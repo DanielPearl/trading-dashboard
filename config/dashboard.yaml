@@ -21,8 +21,10 @@ bots:
     decisions_path: /root/unemployment-claims/data/decisions.jsonl
   - key: natural-gas
     name: Natural Gas
-    db_path: /root/natural-gas/data/sim.db
-    decisions_path: /root/natural-gas/outputs/daily_signals.json
+    # Lives at /root/peak-load/ on the droplet — directory keeps its old
+    # name from before the bot was rebuilt around the KXNATGASD market.
+    db_path: /root/peak-load/data/sim.db
+    decisions_path: /root/peak-load/outputs/daily_signals.json
   - key: whale-watcher
     name: Whale Watcher
     db_path: /root/whale-watcher/data/sim.db
