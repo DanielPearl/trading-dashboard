@@ -10,8 +10,10 @@ cd /root
 git clone git@github.com:DanielPearl/trading-dashboard.git
 cd trading-dashboard
 
-# 2. Install Python deps. PyYAML is the only one — stdlib does the rest.
-pip3 install -r requirements.txt
+# 2. Per-repo venv (matches the pattern used by the bot services on this
+#    droplet) and install deps. PyYAML is the only one — stdlib does the rest.
+python3 -m venv .venv
+.venv/bin/pip install -r requirements.txt
 
 # 3. Install + start the systemd unit.
 cp deploy/trading-dashboard.service /etc/systemd/system/

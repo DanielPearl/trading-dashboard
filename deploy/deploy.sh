@@ -15,8 +15,16 @@ echo "→ git pull"
 git fetch origin
 git reset --hard origin/main
 
+# Per-repo venv. Matches the convention used by the bot services on this
+# droplet, and sidesteps the PEP 668 externally-managed warning that
+# Bookworm's system python3 emits.
+if [[ ! -d .venv ]]; then
+  echo "→ creating .venv"
+  python3 -m venv .venv
+fi
 echo "→ pip install -r requirements.txt"
-pip3 install -q -r requirements.txt
+.venv/bin/pip install -q --upgrade pip
+.venv/bin/pip install -q -r requirements.txt
 
 # First-time install: copy the unit file. On subsequent runs this is a no-op.
 if [[ ! -f /etc/systemd/system/trading-dashboard.service ]]; then
