@@ -1,0 +1,17 @@
+[Unit]
+Description=Kalshi multi-bot trading dashboard
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/root/trading-dashboard
+ExecStart=/usr/bin/python3 /root/trading-dashboard/dashboard.py --config /root/trading-dashboard/config/dashboard.yaml
+Restart=on-failure
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

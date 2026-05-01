@@ -1,0 +1,43 @@
+# --- python ---
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.venv/
+venv/
+env/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+*.egg-info/
+build/
+dist/
+
+# --- runtime data (dashboard reads sibling bots' DBs; never owns one) ---
+data/
+logs/
+*.log
+*.db
+*.sqlite
+
+# --- OS / editor ---
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# --- claude code local settings ---
+.claude/
+
+# --- secrets (dashboard has none, but defense in depth) ---
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+
+# --- local-dev configs ---
+config/dashboard.local.yaml
+config/*.local.yaml

@@ -1,0 +1,67 @@
+# Multi-bot trading dashboard config.
+#
+# The dashboard is a read-only viewer over each bot's SQLite DB. It does
+# not place trades, hold credentials, or talk to Kalshi. Edit `bots:` to
+# add or remove bots; the rest of the file holds the display thresholds
+# shown on the buy-criteria panel (these mirror the gas-bot's gates).
+
+host: "0.0.0.0"
+port: 8080
+
+# Bot registry. Listed in display order. db_path is checked at startup —
+# bots whose DB is missing render a friendly stub instead of an error.
+bots:
+  - key: gas-prices
+    name: Gas Prices
+    db_path: /root/gas-prices/data/sim.db
+    decisions_path: /root/gas-prices/data/decisions.jsonl
+  - key: unemployment-claims
+    name: Unemployment Claims
+    db_path: /root/unemployment-claims/data/sim.db
+    decisions_path: /root/unemployment-claims/data/decisions.jsonl
+  - key: natural-gas
+    name: Natural Gas
+    db_path: /root/natural-gas/data/sim.db
+    decisions_path: /root/natural-gas/outputs/daily_signals.json
+  - key: whale-watcher
+    name: Whale Watcher
+    db_path: /root/whale-watcher/data/sim.db
+    decisions_path: /root/whale-watcher/data/decisions.jsonl
+
+# ---------------------------------------------------------------------------
+# Display thresholds. Mirror the gas-bot's gates so the buy-criteria panel
+# shows the actual bar each market must clear.
+# ---------------------------------------------------------------------------
+risk:
+  bet_size_cents: 100
+  max_open_positions: 1
+  max_total_exposure_cents: 200
+  max_bets_per_day: 50
+  cooldown_seconds_same_market: 1800
+
+edge:
+  min_edge_yes: 0.08
+  min_edge_no: 0.08
+  min_model_confidence: 0.40
+  min_confidence: 0.30
+  min_model_accuracy: 0.55
+  min_ev_per_contract: 0.03
+  min_prob_edge_over_breakeven: 0.05
+
+hedge:
+  enabled: true
+  profit_lock_cents: 20
+  stop_loss_cents: 15
+  hedge_size_fraction: 0.5
+
+validators:
+  min_book_depth_contracts: 100
+  max_spread_cents: 8
+  min_minutes_to_close: 30
+  max_minutes_to_close: 10080
+  prob_bounds_cents: [5, 95]
+  min_volume: 50
+  min_open_interest: 50
+  min_depth_at_best_ask: 25
+  basis_risk_strike_window_dollars: 0.03
+  basis_risk_max_hours_to_close: 6
