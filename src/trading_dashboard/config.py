@@ -51,6 +51,11 @@ class BotEntry:
     dashboard_type: str = "standard"
     signals_path: str | None = None
     orders_path: str | None = None
+    # Kalshi series_ticker for the family the bot trades (e.g.
+    # "KXAAAGASW", "KXNATGASD", "KXJOBLESSCLAIMS"). The dashboard uses
+    # this to fetch live candlesticks straight from Kalshi for the
+    # watchlist hero chart, independent of whether the bot itself is up.
+    series_ticker: str | None = None
     display: DisplayCfg = field(default_factory=DisplayCfg)
 
 

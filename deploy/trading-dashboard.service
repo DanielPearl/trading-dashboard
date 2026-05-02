@@ -7,6 +7,12 @@ Wants=network-online.target
 Type=simple
 User=root
 WorkingDirectory=/root/trading-dashboard
+# Load KALSHI_API_KEY_ID + KALSHI_PRIVATE_KEY_PATH so the dashboard can
+# fetch live candlesticks for each bot's series. We piggyback on the
+# gas-prices bot's .env — same key, read-only use, no scope expansion.
+# `-` prefix makes systemd skip the line if the file is missing
+# (e.g. on a fresh droplet that hasn't installed gas-prices yet).
+EnvironmentFile=-/root/gas-prices/.env
 ExecStart=/root/trading-dashboard/.venv/bin/python /root/trading-dashboard/dashboard.py --config /root/trading-dashboard/config/dashboard.yaml
 MemoryMax=80M
 MemoryHigh=60M

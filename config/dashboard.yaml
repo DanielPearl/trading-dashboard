@@ -15,6 +15,7 @@ bots:
     name: Gas Prices
     db_path: /root/gas-prices/data/sim.db
     decisions_path: /root/gas-prices/data/decisions.jsonl
+    series_ticker: KXAAAGASW
     display:
       underlying_label: Retail gas price
       underlying_unit: "$"
@@ -24,6 +25,7 @@ bots:
     name: Unemployment Claims
     db_path: /root/unemployment-claims/data/sim.db
     decisions_path: /root/unemployment-claims/data/decisions.jsonl
+    series_ticker: KXJOBLESSCLAIMS
     display:
       underlying_label: Initial jobless claims
       underlying_unit: "K"
@@ -37,6 +39,7 @@ bots:
     # name from before the bot was rebuilt around the KXNATGASD market.
     db_path: /root/peak-load/data/sim.db
     decisions_path: /root/peak-load/outputs/daily_signals.json
+    series_ticker: KXNATGASD
     display:
       underlying_label: Henry Hub spot
       underlying_unit: "$"
