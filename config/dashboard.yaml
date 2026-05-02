@@ -12,7 +12,7 @@ port: 8080
 # bots whose DB is missing render a friendly stub instead of an error.
 bots:
   - key: gas-prices
-    name: Gas Prices
+    name: Retail Gas Prices
     db_path: /root/gas-prices/data/sim.db
     decisions_path: /root/gas-prices/data/decisions.jsonl
     series_ticker: KXAAAGASW

@@ -2374,7 +2374,7 @@ def _render_active_bet(out: List[str], pos: dict | None,
         if ticker.startswith("KXJOBLESSCLAIMS"):
             enriched["_bot_name"] = "Unemployment Claims"
         elif ticker.startswith("KXAAAGASW") or ticker.startswith("KXAAAGASD"):
-            enriched["_bot_name"] = "Gas Prices"
+            enriched["_bot_name"] = "Retail Gas Prices"
         elif ticker.startswith("KXNATGAS"):
             enriched["_bot_name"] = "Natural Gas"
         else:
