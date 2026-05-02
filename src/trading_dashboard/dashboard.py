@@ -1138,12 +1138,19 @@ def _live_update_script(current_bot: str) -> str:
           ? (Math.round(r.model_prob_yes * 100) + "%") : "—";
         const myNo = (r.model_prob_yes !== null && r.model_prob_yes !== undefined)
           ? (Math.round((1 - r.model_prob_yes) * 100) + "%") : "—";
-        patchCell(tr.querySelector("[data-field='volume']"),
-                  r.volume !== null && r.volume !== undefined
-                    ? Number(r.volume).toLocaleString() : "—");
         patchCell(tr.querySelector("[data-field='oi']"),
                   r.open_interest !== null && r.open_interest !== undefined
                     ? Number(r.open_interest).toLocaleString() : "—");
+        // "Chance" — YES/NO ask midpoint, mirrors what Kalshi shows.
+        let chance = "—";
+        if (ya !== null && ya !== undefined && na !== null && na !== undefined) {{
+          chance = Math.round((Number(ya) + (100 - Number(na))) / 2) + "%";
+        }} else if (ya !== null && ya !== undefined) {{
+          chance = ya + "%";
+        }} else if (na !== null && na !== undefined) {{
+          chance = (100 - Number(na)) + "%";
+        }}
+        patchCell(tr.querySelector("[data-field='chance']"), chance);
         patchCell(tr.querySelector("[data-field='kyes']"), kyes);
         patchCell(tr.querySelector("[data-field='kno']"), kno);
         patchCell(tr.querySelector("[data-field='my_yes']"), myYes);
@@ -2100,13 +2107,15 @@ def _render_watchlist(out: List[str], watchlist: List[dict],
                        r.get("ticker") or ""),
     )
 
-    # Column layout (per user spec): Ticker | Question | Closes | Volume |
-    # Contracts (= open interest) | Kalshi YES + NO grouped | My YES + NO
-    # grouped | EV YES + NO grouped | Verdict (rightmost).
+    # Column layout (per user spec): Ticker | Question | Contracts |
+    # Chance | Kalshi YES + NO grouped | My YES + NO grouped |
+    # EV YES + NO grouped | Verdict (rightmost). Closes-in and total
+    # volume are surfaced in the watchlist hero header instead of being
+    # repeated on every row.
     out.append("<table><thead><tr>"
-               "<th>Ticker</th><th>Question</th><th class='num'>Closes in</th>"
-               "<th class='num' title='Total contracts traded on this market (lifetime). Below the bot threshold the row dims as suspect — a thin market reflects a few trades, not a wisdom-of-crowds price.'>Volume</th>"
-               "<th class='num' title='Open interest — number of contracts currently held open. Volume tells you how much trading happened; Contracts tells you how many positions are still active.'>Contracts</th>"
+               "<th>Ticker</th><th>Question</th>"
+               "<th class='num' title='Open interest — number of contracts currently held open on this strike.'>Contracts</th>"
+               "<th class='num' title='Implied probability the strike resolves YES, derived from the YES/NO ask midpoint (mirrors what Kalshi shows as &quot;Chance&quot;).'>Chance</th>"
                "<th class='num'>Kalshi YES %</th>"
                "<th class='num'>Kalshi NO %</th>"
                "<th class='num'>My YES %</th>"
@@ -2117,14 +2126,28 @@ def _render_watchlist(out: List[str], watchlist: List[dict],
     for v in watchlist:
         ticker = v.get("ticker", "")
         qstr = question_str(v.get("direction", ""), v.get("strike_low"), v.get("strike_high"))
-        mtc_min = v.get("minutes_to_close")
-        mtc_str = time_to_close_str(mtc_min)
         ya_c = v.get("yes_ask_cents"); na_c = v.get("no_ask_cents")
         spread_cents = v.get("spread_cents")
+        # Volume still drives the "thin volume" row-suspect flag below
+        # but the column itself is gone — the hero shows the watchlist
+        # total instead.
         volume = v.get("volume")
-        vol_str = f"{int(volume):,}" if volume is not None else "—"
         oi = v.get("open_interest")
         oi_str = f"{int(oi):,}" if oi is not None else "—"
+        # Chance — the implied probability the strike resolves YES.
+        # Prefer the YES/NO ask midpoint (consensus mid), fall back to
+        # mid_cents if Kalshi populated it, else single-side ask.
+        if ya_c is not None and na_c is not None:
+            chance_pct = (float(ya_c) + (100.0 - float(na_c))) / 2.0
+            chance_str = f"{chance_pct:.0f}%"
+        elif v.get("mid_cents") is not None:
+            chance_str = f"{float(v['mid_cents']):.0f}%"
+        elif ya_c is not None:
+            chance_str = f"{int(ya_c)}%"
+        elif na_c is not None:
+            chance_str = f"{100 - int(na_c)}%"
+        else:
+            chance_str = "—"
         # Derive missing side from the other when only one ask is quoted.
         if ya_c is not None:
             kyes_str = f"{ya_c}%"
@@ -2235,9 +2258,8 @@ def _render_watchlist(out: List[str], watchlist: List[dict],
         out.append(f"<tr{row_cls} data-ticker='{tt_esc}'>"
                    f"<td class='mono'>{tt_esc}</td>"
                    f"<td>{html.escape(qstr)}</td>"
-                   f"<td class='num'>{mtc_str}</td>"
-                   f"<td class='num' data-field='volume'>{vol_str}</td>"
                    f"<td class='num' data-field='oi'>{oi_str}</td>"
+                   f"<td class='num' data-field='chance'>{chance_str}</td>"
                    f"<td class='num' data-field='kyes'>{kyes_str}</td>"
                    f"<td class='num' data-field='kno'>{kno_str}</td>"
                    f"<td class='num {my_yes_cls}' data-field='my_yes'{my_yes_tt}>{my_yes_str}</td>"
