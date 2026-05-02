@@ -20,6 +20,22 @@ import yaml
 
 
 @dataclass
+class DisplayCfg:
+    """Per-bot display knobs for the watchlist hero header / chart.
+
+    The dashboard's `model_snapshots.current_gas_price` column is shared
+    across bots but the underlying it represents differs (USD/gal,
+    USD/MMBtu, thousands of jobless claims). Each bot tells the
+    dashboard how to format its value here.
+    """
+    underlying_label: str = "Underlying"
+    underlying_unit: str = "$"
+    underlying_decimals: int = 2
+    # "prefix" — render as "$2.759"; "suffix" — "189.0K"; "none" — bare number.
+    unit_position: str = "prefix"
+
+
+@dataclass
 class BotEntry:
     key: str
     name: str
@@ -31,6 +47,7 @@ class BotEntry:
     dashboard_type: str = "standard"
     signals_path: str | None = None
     orders_path: str | None = None
+    display: DisplayCfg = field(default_factory=DisplayCfg)
 
 
 @dataclass
@@ -94,7 +111,12 @@ def load_config(path: str | Path = "config/dashboard.yaml") -> DashboardConfig:
     validators_raw = dict(raw["validators"])
     validators_raw["prob_bounds_cents"] = tuple(validators_raw["prob_bounds_cents"])
 
-    bots = [BotEntry(**b) for b in raw["bots"]]
+    bots: List[BotEntry] = []
+    for b in raw["bots"]:
+        b = dict(b)
+        if "display" in b and isinstance(b["display"], dict):
+            b["display"] = DisplayCfg(**b["display"])
+        bots.append(BotEntry(**b))
 
     return DashboardConfig(
         host=raw.get("host", "0.0.0.0"),

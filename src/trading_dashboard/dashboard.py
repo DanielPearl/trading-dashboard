@@ -27,7 +27,7 @@ from contextlib import closing
 from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from typing import Any, List
+from typing import Any, List, Tuple
 
 log = logging.getLogger("dashboard")
 
@@ -402,21 +402,24 @@ def fetch_watchlist(db_path: str) -> List[dict]:
         return []
 
 
-def fetch_view_history(db_path: str, ticker: str, max_points: int = 200) -> List[dict]:
-    """All historical views for a single market, oldest first.
+def fetch_underlying_history(db_path: str, hours: int = 72,
+                              max_points: int = 400) -> List[dict]:
+    """Time-series of the bot's underlying value (model_snapshots.current_gas_price)
+    over the last N hours. Used to draw the watchlist hero chart.
 
-    Used to render a time-series chart of model% vs kalshi% for any
-    market the user is currently invested in.
+    Returns rows oldest-first as `[{"captured_at": "...", "value": float}, ...]`.
     """
     if not Path(db_path).exists():
         return []
     try:
         with closing(_conn(db_path)) as c:
             rows = c.execute(
-                "SELECT captured_at, model_prob_yes, yes_ask_cents, no_ask_cents, "
-                "edge_yes, edge_no FROM market_views WHERE ticker = ? "
+                "SELECT captured_at, current_gas_price AS value "
+                "FROM model_snapshots "
+                "WHERE current_gas_price IS NOT NULL "
+                "  AND captured_at >= datetime('now', ?) "
                 "ORDER BY captured_at ASC LIMIT ?",
-                (ticker, max_points),
+                (f"-{int(hours)} hours", max_points),
             ).fetchall()
         return [dict(r) for r in rows]
     except (sqlite3.OperationalError, sqlite3.DatabaseError):
@@ -601,79 +604,144 @@ def confidence_pct(prob: float | None,
     return int(round(raw * accuracy * 100))
 
 
-def svg_chart(history: List[dict], entry_price_cents: int | None = None,
-              side: str = "YES", width: int = 640, height: int = 160) -> str:
-    """Plot the active bet's market price as one solid line over time,
-    plus a dotted reference line at the entry price.
-
-    Per user request: only ONE moving line (Kalshi market for the side
-    we're holding) and a dotted line marking the price we paid.
-    Side determines whether we plot YES ask or NO ask.
+def fmt_underlying(value: float | None, display: dict) -> str:
+    """Format an underlying value per the bot's display config:
+       prefix → '$2.759';   suffix → '189K';   none → '2.759'.
     """
-    points = [r for r in history if r.get("captured_at")]
-    if len(points) < 2:
-        return "<div class='empty'>Not enough history yet to plot — need at least 2 ticks.</div>"
+    if value is None:
+        return "—"
+    decimals = int(display.get("underlying_decimals", 2))
+    unit = display.get("underlying_unit", "")
+    pos = display.get("unit_position", "prefix")
+    n = f"{float(value):,.{decimals}f}"
+    if pos == "prefix":
+        return f"{unit}{n}"
+    if pos == "suffix":
+        return f"{n}{unit}"
+    return n
 
-    pad_l, pad_r, pad_t, pad_b = 36, 12, 12, 28
+
+def svg_underlying_chart(history: List[dict], current_value: float | None,
+                          display: dict, active_strike: float | None = None,
+                          active_side: str | None = None,
+                          width: int = 760, height: int = 220) -> str:
+    """Watchlist hero chart: underlying commodity / metric value over the
+    last few days. Auto-scales the Y axis to the data range with a small
+    pad so price moves of 1-2% still fill the panel.
+
+    If `active_strike` is set, draws a horizontal line at the strike so
+    the user can see how the underlying is moving toward / away from
+    their bought contract. Line color reflects which side they're long.
+    """
+    pts_in: List[Tuple[str, float]] = []
+    for r in history:
+        v = r.get("value")
+        ts = r.get("captured_at")
+        if v is None or ts is None:
+            continue
+        try:
+            pts_in.append((ts, float(v)))
+        except (TypeError, ValueError):
+            continue
+    if len(pts_in) < 2:
+        return ("<div class='empty' style='padding:24px'>"
+                "Not enough underlying-price history yet (need 2+ snapshots). "
+                "Once the bot runs for a few ticks this chart populates."
+                "</div>")
+
+    pad_l, pad_r, pad_t, pad_b = 56, 16, 12, 28
     inner_w = width - pad_l - pad_r
     inner_h = height - pad_t - pad_b
-    n = len(points)
+    n = len(pts_in)
+
+    # Extend range to include the active strike — otherwise an in-the-money
+    # strike that sits outside the recent price range falls off the chart.
+    values_for_range = [v for _, v in pts_in]
+    if active_strike is not None:
+        values_for_range.append(float(active_strike))
+    vmin = min(values_for_range)
+    vmax = max(values_for_range)
+    if vmax == vmin:
+        vmax = vmin + 1.0
+    span = vmax - vmin
+    pad = span * 0.10
+    y_lo = vmin - pad
+    y_hi = vmax + pad
 
     def x_at(i: int) -> float:
         return pad_l + (i / max(1, n - 1)) * inner_w
 
-    def y_at(p: float) -> float:
-        return pad_t + (1.0 - max(0.0, min(1.0, p))) * inner_h
+    def y_at(v: float) -> float:
+        return pad_t + (1.0 - (v - y_lo) / (y_hi - y_lo)) * inner_h
 
     out: List[str] = [
-        f"<svg width='{width}' height='{height}' viewBox='0 0 {width} {height}' "
-        f"style='background:#0d1117; border:1px solid #21262d; border-radius:6px'>"
+        f"<svg width='100%' height='{height}' viewBox='0 0 {width} {height}' "
+        f"preserveAspectRatio='none' "
+        f"style='background:#0d1117; border:1px solid #21262d; "
+        f"border-radius:6px; display:block'>"
     ]
-    for p, label in [(0.0, "0%"), (0.25, "25%"), (0.5, "50%"), (0.75, "75%"), (1.0, "100%")]:
-        y = y_at(p)
+
+    # Y gridlines: 4 evenly spaced ticks across the visible range.
+    for i in range(5):
+        v = y_lo + (i / 4.0) * (y_hi - y_lo)
+        y = y_at(v)
         out.append(f"<line x1='{pad_l}' y1='{y}' x2='{width-pad_r}' y2='{y}' "
-                   f"stroke='#21262d' stroke-width='1'/>")
+                   f"stroke='#1f2530' stroke-width='1'/>")
         out.append(f"<text x='{pad_l-6}' y='{y+4}' fill='#8b949e' font-size='10' "
-                   f"text-anchor='end'>{label}</text>")
+                   f"text-anchor='end'>{fmt_underlying(v, display)}</text>")
 
-    # The single moving line: Kalshi market price for OUR side over time.
-    # We plot the implied YES probability if side=YES (= yes_ask cents/100),
-    # else the implied NO probability (no_ask cents/100). Both are 0..1.
-    side_key = "yes_ask_cents" if side.upper() == "YES" else "no_ask_cents"
-    pts: List[str] = []
-    for i, r in enumerate(points):
-        v = r.get(side_key)
-        if v is None:
-            continue
-        pts.append(f"{x_at(i):.1f},{y_at(float(v) / 100.0):.1f}")
+    # The price line itself.
+    pts = [f"{x_at(i):.1f},{y_at(v):.1f}" for i, (_, v) in enumerate(pts_in)]
+    out.append(f"<polyline points='{' '.join(pts)}' stroke='#c9d1d9' "
+               f"stroke-width='2' fill='none'/>")
 
-    line_color = "#3fb950" if side.upper() == "YES" else "#f85149"
-    if len(pts) >= 2:
-        out.append(f"<polyline points='{' '.join(pts)}' stroke='{line_color}' "
-                   f"stroke-width='2' fill='none'/>")
+    # Highlight the latest tail in green/red depending on direction. Cosmetic
+    # — Kalshi colors the tail of their chart so the trend is immediately
+    # readable.
+    if len(pts_in) >= 6:
+        recent = pts_in[-6:]
+        col = "#3fb950" if recent[-1][1] >= recent[0][1] else "#f85149"
+        tail = [f"{x_at(n - len(recent) + j):.1f},{y_at(v):.1f}"
+                for j, (_, v) in enumerate(recent)]
+        out.append(f"<polyline points='{' '.join(tail)}' stroke='{col}' "
+                   f"stroke-width='2.5' fill='none'/>")
 
-    # Dotted reference line at the entry price.
-    if entry_price_cents is not None:
-        y_entry = y_at(entry_price_cents / 100.0)
-        out.append(f"<line x1='{pad_l}' y1='{y_entry}' x2='{width-pad_r}' y2='{y_entry}' "
-                   f"stroke='#8b949e' stroke-width='1.5' stroke-dasharray='5,4'/>")
-        out.append(f"<text x='{width-pad_r-2}' y='{y_entry-4}' fill='#8b949e' "
-                   f"font-size='10' text-anchor='end'>entry {entry_price_cents}c</text>")
+    # Active-strike horizontal line: the value the user bought against.
+    if active_strike is not None:
+        ys = y_at(float(active_strike))
+        side = (active_side or "").upper()
+        col = "#3fb950" if side == "YES" else ("#f85149" if side == "NO" else "#58a6ff")
+        out.append(f"<line x1='{pad_l}' y1='{ys}' x2='{width-pad_r}' y2='{ys}' "
+                   f"stroke='{col}' stroke-width='1.5' stroke-dasharray='6,4'/>")
+        label = f"My {side or 'bet'} @ {fmt_underlying(float(active_strike), display)}"
+        out.append(f"<text x='{width-pad_r-6}' y='{ys-6}' fill='{col}' "
+                   f"font-size='11' text-anchor='end'>{html.escape(label)}</text>")
 
-    first_ts = points[0]["captured_at"][:16].replace("T", " ")
-    last_ts = points[-1]["captured_at"][:16].replace("T", " ")
+    # X axis: timestamp at each end.
+    first_ts = pts_in[0][0][:16].replace("T", " ")
+    last_ts = pts_in[-1][0][:16].replace("T", " ")
     out.append(f"<text x='{pad_l}' y='{height-8}' fill='#8b949e' font-size='10'>"
                f"{html.escape(first_ts)}</text>")
     out.append(f"<text x='{width-pad_r}' y='{height-8}' fill='#8b949e' font-size='10' "
                f"text-anchor='end'>{html.escape(last_ts)} UTC</text>")
-    out.append(f"<rect x='{pad_l}' y='2' width='10' height='10' fill='{line_color}'/>")
-    out.append(f"<text x='{pad_l+14}' y='11' fill='#c9d1d9' font-size='11'>"
-               f"Kalshi {side.upper()} %</text>")
-    out.append(f"<line x1='{pad_l+90}' y1='8' x2='{pad_l+106}' y2='8' "
-               f"stroke='#8b949e' stroke-width='1.5' stroke-dasharray='4,3'/>")
-    out.append(f"<text x='{pad_l+110}' y='11' fill='#c9d1d9' font-size='11'>entry</text>")
     out.append("</svg>")
     return "".join(out)
+
+
+def time_left_str(minutes: float | None) -> str:
+    """Compact 'closes in 3d 4h' / '12h 30m' / '45m' for the hero header."""
+    if minutes is None or minutes <= 0:
+        return "—"
+    total_min = int(minutes)
+    days = total_min // (60 * 24)
+    rem = total_min - days * 60 * 24
+    hours = rem // 60
+    mins = rem - hours * 60
+    if days >= 1:
+        return f"{days}d {hours}h"
+    if hours >= 1:
+        return f"{hours}h {mins}m"
+    return f"{mins}m"
 
 
 def question_str(direction: str, low: float | None, high: float | None) -> str:
@@ -852,6 +920,28 @@ code { background: #161b22; padding: 1px 6px; border-radius: 3px; color: #c9d1d9
 tr.row-suspect td { opacity: 0.55; }
 tr.row-suspect td:nth-last-child(2) { opacity: 0.85; }  /* keep gap legible */
 .section h2 .small { text-transform: none; letter-spacing: 0; font-size: 11px; font-weight: 400; }
+/* Watchlist hero — Kalshi-style market header above the strikes table.
+   Layout mirrors the live Kalshi market page: title + countdown on top,
+   then a big current-value, % change, and total volume row, then the
+   underlying chart. */
+.wl-hero { background: #0d1117; border: 1px solid #21262d; border-radius: 8px;
+    padding: 16px 18px; margin-bottom: 18px; }
+.wl-hero-top { display: flex; align-items: baseline; justify-content: space-between;
+    gap: 12px; flex-wrap: wrap; margin-bottom: 6px; }
+.wl-hero-title { font-size: 12px; font-weight: 600; color: #8b949e;
+    text-transform: uppercase; letter-spacing: 0.06em; }
+.wl-hero-mtc .label { font-size: 11px; color: #8b949e; text-transform: uppercase;
+    letter-spacing: 0.06em; margin-right: 6px; }
+.wl-hero-mtc .value { font-size: 14px; color: #c9d1d9; font-weight: 600; }
+.wl-hero-stats { display: flex; align-items: baseline; gap: 18px;
+    flex-wrap: wrap; margin: 4px 0 14px 0; }
+.wl-hero-price { font-size: 36px; font-weight: 700; color: #f0f6fc;
+    letter-spacing: -0.5px; }
+.wl-hero-change { font-size: 16px; font-weight: 600; color: #8b949e; }
+.wl-hero-change.pos { color: #3fb950; }
+.wl-hero-change.neg { color: #f85149; }
+.wl-hero-vol { font-size: 13px; color: #c9d1d9; margin-left: auto; }
+.wl-hero-vol .dim { color: #8b949e; }
 """
 
 
@@ -870,7 +960,8 @@ def render_page(
     latest_active: dict | None,
     bot_closed_positions: List[dict],
     watchlist: List[dict],
-    position_history: List[dict],
+    underlying_history: List[dict],
+    display: dict,
     risk_caps: dict,
     edge_cfg: dict,
     validator_cfg: dict,
@@ -908,12 +999,16 @@ def render_page(
     _render_model_section(out, model)
 
     # SECTION 3 — Active bet (just the latest one) + this bot's closed history.
-    _render_active_bet(out, latest_active, watchlist, position_history,
-                       bot_closed_positions)
+    _render_active_bet(out, latest_active, watchlist, bot_closed_positions)
 
     # SECTION 4 — Watchlist + the bot's full buy-criteria table directly
-    # underneath it (so verdicts and rules live side-by-side).
+    # underneath it (so verdicts and rules live side-by-side). The hero
+    # header at the top of this section shows the underlying value and
+    # an SVG chart with the active-bet strike overlaid (if any).
     _render_watchlist(out, watchlist, model,
+                      underlying_history=underlying_history,
+                      display=display,
+                      latest_active=latest_active,
                       edge_cfg=edge_cfg,
                       validator_cfg=validator_cfg,
                       risk_caps=risk_caps,
@@ -1735,7 +1830,6 @@ def _render_why_panel(out: List[str], pos: dict, mtc_min, wl: dict | None) -> No
 
 def _render_active_bet(out: List[str], pos: dict | None,
                        watchlist: List[dict],
-                       position_history: List[dict],
                        closed_history: List[dict]) -> None:
     out.append("<div class='section'><h2>3 · Active bet — currently invested</h2>"
                "<div class='body'>")
@@ -1823,9 +1917,10 @@ def _render_active_bet(out: List[str], pos: dict | None,
     # ── "Why this trade was taken" panel ───────────────────────────────
     _render_why_panel(out, pos, mtc, wl)
 
-    out.append("<div class='hero-chart'>")
-    out.append(svg_chart(position_history, entry_price_cents=entry, side=side))
-    out.append("</div>")
+    # The per-position market-price chart that lived here was retired:
+    # the watchlist hero chart now shows the underlying with a horizontal
+    # line at this position's strike, which is more useful for tracking
+    # whether the bet is going to resolve YES or NO.
     out.append("</div>")  # /hero-card
 
     # Per request: closed-bet history with the same columns as Section 1's
@@ -1835,8 +1930,110 @@ def _render_active_bet(out: List[str], pos: dict | None,
     out.append("</div></div>")
 
 
+def _render_watchlist_hero(out: List[str],
+                            watchlist: List[dict],
+                            model: dict | None,
+                            underlying_history: List[dict],
+                            display: dict,
+                            latest_active: dict | None) -> None:
+    """Kalshi-style hero block: current underlying value, % change, total
+    Kalshi volume on the watchlist, time-to-close on the soonest market,
+    and an SVG chart of the underlying. If there's an active position,
+    a horizontal line on the chart marks the strike the user bought.
+    """
+    # Current underlying value (from the latest model snapshot).
+    current = None
+    if model is not None and model.get("current_gas_price") is not None:
+        try:
+            current = float(model["current_gas_price"])
+        except (TypeError, ValueError):
+            current = None
+
+    # % change vs the start of the chart window. If the bot's only run
+    # for a few snapshots, this defaults to 0 — better than hiding the
+    # field, since the chart itself shows the data sparsity.
+    pct_change = None
+    earliest_value = None
+    if underlying_history:
+        for r in underlying_history:
+            v = r.get("value")
+            if v is None:
+                continue
+            try:
+                earliest_value = float(v)
+                break
+            except (TypeError, ValueError):
+                continue
+    if current is not None and earliest_value is not None and earliest_value != 0:
+        pct_change = (current - earliest_value) / abs(earliest_value) * 100.0
+
+    # Total Kalshi volume across the visible watchlist + soonest close.
+    vols = [int(r.get("volume") or 0) for r in watchlist
+            if r.get("volume") is not None]
+    total_volume = sum(vols)
+    mtc_values = [float(r.get("minutes_to_close")) for r in watchlist
+                  if r.get("minutes_to_close") is not None
+                  and float(r.get("minutes_to_close")) > 0]
+    soonest_mtc = min(mtc_values) if mtc_values else None
+
+    # Per-bot display formatting + active-strike overlay (if any).
+    label = display.get("underlying_label", "Underlying") if display else "Underlying"
+    current_str = fmt_underlying(current, display)
+    pct_str = "—" if pct_change is None else f"{pct_change:+.2f}%"
+    pct_cls = "" if pct_change is None else ("pos" if pct_change >= 0 else "neg")
+
+    active_strike = None
+    active_side = None
+    if latest_active:
+        # The positions table doesn't carry strike_low / strike_high
+        # directly — those live on market_views. Look them up by ticker.
+        # For "between" markets we plot the midpoint; for "above $X" we
+        # plot the lower bound.
+        wl_row = next(
+            (w for w in watchlist
+             if w.get("ticker") == latest_active.get("ticker")),
+            None,
+        )
+        if wl_row is not None:
+            sl = wl_row.get("strike_low")
+            sh = wl_row.get("strike_high")
+            if sl is not None and sh is not None:
+                try:
+                    active_strike = (float(sl) + float(sh)) / 2
+                except (TypeError, ValueError):
+                    pass
+            elif sl is not None:
+                try:
+                    active_strike = float(sl)
+                except (TypeError, ValueError):
+                    pass
+        active_side = (latest_active.get("side") or "").upper() or None
+
+    out.append("<div class='wl-hero'>")
+    out.append("<div class='wl-hero-top'>")
+    out.append(f"<div class='wl-hero-title'>{html.escape(label)}</div>")
+    out.append(f"<div class='wl-hero-mtc'>"
+               f"<span class='label'>Closes in</span> "
+               f"<span class='value'>{time_left_str(soonest_mtc)}</span>"
+               f"</div>")
+    out.append("</div>")
+    out.append("<div class='wl-hero-stats'>")
+    out.append(f"<div class='wl-hero-price'>{html.escape(current_str)}</div>")
+    out.append(f"<div class='wl-hero-change {pct_cls}'>{pct_str}</div>")
+    out.append(f"<div class='wl-hero-vol'>{total_volume:,} <span class='dim'>vol</span></div>")
+    out.append("</div>")
+    out.append(svg_underlying_chart(
+        underlying_history, current, display,
+        active_strike=active_strike, active_side=active_side,
+    ))
+    out.append("</div>")
+
+
 def _render_watchlist(out: List[str], watchlist: List[dict],
                       model: dict | None,
+                      underlying_history: List[dict] | None = None,
+                      display: dict | None = None,
+                      latest_active: dict | None = None,
                       edge_cfg: dict | None = None,
                       validator_cfg: dict | None = None,
                       risk_caps: dict | None = None,
@@ -1848,6 +2045,15 @@ def _render_watchlist(out: List[str], watchlist: List[dict],
                f"confidence is scaled by it)</span></h2><div class='body'>")
     # Current prediction (moved here from the Model section per request).
     _render_current_prediction(out, model)
+
+    # ── Hero header + chart (Kalshi-style) ────────────────────────────────
+    # Top-line metrics for the underlying the bot tracks: current value,
+    # % change vs the start of the chart window, total Kalshi volume
+    # across the watchlist, and time-to-close on the soonest market.
+    _render_watchlist_hero(out, watchlist, model,
+                           underlying_history or [],
+                           display or {}, latest_active)
+
     if not watchlist:
         out.append("<div class='empty'>No fully-priced markets right now.</div>")
         out.append("</div></div>")
@@ -1890,13 +2096,16 @@ def _render_watchlist(out: List[str], watchlist: List[dict],
                        r.get("ticker") or ""),
     )
 
+    # Column layout (per user spec): Ticker | Question | Closes | Volume |
+    # Contracts (= open interest) | Kalshi YES + NO grouped | My YES + NO
+    # grouped | EV YES + NO grouped | Verdict (rightmost).
     out.append("<table><thead><tr>"
                "<th>Ticker</th><th>Question</th><th class='num'>Closes in</th>"
                "<th class='num' title='Total contracts traded on this market (lifetime). Below the bot threshold the row dims as suspect — a thin market reflects a few trades, not a wisdom-of-crowds price.'>Volume</th>"
                "<th class='num' title='Open interest — number of contracts currently held open. Volume tells you how much trading happened; Contracts tells you how many positions are still active.'>Contracts</th>"
                "<th class='num'>Kalshi YES %</th>"
-               "<th class='num'>My YES %</th>"
                "<th class='num'>Kalshi NO %</th>"
+               "<th class='num'>My YES %</th>"
                "<th class='num'>My NO %</th>"
                "<th class='num' title='Expected value per $1 contract on YES, net of half-spread. Positive = profitable in expectation.'>EV YES</th>"
                "<th class='num' title='Expected value per $1 contract on NO, net of half-spread.'>EV NO</th>"
@@ -2026,8 +2235,8 @@ def _render_watchlist(out: List[str], watchlist: List[dict],
                    f"<td class='num' data-field='volume'>{vol_str}</td>"
                    f"<td class='num' data-field='oi'>{oi_str}</td>"
                    f"<td class='num' data-field='kyes'>{kyes_str}</td>"
-                   f"<td class='num {my_yes_cls}' data-field='my_yes'{my_yes_tt}>{my_yes_str}</td>"
                    f"<td class='num' data-field='kno'>{kno_str}</td>"
+                   f"<td class='num {my_yes_cls}' data-field='my_yes'{my_yes_tt}>{my_yes_str}</td>"
                    f"<td class='num {my_no_cls}' data-field='my_no'{my_no_tt}>{my_no_str}</td>"
                    f"<td class='num {ev_yes_cls}' data-field='ev_yes'>{ev_yes_str}</td>"
                    f"<td class='num {ev_no_cls}' data-field='ev_no'>{ev_no_str}</td>"
@@ -2610,10 +2819,10 @@ class Handler(BaseHTTPRequestHandler):
                 model = fetch_latest_model(db_path)
                 latest_active = fetch_latest_open_position(db_path)
                 watchlist = fetch_watchlist(db_path)
-                position_history = (
-                    fetch_view_history(db_path, latest_active["ticker"], 200)
-                    if latest_active else []
-                )
+                # Underlying time-series for the watchlist hero chart.
+                # 72h gives enough resolution to see the recent trend
+                # without flooding the SVG with thousands of points.
+                underlying_history = fetch_underlying_history(db_path, hours=72)
 
                 # Global cross-bot fetches (these power the Summary section
                 # which is identical regardless of which bot is selected).
@@ -2646,7 +2855,8 @@ class Handler(BaseHTTPRequestHandler):
                     latest_active=latest_active,
                     bot_closed_positions=bot_closed_positions,
                     watchlist=watchlist,
-                    position_history=position_history,
+                    underlying_history=underlying_history,
+                    display=bot.get("display") or {},
                     risk_caps=self.risk_caps,
                     edge_cfg=self.edge_cfg,
                     validator_cfg=self.validator_cfg,
@@ -2795,6 +3005,12 @@ def main(argv: list[str] | None = None) -> int:
             "dashboard_type": b.dashboard_type,
             "signals_path": b.signals_path,
             "orders_path": b.orders_path,
+            "display": {
+                "underlying_label": b.display.underlying_label,
+                "underlying_unit": b.display.underlying_unit,
+                "underlying_decimals": b.display.underlying_decimals,
+                "unit_position": b.display.unit_position,
+            },
             "available": Path(b.db_path).exists(),
         })
 
