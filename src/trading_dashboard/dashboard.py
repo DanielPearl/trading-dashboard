@@ -868,28 +868,22 @@ def svg_kalshi_chart(history: List[dict], display: dict,
             out.append(f"<polyline points='{pts_str}' stroke='{color}' "
                        f"stroke-width='2' fill='none'/>")
 
-    # Horizontal strike line. Kalshi labels it just "Above 2.8" inline
-    # near the middle of the chart, in the line's color.
-    if strike_in_range and reference_strike is not None:
+    # Horizontal strike line — dotted, drawn ONLY for an active bet.
+    # YES position → segments above the dotted line are green;
+    # NO  position → segments below the dotted line are green.
+    # (The closest-to-money strike highlight was retired — it's noisy
+    # without a real position to anchor it to.)
+    if strike_is_active_bet and strike_in_range and reference_strike is not None:
         ys = y_at(float(reference_strike))
         line_color = above_color if side != "NO" else below_color
-        stroke_w = 1.4 if strike_is_active_bet else 1.0
-        opacity = 0.95 if strike_is_active_bet else 0.55
         out.append(f"<line x1='{pad_l}' y1='{ys}' x2='{width-pad_r}' y2='{ys}' "
-                   f"stroke='{line_color}' stroke-width='{stroke_w}' "
-                   f"opacity='{opacity}'/>")
+                   f"stroke='{line_color}' stroke-width='1.5' "
+                   f"stroke-dasharray='4,4' opacity='0.95'/>")
         label_strike = fmt_underlying(float(reference_strike), display)
-        # Kalshi prefixes their strike label with "Above" for "above-X"
-        # markets. Bot side annotation only shown when there's an active
-        # position so the casual viewer just sees "Above 2.8".
-        if strike_is_active_bet:
-            label = f"My {side or 'bet'} · Above {label_strike}"
-        else:
-            label = f"Above {label_strike}"
-        # Place label centered horizontally, on top of the line.
+        label = f"My {side or 'bet'} · Above {label_strike}"
         label_x = pad_l + inner_w * 0.5
         out.append(f"<text x='{label_x:.0f}' y='{ys-6}' fill='{line_color}' "
-                   f"font-size='11' text-anchor='middle' opacity='{opacity}'>"
+                   f"font-size='11' text-anchor='middle' opacity='0.95'>"
                    f"{html.escape(label)}</text>")
 
     # X-axis: 5 evenly-spaced date labels across the chart. Each gets a
@@ -1592,16 +1586,6 @@ def _live_update_script(current_bot: str) -> str:
         patchCell(tr.querySelector("[data-field='oi']"),
                   r.open_interest !== null && r.open_interest !== undefined
                     ? Number(r.open_interest).toLocaleString() : "—");
-        // "Chance" — YES/NO ask midpoint, mirrors what Kalshi shows.
-        let chance = "—";
-        if (ya !== null && ya !== undefined && na !== null && na !== undefined) {{
-          chance = Math.round((Number(ya) + (100 - Number(na))) / 2) + "%";
-        }} else if (ya !== null && ya !== undefined) {{
-          chance = ya + "%";
-        }} else if (na !== null && na !== undefined) {{
-          chance = (100 - Number(na)) + "%";
-        }}
-        patchCell(tr.querySelector("[data-field='chance']"), chance);
         patchCell(tr.querySelector("[data-field='kyes']"), kyes);
         patchCell(tr.querySelector("[data-field='kno']"), kno);
         patchCell(tr.querySelector("[data-field='my_yes']"), myYes);
@@ -2523,25 +2507,13 @@ def _render_watchlist_hero(out: List[str],
                        f"</div>")
 
     # Pick a reference strike to color the line against. Active bet's
-    # strike wins; else the closest-to-money strike in the watchlist so
-    # there's still a meaningful divider when no bet is open.
+    # Reference strike for chart coloring: only set when there's an
+    # active bet. The dotted strike line + green-above-or-below split
+    # only make sense relative to a real position; closest-to-money
+    # was noisy without one.
     reference_strike = active_strike
     strike_side = active_side
     strike_is_active = active_strike is not None
-    if reference_strike is None and current is not None:
-        candidates: list[float] = []
-        for w in watchlist:
-            sl = w.get("strike_low")
-            if sl is None:
-                continue
-            try:
-                candidates.append(float(sl))
-            except (TypeError, ValueError):
-                continue
-        if candidates:
-            reference_strike = min(candidates,
-                                    key=lambda s: abs(s - float(current)))
-            strike_side = None
 
     # Chart: prefer Kalshi-derived underlying (matches Kalshi's market-
     # page chart axis). Falls back to the bot's own model_snapshots if
@@ -2629,6 +2601,10 @@ def _render_watchlist(out: List[str], watchlist: List[dict],
         v["_be_no"] = be_no
         v["_best_side"] = best_side
         v["_best_ev"] = best_ev
+    # Filter to rows that have at least 1 open contract — markets with
+    # zero open interest aren't tradeable and clutter the table.
+    watchlist = [r for r in watchlist
+                 if (r.get("open_interest") or 0) > 0]
     # Sort by strike ascending — natural order ($4.00, $4.02, $4.04 ...).
     # Falls back to ticker for rows missing a strike (shouldn't happen for
     # KXAAAGASW but defends against partial parses).
@@ -2640,14 +2616,13 @@ def _render_watchlist(out: List[str], watchlist: List[dict],
     )
 
     # Column layout (per user spec): Ticker | Question | Contracts |
-    # Chance | Kalshi YES + NO grouped | My YES + NO grouped |
-    # EV YES + NO grouped | Verdict (rightmost). Closes-in and total
-    # volume are surfaced in the watchlist hero header instead of being
-    # repeated on every row.
+    # Kalshi YES + NO grouped | My YES + NO grouped | EV YES + NO
+    # grouped | Verdict (rightmost). Chance was redundant with Kalshi
+    # YES (same midpoint of the bid/ask); volume and closes-in live in
+    # the hero header instead of being repeated per row.
     out.append("<table><thead><tr>"
                "<th>Ticker</th><th>Question</th>"
                "<th class='num' title='Open interest — number of contracts currently held open on this strike.'>Contracts</th>"
-               "<th class='num' title='Implied probability the strike resolves YES, derived from the YES/NO ask midpoint (mirrors what Kalshi shows as &quot;Chance&quot;).'>Chance</th>"
                "<th class='num'>Kalshi YES %</th>"
                "<th class='num'>Kalshi NO %</th>"
                "<th class='num'>My YES %</th>"
@@ -2666,20 +2641,6 @@ def _render_watchlist(out: List[str], watchlist: List[dict],
         volume = v.get("volume")
         oi = v.get("open_interest")
         oi_str = f"{int(oi):,}" if oi is not None else "—"
-        # Chance — the implied probability the strike resolves YES.
-        # Prefer the YES/NO ask midpoint (consensus mid), fall back to
-        # mid_cents if Kalshi populated it, else single-side ask.
-        if ya_c is not None and na_c is not None:
-            chance_pct = (float(ya_c) + (100.0 - float(na_c))) / 2.0
-            chance_str = f"{chance_pct:.0f}%"
-        elif v.get("mid_cents") is not None:
-            chance_str = f"{float(v['mid_cents']):.0f}%"
-        elif ya_c is not None:
-            chance_str = f"{int(ya_c)}%"
-        elif na_c is not None:
-            chance_str = f"{100 - int(na_c)}%"
-        else:
-            chance_str = "—"
         # Derive missing side from the other when only one ask is quoted.
         if ya_c is not None:
             kyes_str = f"{ya_c}%"
@@ -2837,7 +2798,6 @@ def _render_watchlist(out: List[str], watchlist: List[dict],
                    f"<td class='mono'>{ticker_cell}</td>"
                    f"<td>{html.escape(qstr)}</td>"
                    f"<td class='num' data-field='oi'>{oi_str}</td>"
-                   f"<td class='num' data-field='chance'>{chance_str}</td>"
                    f"<td class='num' data-field='kyes'>{kyes_str}</td>"
                    f"<td class='num' data-field='kno'>{kno_str}</td>"
                    f"<td class='num {my_yes_cls}' data-field='my_yes'{my_yes_tt}>{my_yes_str}</td>"
