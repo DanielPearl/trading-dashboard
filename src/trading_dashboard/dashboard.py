@@ -883,7 +883,7 @@ def svg_kalshi_chart(history: List[dict], display: dict,
                    f"stroke='{line_color}' stroke-width='1.5' "
                    f"stroke-dasharray='4,4' opacity='0.95'/>")
         label_strike = fmt_underlying(float(reference_strike), display)
-        label = f"My {side or 'bet'} · Above {label_strike}"
+        label = f"Above {label_strike}"
         label_x = pad_l + inner_w * 0.5
         out.append(f"<text x='{label_x:.0f}' y='{ys-6}' fill='{line_color}' "
                    f"font-size='11' text-anchor='middle' opacity='0.95'>"
@@ -894,19 +894,38 @@ def svg_kalshi_chart(history: List[dict], display: dict,
     # Even spacing (vs irregular midnight ticks) matches what Kalshi
     # does and keeps the bottom row visually balanced regardless of
     # whether the contract is 2 days old or 7.
-    n_ticks = 5
-    for i in range(n_ticks):
-        frac = i / (n_ticks - 1)
-        ts = t_min + frac * t_span
+    # Pick one tick per UNIQUE date in the visible span, plus the
+    # start/end anchors. Avoids "May 1 May 1 May 2 May 2 May 2" repeats
+    # when the chart spans a couple of days.
+    from datetime import timedelta
+    dt_min = datetime.fromtimestamp(t_min, tz=timezone.utc)
+    dt_max = datetime.fromtimestamp(t_max, tz=timezone.utc)
+    # Build a list of (timestamp, label) for each calendar day boundary
+    # inside (t_min, t_max). Always include t_min and t_max.
+    tick_points: List[Tuple[float, str]] = []
+    tick_points.append((t_min, dt_min.strftime("%b %-d")))
+    next_midnight = (dt_min.replace(hour=0, minute=0, second=0, microsecond=0)
+                     + timedelta(days=1))
+    while next_midnight < dt_max:
+        ts = next_midnight.timestamp()
+        # Only include if it's well-separated from neighbours.
+        if ts - tick_points[-1][0] > t_span * 0.12:
+            tick_points.append((ts, next_midnight.strftime("%b %-d")))
+        next_midnight += timedelta(days=1)
+    if dt_max.strftime("%b %-d") != tick_points[-1][1]:
+        tick_points.append((t_max, dt_max.strftime("%b %-d")))
+    elif t_max - tick_points[-1][0] > t_span * 0.12:
+        # Same date but enough horizontal distance to want a final mark.
+        tick_points[-1] = (t_max, tick_points[-1][1])
+    for i, (ts, label) in enumerate(tick_points):
+        frac = (ts - t_min) / t_span if t_span > 0 else 0.0
         x = pad_l + frac * inner_w
         out.append(f"<line x1='{x:.1f}' y1='{pad_t}' x2='{x:.1f}' "
                    f"y2='{height-pad_b}' stroke='#1f2530' stroke-width='1' "
                    f"stroke-dasharray='2,3' opacity='0.7'/>")
-        # Date only — no time component (per user request).
-        label = datetime.fromtimestamp(ts, tz=timezone.utc).strftime("%b %-d")
         if i == 0:
             anchor, tx = "start", x
-        elif i == n_ticks - 1:
+        elif i == len(tick_points) - 1:
             anchor, tx = "end", x
         else:
             anchor, tx = "middle", x
@@ -1079,7 +1098,7 @@ def svg_underlying_chart(history: List[dict], current_value: float | None,
                    f"opacity='{opacity}'/>")
         label_strike = fmt_underlying(float(reference_strike), display)
         if strike_is_active_bet:
-            label = f"My {side or 'bet'} · Above {label_strike}"
+            label = f"Above {label_strike}"
         else:
             label = f"Above {label_strike}"
         out.append(f"<text x='{width-pad_r-6}' y='{ys-6}' fill='{line_color}' "
@@ -1309,37 +1328,22 @@ tr.row-suspect td:nth-last-child(2) { opacity: 0.85; }  /* keep gap legible */
    tinted background, a glowing left rail, and a BOUGHT pill prefixing
    the ticker. Wins specificity over row-suspect so a held position is
    never dimmed. */
-tr.row-bought td {
-    background: rgba(56, 139, 253, 0.13);
-    border-top: 1px solid rgba(56, 139, 253, 0.55);
-    border-bottom: 1px solid rgba(56, 139, 253, 0.55);
-    font-weight: 600;
-    opacity: 1 !important;
+tr.row-bought td { opacity: 1 !important; }
+/* Side-colored treatment: green for YES, red for NO. The first cell
+   gets a 3px colored left bar to flag the row at a glance; the ticker
+   text picks up the same color so it's readable from across the page. */
+tr.row-bought.bought-yes td:first-child {
+    border-left: 3px solid #3fb950;
+    background: rgba(63, 185, 80, 0.08);
 }
-tr.row-bought td:first-child {
-    border-left: 3px solid #1f6feb;
-    box-shadow: inset 6px 0 12px -8px rgba(56, 139, 253, 0.85);
+tr.row-bought.bought-no td:first-child {
+    border-left: 3px solid #f85149;
+    background: rgba(248, 81, 73, 0.08);
 }
-tr.row-bought td:last-child {
-    border-right: 1px solid rgba(56, 139, 253, 0.55);
-}
-tr.row-bought:hover td { background: rgba(56, 139, 253, 0.18); }
-.bought-marker {
-    display: inline-block;
-    background: #1f6feb;
-    color: #fff;
-    font-size: 9px;
-    font-weight: 700;
-    padding: 2px 6px;
-    border-radius: 3px;
-    margin-right: 6px;
-    text-transform: uppercase;
-    letter-spacing: 0.06em;
-    vertical-align: middle;
-    box-shadow: 0 0 6px rgba(56, 139, 253, 0.6);
-}
-.bought-marker.yes { background: #238636; box-shadow: 0 0 6px rgba(35, 134, 54, 0.6); }
-.bought-marker.no  { background: #da3633; box-shadow: 0 0 6px rgba(218, 54, 51, 0.6); }
+tr.row-bought.bought-yes td.mono a.ticker-link,
+tr.row-bought.bought-yes td.mono { color: #3fb950; font-weight: 600; }
+tr.row-bought.bought-no  td.mono a.ticker-link,
+tr.row-bought.bought-no  td.mono { color: #f85149; font-weight: 600; }
 .section h2 .small { text-transform: none; letter-spacing: 0; font-size: 11px; font-weight: 400; }
 /* Watchlist hero — Kalshi-style market header above the strikes table.
    Layout mirrors the live Kalshi market page: title + countdown on top,
@@ -1347,25 +1351,19 @@ tr.row-bought:hover td { background: rgba(56, 139, 253, 0.18); }
    underlying chart. */
 .wl-hero { background: #0d1117; border: 1px solid #21262d; border-radius: 8px;
     padding: 16px 18px; margin-bottom: 18px; }
-.wl-hero-top { display: flex; align-items: flex-start; justify-content: space-between;
-    gap: 12px; margin-bottom: 4px; }
-.wl-hero-title { font-size: 18px; font-weight: 600; color: #f0f6fc;
-    line-height: 1.3; flex: 1 1 auto; min-width: 0; }
-.wl-hero-meta { display: flex; flex-direction: column; align-items: flex-end;
-    gap: 4px; flex: 0 0 auto; }
-.wl-hero-mtc, .wl-hero-vol { font-size: 12px; color: #8b949e; }
-.wl-hero-mtc .label, .wl-hero-vol .label { color: #8b949e;
-    text-transform: uppercase; letter-spacing: 0.04em; margin-right: 6px;
-    font-size: 10px; }
-.wl-hero-mtc .value, .wl-hero-vol .value { color: #c9d1d9; font-weight: 600;
-    font-size: 13px; }
+.wl-hero-top { display: flex; align-items: baseline; justify-content: space-between;
+    gap: 12px; margin-bottom: 12px; }
 .wl-hero-stats { display: flex; align-items: baseline; gap: 14px;
-    flex-wrap: wrap; margin: 6px 0 14px 0; }
+    flex-wrap: wrap; }
 .wl-hero-price { font-size: 36px; font-weight: 700; color: #f0f6fc;
     letter-spacing: -0.5px; }
 .wl-hero-change { font-size: 16px; font-weight: 600; color: #8b949e; }
 .wl-hero-change.pos { color: #3fb950; }
 .wl-hero-change.neg { color: #f85149; }
+.wl-hero-mtc { font-size: 12px; color: #8b949e; flex: 0 0 auto; }
+.wl-hero-mtc .label { color: #8b949e; text-transform: uppercase;
+    letter-spacing: 0.04em; margin-right: 6px; font-size: 10px; }
+.wl-hero-mtc .value { color: #c9d1d9; font-weight: 600; font-size: 13px; }
 """
 
 
@@ -1557,17 +1555,22 @@ def _live_update_script(current_bot: str) -> str:
       // gets/loses its blue rail without a full page reload. The
       // BOUGHT pill itself is server-rendered; if it's missing the
       // user can refresh to pick it up.
-      const boughtTickers = new Set();
+      const boughtBySide = {{}};
       (snap.active_bets || []).forEach(function (ab) {{
-        if (ab && ab.ticker) boughtTickers.add(ab.ticker);
+        if (ab && ab.ticker) {{
+          const s = (ab.side || "").toUpperCase();
+          boughtBySide[ab.ticker] = (s === "YES") ? "yes"
+                                  : (s === "NO")  ? "no"
+                                  : "yes";
+        }}
       }});
       tbody.querySelectorAll("tr[data-ticker]").forEach(function (tr) {{
         const t = tr.getAttribute("data-ticker");
-        if (boughtTickers.has(t)) {{
-          tr.classList.add("row-bought");
+        const side = boughtBySide[t];
+        tr.classList.remove("row-bought", "bought-yes", "bought-no");
+        if (side) {{
+          tr.classList.add("row-bought", "bought-" + side);
           tr.classList.remove("row-suspect");
-        }} else {{
-          tr.classList.remove("row-bought");
         }}
       }});
       snap.watchlist.forEach(function (r) {{
@@ -2504,25 +2507,11 @@ def _render_watchlist_hero(out: List[str],
                     pass
         active_side = (latest_active.get("side") or "").upper() or None
 
-    # Header layout (matches Kalshi's market page):
-    #   [event title]                                        [Closes in: Xd Xh]
-    #                                                        [Volume: $N vol]
-    #   [big price]  [▲/▼ change]
-    title_text = event_title or (atm_market.get("yes_sub_title") if atm_market else "") or label
+    # Header: big price + change on the left, time-to-close on the right.
+    # Title and volume removed per user request — title is in the chart's
+    # underlying ladder anyway and volume duplicates per-row Contracts.
     out.append("<div class='wl-hero'>")
     out.append("<div class='wl-hero-top'>")
-    out.append(f"<div class='wl-hero-title'>{html.escape(title_text)}</div>")
-    out.append("<div class='wl-hero-meta'>")
-    out.append(f"<div class='wl-hero-mtc'>"
-               f"<span class='label'>Closes in</span> "
-               f"<span class='value'>{time_left_str(soonest_mtc)}</span>"
-               f"</div>")
-    out.append(f"<div class='wl-hero-vol'>"
-               f"<span class='label'>Volume</span> "
-               f"<span class='value'>${total_volume:,}</span>"
-               f"</div>")
-    out.append("</div>")
-    out.append("</div>")
     out.append("<div class='wl-hero-stats'>")
     out.append(f"<div class='wl-hero-price'>{html.escape(current_str)}</div>")
     arrow = ""
@@ -2530,7 +2519,12 @@ def _render_watchlist_hero(out: List[str],
         arrow = "▲" if pct_change >= 0 else "▼"
     pct_display = pct_str if not arrow else f"{arrow} {pct_str.lstrip('+-')}"
     out.append(f"<div class='wl-hero-change {pct_cls}'>{html.escape(pct_display)}</div>")
-    out.append("</div>")
+    out.append("</div>")  # /wl-hero-stats
+    out.append(f"<div class='wl-hero-mtc'>"
+               f"<span class='label'>Closes in</span> "
+               f"<span class='value'>{time_left_str(soonest_mtc)}</span>"
+               f"</div>")
+    out.append("</div>")  # /wl-hero-top
 
     # Pick a reference strike to color the line against. Active bet's
     # Reference strike for chart coloring: only set when there's an
@@ -2765,6 +2759,9 @@ def _render_watchlist(out: List[str], watchlist: List[dict],
         title_attr = ""
         if is_bought:
             classes.append("row-bought")
+            classes.append("bought-yes" if bought_side == "YES"
+                           else "bought-no" if bought_side == "NO"
+                           else "")
             entry_c = latest_active.get("entry_price_cents")
             contracts = latest_active.get("contracts")
             tip_parts = ["You are holding this strike"]
@@ -2815,14 +2812,9 @@ def _render_watchlist(out: List[str], watchlist: List[dict],
             f"rel='noopener noreferrer' class='ticker-link'>{tt_esc}</a>"
             if ticker_url else tt_esc
         )
-        if is_bought:
-            side_cls = ("yes" if bought_side == "YES"
-                        else "no" if bought_side == "NO" else "")
-            label = f"● BOUGHT {bought_side}".strip()
-            ticker_cell = (
-                f"<span class='bought-marker {side_cls}'>{html.escape(label)}</span>"
-                + ticker_cell
-            )
+        # The "BOUGHT YES/NO" inline pill was retired — the row's
+        # side-colored left bar + colored ticker text already convey
+        # the bet at a glance.
         out.append(f"<tr{row_cls} data-ticker='{tt_esc}'>"
                    f"<td class='mono'>{ticker_cell}</td>"
                    f"<td>{html.escape(qstr)}</td>"
