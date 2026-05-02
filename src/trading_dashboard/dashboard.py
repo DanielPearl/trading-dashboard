@@ -1658,11 +1658,26 @@ def _live_update_script(current_bot: str) -> str:
     if (![tmin, tmax, padL, innerW, padT, padB, h, vbW].every(isFinite)) return;
 
     const ns = "http://www.w3.org/2000/svg";
+    // Dim overlay covers the right portion of the chart (everything
+    // past the cursor) so the line in that region greys out as the
+    // user "scrubs" through. Appended before the cursor line so it
+    // sits beneath it in z-order. Using the panel background color
+    // (#0d1117) at 0.65 opacity gives a clean greyed-out look without
+    // hiding the line entirely.
+    const dimRect = document.createElementNS(ns, "rect");
+    dimRect.setAttribute("y", padT);
+    dimRect.setAttribute("height", h - padB - padT);
+    dimRect.setAttribute("fill", "#0d1117");
+    dimRect.setAttribute("opacity", "0");
+    dimRect.setAttribute("pointer-events", "none");
+    svg.appendChild(dimRect);
+
     const cursor = document.createElementNS(ns, "line");
     cursor.setAttribute("stroke", "#c9d1d9");
     cursor.setAttribute("stroke-width", "1");
     cursor.setAttribute("stroke-dasharray", "2,3");
     cursor.setAttribute("opacity", "0");
+    cursor.setAttribute("pointer-events", "none");
     svg.appendChild(cursor);
 
     function fmtTs(ts) {{
@@ -1683,6 +1698,7 @@ def _live_update_script(current_bot: str) -> str:
       const x = (e.clientX - rect.left) * vbW / rect.width;
       if (x < padL || x > padL + innerW) {{
         cursor.setAttribute("opacity", "0");
+        dimRect.setAttribute("opacity", "0");
         tip.hidden = true;
         return;
       }}
@@ -1691,6 +1707,10 @@ def _live_update_script(current_bot: str) -> str:
       cursor.setAttribute("y1", padT);
       cursor.setAttribute("y2", h - padB);
       cursor.setAttribute("opacity", "0.7");
+      // Grey out the line to the right of the cursor.
+      dimRect.setAttribute("x", x);
+      dimRect.setAttribute("width", Math.max(0, padL + innerW - x));
+      dimRect.setAttribute("opacity", "0.65");
 
       const frac = (x - padL) / innerW;
       const ts = tmin + frac * (tmax - tmin);
@@ -1704,6 +1724,7 @@ def _live_update_script(current_bot: str) -> str:
 
     svg.addEventListener("mouseleave", function () {{
       cursor.setAttribute("opacity", "0");
+      dimRect.setAttribute("opacity", "0");
       tip.hidden = true;
     }});
   }});
