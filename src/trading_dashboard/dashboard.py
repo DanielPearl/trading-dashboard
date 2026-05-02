@@ -1121,7 +1121,18 @@ def time_left_str(minutes: float | None) -> str:
     return f"{mins}m"
 
 
-def question_str(direction: str, low: float | None, high: float | None) -> str:
+def question_str(direction: str, low: float | None, high: float | None,
+                 display: dict | None = None) -> str:
+    """Format the watchlist's Question column. Uses the bot's display
+    config when given so unemployment renders "above 175K" instead of
+    "above $175000.00"."""
+    if display:
+        if direction == "between" and low is not None and high is not None:
+            return f"{fmt_underlying(low, display)} – {fmt_underlying(high, display)}"
+        if low is not None:
+            return f"{direction} {fmt_underlying(low, display)}"
+        return direction or "—"
+    # Legacy default — gas-prices-style $/gal formatting.
     if direction == "between" and low is not None and high is not None:
         return f"${low:.2f} – ${high:.2f}"
     if low is not None:
@@ -2096,44 +2107,68 @@ def _render_model_section(out: List[str], model: dict | None) -> None:
     out.append("</div></div>")
 
 
-def _render_current_prediction(out: List[str], model: dict | None) -> None:
+def _fmt_signed_underlying(value: float | None, display: dict) -> str:
+    """Like fmt_underlying but with a leading +/- sign — for delta
+    values (median_change). Respects the bot's divisor + decimals."""
+    if value is None:
+        return "—"
+    divisor = float(display.get("divisor", 1.0)) or 1.0
+    v = float(value) / divisor
+    decimals = int(display.get("underlying_decimals", 2))
+    unit = display.get("underlying_unit", "")
+    pos = display.get("unit_position", "prefix")
+    sign = "+" if v >= 0 else "−"
+    n = f"{abs(v):,.{decimals}f}"
+    if pos == "prefix":
+        return f"{sign}{unit}{n}"
+    if pos == "suffix":
+        return f"{sign}{n}{unit}"
+    return f"{sign}{n}"
+
+
+def _render_current_prediction(out: List[str], model: dict | None,
+                                 display: dict | None = None) -> None:
     """Renders the 'Current prediction' card row.
 
     Lives at the top of the Watchlist section now (per user request) — it
     fits there better than under the Model section because it's the
     immediate context for reading the watchlist rows below it.
+
+    Number formatting follows the bot's display config so unemployment
+    shows "189K" / "+1K" instead of "$189000.00" / "+1000.00".
     """
     if not model:
         return
+    display = display or {}
     out.append("<div class='subsec'>"
                "<h3 class='subhead' style='margin-left:0;'>Current prediction</h3>")
-    # Card values stay white per user request — colors here would suggest
-    # P&L semantics that don't apply (a positive predicted change isn't a
-    # "good" outcome, just a directional forecast).
     prob_up = float(model.get("prob_up") or 0)
     change = float(model.get("median_change") or 0)
     q05 = model.get("quantile_05")
     q95 = model.get("quantile_95")
-    # Compact row: 6 single-value cards, evenly spaced, all on one line.
     out.append("<div class='row compact'>")
     out.append(f"<div class='card'><div class='label'>Current price</div>"
-               f"<div class='value'>${float(model['current_gas_price']):.3f}</div></div>")
+               f"<div class='value'>"
+               f"{html.escape(fmt_underlying(model.get('current_gas_price'), display))}"
+               f"</div></div>")
     out.append(f"<div class='card'><div class='label'>Predicted next week</div>"
-               f"<div class='value'>${float(model['median_price']):.3f}</div></div>")
+               f"<div class='value'>"
+               f"{html.escape(fmt_underlying(model.get('median_price'), display))}"
+               f"</div></div>")
     out.append(f"<div class='card'><div class='label'>Median change</div>"
-               f"<div class='value'>{change:+.3f}</div></div>")
+               f"<div class='value'>"
+               f"{html.escape(_fmt_signed_underlying(change, display))}"
+               f"</div></div>")
     out.append(f"<div class='card'><div class='label'>P(price goes up)</div>"
                f"<div class='value'>{prob_up:.0%}</div></div>")
+    q05_str = (html.escape(fmt_underlying(q05, display))
+               if q05 is not None else "—")
+    q95_str = (html.escape(fmt_underlying(q95, display))
+               if q95 is not None else "—")
     out.append(f"<div class='card'><div class='label'>Lower 5%</div>"
-               f"<div class='value'>{float(q05):+.3f}</div></div>"
-               if q05 is not None else
-               "<div class='card'><div class='label'>Lower 5%</div>"
-               "<div class='value'>—</div></div>")
+               f"<div class='value'>{q05_str}</div></div>")
     out.append(f"<div class='card'><div class='label'>Upper 95%</div>"
-               f"<div class='value'>{float(q95):+.3f}</div></div>"
-               if q95 is not None else
-               "<div class='card'><div class='label'>Upper 95%</div>"
-               "<div class='value'>—</div></div>")
+               f"<div class='value'>{q95_str}</div></div>")
     out.append("</div></div>")
 
 
@@ -2555,7 +2590,7 @@ def _render_watchlist(out: List[str], watchlist: List[dict],
                f"<span class='small gray'>(model historical accuracy {accuracy_label}; "
                f"confidence is scaled by it)</span></h2><div class='body'>")
     # Current prediction (moved here from the Model section per request).
-    _render_current_prediction(out, model)
+    _render_current_prediction(out, model, display=display)
 
     # ── Hero header + chart (Kalshi-style) ────────────────────────────────
     # Top-line metrics for the underlying the bot tracks: current value,
@@ -2632,7 +2667,8 @@ def _render_watchlist(out: List[str], watchlist: List[dict],
                "<th>Verdict</th></tr></thead><tbody id='watchlist-tbody'>")
     for v in watchlist:
         ticker = v.get("ticker", "")
-        qstr = question_str(v.get("direction", ""), v.get("strike_low"), v.get("strike_high"))
+        qstr = question_str(v.get("direction", ""), v.get("strike_low"),
+                             v.get("strike_high"), display=display)
         ya_c = v.get("yes_ask_cents"); na_c = v.get("no_ask_cents")
         spread_cents = v.get("spread_cents")
         # Volume still drives the "thin volume" row-suspect flag below
