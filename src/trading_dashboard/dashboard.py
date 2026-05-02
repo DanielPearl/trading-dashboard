@@ -626,16 +626,24 @@ def fmt_underlying(value: float | None, display: dict) -> str:
 
 
 def svg_underlying_chart(history: List[dict], current_value: float | None,
-                          display: dict, active_strike: float | None = None,
-                          active_side: str | None = None,
+                          display: dict, reference_strike: float | None = None,
+                          strike_side: str | None = None,
+                          strike_is_active_bet: bool = False,
                           width: int = 760, height: int = 220) -> str:
-    """Watchlist hero chart: underlying commodity / metric value over the
-    last few days. Auto-scales the Y axis to the data range with a small
-    pad so price moves of 1-2% still fill the panel.
+    """Watchlist hero chart: underlying commodity / metric value over time,
+    rendered in the same style Kalshi uses on its market page.
 
-    If `active_strike` is set, draws a horizontal line at the strike so
-    the user can see how the underlying is moving toward / away from
-    their bought contract. Line color reflects which side they're long.
+    Kalshi colors the price line GREEN where it sits above the selected
+    strike and white where it sits below. We mirror that: walk the
+    polyline, split it at strike crossings, and render each run in the
+    appropriate color.
+
+    `reference_strike` controls which strike is treated as the dividing
+    line. The watchlist hero passes (a) the active position's strike if
+    any, else (b) the closest-to-money strike from the watchlist.
+    `strike_side` decides which direction is "winning":
+       YES → green above; NO → green below; None → green above (default).
+    `strike_is_active_bet` makes the strike line bolder + relabels it.
     """
     pts_in: List[Tuple[str, float]] = []
     for r in history:
@@ -658,11 +666,11 @@ def svg_underlying_chart(history: List[dict], current_value: float | None,
     inner_h = height - pad_t - pad_b
     n = len(pts_in)
 
-    # Extend range to include the active strike — otherwise an in-the-money
-    # strike that sits outside the recent price range falls off the chart.
+    # Extend the y-range to include the strike, so an in-the-money strike
+    # that sits outside the recent price band still appears on screen.
     values_for_range = [v for _, v in pts_in]
-    if active_strike is not None:
-        values_for_range.append(float(active_strike))
+    if reference_strike is not None:
+        values_for_range.append(float(reference_strike))
     vmin = min(values_for_range)
     vmax = max(values_for_range)
     if vmax == vmin:
@@ -694,32 +702,73 @@ def svg_underlying_chart(history: List[dict], current_value: float | None,
         out.append(f"<text x='{pad_l-6}' y='{y+4}' fill='#8b949e' font-size='10' "
                    f"text-anchor='end'>{fmt_underlying(v, display)}</text>")
 
-    # The price line itself.
-    pts = [f"{x_at(i):.1f},{y_at(v):.1f}" for i, (_, v) in enumerate(pts_in)]
-    out.append(f"<polyline points='{' '.join(pts)}' stroke='#c9d1d9' "
-               f"stroke-width='2' fill='none'/>")
+    # ── Price line, split at strike crossings ──────────────────────────
+    side = (strike_side or "").upper()
+    if side == "NO":
+        above_color, below_color = "#c9d1d9", "#3fb950"
+    else:  # YES, or no active side → default green-above
+        above_color, below_color = "#3fb950", "#c9d1d9"
 
-    # Highlight the latest tail in green/red depending on direction. Cosmetic
-    # — Kalshi colors the tail of their chart so the trend is immediately
-    # readable.
-    if len(pts_in) >= 6:
-        recent = pts_in[-6:]
-        col = "#3fb950" if recent[-1][1] >= recent[0][1] else "#f85149"
-        tail = [f"{x_at(n - len(recent) + j):.1f},{y_at(v):.1f}"
-                for j, (_, v) in enumerate(recent)]
-        out.append(f"<polyline points='{' '.join(tail)}' stroke='{col}' "
-                   f"stroke-width='2.5' fill='none'/>")
+    if reference_strike is None:
+        # No strike reference → single white line.
+        pts = [(x_at(i), y_at(v)) for i, (_, v) in enumerate(pts_in)]
+        path = " ".join(f"{x:.1f},{y:.1f}" for x, y in pts)
+        out.append(f"<polyline points='{path}' stroke='#c9d1d9' "
+                   f"stroke-width='2' fill='none'/>")
+    else:
+        strike = float(reference_strike)
+        # Walk the polyline; whenever a segment crosses the strike,
+        # interpolate the crossing point and split the run there.
+        runs: List[Tuple[bool, List[Tuple[float, float]]]] = []
+        # Each run is (is_above, [(x_px, y_px), ...]).
+        cur_above = pts_in[0][1] >= strike
+        cur_run: List[Tuple[float, float]] = [(x_at(0), y_at(pts_in[0][1]))]
+        for i in range(1, n):
+            v_prev = pts_in[i - 1][1]
+            v_curr = pts_in[i][1]
+            new_above = v_curr >= strike
+            if new_above == cur_above:
+                cur_run.append((x_at(i), y_at(v_curr)))
+                continue
+            # Crossing — split at the strike line.
+            denom = v_curr - v_prev
+            t = (strike - v_prev) / denom if denom != 0 else 0.5
+            t = max(0.0, min(1.0, t))
+            cross_x = x_at(i - 1) + t * (x_at(i) - x_at(i - 1))
+            cross_y = y_at(strike)
+            cur_run.append((cross_x, cross_y))
+            runs.append((cur_above, cur_run))
+            cur_run = [(cross_x, cross_y), (x_at(i), y_at(v_curr))]
+            cur_above = new_above
+        runs.append((cur_above, cur_run))
 
-    # Active-strike horizontal line: the value the user bought against.
-    if active_strike is not None:
-        ys = y_at(float(active_strike))
-        side = (active_side or "").upper()
-        col = "#3fb950" if side == "YES" else ("#f85149" if side == "NO" else "#58a6ff")
+        for is_above, run in runs:
+            if len(run) < 2:
+                continue
+            color = above_color if is_above else below_color
+            pts_str = " ".join(f"{x:.1f},{y:.1f}" for x, y in run)
+            out.append(f"<polyline points='{pts_str}' stroke='{color}' "
+                       f"stroke-width='2' fill='none'/>")
+
+    # ── Strike line ────────────────────────────────────────────────────
+    if reference_strike is not None:
+        ys = y_at(float(reference_strike))
+        # Dimmer for the inferred (closest-to-money) strike, brighter +
+        # slightly thicker for the strike of an actual active bet.
+        line_color = above_color if side != "NO" else below_color
+        stroke_w = 1.8 if strike_is_active_bet else 1.2
+        opacity = 0.95 if strike_is_active_bet else 0.55
         out.append(f"<line x1='{pad_l}' y1='{ys}' x2='{width-pad_r}' y2='{ys}' "
-                   f"stroke='{col}' stroke-width='1.5' stroke-dasharray='6,4'/>")
-        label = f"My {side or 'bet'} @ {fmt_underlying(float(active_strike), display)}"
-        out.append(f"<text x='{width-pad_r-6}' y='{ys-6}' fill='{col}' "
-                   f"font-size='11' text-anchor='end'>{html.escape(label)}</text>")
+                   f"stroke='{line_color}' stroke-width='{stroke_w}' "
+                   f"opacity='{opacity}'/>")
+        label_strike = fmt_underlying(float(reference_strike), display)
+        if strike_is_active_bet:
+            label = f"My {side or 'bet'} · Above {label_strike}"
+        else:
+            label = f"Above {label_strike}"
+        out.append(f"<text x='{width-pad_r-6}' y='{ys-6}' fill='{line_color}' "
+                   f"font-size='11' text-anchor='end' opacity='{opacity}'>"
+                   f"{html.escape(label)}</text>")
 
     # X axis: timestamp at each end.
     first_ts = pts_in[0][0][:16].replace("T", " ")
@@ -2033,9 +2082,32 @@ def _render_watchlist_hero(out: List[str],
     out.append(f"<div class='wl-hero-change {pct_cls}'>{pct_str}</div>")
     out.append(f"<div class='wl-hero-vol'>{total_volume:,} <span class='dim'>vol</span></div>")
     out.append("</div>")
+    # Pick a reference strike for the chart. Active position wins; else
+    # fall back to the closest-to-money strike in the watchlist so the
+    # chart still has a meaningful divider when no bet is open.
+    reference_strike = active_strike
+    strike_side = active_side
+    strike_is_active = active_strike is not None
+    if reference_strike is None and current is not None:
+        candidates: list[float] = []
+        for w in watchlist:
+            sl = w.get("strike_low")
+            if sl is None:
+                continue
+            try:
+                candidates.append(float(sl))
+            except (TypeError, ValueError):
+                continue
+        if candidates:
+            reference_strike = min(candidates,
+                                    key=lambda s: abs(s - float(current)))
+            strike_side = None  # default coloring (green-above)
+
     out.append(svg_underlying_chart(
         underlying_history, current, display,
-        active_strike=active_strike, active_side=active_side,
+        reference_strike=reference_strike,
+        strike_side=strike_side,
+        strike_is_active_bet=strike_is_active,
     ))
     out.append("</div>")
 
