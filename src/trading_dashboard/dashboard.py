@@ -51,7 +51,7 @@ def fetch_latest_model(db_path: str) -> dict | None:
                 "SELECT * FROM model_snapshots ORDER BY id DESC LIMIT 1"
             ).fetchone()
             out = dict(row) if row else None
-    except sqlite3.OperationalError:
+    except (sqlite3.OperationalError, sqlite3.DatabaseError):
         return None
     if out is None:
         return None
@@ -67,7 +67,7 @@ def fetch_latest_model(db_path: str) -> dict | None:
             if pairs:
                 out["training_pairs_count"] = int(pairs["n"] or 0)
                 out["training_pairs_total_weight"] = float(pairs["w"] or 0.0)
-    except sqlite3.OperationalError:
+    except (sqlite3.OperationalError, sqlite3.DatabaseError):
         pass
     # Realized-bet win rate. Wins / (wins + losses) over all closed
     # positions for this bot. Distinct from the training-holdout
@@ -84,7 +84,7 @@ def fetch_latest_model(db_path: str) -> dict | None:
             if wl:
                 out["actual_wins"] = int(wl["wins"] or 0)
                 out["actual_losses"] = int(wl["losses"] or 0)
-    except sqlite3.OperationalError:
+    except (sqlite3.OperationalError, sqlite3.DatabaseError):
         pass
     return out
 
@@ -95,13 +95,17 @@ def _safe_query(db_path: str, query: str, params: tuple = ()) -> List[dict]:
     exist on this bot's schema. Bot DBs aren't required to have every
     table the gas-prices schema defines (e.g. natural-gas doesn't have
     `position_marks` since it's a daily-cadence bot, not continuous).
+
+    Also tolerates files that aren't SQLite at all (DatabaseError) — this
+    happens when a whale-type bot is in the registry; its db_path points
+    at a JSONL, not a sim.db.
     """
     if not Path(db_path).exists():
         return []
     try:
         with closing(_conn(db_path)) as c:
             return [dict(r) for r in c.execute(query, params).fetchall()]
-    except sqlite3.OperationalError:
+    except (sqlite3.OperationalError, sqlite3.DatabaseError):
         return []
 
 
@@ -179,7 +183,7 @@ def fetch_summary(db_path: str) -> dict:
                 "SELECT COUNT(*) n FROM trades "
                 "WHERE kind = 'entry' AND substr(created_at, 1, 10) = date('now')"
             ).fetchone()
-    except sqlite3.OperationalError:
+    except (sqlite3.OperationalError, sqlite3.DatabaseError):
         return empty
     return {
         "total_bets": int(total["n"] or 0),
@@ -218,7 +222,7 @@ def fetch_latest_open_position(db_path: str) -> dict | None:
                 "FROM positions p LEFT JOIN position_marks m ON p.id = m.position_id "
                 "WHERE p.status = 'open' ORDER BY p.opened_at DESC LIMIT 1"
             ).fetchone()
-    except sqlite3.OperationalError:
+    except (sqlite3.OperationalError, sqlite3.DatabaseError):
         return None
     return dict(row) if row else None
 
@@ -281,7 +285,7 @@ def fetch_bet_history(db_path: str, limit: int = 100) -> List[dict]:
                 f"SELECT {select_cols} FROM positions WHERE status='closed' "
                 f"ORDER BY exited_at DESC LIMIT ?", (limit,),
             ).fetchall()
-    except sqlite3.OperationalError:
+    except (sqlite3.OperationalError, sqlite3.DatabaseError):
         return []
     return [dict(r) for r in rows]
 
@@ -310,6 +314,12 @@ def fetch_global_summary(bots: List[dict]) -> dict:
     }
     for b in bots:
         if not b.get("available"):
+            continue
+        # Whale-type bots don't write the standard positions schema —
+        # their realized-P&L story is told on the whale page itself.
+        # Skip them in the cross-bot rollup so the summary card row
+        # stays focused on the recurrent-series bots.
+        if b.get("dashboard_type") and b["dashboard_type"] != "standard":
             continue
         s = fetch_summary(b["db_path"])
         rollup["total_bets"] += s.get("total_bets", 0)
@@ -388,7 +398,7 @@ def fetch_watchlist(db_path: str) -> List[dict]:
                 "  mv.minutes_to_close ASC"
             ).fetchall()
         return [dict(r) for r in rows]
-    except sqlite3.OperationalError:
+    except (sqlite3.OperationalError, sqlite3.DatabaseError):
         return []
 
 
@@ -409,7 +419,7 @@ def fetch_view_history(db_path: str, ticker: str, max_points: int = 200) -> List
                 (ticker, max_points),
             ).fetchall()
         return [dict(r) for r in rows]
-    except sqlite3.OperationalError:
+    except (sqlite3.OperationalError, sqlite3.DatabaseError):
         return []
 
 
@@ -2563,11 +2573,37 @@ class Handler(BaseHTTPRequestHandler):
         return self.bots[0]
 
     def do_GET(self) -> None:
-        from urllib.parse import urlparse
+        from urllib.parse import urlparse, parse_qs
         parsed = urlparse(self.path)
         if parsed.path in ("/", "/index.html"):
             try:
                 bot = self._resolve_bot(parsed.query)
+
+                # Whale-watcher uses a different page entirely — JSONL
+                # source, signal-analysis-style render. Dispatch early so
+                # the standard render path stays focused on sim.db bots.
+                if bot.get("dashboard_type") == "whale":
+                    from . import whale
+                    qs = parse_qs(parsed.query)
+                    sort_by = qs.get("sort", ["recent"])[0]
+                    events = whale.load_events(bot.get("signals_path"))
+                    orders = whale.load_orders(bot.get("orders_path"))
+                    body = whale.render_page(
+                        events=events,
+                        orders=orders,
+                        available_bots=self.bots,
+                        current_bot_key=bot["key"],
+                        sort_by=sort_by,
+                    )
+                    payload = body.encode("utf-8")
+                    self.send_response(200)
+                    self.send_header("Content-Type", "text/html; charset=utf-8")
+                    self.send_header("Cache-Control", "no-store")
+                    self.send_header("Content-Length", str(len(payload)))
+                    self.end_headers()
+                    self.wfile.write(payload)
+                    return
+
                 db_path = bot["db_path"]
 
                 # Bot-scoped fetches.
@@ -2586,6 +2622,8 @@ class Handler(BaseHTTPRequestHandler):
                 global_history: List[dict] = []
                 for b in self.bots:
                     if not b.get("available"):
+                        continue
+                    if b.get("dashboard_type") and b["dashboard_type"] != "standard":
                         continue
                     for ab in fetch_active_bets_with_marks(b["db_path"]):
                         ab["_bot_name"] = b["name"]
@@ -2640,9 +2678,15 @@ class Handler(BaseHTTPRequestHandler):
             # cell id so the JS can do straightforward DOM lookups.
             try:
                 bot = self._resolve_bot(parsed.query)
-                db_path = bot["db_path"]
-                payload_dict = build_snapshot(db_path, self.bots,
-                                               self.edge_cfg)
+                if bot.get("dashboard_type") == "whale":
+                    # Whale page uses meta-refresh, not the JS poller.
+                    # Return a minimal stub so any client polling this
+                    # endpoint gets a clean 200.
+                    payload_dict = {"bot": bot["key"], "type": "whale"}
+                else:
+                    db_path = bot["db_path"]
+                    payload_dict = build_snapshot(db_path, self.bots,
+                                                   self.edge_cfg)
             except Exception:  # noqa: BLE001
                 log.exception("snapshot endpoint failed")
                 self.send_response(500)
@@ -2741,11 +2785,16 @@ def main(argv: list[str] | None = None) -> int:
     # unavailable bot in the dropdown shows a friendly stub.
     bots: list[dict] = []
     for b in cfg.bots:
+        # For whale-type bots `db_path` points at a JSONL (signal_tracking),
+        # so the same `available = path exists` check works.
         bots.append({
             "key": b.key,
             "name": b.name,
             "db_path": b.db_path,
             "decisions_path": b.decisions_path,
+            "dashboard_type": b.dashboard_type,
+            "signals_path": b.signals_path,
+            "orders_path": b.orders_path,
             "available": Path(b.db_path).exists(),
         })
 

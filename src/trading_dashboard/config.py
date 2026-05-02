@@ -25,6 +25,12 @@ class BotEntry:
     name: str
     db_path: str
     decisions_path: str
+    # "standard" → render the gas-bot-style page (model card, watchlist,
+    # positions). "whale" → render the signal-analysis page driven by
+    # signals_path / orders_path instead of a sim.db.
+    dashboard_type: str = "standard"
+    signals_path: str | None = None
+    orders_path: str | None = None
 
 
 @dataclass

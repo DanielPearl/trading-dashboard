@@ -27,8 +27,14 @@ bots:
     decisions_path: /root/peak-load/outputs/daily_signals.json
   - key: whale-watcher
     name: Whale Watcher
-    db_path: /root/whale-watcher/data/sim.db
-    decisions_path: /root/whale-watcher/data/decisions.jsonl
+    # Whale bot uses signal-analysis JSONLs instead of a sim.db. db_path
+    # is set to signals_path so the existing "available" check behaves
+    # sensibly on this entry.
+    dashboard_type: whale
+    db_path: /root/whale-watcher/data/signal_tracking.jsonl
+    decisions_path: /root/whale-watcher/data/signal_tracking.jsonl
+    signals_path: /root/whale-watcher/data/signal_tracking.jsonl
+    orders_path: /root/whale-watcher/data/orders.jsonl
 
 # ---------------------------------------------------------------------------
 # Display thresholds. Mirror the gas-bot's gates so the buy-criteria panel

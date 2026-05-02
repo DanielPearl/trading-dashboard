@@ -40,4 +40,5 @@ Thumbs.db
 
 # --- local-dev configs ---
 config/dashboard.local.yaml
+config/dashboard.fixture.yaml
 config/*.local.yaml
