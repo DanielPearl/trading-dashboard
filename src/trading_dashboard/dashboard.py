@@ -811,9 +811,7 @@ def svg_kalshi_chart(history: List[dict], display: dict,
 
     out: List[str] = [
         f"<svg width='100%' height='{height}' viewBox='0 0 {width} {height}' "
-        f"preserveAspectRatio='none' "
-        f"style='background:#0d1117; border:1px solid #21262d; "
-        f"border-radius:6px; display:block'>"
+        f"preserveAspectRatio='none' style='display:block'>"
     ]
 
     # 5 evenly-spaced y-gridlines, labeled in the underlying's units.
@@ -1022,9 +1020,7 @@ def svg_underlying_chart(history: List[dict], current_value: float | None,
 
     out: List[str] = [
         f"<svg width='100%' height='{height}' viewBox='0 0 {width} {height}' "
-        f"preserveAspectRatio='none' "
-        f"style='background:#0d1117; border:1px solid #21262d; "
-        f"border-radius:6px; display:block'>"
+        f"preserveAspectRatio='none' style='display:block'>"
     ]
 
     # Y gridlines: 4 evenly spaced ticks across the visible range.

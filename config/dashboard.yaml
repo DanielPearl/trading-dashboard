@@ -19,7 +19,7 @@ bots:
     display:
       underlying_label: Retail gas price
       underlying_unit: "$"
-      underlying_decimals: 3
+      underlying_decimals: 2
       unit_position: prefix
   - key: unemployment-claims
     name: Unemployment Claims
@@ -43,7 +43,7 @@ bots:
     display:
       underlying_label: Henry Hub spot
       underlying_unit: "$"
-      underlying_decimals: 3
+      underlying_decimals: 2
       unit_position: prefix
   - key: whale-watcher
     name: Whale Watcher
