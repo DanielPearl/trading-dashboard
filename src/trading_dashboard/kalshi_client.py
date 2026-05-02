@@ -71,7 +71,10 @@ class _TTLCache:
             self._store[key] = _CacheEntry(fetched_at=time.time(), value=value)
 
 
-_CACHE = _TTLCache(ttl_seconds=60.0)
+# 60-min candles only refresh once per hour, so a 5-minute cache hits
+# ~12× fewer API calls than the 60s default and stays well under
+# Kalshi's per-IP rate limit. Markets list is also cached here.
+_CACHE = _TTLCache(ttl_seconds=300.0)
 
 
 class KalshiClient:
@@ -311,7 +314,7 @@ def fetch_underlying_history(series_ticker: str,
                               period_minutes: int = 60,
                               lookback_hours: Optional[int] = None,
                               client: Optional[KalshiClient] = None,
-                              max_strikes: int = 12,
+                              max_strikes: int = 6,
                               ) -> Tuple[List[dict], Optional[dict], List[dict], Optional[float]]:
     """Derive the implied underlying price for one ticker group from the
     full strike ladder.
@@ -381,18 +384,24 @@ def fetch_underlying_history(series_ticker: str,
     if len(picked) < 2:
         return [], atm, markets, contract_open_ts
 
-    # Pull candles for each picked market (cached 60s). Sequential keeps
-    # the code simple; cache makes subsequent renders instant.
+    # Pull candles for each picked market. Cached 5 minutes per market
+    # so the same lookup costs ~0 on subsequent renders. Cache misses
+    # space the API calls 100ms apart to stay under Kalshi's per-IP
+    # rate limit (we've seen 429s when bursting 30+ calls in a second).
     market_data: List[Tuple[float, Dict[float, float]]] = []
     for m in picked:
         try:
             strike = float(m["floor_strike"])
         except (TypeError, ValueError):
             continue
+        cache_key = (f"candles:{m['ticker']}:{period_minutes}:{lookback_hours}")
+        was_cached = _CACHE.get(cache_key) is not None
         candles = c.candlesticks(
             series_ticker, m["ticker"],
             period_minutes=period_minutes, lookback_hours=lookback_hours,
         )
+        if not was_cached:
+            time.sleep(0.1)
         ts_to_yes: Dict[float, float] = {}
         for cdl in candles:
             ts = cdl.get("end_period_ts")
