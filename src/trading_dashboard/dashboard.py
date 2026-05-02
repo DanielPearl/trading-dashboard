@@ -741,7 +741,7 @@ def svg_kalshi_chart(history: List[dict], display: dict,
                       strike_is_active_bet: bool = False,
                       contract_open_ts: float | None = None,
                       total_volume: int | None = None,
-                      width: int = 760, height: int = 240) -> str:
+                      width: int = 760, height: int = 220) -> str:
     """Underlying-price chart, derived from Kalshi's strike ladder.
 
     Same visual idiom as Kalshi's market-page chart: one line in the
@@ -769,9 +769,9 @@ def svg_kalshi_chart(history: List[dict], display: dict,
                 "</div>")
 
     # Y-axis labels go on the right edge (matches Kalshi's market page),
-    # so reserve the right padding instead of the left. The bottom
-    # padding has room for both the date-tick row and the volume line.
-    pad_l, pad_r, pad_t, pad_b = 12, 64, 14, 50
+    # so reserve the right padding instead of the left. Bottom padding
+    # leaves room for the date-tick row.
+    pad_l, pad_r, pad_t, pad_b = 12, 64, 14, 30
     inner_w = width - pad_l - pad_r
     inner_h = height - pad_t - pad_b
     n = len(pts_in)
@@ -910,15 +910,12 @@ def svg_kalshi_chart(history: List[dict], display: dict,
             anchor, tx = "end", x
         else:
             anchor, tx = "middle", x
-        out.append(f"<text x='{tx:.0f}' y='{height-30}' fill='#8b949e' "
+        out.append(f"<text x='{tx:.0f}' y='{height-10}' fill='#8b949e' "
                    f"font-size='10' text-anchor='{anchor}'>"
                    f"{html.escape(label)}</text>")
 
-    # Volume label at the bottom-left, mirroring Kalshi's "$N vol" line.
-    if total_volume is not None:
-        out.append(f"<text x='{pad_l}' y='{height-10}' fill='#c9d1d9' "
-                   f"font-size='12' text-anchor='start'>"
-                   f"${total_volume:,} <tspan fill='#8b949e'>vol</tspan></text>")
+    # Volume moved to the hero header (top-right under "Closes in")
+    # per user request — no longer on the chart frame.
 
     out.append("</svg>")
     return "".join(out)
@@ -1350,29 +1347,25 @@ tr.row-bought:hover td { background: rgba(56, 139, 253, 0.18); }
    underlying chart. */
 .wl-hero { background: #0d1117; border: 1px solid #21262d; border-radius: 8px;
     padding: 16px 18px; margin-bottom: 18px; }
-.wl-hero-top { display: flex; align-items: baseline; justify-content: space-between;
-    gap: 12px; flex-wrap: wrap; margin-bottom: 6px; }
-.wl-hero-title { font-size: 12px; font-weight: 600; color: #8b949e;
-    text-transform: uppercase; letter-spacing: 0.06em; }
-.wl-hero-mtc .label { font-size: 11px; color: #8b949e; text-transform: uppercase;
-    letter-spacing: 0.06em; margin-right: 6px; }
-.wl-hero-mtc .value { font-size: 14px; color: #c9d1d9; font-weight: 600; }
-.wl-hero-stats { display: flex; align-items: baseline; gap: 18px;
-    flex-wrap: wrap; margin: 4px 0 14px 0; }
+.wl-hero-top { display: flex; align-items: flex-start; justify-content: space-between;
+    gap: 12px; margin-bottom: 4px; }
+.wl-hero-title { font-size: 18px; font-weight: 600; color: #f0f6fc;
+    line-height: 1.3; flex: 1 1 auto; min-width: 0; }
+.wl-hero-meta { display: flex; flex-direction: column; align-items: flex-end;
+    gap: 4px; flex: 0 0 auto; }
+.wl-hero-mtc, .wl-hero-vol { font-size: 12px; color: #8b949e; }
+.wl-hero-mtc .label, .wl-hero-vol .label { color: #8b949e;
+    text-transform: uppercase; letter-spacing: 0.04em; margin-right: 6px;
+    font-size: 10px; }
+.wl-hero-mtc .value, .wl-hero-vol .value { color: #c9d1d9; font-weight: 600;
+    font-size: 13px; }
+.wl-hero-stats { display: flex; align-items: baseline; gap: 14px;
+    flex-wrap: wrap; margin: 6px 0 14px 0; }
 .wl-hero-price { font-size: 36px; font-weight: 700; color: #f0f6fc;
     letter-spacing: -0.5px; }
 .wl-hero-change { font-size: 16px; font-weight: 600; color: #8b949e; }
 .wl-hero-change.pos { color: #3fb950; }
 .wl-hero-change.neg { color: #f85149; }
-.wl-hero-vol { font-size: 13px; color: #c9d1d9; margin-left: auto; }
-.wl-hero-vol .dim { color: #8b949e; }
-/* Chart toolbar: just the at-the-money strike label above the SVG.
-   Chart always spans the full life of whichever event is currently
-   open, so a period selector would be misleading. */
-.wl-chart-toolbar { display:flex; align-items:center; gap:12px;
-    margin: 6px 0 10px 0; }
-.wl-chart-title { font-size: 14px; color: #f0f6fc; font-weight: 500;
-    letter-spacing: 0; }
 """
 
 
@@ -2511,16 +2504,25 @@ def _render_watchlist_hero(out: List[str],
                     pass
         active_side = (latest_active.get("side") or "").upper() or None
 
+    # Header layout (matches Kalshi's market page):
+    #   [event title]                                        [Closes in: Xd Xh]
+    #                                                        [Volume: $N vol]
+    #   [big price]  [▲/▼ change]
+    title_text = event_title or (atm_market.get("yes_sub_title") if atm_market else "") or label
     out.append("<div class='wl-hero'>")
     out.append("<div class='wl-hero-top'>")
-    out.append(f"<div class='wl-hero-title'>{html.escape(label)}</div>")
+    out.append(f"<div class='wl-hero-title'>{html.escape(title_text)}</div>")
+    out.append("<div class='wl-hero-meta'>")
     out.append(f"<div class='wl-hero-mtc'>"
                f"<span class='label'>Closes in</span> "
                f"<span class='value'>{time_left_str(soonest_mtc)}</span>"
                f"</div>")
+    out.append(f"<div class='wl-hero-vol'>"
+               f"<span class='label'>Volume</span> "
+               f"<span class='value'>${total_volume:,}</span>"
+               f"</div>")
     out.append("</div>")
-    # Hero stats: price + % change up top (Kalshi shows them as a row
-    # under the title). Volume moves to the chart's bottom-left.
+    out.append("</div>")
     out.append("<div class='wl-hero-stats'>")
     out.append(f"<div class='wl-hero-price'>{html.escape(current_str)}</div>")
     arrow = ""
@@ -2529,16 +2531,6 @@ def _render_watchlist_hero(out: List[str],
     pct_display = pct_str if not arrow else f"{arrow} {pct_str.lstrip('+-')}"
     out.append(f"<div class='wl-hero-change {pct_cls}'>{html.escape(pct_display)}</div>")
     out.append("</div>")
-    # Chart toolbar: the Kalshi event title — same header users see on
-    # the market page (e.g. "Initial jobless claims for the week ending
-    # May 2, 2026?", "Natural gas price on May 04, 2026 at 5:00 PM EDT?").
-    # Falls back to the at-the-money strike label if Kalshi's events
-    # endpoint didn't return a title.
-    title_text = event_title or (atm_market.get("yes_sub_title") if atm_market else "")
-    if title_text:
-        out.append(f"<div class='wl-chart-toolbar'>"
-                   f"<div class='wl-chart-title'>{html.escape(title_text)}</div>"
-                   f"</div>")
 
     # Pick a reference strike to color the line against. Active bet's
     # Reference strike for chart coloring: only set when there's an
