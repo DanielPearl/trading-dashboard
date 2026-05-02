@@ -297,12 +297,22 @@ def _candle_yes_prob(cdl: dict) -> Optional[float]:
     return ya_c if ya_c is not None else yb_c
 
 
+def _parse_iso(ts: str | None) -> Optional[float]:
+    if not ts:
+        return None
+    try:
+        from datetime import datetime
+        return datetime.fromisoformat(ts.replace("Z", "+00:00")).timestamp()
+    except (TypeError, ValueError):
+        return None
+
+
 def fetch_underlying_history(series_ticker: str,
                               period_minutes: int = 60,
-                              lookback_hours: int = 24,
+                              lookback_hours: Optional[int] = None,
                               client: Optional[KalshiClient] = None,
                               max_strikes: int = 12,
-                              ) -> Tuple[List[dict], Optional[dict], List[dict]]:
+                              ) -> Tuple[List[dict], Optional[dict], List[dict], Optional[float]]:
     """Derive the implied underlying price for one ticker group from the
     full strike ladder.
 
@@ -313,7 +323,7 @@ def fetch_underlying_history(series_ticker: str,
     displays at the top of every market page — same data source, just
     derived rather than fetched directly.
 
-    Returns ``(history, atm_market, markets)``:
+    Returns ``(history, atm_market, markets, contract_open_ts)``:
       * history — list of ``{"ts": float, "value": float}`` points, oldest
         first. Y-values are in the underlying's native units (USD/MMBtu
         for natgas, USD/gal for retail gas, raw count for claims).
@@ -322,17 +332,31 @@ def fetch_underlying_history(series_ticker: str,
       * markets — the full open-market list for this series, so the
         caller can render a Kalshi-derived watchlist when the local
         DB is empty.
+      * contract_open_ts — unix timestamp of when the current event
+        opened. The chart uses this as the x-axis start so the line
+        spans the entire contract life, not just the lookback window.
 
     Limited to the ``max_strikes`` closest-to-money markets to keep API
     load bounded. Each market's candlesticks call is cached for 60s.
     """
     c = client or default_client()
     if not c.available:
-        return [], None, []
+        return [], None, [], None
     markets = c.list_markets(series_ticker)
     if not markets:
-        return [], None, markets
+        return [], None, markets, None
     atm = pick_atm_market(markets)
+    # Contract open time — ATM is in the current event so any market in
+    # that event reports the same open_time. Chart x-axis starts here.
+    contract_open_ts = _parse_iso(atm.get("open_time")) if atm else None
+    # Auto-size lookback to cover the contract's full life so far. Cap
+    # at 7 days; Kalshi rejects very long ranges with very fine periods.
+    if lookback_hours is None:
+        if contract_open_ts is not None:
+            elapsed_h = max(1, int((time.time() - contract_open_ts) / 3600) + 1)
+            lookback_hours = min(elapsed_h, 7 * 24)
+        else:
+            lookback_hours = 24
     # Pick the top-N markets nearest the ATM by current YES probability.
     # Anything far from 50% has no useful information for interpolation
     # — the strike where YES≈50% is what determines the implied price.
@@ -355,7 +379,7 @@ def fetch_underlying_history(series_ticker: str,
     scored.sort(key=lambda x: x[0])
     picked = [m for _, m in scored[:max_strikes]]
     if len(picked) < 2:
-        return [], atm, markets
+        return [], atm, markets, contract_open_ts
 
     # Pull candles for each picked market (cached 60s). Sequential keeps
     # the code simple; cache makes subsequent renders instant.
@@ -379,7 +403,7 @@ def fetch_underlying_history(series_ticker: str,
         market_data.append((strike, ts_to_yes))
 
     if not market_data:
-        return [], atm, markets
+        return [], atm, markets, contract_open_ts
 
     # Union of timestamps observed across all markets.
     all_ts = sorted({t for _, ts_map in market_data for t in ts_map.keys()})
@@ -420,20 +444,4 @@ def fetch_underlying_history(series_ticker: str,
         if implied is not None:
             history.append({"ts": float(ts), "value": float(implied)})
 
-    return history, atm, markets
-
-
-# Period presets exposed to the URL: ?period=1d|3h|1h.
-# Kalshi's candlestick endpoint only accepts period_interval ∈ {1, 60, 1440}
-# (probed empirically — 5/15/30 return 400). 1-minute candles cover both
-# 1H and 3H views; 60-minute covers 1D.
-PERIOD_PRESETS: Dict[str, Tuple[int, int]] = {
-    # key: (period_minutes, lookback_hours)
-    "1h": (1, 1),
-    "3h": (1, 3),
-    "1d": (60, 24),
-}
-
-
-def resolve_period(key: str) -> Tuple[int, int]:
-    return PERIOD_PRESETS.get(key, PERIOD_PRESETS["1d"])
+    return history, atm, markets, contract_open_ts
