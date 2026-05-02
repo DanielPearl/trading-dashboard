@@ -816,7 +816,15 @@ def svg_kalshi_chart(history: List[dict], display: dict,
     def y_at(v: float) -> float:
         return pad_t + (1.0 - (v - y_lo) / (y_hi - y_lo)) * inner_h
 
+    # Wrap the SVG in a positioning context for the hover tooltip and
+    # expose the chart geometry as data attrs so the JS can map the
+    # cursor's x position back to a timestamp without re-deriving it.
     out: List[str] = [
+        f"<div class='wl-chart-wrap' "
+        f"data-tmin='{t_min:.0f}' data-tmax='{t_max:.0f}' "
+        f"data-padl='{pad_l}' data-innerw='{inner_w}' "
+        f"data-padt='{pad_t}' data-padb='{pad_b}' data-h='{height}' "
+        f"data-vbw='{width}'>",
         f"<svg width='100%' height='{height}' viewBox='0 0 {width} {height}' "
         f"preserveAspectRatio='none' style='display:block'>"
     ]
@@ -938,6 +946,10 @@ def svg_kalshi_chart(history: List[dict], display: dict,
     # per user request — no longer on the chart frame.
 
     out.append("</svg>")
+    # Hover tooltip — JS in the page polyfills this with a vertical
+    # line + "May 1 at 9 AM" label as the cursor moves over the chart.
+    out.append("<div class='wl-chart-tooltip' hidden></div>")
+    out.append("</div>")
     return "".join(out)
 
 
@@ -1365,6 +1377,16 @@ tr.row-bought.bought-no  td.mono { color: #f85149; font-weight: 600; }
 .wl-hero-mtc .label { color: #8b949e; text-transform: uppercase;
     letter-spacing: 0.04em; margin-right: 6px; font-size: 10px; }
 .wl-hero-mtc .value { color: #c9d1d9; font-weight: 600; font-size: 13px; }
+/* Hover crosshair on the underlying chart. JS draws the vertical line
+   inside the SVG and positions this tooltip via inline `left:`. */
+.wl-chart-wrap { position: relative; }
+.wl-chart-tooltip {
+    position: absolute; top: -2px; transform: translateX(-50%);
+    background: #161b22; color: #c9d1d9;
+    border: 1px solid #30363d; border-radius: 4px;
+    padding: 3px 8px; font-size: 11px; font-weight: 500;
+    pointer-events: none; white-space: nowrap; z-index: 2;
+}
 """
 
 
@@ -1616,6 +1638,75 @@ def _live_update_script(current_bot: str) -> str:
   // Initial fetch on load + recurring poll.
   poll();
   setInterval(poll, POLL_MS);
+
+  // ── Hover crosshair on the underlying chart ───────────────────
+  // The SVG carries data-* attrs with t_min/t_max + chart geometry.
+  // On mousemove we draw a vertical line and position a "May 1 at 9 AM"
+  // tooltip; on mouseleave we hide them. Pure DOM, no chart library.
+  document.querySelectorAll(".wl-chart-wrap").forEach(function (wrap) {{
+    const svg = wrap.querySelector("svg");
+    const tip = wrap.querySelector(".wl-chart-tooltip");
+    if (!svg || !tip) return;
+    const tmin = parseFloat(wrap.dataset.tmin);
+    const tmax = parseFloat(wrap.dataset.tmax);
+    const padL = parseFloat(wrap.dataset.padl);
+    const innerW = parseFloat(wrap.dataset.innerw);
+    const padT = parseFloat(wrap.dataset.padt);
+    const padB = parseFloat(wrap.dataset.padb);
+    const h = parseFloat(wrap.dataset.h);
+    const vbW = parseFloat(wrap.dataset.vbw);
+    if (![tmin, tmax, padL, innerW, padT, padB, h, vbW].every(isFinite)) return;
+
+    const ns = "http://www.w3.org/2000/svg";
+    const cursor = document.createElementNS(ns, "line");
+    cursor.setAttribute("stroke", "#c9d1d9");
+    cursor.setAttribute("stroke-width", "1");
+    cursor.setAttribute("stroke-dasharray", "2,3");
+    cursor.setAttribute("opacity", "0");
+    svg.appendChild(cursor);
+
+    function fmtTs(ts) {{
+      const d = new Date(ts * 1000);
+      const months = ["Jan","Feb","Mar","Apr","May","Jun",
+                      "Jul","Aug","Sep","Oct","Nov","Dec"];
+      const month = months[d.getUTCMonth()];
+      const day = d.getUTCDate();
+      let hour = d.getUTCHours();
+      const ampm = hour >= 12 ? "PM" : "AM";
+      hour = hour % 12 || 12;
+      return month + " " + day + " at " + hour + " " + ampm;
+    }}
+
+    svg.addEventListener("mousemove", function (e) {{
+      const rect = svg.getBoundingClientRect();
+      // Cursor's x in viewBox space (the SVG scales to the wrap's width).
+      const x = (e.clientX - rect.left) * vbW / rect.width;
+      if (x < padL || x > padL + innerW) {{
+        cursor.setAttribute("opacity", "0");
+        tip.hidden = true;
+        return;
+      }}
+      cursor.setAttribute("x1", x);
+      cursor.setAttribute("x2", x);
+      cursor.setAttribute("y1", padT);
+      cursor.setAttribute("y2", h - padB);
+      cursor.setAttribute("opacity", "0.7");
+
+      const frac = (x - padL) / innerW;
+      const ts = tmin + frac * (tmax - tmin);
+      tip.textContent = fmtTs(ts);
+      tip.hidden = false;
+      // Anchor the tooltip in pixel space relative to the wrap so it
+      // tracks the cursor regardless of how the SVG is scaled.
+      const ratio = rect.width / vbW;
+      tip.style.left = (x * ratio) + "px";
+    }});
+
+    svg.addEventListener("mouseleave", function () {{
+      cursor.setAttribute("opacity", "0");
+      tip.hidden = true;
+    }});
+  }});
 }})();
 </script>"""
 
