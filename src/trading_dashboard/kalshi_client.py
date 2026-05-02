@@ -278,59 +278,162 @@ def pick_atm_market(markets: List[dict]) -> Optional[dict]:
     return scored[0][1]
 
 
-def fetch_chart_series(series_ticker: str,
-                        period_minutes: int = 60,
-                        lookback_hours: int = 72,
-                        client: Optional[KalshiClient] = None
-                        ) -> Tuple[List[dict], Optional[dict]]:
-    """Fetch the chart data for one ticker group (= one series).
+def _candle_yes_prob(cdl: dict) -> Optional[float]:
+    """Pull the cleanest YES probability (0..1) from one candlestick.
+    Prefers the mean trade price (smoothest), falls back to close price,
+    then to bid/ask midpoint for thin bars without trades.
+    """
+    price = cdl.get("price") or {}
+    yp = (_to_float(price.get("mean_dollars"))
+          or _to_float(price.get("close_dollars")))
+    if yp is not None:
+        return yp
+    ya = cdl.get("yes_ask") or {}
+    yb = cdl.get("yes_bid") or {}
+    ya_c = _to_float(ya.get("close_dollars"))
+    yb_c = _to_float(yb.get("close_dollars"))
+    if ya_c is not None and yb_c is not None:
+        return (ya_c + yb_c) / 2.0
+    return ya_c if ya_c is not None else yb_c
 
-    Returns (history, atm_market). `history` is a list of
-    ``{"ts": float, "yes_pct": float, "no_pct": float, "volume": float}``
-    points, oldest first. `atm_market` is the picked market dict (or None
-    if no markets are open / Kalshi is unavailable). Empty history is a
-    valid result — the chart renderer shows the empty-state in that case.
+
+def fetch_underlying_history(series_ticker: str,
+                              period_minutes: int = 60,
+                              lookback_hours: int = 24,
+                              client: Optional[KalshiClient] = None,
+                              max_strikes: int = 12,
+                              ) -> Tuple[List[dict], Optional[dict], List[dict]]:
+    """Derive the implied underlying price for one ticker group from the
+    full strike ladder.
+
+    For each candle timestamp we have (strike, YES probability) pairs
+    across every market in the series. The implied underlying is the
+    strike where YES probability crosses 50% (linear interpolation
+    between the bracketing strikes). That mirrors the chart Kalshi
+    displays at the top of every market page — same data source, just
+    derived rather than fetched directly.
+
+    Returns ``(history, atm_market, markets)``:
+      * history — list of ``{"ts": float, "value": float}`` points, oldest
+        first. Y-values are in the underlying's native units (USD/MMBtu
+        for natgas, USD/gal for retail gas, raw count for claims).
+      * atm_market — the market closest to the money right now (used by
+        the chart title / watchlist "Chance" highlight).
+      * markets — the full open-market list for this series, so the
+        caller can render a Kalshi-derived watchlist when the local
+        DB is empty.
+
+    Limited to the ``max_strikes`` closest-to-money markets to keep API
+    load bounded. Each market's candlesticks call is cached for 60s.
     """
     c = client or default_client()
     if not c.available:
-        return [], None
+        return [], None, []
     markets = c.list_markets(series_ticker)
+    if not markets:
+        return [], None, markets
     atm = pick_atm_market(markets)
-    if atm is None:
-        return [], None
-    candles = c.candlesticks(
-        series_ticker, atm["ticker"],
-        period_minutes=period_minutes, lookback_hours=lookback_hours,
-    )
+    # Pick the top-N markets nearest the ATM by current YES probability.
+    # Anything far from 50% has no useful information for interpolation
+    # — the strike where YES≈50% is what determines the implied price.
+    scored: List[Tuple[float, dict]] = []
+    for m in markets:
+        ya = _to_float(m.get("yes_ask_dollars"))
+        yb = _to_float(m.get("yes_bid_dollars"))
+        mid = None
+        if ya is not None and yb is not None:
+            mid = (ya + yb) / 2.0
+        elif ya is not None:
+            mid = ya
+        elif yb is not None:
+            mid = yb
+        if mid is None:
+            continue
+        if m.get("floor_strike") is None:
+            continue
+        scored.append((abs(mid - 0.5), m))
+    scored.sort(key=lambda x: x[0])
+    picked = [m for _, m in scored[:max_strikes]]
+    if len(picked) < 2:
+        return [], atm, markets
+
+    # Pull candles for each picked market (cached 60s). Sequential keeps
+    # the code simple; cache makes subsequent renders instant.
+    market_data: List[Tuple[float, Dict[float, float]]] = []
+    for m in picked:
+        try:
+            strike = float(m["floor_strike"])
+        except (TypeError, ValueError):
+            continue
+        candles = c.candlesticks(
+            series_ticker, m["ticker"],
+            period_minutes=period_minutes, lookback_hours=lookback_hours,
+        )
+        ts_to_yes: Dict[float, float] = {}
+        for cdl in candles:
+            ts = cdl.get("end_period_ts")
+            yp = _candle_yes_prob(cdl)
+            if ts is None or yp is None:
+                continue
+            ts_to_yes[float(ts)] = yp
+        market_data.append((strike, ts_to_yes))
+
+    if not market_data:
+        return [], atm, markets
+
+    # Union of timestamps observed across all markets.
+    all_ts = sorted({t for _, ts_map in market_data for t in ts_map.keys()})
     history: List[dict] = []
-    for cdl in candles:
-        ts = cdl.get("end_period_ts")
-        if ts is None:
+    for ts in all_ts:
+        # Build (strike, yes_prob) pairs at this ts, sorted by strike asc.
+        pairs: List[Tuple[float, float]] = []
+        for strike, ts_map in market_data:
+            yp = ts_map.get(ts)
+            if yp is None:
+                continue
+            pairs.append((strike, yp))
+        if len(pairs) < 2:
             continue
-        # Prefer mean_dollars if populated; fall back to close_dollars.
-        # Both are in 0..1 (dollar fraction).
-        price = cdl.get("price") or {}
-        ya = cdl.get("yes_ask") or {}
-        yb = cdl.get("yes_bid") or {}
-        yes_close = (_to_float(price.get("mean_dollars"))
-                     or _to_float(price.get("close_dollars")))
-        if yes_close is None:
-            # Some thin bars only have ask/bid, no trades. Fall back to
-            # the bid/ask midpoint so the line stays continuous.
-            ya_close = _to_float(ya.get("close_dollars"))
-            yb_close = _to_float(yb.get("close_dollars"))
-            if ya_close is not None and yb_close is not None:
-                yes_close = (ya_close + yb_close) / 2.0
-            elif ya_close is not None:
-                yes_close = ya_close
-            elif yb_close is not None:
-                yes_close = yb_close
-        if yes_close is None:
-            continue
-        history.append({
-            "ts": float(ts),
-            "yes_pct": yes_close * 100.0,
-            "no_pct": (1.0 - yes_close) * 100.0,
-            "volume": _to_float(cdl.get("volume_fp")) or 0.0,
-        })
-    return history, atm
+        pairs.sort(key=lambda x: x[0])
+        # Higher strike → lower YES probability. Walk pairs and find the
+        # bracket where probability crosses 0.5.
+        implied: Optional[float] = None
+        for i in range(len(pairs) - 1):
+            s1, p1 = pairs[i]
+            s2, p2 = pairs[i + 1]
+            if (p1 >= 0.5 >= p2) or (p2 >= 0.5 >= p1):
+                if p1 == p2:
+                    implied = (s1 + s2) / 2
+                else:
+                    t = (p1 - 0.5) / (p1 - p2)
+                    implied = s1 + t * (s2 - s1)
+                break
+        if implied is None:
+            # All probs > 0.5 → underlying is above the highest sampled
+            # strike. All probs < 0.5 → below the lowest. Clamp so the
+            # chart still has data instead of going blank in extreme
+            # tail-of-distribution moments.
+            if pairs[-1][1] >= 0.5:
+                implied = pairs[-1][0]
+            elif pairs[0][1] < 0.5:
+                implied = pairs[0][0]
+        if implied is not None:
+            history.append({"ts": float(ts), "value": float(implied)})
+
+    return history, atm, markets
+
+
+# Period presets exposed to the URL: ?period=1d|3h|1h.
+# Kalshi's candlestick endpoint only accepts period_interval ∈ {1, 60, 1440}
+# (probed empirically — 5/15/30 return 400). 1-minute candles cover both
+# 1H and 3H views; 60-minute covers 1D.
+PERIOD_PRESETS: Dict[str, Tuple[int, int]] = {
+    # key: (period_minutes, lookback_hours)
+    "1h": (1, 1),
+    "3h": (1, 3),
+    "1d": (60, 24),
+}
+
+
+def resolve_period(key: str) -> Tuple[int, int]:
+    return PERIOD_PRESETS.get(key, PERIOD_PRESETS["1d"])

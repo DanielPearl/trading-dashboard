@@ -402,6 +402,107 @@ def fetch_watchlist(db_path: str) -> List[dict]:
         return []
 
 
+def _watchlist_from_kalshi(markets: List[dict]) -> List[dict]:
+    """Translate Kalshi /markets payloads into the same row shape that
+    the local-DB watchlist uses, so the render path is uniform.
+
+    Bot-specific fields (`model_prob_yes`, `bot_verdict`, `edge_yes`,
+    `rejection_reason`, …) are left None — those only exist when the
+    bot's running and writing market_views. Market-state fields
+    (strikes, prices, volume, OI, mtc) come straight from Kalshi.
+
+    Used when the bot service isn't running locally, so the user can
+    still see the strike ladder for whichever event in the series is
+    currently open. Auto-refreshes via the 60s Kalshi cache.
+    """
+    out: List[dict] = []
+    now = datetime.now(timezone.utc)
+    for m in markets:
+        ticker = m.get("ticker", "")
+        if not ticker:
+            continue
+        # Strike: floor_strike/cap_strike are dollars-as-floats. Some
+        # markets are "between" range; we mirror gas-prices' convention
+        # of using strike_low for "above $X".
+        floor = m.get("floor_strike")
+        cap = m.get("cap_strike")
+        try:
+            strike_low = float(floor) if floor is not None else None
+        except (TypeError, ValueError):
+            strike_low = None
+        try:
+            strike_high = float(cap) if cap is not None else None
+        except (TypeError, ValueError):
+            strike_high = None
+        # Direction inference from strike_type when present.
+        direction = "above"
+        if strike_low is not None and strike_high is not None:
+            direction = "between"
+        # Prices come as decimal-dollar strings ("0.7600"). The local
+        # schema uses int cents.
+        def _cents(v: Any) -> int | None:
+            if v is None or v == "":
+                return None
+            try:
+                return int(round(float(v) * 100))
+            except (TypeError, ValueError):
+                return None
+        ya = _cents(m.get("yes_ask_dollars"))
+        na = _cents(m.get("no_ask_dollars"))
+        yb = _cents(m.get("yes_bid_dollars"))
+        spread = None
+        if ya is not None and yb is not None:
+            spread = max(0, ya - yb)
+        # Time-to-close in minutes from close_time.
+        close_time_str = m.get("close_time") or ""
+        mtc_min: float | None = None
+        if close_time_str:
+            try:
+                ct = datetime.fromisoformat(close_time_str.replace("Z", "+00:00"))
+                mtc_min = max(0.0, (ct - now).total_seconds() / 60.0)
+            except ValueError:
+                mtc_min = None
+        # Volume / open-interest come as float-precision strings.
+        def _intv(v: Any) -> int | None:
+            if v is None or v == "":
+                return None
+            try:
+                return int(round(float(v)))
+            except (TypeError, ValueError):
+                return None
+        out.append({
+            "ticker": ticker,
+            "title": m.get("title") or "",
+            "direction": direction,
+            "strike_low": strike_low,
+            "strike_high": strike_high,
+            "minutes_to_close": mtc_min,
+            "model_prob_yes": None,
+            "raw_model_prob_yes": None,
+            "yes_ask_cents": ya,
+            "no_ask_cents": na,
+            "yes_bid_cents": yb,
+            "spread_cents": spread,
+            "edge_yes": None,
+            "edge_no": None,
+            "bot_verdict": None,
+            "rejection_reason": None,
+            "rules_primary": m.get("rules_primary") or "",
+            "rules_secondary": m.get("rules_secondary") or "",
+            "event_title": m.get("event_ticker") or "",
+            "event_sub_title": m.get("yes_sub_title") or "",
+            "volume": _intv(m.get("volume_fp")),
+            "open_interest": _intv(m.get("open_interest_fp")),
+            "yes_ask_depth": _intv(m.get("yes_ask_size_fp")),
+            "captured_at": now.isoformat(),
+        })
+    # Sort by strike ascending — matches the local fetch_watchlist order.
+    out.sort(key=lambda r: (r.get("strike_low")
+                            if r.get("strike_low") is not None else 9_999.0,
+                            r.get("ticker") or ""))
+    return out
+
+
 def fetch_underlying_history(db_path: str, hours: int = 72,
                               max_points: int = 400) -> List[dict]:
     """Time-series of the bot's underlying value (model_snapshots.current_gas_price)
@@ -602,6 +703,157 @@ def confidence_pct(prob: float | None,
     # Floor at 0.5 (no info worse than coinflip should still show > 0).
     accuracy = max(0.5, min(1.0, accuracy))
     return int(round(raw * accuracy * 100))
+
+
+def svg_kalshi_chart(history: List[dict], display: dict,
+                      reference_strike: float | None = None,
+                      strike_side: str | None = None,
+                      strike_is_active_bet: bool = False,
+                      width: int = 760, height: int = 220) -> str:
+    """Underlying-price chart, derived from Kalshi's strike ladder.
+
+    Same visual idiom as Kalshi's market-page chart: one line in the
+    underlying's native units (USD/MMBtu, USD/gal, K claims), y-axis
+    auto-scaled to the data range, optional horizontal strike line
+    colored to indicate winning side. Different from the prior 0..100%
+    chance chart — the y-axis here is in real-world units so the user
+    sees what Kalshi shows on its own market page.
+    """
+    pts_in: List[Tuple[float, float]] = []
+    for r in history:
+        ts = r.get("ts")
+        v = r.get("value")
+        if ts is None or v is None:
+            continue
+        try:
+            pts_in.append((float(ts), float(v)))
+        except (TypeError, ValueError):
+            continue
+    if len(pts_in) < 2:
+        return ("<div class='empty' style='padding:24px'>"
+                "Live Kalshi chart is loading… (or the strike ladder "
+                "doesn't have enough trade history yet to derive an "
+                "implied underlying price). Refreshes every 60 seconds."
+                "</div>")
+
+    pad_l, pad_r, pad_t, pad_b = 56, 16, 14, 30
+    inner_w = width - pad_l - pad_r
+    inner_h = height - pad_t - pad_b
+    n = len(pts_in)
+    t_min = pts_in[0][0]
+    t_max = pts_in[-1][0]
+    t_span = max(1.0, t_max - t_min)
+
+    # Auto-scale the y-axis to the actual data range with 5% padding on
+    # each side. Kalshi does the same — a flat line in 0..100% space
+    # would lose all the signal in tight ranges.
+    values = [v for _, v in pts_in]
+    vmin = min(values)
+    vmax = max(values)
+    if vmax == vmin:
+        pad_v = max(0.001, abs(vmax) * 0.005)
+    else:
+        pad_v = (vmax - vmin) * 0.08
+    y_lo = vmin - pad_v
+    y_hi = vmax + pad_v
+
+    # Strike line is drawn ONLY if it falls within the visible y-range.
+    # Otherwise the chart would auto-scale around the strike and
+    # squash the actual price action into a thin band.
+    strike_in_range = (reference_strike is not None
+                       and y_lo <= float(reference_strike) <= y_hi)
+
+    def x_at(t: float) -> float:
+        return pad_l + (t - t_min) / t_span * inner_w
+
+    def y_at(v: float) -> float:
+        return pad_t + (1.0 - (v - y_lo) / (y_hi - y_lo)) * inner_h
+
+    out: List[str] = [
+        f"<svg width='100%' height='{height}' viewBox='0 0 {width} {height}' "
+        f"preserveAspectRatio='none' "
+        f"style='background:#0d1117; border:1px solid #21262d; "
+        f"border-radius:6px; display:block'>"
+    ]
+
+    # 5 evenly-spaced y-gridlines, labeled in the underlying's units.
+    for i in range(5):
+        v = y_lo + (i / 4.0) * (y_hi - y_lo)
+        y = y_at(v)
+        out.append(f"<line x1='{pad_l}' y1='{y}' x2='{width-pad_r}' y2='{y}' "
+                   f"stroke='#1f2530' stroke-width='1'/>")
+        out.append(f"<text x='{pad_l-6}' y='{y+4}' fill='#8b949e' font-size='10' "
+                   f"text-anchor='end'>{html.escape(fmt_underlying(v, display))}</text>")
+
+    # Color the line green where it sits on the winning side of the
+    # strike, white on the losing side. Same logic as the prior
+    # underlying chart — strike-relative segment splitting.
+    side = (strike_side or "").upper()
+    if side == "NO":
+        above_color, below_color = "#c9d1d9", "#3fb950"
+    else:
+        above_color, below_color = "#3fb950", "#c9d1d9"
+
+    if not strike_in_range or reference_strike is None:
+        path = " ".join(f"{x_at(t):.1f},{y_at(v):.1f}" for t, v in pts_in)
+        out.append(f"<polyline points='{path}' stroke='#c9d1d9' "
+                   f"stroke-width='2' fill='none'/>")
+    else:
+        strike = float(reference_strike)
+        runs: List[Tuple[bool, List[Tuple[float, float]]]] = []
+        cur_above = pts_in[0][1] >= strike
+        cur_run: List[Tuple[float, float]] = [(x_at(pts_in[0][0]), y_at(pts_in[0][1]))]
+        for i in range(1, n):
+            t_prev, v_prev = pts_in[i - 1]
+            t_curr, v_curr = pts_in[i]
+            new_above = v_curr >= strike
+            if new_above == cur_above:
+                cur_run.append((x_at(t_curr), y_at(v_curr)))
+                continue
+            denom = v_curr - v_prev
+            t = (strike - v_prev) / denom if denom != 0 else 0.5
+            t = max(0.0, min(1.0, t))
+            cross_x = x_at(t_prev) + t * (x_at(t_curr) - x_at(t_prev))
+            cross_y = y_at(strike)
+            cur_run.append((cross_x, cross_y))
+            runs.append((cur_above, cur_run))
+            cur_run = [(cross_x, cross_y), (x_at(t_curr), y_at(v_curr))]
+            cur_above = new_above
+        runs.append((cur_above, cur_run))
+        for is_above, run in runs:
+            if len(run) < 2:
+                continue
+            color = above_color if is_above else below_color
+            pts_str = " ".join(f"{x:.1f},{y:.1f}" for x, y in run)
+            out.append(f"<polyline points='{pts_str}' stroke='{color}' "
+                       f"stroke-width='2' fill='none'/>")
+
+    # Horizontal strike line.
+    if strike_in_range and reference_strike is not None:
+        ys = y_at(float(reference_strike))
+        line_color = above_color if side != "NO" else below_color
+        stroke_w = 1.8 if strike_is_active_bet else 1.2
+        opacity = 0.95 if strike_is_active_bet else 0.55
+        out.append(f"<line x1='{pad_l}' y1='{ys}' x2='{width-pad_r}' y2='{ys}' "
+                   f"stroke='{line_color}' stroke-width='{stroke_w}' "
+                   f"opacity='{opacity}'/>")
+        label_strike = fmt_underlying(float(reference_strike), display)
+        if strike_is_active_bet:
+            label = f"My {side or 'bet'} · Above {label_strike}"
+        else:
+            label = f"Above {label_strike}"
+        out.append(f"<text x='{width-pad_r-6}' y='{ys-6}' fill='{line_color}' "
+                   f"font-size='11' text-anchor='end' opacity='{opacity}'>"
+                   f"{html.escape(label)}</text>")
+
+    first_ts = datetime.fromtimestamp(pts_in[0][0], tz=timezone.utc).strftime("%Y-%m-%d %H:%M")
+    last_ts = datetime.fromtimestamp(pts_in[-1][0], tz=timezone.utc).strftime("%Y-%m-%d %H:%M")
+    out.append(f"<text x='{pad_l}' y='{height-8}' fill='#8b949e' font-size='10'>"
+               f"{html.escape(first_ts)}</text>")
+    out.append(f"<text x='{width-pad_r}' y='{height-8}' fill='#8b949e' "
+               f"font-size='10' text-anchor='end'>{html.escape(last_ts)} UTC</text>")
+    out.append("</svg>")
+    return "".join(out)
 
 
 def svg_chance_chart(history: List[dict], atm_market: dict | None,
@@ -1142,6 +1394,20 @@ tr.row-suspect td:nth-last-child(2) { opacity: 0.85; }  /* keep gap legible */
 .wl-hero-change.neg { color: #f85149; }
 .wl-hero-vol { font-size: 13px; color: #c9d1d9; margin-left: auto; }
 .wl-hero-vol .dim { color: #8b949e; }
+/* Period selector under the hero stats: 1H / 3H / 1D pills, mirroring
+   Kalshi's bottom-right chart toolbar. Title on the left labels which
+   strike's curve we're showing (the at-the-money strike). */
+.wl-chart-toolbar { display:flex; align-items:center; justify-content:space-between;
+    gap:12px; flex-wrap:wrap; margin: 6px 0 8px 0; }
+.wl-chart-title { font-size: 12px; color: #8b949e; text-transform: uppercase;
+    letter-spacing: 0.06em; }
+.wl-period-pills { display:flex; gap:4px; }
+.wl-period-pill { padding: 4px 12px; border-radius: 999px; font-size: 11px;
+    color:#8b949e; background:#161b22; border:1px solid #21262d;
+    text-decoration:none; line-height: 1.4; }
+.wl-period-pill:hover { background:#1f2530; color:#c9d1d9; }
+.wl-period-pill-active { background:#1f6feb22; border-color:#1f6feb55;
+    color:#58a6ff; }
 """
 
 
@@ -1164,6 +1430,7 @@ def render_page(
     display: dict,
     kalshi_history: List[dict],
     atm_market: dict | None,
+    current_period: str,
     risk_caps: dict,
     edge_cfg: dict,
     validator_cfg: dict,
@@ -1213,6 +1480,8 @@ def render_page(
                       latest_active=latest_active,
                       kalshi_history=kalshi_history,
                       atm_market=atm_market,
+                      current_period=current_period,
+                      current_bot_key=current_bot,
                       edge_cfg=edge_cfg,
                       validator_cfg=validator_cfg,
                       risk_caps=risk_caps,
@@ -2148,26 +2417,46 @@ def _render_watchlist_hero(out: List[str],
                             display: dict,
                             latest_active: dict | None,
                             kalshi_history: List[dict] | None = None,
-                            atm_market: dict | None = None) -> None:
+                            atm_market: dict | None = None,
+                            current_period: str = "1d",
+                            current_bot_key: str = "") -> None:
     """Kalshi-style hero block: current underlying value, % change, total
     Kalshi volume on the watchlist, time-to-close on the soonest market,
     and an SVG chart of the underlying. If there's an active position,
     a horizontal line on the chart marks the strike the user bought.
     """
-    # Current underlying value (from the latest model snapshot).
-    current = None
-    if model is not None and model.get("current_gas_price") is not None:
+    # Prefer Kalshi-derived underlying data for "current value" and
+    # "% change". It's fresher (updates with every Kalshi tick) and
+    # works even when the bot service isn't running locally. Falls back
+    # to the bot's own model_snapshot only if Kalshi data is missing.
+    current: float | None = None
+    earliest_value: float | None = None
+    if kalshi_history:
+        # Take latest from Kalshi.
+        for r in reversed(kalshi_history):
+            v = r.get("value")
+            if v is None:
+                continue
+            try:
+                current = float(v)
+                break
+            except (TypeError, ValueError):
+                continue
+        for r in kalshi_history:
+            v = r.get("value")
+            if v is None:
+                continue
+            try:
+                earliest_value = float(v)
+                break
+            except (TypeError, ValueError):
+                continue
+    if current is None and model is not None and model.get("current_gas_price") is not None:
         try:
             current = float(model["current_gas_price"])
         except (TypeError, ValueError):
             current = None
-
-    # % change vs the start of the chart window. If the bot's only run
-    # for a few snapshots, this defaults to 0 — better than hiding the
-    # field, since the chart itself shows the data sparsity.
-    pct_change = None
-    earliest_value = None
-    if underlying_history:
+    if earliest_value is None and underlying_history:
         for r in underlying_history:
             v = r.get("value")
             if v is None:
@@ -2177,6 +2466,8 @@ def _render_watchlist_hero(out: List[str],
                 break
             except (TypeError, ValueError):
                 continue
+
+    pct_change = None
     if current is not None and earliest_value is not None and earliest_value != 0:
         pct_change = (current - earliest_value) / abs(earliest_value) * 100.0
 
@@ -2235,46 +2526,57 @@ def _render_watchlist_hero(out: List[str],
     out.append(f"<div class='wl-hero-change {pct_cls}'>{pct_str}</div>")
     out.append(f"<div class='wl-hero-vol'>{total_volume:,} <span class='dim'>vol</span></div>")
     out.append("</div>")
-    # Chart: prefer fresh Kalshi candlesticks (so the chart works for
-    # any registered bot, even one whose service isn't running locally
-    # to write model_snapshots). Falls back to local snapshots only if
-    # the dashboard's Kalshi creds aren't configured or the series has
-    # no candle history.
-    if kalshi_history:
-        # Live chance chart from Kalshi candlesticks. Entry-price line
-        # shown when there's an active bet.
-        entry_cents: int | None = None
-        if latest_active and latest_active.get("entry_price_cents") is not None:
+    # Period pill bar: 1H / 3H / 1D, default 1D. Mirrors Kalshi's
+    # bottom-right toolbar. Switching reloads the page with ?period=…
+    # so server-side caches reuse already-fetched candle bundles.
+    out.append("<div class='wl-chart-toolbar'>")
+    if atm_market is not None:
+        sub = atm_market.get("yes_sub_title") or ""
+        if sub:
+            out.append(f"<div class='wl-chart-title'>"
+                       f"{html.escape(sub)}</div>")
+    out.append("<div class='wl-period-pills'>")
+    for p_key, p_label in (("1h", "1H"), ("3h", "3H"), ("1d", "1D")):
+        cls = "wl-period-pill"
+        if p_key == current_period:
+            cls += " wl-period-pill-active"
+        bot_q = html.escape(current_bot_key)
+        out.append(f"<a class='{cls}' href='?bot={bot_q}&period={p_key}'>"
+                   f"{p_label}</a>")
+    out.append("</div></div>")
+
+    # Pick a reference strike to color the line against. Active bet's
+    # strike wins; else the closest-to-money strike in the watchlist so
+    # there's still a meaningful divider when no bet is open.
+    reference_strike = active_strike
+    strike_side = active_side
+    strike_is_active = active_strike is not None
+    if reference_strike is None and current is not None:
+        candidates: list[float] = []
+        for w in watchlist:
+            sl = w.get("strike_low")
+            if sl is None:
+                continue
             try:
-                entry_cents = int(latest_active["entry_price_cents"])
+                candidates.append(float(sl))
             except (TypeError, ValueError):
-                entry_cents = None
-        out.append(svg_chance_chart(
-            kalshi_history, atm_market,
-            entry_price_cents=entry_cents,
-            side=active_side,
+                continue
+        if candidates:
+            reference_strike = min(candidates,
+                                    key=lambda s: abs(s - float(current)))
+            strike_side = None
+
+    # Chart: prefer Kalshi-derived underlying (matches Kalshi's market-
+    # page chart axis). Falls back to the bot's own model_snapshots if
+    # Kalshi creds aren't configured or the series has no candle history.
+    if kalshi_history:
+        out.append(svg_kalshi_chart(
+            kalshi_history, display,
+            reference_strike=reference_strike,
+            strike_side=strike_side,
+            strike_is_active_bet=strike_is_active,
         ))
     else:
-        # Pick a reference strike for the local underlying chart. Active
-        # position wins; else fall back to the closest-to-money strike
-        # in the watchlist so the chart still has a meaningful divider.
-        reference_strike = active_strike
-        strike_side = active_side
-        strike_is_active = active_strike is not None
-        if reference_strike is None and current is not None:
-            candidates: list[float] = []
-            for w in watchlist:
-                sl = w.get("strike_low")
-                if sl is None:
-                    continue
-                try:
-                    candidates.append(float(sl))
-                except (TypeError, ValueError):
-                    continue
-            if candidates:
-                reference_strike = min(candidates,
-                                        key=lambda s: abs(s - float(current)))
-                strike_side = None
         out.append(svg_underlying_chart(
             underlying_history, current, display,
             reference_strike=reference_strike,
@@ -2291,6 +2593,8 @@ def _render_watchlist(out: List[str], watchlist: List[dict],
                       latest_active: dict | None = None,
                       kalshi_history: List[dict] | None = None,
                       atm_market: dict | None = None,
+                      current_period: str = "1d",
+                      current_bot_key: str = "",
                       edge_cfg: dict | None = None,
                       validator_cfg: dict | None = None,
                       risk_caps: dict | None = None,
@@ -2312,7 +2616,9 @@ def _render_watchlist(out: List[str], watchlist: List[dict],
                            underlying_history or [],
                            display or {}, latest_active,
                            kalshi_history=kalshi_history,
-                           atm_market=atm_market)
+                           atm_market=atm_market,
+                           current_period=current_period,
+                           current_bot_key=current_bot_key)
 
     if not watchlist:
         out.append("<div class='empty'>No fully-priced markets right now.</div>")
@@ -3094,30 +3400,55 @@ class Handler(BaseHTTPRequestHandler):
                 model = fetch_latest_model(db_path)
                 latest_active = fetch_latest_open_position(db_path)
                 watchlist = fetch_watchlist(db_path)
-                # Underlying time-series for the watchlist hero chart.
-                # 72h gives enough resolution to see the recent trend
-                # without flooding the SVG with thousands of points.
-                underlying_history = fetch_underlying_history(db_path, hours=72)
-                # Kalshi candlesticks for the at-the-money market in this
-                # bot's series — the chart's primary data source. Falls
-                # back to underlying_history if creds aren't configured
-                # or the series is empty.
+                # Will fall back to Kalshi markets below if `watchlist`
+                # comes up empty (bot service not writing market_views,
+                # or the bot is currently between events). Done after
+                # the Kalshi fetch since both share the cache.
+                # Period selector for the chart: 1h / 3h / 1d (default 1d).
+                qs = parse_qs(parsed.query)
+                period_key = qs.get("period", ["1d"])[0].lower()
+                if period_key not in ("1h", "3h", "1d"):
+                    period_key = "1d"
+                # Local model_snapshots fallback (used if Kalshi is down).
+                local_lookback = {"1h": 1, "3h": 3, "1d": 24}[period_key]
+                underlying_history = fetch_underlying_history(
+                    db_path, hours=local_lookback,
+                )
+                # Kalshi-derived underlying via strike-ladder interpolation
+                # — same data source Kalshi uses for the chart at the top
+                # of every market page. Auto-tracks whichever event in the
+                # series is currently open (status=open filter), so when
+                # one resolves and the next one opens, the chart and the
+                # ATM market shift over without code changes.
                 kalshi_history: List[dict] = []
                 atm_market: dict | None = None
+                kalshi_markets: List[dict] = []
                 series_ticker = bot.get("series_ticker")
                 if series_ticker:
                     from . import kalshi_client
+                    period_min, lookback_h = kalshi_client.resolve_period(
+                        period_key,
+                    )
                     try:
-                        kalshi_history, atm_market = (
-                            kalshi_client.fetch_chart_series(
+                        kalshi_history, atm_market, kalshi_markets = (
+                            kalshi_client.fetch_underlying_history(
                                 series_ticker,
-                                period_minutes=60,
-                                lookback_hours=72,
+                                period_minutes=period_min,
+                                lookback_hours=lookback_h,
                             )
                         )
                     except Exception:  # noqa: BLE001
                         log.exception("kalshi candlestick fetch failed")
-                        kalshi_history, atm_market = [], None
+                        kalshi_history, atm_market, kalshi_markets = [], None, []
+
+                # If the local DB has no watchlist rows (bot service
+                # isn't running or it's between events), build a
+                # watchlist from the Kalshi market list directly. The
+                # row schema mirrors what fetch_watchlist returns; bot-
+                # specific fields (model_prob_yes, bot_verdict, edge_*)
+                # are left None and render as "—".
+                if not watchlist and kalshi_markets:
+                    watchlist = _watchlist_from_kalshi(kalshi_markets)
 
                 # Global cross-bot fetches (these power the Summary section
                 # which is identical regardless of which bot is selected).
@@ -3154,6 +3485,7 @@ class Handler(BaseHTTPRequestHandler):
                     display=bot.get("display") or {},
                     kalshi_history=kalshi_history,
                     atm_market=atm_market,
+                    current_period=period_key,
                     risk_caps=self.risk_caps,
                     edge_cfg=self.edge_cfg,
                     validator_cfg=self.validator_cfg,
