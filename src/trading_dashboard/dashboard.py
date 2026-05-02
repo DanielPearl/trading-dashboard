@@ -740,6 +740,7 @@ def svg_kalshi_chart(history: List[dict], display: dict,
                       strike_side: str | None = None,
                       strike_is_active_bet: bool = False,
                       contract_open_ts: float | None = None,
+                      contract_close_ts: float | None = None,
                       total_volume: int | None = None,
                       width: int = 760, height: int = 220) -> str:
     """Underlying-price chart, derived from Kalshi's strike ladder.
@@ -775,13 +776,16 @@ def svg_kalshi_chart(history: List[dict], display: dict,
     inner_w = width - pad_l - pad_r
     inner_h = height - pad_t - pad_b
     n = len(pts_in)
-    # X-axis spans the full contract life: from the event's open_time
-    # (when Kalshi listed the strikes) to the latest candle. That gives
-    # a stable left edge that doesn't slide as candles roll in.
+    # X-axis spans the FULL contract life: from event open_time to
+    # event close_time. The line only fills the elapsed portion
+    # (open → latest candle); the rest of the chart stays empty so
+    # the user sees how much time is left on the bet.
     t_min = float(contract_open_ts) if contract_open_ts else pts_in[0][0]
     if t_min > pts_in[0][0]:
         t_min = pts_in[0][0]
-    t_max = pts_in[-1][0]
+    t_max = float(contract_close_ts) if contract_close_ts else pts_in[-1][0]
+    if t_max < pts_in[-1][0]:
+        t_max = pts_in[-1][0]
     t_span = max(1.0, t_max - t_min)
 
     # Auto-scale the y-axis to the actual data range with 8% padding.
@@ -894,29 +898,26 @@ def svg_kalshi_chart(history: List[dict], display: dict,
     # Even spacing (vs irregular midnight ticks) matches what Kalshi
     # does and keeps the bottom row visually balanced regardless of
     # whether the contract is 2 days old or 7.
-    # Pick one tick per UNIQUE date in the visible span, plus the
-    # start/end anchors. Avoids "May 1 May 1 May 2 May 2 May 2" repeats
-    # when the chart spans a couple of days.
+    # One label per CALENDAR DAY in the contract life — from open to
+    # close, no skipping. Each label is anchored at midnight UTC of
+    # that day, except the first (anchored at open_time) and the last
+    # (anchored at close_time).
     from datetime import timedelta
     dt_min = datetime.fromtimestamp(t_min, tz=timezone.utc)
     dt_max = datetime.fromtimestamp(t_max, tz=timezone.utc)
-    # Build a list of (timestamp, label) for each calendar day boundary
-    # inside (t_min, t_max). Always include t_min and t_max.
     tick_points: List[Tuple[float, str]] = []
     tick_points.append((t_min, dt_min.strftime("%b %-d")))
     next_midnight = (dt_min.replace(hour=0, minute=0, second=0, microsecond=0)
                      + timedelta(days=1))
     while next_midnight < dt_max:
-        ts = next_midnight.timestamp()
-        # Only include if it's well-separated from neighbours.
-        if ts - tick_points[-1][0] > t_span * 0.12:
-            tick_points.append((ts, next_midnight.strftime("%b %-d")))
+        # Skip the boundary if it'd be visually right next to t_min.
+        if next_midnight.timestamp() - t_min > 600:
+            tick_points.append((next_midnight.timestamp(),
+                                next_midnight.strftime("%b %-d")))
         next_midnight += timedelta(days=1)
-    if dt_max.strftime("%b %-d") != tick_points[-1][1]:
-        tick_points.append((t_max, dt_max.strftime("%b %-d")))
-    elif t_max - tick_points[-1][0] > t_span * 0.12:
-        # Same date but enough horizontal distance to want a final mark.
-        tick_points[-1] = (t_max, tick_points[-1][1])
+    last_label = dt_max.strftime("%b %-d")
+    if not tick_points or tick_points[-1][1] != last_label:
+        tick_points.append((t_max, last_label))
     for i, (ts, label) in enumerate(tick_points):
         frac = (ts - t_min) / t_span if t_span > 0 else 0.0
         x = pad_l + frac * inner_w
@@ -1387,6 +1388,7 @@ def render_page(
     kalshi_history: List[dict],
     atm_market: dict | None,
     contract_open_ts: float | None,
+    contract_close_ts: float | None,
     event_title: str | None,
     risk_caps: dict,
     edge_cfg: dict,
@@ -1438,6 +1440,7 @@ def render_page(
                       kalshi_history=kalshi_history,
                       atm_market=atm_market,
                       contract_open_ts=contract_open_ts,
+                      contract_close_ts=contract_close_ts,
                       event_title=event_title,
                       edge_cfg=edge_cfg,
                       validator_cfg=validator_cfg,
@@ -2413,6 +2416,7 @@ def _render_watchlist_hero(out: List[str],
                             kalshi_history: List[dict] | None = None,
                             atm_market: dict | None = None,
                             contract_open_ts: float | None = None,
+                            contract_close_ts: float | None = None,
                             event_title: str | None = None) -> None:
     """Kalshi-style hero block: current underlying value, % change, total
     Kalshi volume on the watchlist, time-to-close on the soonest market,
@@ -2545,6 +2549,7 @@ def _render_watchlist_hero(out: List[str],
             strike_side=strike_side,
             strike_is_active_bet=strike_is_active,
             contract_open_ts=contract_open_ts,
+            contract_close_ts=contract_close_ts,
             total_volume=total_volume,
         ))
     else:
@@ -2565,6 +2570,7 @@ def _render_watchlist(out: List[str], watchlist: List[dict],
                       kalshi_history: List[dict] | None = None,
                       atm_market: dict | None = None,
                       contract_open_ts: float | None = None,
+                      contract_close_ts: float | None = None,
                       event_title: str | None = None,
                       edge_cfg: dict | None = None,
                       validator_cfg: dict | None = None,
@@ -2589,6 +2595,7 @@ def _render_watchlist(out: List[str], watchlist: List[dict],
                            kalshi_history=kalshi_history,
                            atm_market=atm_market,
                            contract_open_ts=contract_open_ts,
+                           contract_close_ts=contract_close_ts,
                            event_title=event_title)
 
     if not watchlist:
@@ -3423,13 +3430,15 @@ class Handler(BaseHTTPRequestHandler):
                 atm_market: dict | None = None
                 kalshi_markets: List[dict] = []
                 contract_open_ts: float | None = None
+                contract_close_ts: float | None = None
                 event_title: str | None = None
                 series_ticker = bot.get("series_ticker")
                 if series_ticker:
                     from . import kalshi_client
                     try:
                         (kalshi_history, atm_market, kalshi_markets,
-                         contract_open_ts, event_title) = (
+                         contract_open_ts, contract_close_ts,
+                         event_title) = (
                             kalshi_client.fetch_underlying_history(
                                 series_ticker,
                                 period_minutes=60,  # 1D view
@@ -3439,6 +3448,7 @@ class Handler(BaseHTTPRequestHandler):
                         log.exception("kalshi candlestick fetch failed")
                         kalshi_history, atm_market = [], None
                         kalshi_markets, contract_open_ts = [], None
+                        contract_close_ts = None
                         event_title = None
 
                 # Hybrid watchlist: Kalshi spine + merged local data.
@@ -3490,6 +3500,7 @@ class Handler(BaseHTTPRequestHandler):
                     kalshi_history=kalshi_history,
                     atm_market=atm_market,
                     contract_open_ts=contract_open_ts,
+                    contract_close_ts=contract_close_ts,
                     event_title=event_title,
                     risk_caps=self.risk_caps,
                     edge_cfg=self.edge_cfg,
