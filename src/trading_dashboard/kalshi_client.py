@@ -198,6 +198,26 @@ class KalshiClient:
         _CACHE.put(cache_key, out)
         return out
 
+    def get_event(self, event_ticker: str) -> Optional[dict]:
+        """Fetch a single event's metadata. Cached.
+
+        We need the event's `title` ("Initial jobless claims for the
+        week ending May 2, 2026?", "Natural gas price on May 04, 2026
+        at 5:00 PM EDT?", etc.) to label the chart. The market's own
+        `title` is more verbose ("Will the natural gas close price be
+        above 2.750 USD/MMBtu on …?") so we prefer the event title.
+        """
+        cache_key = f"event:{event_ticker}"
+        cached = _CACHE.get(cache_key)
+        if cached is not None:
+            return cached
+        resp = self._get(f"/events/{event_ticker}")
+        if not resp:
+            return None
+        event = resp.get("event") or resp
+        _CACHE.put(cache_key, event)
+        return event
+
     def candlesticks(self, series_ticker: str, market_ticker: str,
                      period_minutes: int = 60,
                      lookback_hours: int = 72) -> List[dict]:
@@ -315,7 +335,7 @@ def fetch_underlying_history(series_ticker: str,
                               lookback_hours: Optional[int] = None,
                               client: Optional[KalshiClient] = None,
                               max_strikes: int = 6,
-                              ) -> Tuple[List[dict], Optional[dict], List[dict], Optional[float]]:
+                              ) -> Tuple[List[dict], Optional[dict], List[dict], Optional[float], Optional[str]]:
     """Derive the implied underlying price for one ticker group from the
     full strike ladder.
 
@@ -326,7 +346,7 @@ def fetch_underlying_history(series_ticker: str,
     displays at the top of every market page — same data source, just
     derived rather than fetched directly.
 
-    Returns ``(history, atm_market, markets, contract_open_ts)``:
+    Returns ``(history, atm_market, markets, contract_open_ts, event_title)``:
       * history — list of ``{"ts": float, "value": float}`` points, oldest
         first. Y-values are in the underlying's native units (USD/MMBtu
         for natgas, USD/gal for retail gas, raw count for claims).
@@ -344,14 +364,22 @@ def fetch_underlying_history(series_ticker: str,
     """
     c = client or default_client()
     if not c.available:
-        return [], None, [], None
+        return [], None, [], None, None
     markets = c.list_markets(series_ticker)
     if not markets:
-        return [], None, markets, None
+        return [], None, markets, None, None
     atm = pick_atm_market(markets)
     # Contract open time — ATM is in the current event so any market in
     # that event reports the same open_time. Chart x-axis starts here.
     contract_open_ts = _parse_iso(atm.get("open_time")) if atm else None
+    # Event title — used as the chart title (matches Kalshi's market
+    # page header, e.g. "Initial jobless claims for the week ending
+    # May 2, 2026?").
+    event_title: Optional[str] = None
+    if atm and atm.get("event_ticker"):
+        event = c.get_event(atm["event_ticker"])
+        if event:
+            event_title = event.get("title")
     # Auto-size lookback to cover the contract's full life so far. Cap
     # at 7 days; Kalshi rejects very long ranges with very fine periods.
     if lookback_hours is None:
@@ -382,7 +410,7 @@ def fetch_underlying_history(series_ticker: str,
     scored.sort(key=lambda x: x[0])
     picked = [m for _, m in scored[:max_strikes]]
     if len(picked) < 2:
-        return [], atm, markets, contract_open_ts
+        return [], atm, markets, contract_open_ts, event_title
 
     # Pull candles for each picked market. Cached 5 minutes per market
     # so the same lookup costs ~0 on subsequent renders. Cache misses
@@ -412,7 +440,7 @@ def fetch_underlying_history(series_ticker: str,
         market_data.append((strike, ts_to_yes))
 
     if not market_data:
-        return [], atm, markets, contract_open_ts
+        return [], atm, markets, contract_open_ts, event_title
 
     # Union of timestamps observed across all markets.
     all_ts = sorted({t for _, ts_map in market_data for t in ts_map.keys()})
@@ -453,4 +481,4 @@ def fetch_underlying_history(series_ticker: str,
         if implied is not None:
             history.append({"ts": float(ts), "value": float(implied)})
 
-    return history, atm, markets, contract_open_ts
+    return history, atm, markets, contract_open_ts, event_title

@@ -87,7 +87,7 @@ validators:
   max_spread_cents: 8
   min_minutes_to_close: 30
   max_minutes_to_close: 10080
-  prob_bounds_cents: [5, 95]
+  prob_bounds_cents: [15, 85]
   min_volume: 50
   min_open_interest: 50
   min_depth_at_best_ask: 25

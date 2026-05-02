@@ -1370,9 +1370,9 @@ tr.row-bought:hover td { background: rgba(56, 139, 253, 0.18); }
    Chart always spans the full life of whichever event is currently
    open, so a period selector would be misleading. */
 .wl-chart-toolbar { display:flex; align-items:center; gap:12px;
-    margin: 6px 0 8px 0; }
-.wl-chart-title { font-size: 12px; color: #8b949e; text-transform: uppercase;
-    letter-spacing: 0.06em; }
+    margin: 6px 0 10px 0; }
+.wl-chart-title { font-size: 14px; color: #f0f6fc; font-weight: 500;
+    letter-spacing: 0; }
 """
 
 
@@ -1396,6 +1396,7 @@ def render_page(
     kalshi_history: List[dict],
     atm_market: dict | None,
     contract_open_ts: float | None,
+    event_title: str | None,
     risk_caps: dict,
     edge_cfg: dict,
     validator_cfg: dict,
@@ -1446,6 +1447,7 @@ def render_page(
                       kalshi_history=kalshi_history,
                       atm_market=atm_market,
                       contract_open_ts=contract_open_ts,
+                      event_title=event_title,
                       edge_cfg=edge_cfg,
                       validator_cfg=validator_cfg,
                       risk_caps=risk_caps,
@@ -2414,7 +2416,8 @@ def _render_watchlist_hero(out: List[str],
                             latest_active: dict | None,
                             kalshi_history: List[dict] | None = None,
                             atm_market: dict | None = None,
-                            contract_open_ts: float | None = None) -> None:
+                            contract_open_ts: float | None = None,
+                            event_title: str | None = None) -> None:
     """Kalshi-style hero block: current underlying value, % change, total
     Kalshi volume on the watchlist, time-to-close on the soonest market,
     and an SVG chart of the underlying. If there's an active position,
@@ -2526,15 +2529,16 @@ def _render_watchlist_hero(out: List[str],
     pct_display = pct_str if not arrow else f"{arrow} {pct_str.lstrip('+-')}"
     out.append(f"<div class='wl-hero-change {pct_cls}'>{html.escape(pct_display)}</div>")
     out.append("</div>")
-    # Chart toolbar: just the at-the-money strike label. The chart
-    # always shows the full life of the currently-open contract, so a
-    # period selector would be misleading — there's only one window.
-    if atm_market is not None:
-        sub = atm_market.get("yes_sub_title") or ""
-        if sub:
-            out.append(f"<div class='wl-chart-toolbar'>"
-                       f"<div class='wl-chart-title'>{html.escape(sub)}</div>"
-                       f"</div>")
+    # Chart toolbar: the Kalshi event title — same header users see on
+    # the market page (e.g. "Initial jobless claims for the week ending
+    # May 2, 2026?", "Natural gas price on May 04, 2026 at 5:00 PM EDT?").
+    # Falls back to the at-the-money strike label if Kalshi's events
+    # endpoint didn't return a title.
+    title_text = event_title or (atm_market.get("yes_sub_title") if atm_market else "")
+    if title_text:
+        out.append(f"<div class='wl-chart-toolbar'>"
+                   f"<div class='wl-chart-title'>{html.escape(title_text)}</div>"
+                   f"</div>")
 
     # Pick a reference strike to color the line against. Active bet's
     # Reference strike for chart coloring: only set when there's an
@@ -2575,6 +2579,7 @@ def _render_watchlist(out: List[str], watchlist: List[dict],
                       kalshi_history: List[dict] | None = None,
                       atm_market: dict | None = None,
                       contract_open_ts: float | None = None,
+                      event_title: str | None = None,
                       edge_cfg: dict | None = None,
                       validator_cfg: dict | None = None,
                       risk_caps: dict | None = None,
@@ -2597,7 +2602,8 @@ def _render_watchlist(out: List[str], watchlist: List[dict],
                            display or {}, latest_active,
                            kalshi_history=kalshi_history,
                            atm_market=atm_market,
-                           contract_open_ts=contract_open_ts)
+                           contract_open_ts=contract_open_ts,
+                           event_title=event_title)
 
     if not watchlist:
         out.append("<div class='empty'>No fully-priced markets right now.</div>")
@@ -3433,12 +3439,13 @@ class Handler(BaseHTTPRequestHandler):
                 atm_market: dict | None = None
                 kalshi_markets: List[dict] = []
                 contract_open_ts: float | None = None
+                event_title: str | None = None
                 series_ticker = bot.get("series_ticker")
                 if series_ticker:
                     from . import kalshi_client
                     try:
                         (kalshi_history, atm_market, kalshi_markets,
-                         contract_open_ts) = (
+                         contract_open_ts, event_title) = (
                             kalshi_client.fetch_underlying_history(
                                 series_ticker,
                                 period_minutes=60,  # 1D view
@@ -3448,6 +3455,7 @@ class Handler(BaseHTTPRequestHandler):
                         log.exception("kalshi candlestick fetch failed")
                         kalshi_history, atm_market = [], None
                         kalshi_markets, contract_open_ts = [], None
+                        event_title = None
 
                 # Hybrid watchlist: Kalshi spine + merged local data.
                 # Kalshi gives us the canonical, always-up-to-date strike
@@ -3498,6 +3506,7 @@ class Handler(BaseHTTPRequestHandler):
                     kalshi_history=kalshi_history,
                     atm_market=atm_market,
                     contract_open_ts=contract_open_ts,
+                    event_title=event_title,
                     risk_caps=self.risk_caps,
                     edge_cfg=self.edge_cfg,
                     validator_cfg=self.validator_cfg,
