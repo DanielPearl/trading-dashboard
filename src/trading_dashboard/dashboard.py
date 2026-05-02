@@ -784,10 +784,12 @@ def svg_kalshi_chart(history: List[dict], display: dict,
     t_max = pts_in[-1][0]
     t_span = max(1.0, t_max - t_min)
 
-    # Auto-scale the y-axis to the actual data range with 5% padding on
-    # each side. Kalshi does the same — a flat line in 0..100% space
-    # would lose all the signal in tight ranges.
+    # Auto-scale the y-axis to the actual data range with 8% padding.
+    # When there's an active bet, also include its strike in the range
+    # so the dotted reference line is always visible on the chart.
     values = [v for _, v in pts_in]
+    if strike_is_active_bet and reference_strike is not None:
+        values = values + [float(reference_strike)]
     vmin = min(values)
     vmax = max(values)
     if vmax == vmin:
@@ -797,9 +799,10 @@ def svg_kalshi_chart(history: List[dict], display: dict,
     y_lo = vmin - pad_v
     y_hi = vmax + pad_v
 
-    # Strike line is drawn ONLY if it falls within the visible y-range.
-    # Otherwise the chart would auto-scale around the strike and
-    # squash the actual price action into a thin band.
+    # With the strike included in the value set, the dotted line is
+    # always in range when there's a bet. The flag is kept for
+    # completeness (callers can pass an out-of-range strike for the
+    # closest-to-money case, which we now skip).
     strike_in_range = (reference_strike is not None
                        and y_lo <= float(reference_strike) <= y_hi)
 
@@ -899,16 +902,8 @@ def svg_kalshi_chart(history: List[dict], display: dict,
         out.append(f"<line x1='{x:.1f}' y1='{pad_t}' x2='{x:.1f}' "
                    f"y2='{height-pad_b}' stroke='#1f2530' stroke-width='1' "
                    f"stroke-dasharray='2,3' opacity='0.7'/>")
-        # "May 2" if the tick is at midnight, otherwise "May 2 · 3pm".
-        dt_tick = datetime.fromtimestamp(ts, tz=timezone.utc)
-        if dt_tick.hour == 0 and dt_tick.minute == 0:
-            label = dt_tick.strftime("%b %-d")
-        else:
-            label = dt_tick.strftime("%b %-d · %-I%p").lower()
-            # %p uppercases AM/PM; lowercase looks cleaner.
-            label = label.replace("am", "am").replace("pm", "pm")
-            # Re-capitalize the month name (lower() above downcased it).
-            label = label[0].upper() + label[1:]
+        # Date only — no time component (per user request).
+        label = datetime.fromtimestamp(ts, tz=timezone.utc).strftime("%b %-d")
         if i == 0:
             anchor, tx = "start", x
         elif i == n_ticks - 1:
