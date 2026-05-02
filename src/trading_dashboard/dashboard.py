@@ -740,7 +740,8 @@ def svg_kalshi_chart(history: List[dict], display: dict,
                       strike_side: str | None = None,
                       strike_is_active_bet: bool = False,
                       contract_open_ts: float | None = None,
-                      width: int = 760, height: int = 220) -> str:
+                      total_volume: int | None = None,
+                      width: int = 760, height: int = 240) -> str:
     """Underlying-price chart, derived from Kalshi's strike ladder.
 
     Same visual idiom as Kalshi's market-page chart: one line in the
@@ -767,7 +768,10 @@ def svg_kalshi_chart(history: List[dict], display: dict,
                 "implied underlying price). Refreshes every 60 seconds."
                 "</div>")
 
-    pad_l, pad_r, pad_t, pad_b = 56, 16, 14, 34
+    # Y-axis labels go on the right edge (matches Kalshi's market page),
+    # so reserve the right padding instead of the left. The bottom
+    # padding has room for both the date-tick row and the volume line.
+    pad_l, pad_r, pad_t, pad_b = 12, 64, 14, 50
     inner_w = width - pad_l - pad_r
     inner_h = height - pad_t - pad_b
     n = len(pts_in)
@@ -818,8 +822,10 @@ def svg_kalshi_chart(history: List[dict], display: dict,
         y = y_at(v)
         out.append(f"<line x1='{pad_l}' y1='{y}' x2='{width-pad_r}' y2='{y}' "
                    f"stroke='#1f2530' stroke-width='1'/>")
-        out.append(f"<text x='{pad_l-6}' y='{y+4}' fill='#8b949e' font-size='10' "
-                   f"text-anchor='end'>{html.escape(fmt_underlying(v, display))}</text>")
+        # Y-axis label sits to the right of the chart (Kalshi style).
+        out.append(f"<text x='{width-pad_r+6}' y='{y+4}' fill='#8b949e' "
+                   f"font-size='10' text-anchor='start'>"
+                   f"{html.escape(fmt_underlying(v, display))}</text>")
 
     # Color the line green where it sits on the winning side of the
     # strike, white on the losing side. Same logic as the prior
@@ -864,22 +870,28 @@ def svg_kalshi_chart(history: List[dict], display: dict,
             out.append(f"<polyline points='{pts_str}' stroke='{color}' "
                        f"stroke-width='2' fill='none'/>")
 
-    # Horizontal strike line.
+    # Horizontal strike line. Kalshi labels it just "Above 2.8" inline
+    # near the middle of the chart, in the line's color.
     if strike_in_range and reference_strike is not None:
         ys = y_at(float(reference_strike))
         line_color = above_color if side != "NO" else below_color
-        stroke_w = 1.8 if strike_is_active_bet else 1.2
+        stroke_w = 1.4 if strike_is_active_bet else 1.0
         opacity = 0.95 if strike_is_active_bet else 0.55
         out.append(f"<line x1='{pad_l}' y1='{ys}' x2='{width-pad_r}' y2='{ys}' "
                    f"stroke='{line_color}' stroke-width='{stroke_w}' "
                    f"opacity='{opacity}'/>")
         label_strike = fmt_underlying(float(reference_strike), display)
+        # Kalshi prefixes their strike label with "Above" for "above-X"
+        # markets. Bot side annotation only shown when there's an active
+        # position so the casual viewer just sees "Above 2.8".
         if strike_is_active_bet:
             label = f"My {side or 'bet'} · Above {label_strike}"
         else:
             label = f"Above {label_strike}"
-        out.append(f"<text x='{width-pad_r-6}' y='{ys-6}' fill='{line_color}' "
-                   f"font-size='11' text-anchor='end' opacity='{opacity}'>"
+        # Place label centered horizontally, on top of the line.
+        label_x = pad_l + inner_w * 0.5
+        out.append(f"<text x='{label_x:.0f}' y='{ys-6}' fill='{line_color}' "
+                   f"font-size='11' text-anchor='middle' opacity='{opacity}'>"
                    f"{html.escape(label)}</text>")
 
     # X-axis: daily tick labels. Always include t_min (contract open)
@@ -906,7 +918,7 @@ def svg_kalshi_chart(history: List[dict], display: dict,
             anchor, tx = "end", width - pad_r - 2
         else:
             anchor, tx = "middle", x
-        out.append(f"<text x='{tx}' y='{height-12}' fill='#8b949e' "
+        out.append(f"<text x='{tx}' y='{height-30}' fill='#8b949e' "
                    f"font-size='10' text-anchor='{anchor}'>"
                    f"{html.escape(label)}</text>")
 
@@ -918,6 +930,13 @@ def svg_kalshi_chart(history: List[dict], display: dict,
         _tick(next_midnight.timestamp())
         next_midnight += timedelta(days=1)
     _tick(t_max)
+
+    # Volume label at the bottom-left, mirroring Kalshi's "$N vol" line.
+    if total_volume is not None:
+        out.append(f"<text x='{pad_l}' y='{height-10}' fill='#c9d1d9' "
+                   f"font-size='12' text-anchor='start'>"
+                   f"${total_volume:,} <tspan fill='#8b949e'>vol</tspan></text>")
+
     out.append("</svg>")
     return "".join(out)
 
@@ -2432,10 +2451,15 @@ def _render_watchlist_hero(out: List[str],
                f"<span class='value'>{time_left_str(soonest_mtc)}</span>"
                f"</div>")
     out.append("</div>")
+    # Hero stats: price + % change up top (Kalshi shows them as a row
+    # under the title). Volume moves to the chart's bottom-left.
     out.append("<div class='wl-hero-stats'>")
     out.append(f"<div class='wl-hero-price'>{html.escape(current_str)}</div>")
-    out.append(f"<div class='wl-hero-change {pct_cls}'>{pct_str}</div>")
-    out.append(f"<div class='wl-hero-vol'>{total_volume:,} <span class='dim'>vol</span></div>")
+    arrow = ""
+    if pct_change is not None:
+        arrow = "▲" if pct_change >= 0 else "▼"
+    pct_display = pct_str if not arrow else f"{arrow} {pct_str.lstrip('+-')}"
+    out.append(f"<div class='wl-hero-change {pct_cls}'>{html.escape(pct_display)}</div>")
     out.append("</div>")
     # Chart toolbar: just the at-the-money strike label. The chart
     # always shows the full life of the currently-open contract, so a
@@ -2478,6 +2502,7 @@ def _render_watchlist_hero(out: List[str],
             strike_side=strike_side,
             strike_is_active_bet=strike_is_active,
             contract_open_ts=contract_open_ts,
+            total_volume=total_volume,
         ))
     else:
         out.append(svg_underlying_chart(
