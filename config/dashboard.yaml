@@ -29,6 +29,8 @@ bots:
       underlying_unit: "K"
       underlying_decimals: 0
       unit_position: suffix
+      # Bot stores raw count (189000); display in thousands → "189K".
+      divisor: 1000.0
   - key: natural-gas
     name: Natural Gas
     # Lives at /root/peak-load/ on the droplet — directory keeps its old

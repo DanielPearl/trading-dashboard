@@ -607,13 +607,17 @@ def confidence_pct(prob: float | None,
 def fmt_underlying(value: float | None, display: dict) -> str:
     """Format an underlying value per the bot's display config:
        prefix → '$2.759';   suffix → '189K';   none → '2.759'.
+    Applies `divisor` first so bots that store raw counts (e.g. 189000
+    claims) can render in thousands.
     """
     if value is None:
         return "—"
+    divisor = float(display.get("divisor", 1.0)) or 1.0
+    v = float(value) / divisor
     decimals = int(display.get("underlying_decimals", 2))
     unit = display.get("underlying_unit", "")
     pos = display.get("unit_position", "prefix")
-    n = f"{float(value):,.{decimals}f}"
+    n = f"{v:,.{decimals}f}"
     if pos == "prefix":
         return f"{unit}{n}"
     if pos == "suffix":
@@ -3010,6 +3014,7 @@ def main(argv: list[str] | None = None) -> int:
                 "underlying_unit": b.display.underlying_unit,
                 "underlying_decimals": b.display.underlying_decimals,
                 "unit_position": b.display.unit_position,
+                "divisor": b.display.divisor,
             },
             "available": Path(b.db_path).exists(),
         })

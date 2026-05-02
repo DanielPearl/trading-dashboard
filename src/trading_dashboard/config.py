@@ -33,6 +33,10 @@ class DisplayCfg:
     underlying_decimals: int = 2
     # "prefix" — render as "$2.759"; "suffix" — "189.0K"; "none" — bare number.
     unit_position: str = "prefix"
+    # Divide the raw model_snapshots.current_gas_price by this before
+    # formatting. Lets unemployment-claims (which stores 189000) render
+    # as "189K" without changing the bot's writing schema.
+    divisor: float = 1.0
 
 
 @dataclass
