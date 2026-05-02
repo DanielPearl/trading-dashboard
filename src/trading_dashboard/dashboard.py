@@ -894,42 +894,38 @@ def svg_kalshi_chart(history: List[dict], display: dict,
                    f"font-size='11' text-anchor='middle' opacity='{opacity}'>"
                    f"{html.escape(label)}</text>")
 
-    # X-axis: daily tick labels. Always include t_min (contract open)
-    # and t_max (latest candle); fill in midnight UTC ticks between if
-    # the span covers them. Each tick gets a faint dotted vertical
-    # guideline and a "May 2" / "May 3" label below the chart.
-    from datetime import timedelta
-    seen_x: set[int] = set()
-
-    def _tick(ts: float, fmt: str = "%b %-d") -> None:
-        x = pad_l + (ts - t_min) / t_span * inner_w
-        x = max(pad_l, min(width - pad_r, x))
-        bucket = int(x / 4)
-        if bucket in seen_x:
-            return
-        seen_x.add(bucket)
+    # X-axis: 5 evenly-spaced date labels across the chart. Each gets a
+    # faint dotted vertical guideline and "May 2 · 3pm" style label.
+    # Even spacing (vs irregular midnight ticks) matches what Kalshi
+    # does and keeps the bottom row visually balanced regardless of
+    # whether the contract is 2 days old or 7.
+    n_ticks = 5
+    for i in range(n_ticks):
+        frac = i / (n_ticks - 1)
+        ts = t_min + frac * t_span
+        x = pad_l + frac * inner_w
         out.append(f"<line x1='{x:.1f}' y1='{pad_t}' x2='{x:.1f}' "
                    f"y2='{height-pad_b}' stroke='#1f2530' stroke-width='1' "
                    f"stroke-dasharray='2,3' opacity='0.7'/>")
-        label = datetime.fromtimestamp(ts, tz=timezone.utc).strftime(fmt)
-        if x < pad_l + 30:
-            anchor, tx = "start", pad_l + 2
-        elif x > width - pad_r - 30:
-            anchor, tx = "end", width - pad_r - 2
+        # "May 2" if the tick is at midnight, otherwise "May 2 · 3pm".
+        dt_tick = datetime.fromtimestamp(ts, tz=timezone.utc)
+        if dt_tick.hour == 0 and dt_tick.minute == 0:
+            label = dt_tick.strftime("%b %-d")
+        else:
+            label = dt_tick.strftime("%b %-d · %-I%p").lower()
+            # %p uppercases AM/PM; lowercase looks cleaner.
+            label = label.replace("am", "am").replace("pm", "pm")
+            # Re-capitalize the month name (lower() above downcased it).
+            label = label[0].upper() + label[1:]
+        if i == 0:
+            anchor, tx = "start", x
+        elif i == n_ticks - 1:
+            anchor, tx = "end", x
         else:
             anchor, tx = "middle", x
-        out.append(f"<text x='{tx}' y='{height-30}' fill='#8b949e' "
+        out.append(f"<text x='{tx:.0f}' y='{height-30}' fill='#8b949e' "
                    f"font-size='10' text-anchor='{anchor}'>"
                    f"{html.escape(label)}</text>")
-
-    _tick(t_min)
-    dt_min = datetime.fromtimestamp(t_min, tz=timezone.utc)
-    next_midnight = (dt_min.replace(hour=0, minute=0, second=0, microsecond=0)
-                     + timedelta(days=1))
-    while next_midnight.timestamp() < t_max - 60:
-        _tick(next_midnight.timestamp())
-        next_midnight += timedelta(days=1)
-    _tick(t_max)
 
     # Volume label at the bottom-left, mirroring Kalshi's "$N vol" line.
     if total_volume is not None:
@@ -1245,6 +1241,11 @@ table.criteria code { background: transparent; color: #c9d1d9; padding: 0; }
 .bar { display: flex; align-items: baseline; gap: 8px; }
 .bar .small, .small { font-size: 11px; color: #8b949e; }
 td.mono, code { font-family: ui-monospace, SFMono-Regular, Consolas, monospace; font-size: 12px; }
+/* Watchlist ticker links — keep the cell looking like the rest of the
+   table at rest, only flip color + underline on hover so the affordance
+   is discoverable without making the table feel like a wall of links. */
+td.mono a.ticker-link { color: inherit; text-decoration: none; }
+td.mono a.ticker-link:hover { color: #58a6ff; text-decoration: underline; }
 code { background: #161b22; padding: 1px 6px; border-radius: 3px; color: #c9d1d9; }
 /* hero-card sits inside the body which already has padding; only need
    internal vertical breathing room for multi-card scenarios. */
@@ -1310,6 +1311,42 @@ code { background: #161b22; padding: 1px 6px; border-radius: 3px; color: #c9d1d9
    wide spread, edge<cost, etc.). Rendered visible but de-emphasized. */
 tr.row-suspect td { opacity: 0.55; }
 tr.row-suspect td:nth-last-child(2) { opacity: 0.85; }  /* keep gap legible */
+/* Watchlist row matching the strike the bot currently holds an open
+   position on. The user can see at a glance which strike is "live" —
+   tinted background, a glowing left rail, and a BOUGHT pill prefixing
+   the ticker. Wins specificity over row-suspect so a held position is
+   never dimmed. */
+tr.row-bought td {
+    background: rgba(56, 139, 253, 0.13);
+    border-top: 1px solid rgba(56, 139, 253, 0.55);
+    border-bottom: 1px solid rgba(56, 139, 253, 0.55);
+    font-weight: 600;
+    opacity: 1 !important;
+}
+tr.row-bought td:first-child {
+    border-left: 3px solid #1f6feb;
+    box-shadow: inset 6px 0 12px -8px rgba(56, 139, 253, 0.85);
+}
+tr.row-bought td:last-child {
+    border-right: 1px solid rgba(56, 139, 253, 0.55);
+}
+tr.row-bought:hover td { background: rgba(56, 139, 253, 0.18); }
+.bought-marker {
+    display: inline-block;
+    background: #1f6feb;
+    color: #fff;
+    font-size: 9px;
+    font-weight: 700;
+    padding: 2px 6px;
+    border-radius: 3px;
+    margin-right: 6px;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    vertical-align: middle;
+    box-shadow: 0 0 6px rgba(56, 139, 253, 0.6);
+}
+.bought-marker.yes { background: #238636; box-shadow: 0 0 6px rgba(35, 134, 54, 0.6); }
+.bought-marker.no  { background: #da3633; box-shadow: 0 0 6px rgba(218, 54, 51, 0.6); }
 .section h2 .small { text-transform: none; letter-spacing: 0; font-size: 11px; font-weight: 400; }
 /* Watchlist hero — Kalshi-style market header above the strikes table.
    Layout mirrors the live Kalshi market page: title + countdown on top,
@@ -1523,6 +1560,24 @@ def _live_update_script(current_bot: str) -> str:
       const rowsByTicker = {{}};
       tbody.querySelectorAll("tr[data-ticker]").forEach(function (tr) {{
         rowsByTicker[tr.getAttribute("data-ticker")] = tr;
+      }});
+      // Keep the "row-bought" highlight in sync with the active-bets
+      // list — if a position opens or closes mid-poll, the held strike
+      // gets/loses its blue rail without a full page reload. The
+      // BOUGHT pill itself is server-rendered; if it's missing the
+      // user can refresh to pick it up.
+      const boughtTickers = new Set();
+      (snap.active_bets || []).forEach(function (ab) {{
+        if (ab && ab.ticker) boughtTickers.add(ab.ticker);
+      }});
+      tbody.querySelectorAll("tr[data-ticker]").forEach(function (tr) {{
+        const t = tr.getAttribute("data-ticker");
+        if (boughtTickers.has(t)) {{
+          tr.classList.add("row-bought");
+          tr.classList.remove("row-suspect");
+        }} else {{
+          tr.classList.remove("row-bought");
+        }}
       }});
       snap.watchlist.forEach(function (r) {{
         const tr = rowsByTicker[r.ticker];
@@ -2713,13 +2768,38 @@ def _render_watchlist(out: List[str], watchlist: List[dict],
         else:
             badge = f"<span class='badge badge-hedge'{tt}>WATCH</span>"
 
-        # Suspect rows (any validation flag) get a faded background and
-        # a tooltip listing the reasons.
-        if flags:
-            tooltip = html.escape("Suspect: " + ", ".join(flags))
-            row_cls = f" class='row-suspect' title='{tooltip}'"
-        else:
-            row_cls = ""
+        # Bought rows (the strike the bot currently holds) win over
+        # suspect-row dimming — we always want the held position to
+        # pop visually, even if its book is currently thin/one-sided.
+        is_bought = bool(latest_active and
+                         latest_active.get("ticker") == ticker)
+        bought_side = ((latest_active.get("side") or "").upper()
+                       if is_bought else "")
+        classes: List[str] = []
+        title_attr = ""
+        if is_bought:
+            classes.append("row-bought")
+            entry_c = latest_active.get("entry_price_cents")
+            contracts = latest_active.get("contracts")
+            tip_parts = ["You are holding this strike"]
+            if bought_side:
+                tip_parts.append(f"on {bought_side}")
+            if contracts is not None:
+                tip_parts.append(f"({contracts} contracts")
+                if entry_c is not None:
+                    tip_parts.append(f"@ {entry_c}c)")
+                else:
+                    tip_parts[-1] = tip_parts[-1] + ")"
+            elif entry_c is not None:
+                tip_parts.append(f"(entry {entry_c}c)")
+            title_attr = (" title='"
+                          + html.escape(" ".join(tip_parts)) + "'")
+        elif flags:
+            classes.append("row-suspect")
+            title_attr = (" title='"
+                          + html.escape("Suspect: " + ", ".join(flags))
+                          + "'")
+        row_cls = (f" class='{' '.join(classes)}'" if classes else "") + title_attr
 
         # Pre-format EV cells (BE YES + Best columns removed — EV cells
         # already convey the same information without the real-estate).
@@ -2736,8 +2816,29 @@ def _render_watchlist(out: List[str], watchlist: List[dict],
         # mtc cell isn't tagged because it doesn't refresh on a 30s
         # cadence (advances naturally with wall clock time).
         tt_esc = html.escape(ticker)
+        # Kalshi uses lowercased series tickers in its market URLs. The
+        # full market ticker has the form "<SERIES>-<EVENT>-<STRIKE>", so
+        # the series is everything before the first hyphen. Linking to
+        # the series page lands on the same market group the row is
+        # describing; Kalshi resolves it to the active event.
+        series_lower = (ticker.split("-", 1)[0] if ticker else "").lower()
+        ticker_url = (f"https://kalshi.com/markets/{series_lower}"
+                      if series_lower else "")
+        ticker_cell = (
+            f"<a href='{html.escape(ticker_url)}' target='_blank' "
+            f"rel='noopener noreferrer' class='ticker-link'>{tt_esc}</a>"
+            if ticker_url else tt_esc
+        )
+        if is_bought:
+            side_cls = ("yes" if bought_side == "YES"
+                        else "no" if bought_side == "NO" else "")
+            label = f"● BOUGHT {bought_side}".strip()
+            ticker_cell = (
+                f"<span class='bought-marker {side_cls}'>{html.escape(label)}</span>"
+                + ticker_cell
+            )
         out.append(f"<tr{row_cls} data-ticker='{tt_esc}'>"
-                   f"<td class='mono'>{tt_esc}</td>"
+                   f"<td class='mono'>{ticker_cell}</td>"
                    f"<td>{html.escape(qstr)}</td>"
                    f"<td class='num' data-field='oi'>{oi_str}</td>"
                    f"<td class='num' data-field='chance'>{chance_str}</td>"
