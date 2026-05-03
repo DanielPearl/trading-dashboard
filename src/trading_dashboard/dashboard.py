@@ -1486,6 +1486,20 @@ code { background: #161b22; padding: 1px 6px; border-radius: 3px; color: #c9d1d9
     transition: background 120ms, border-color 120ms, color 120ms; }
 .criteria-rules-btn:hover { background: #2d333b; border-color: #1f6feb;
     color: #f0f6fc; }
+/* Same circle-i affordance for the Kalshi-rules section header.
+   Clicking opens the shared modal with the extended contract rules
+   (primary + secondary paragraphs from Kalshi). */
+.contract-rules-btn {
+    background: #21262d; color: #8b949e; border: 1px solid #30363d;
+    border-radius: 50%; width: 22px; height: 22px; padding: 0;
+    font-family: Georgia, "Times New Roman", serif;
+    font-style: italic; font-weight: 700;
+    font-size: 13px; line-height: 1; cursor: pointer;
+    display: inline-flex; align-items: center; justify-content: center;
+    transition: background 120ms, border-color 120ms, color 120ms;
+    vertical-align: 4px; }
+.contract-rules-btn:hover { background: #2d333b; border-color: #1f6feb;
+    color: #f0f6fc; }
 .criteria-overlay {
     position: fixed; inset: 0; background: rgba(0,0,0,0.55);
     z-index: 100; }
@@ -2163,7 +2177,53 @@ def _live_update_script(current_bot: str, period_key: str = "all") -> str:
     critModal.hidden   = false;
   }}
 
+  // Build the extended contract-rules popup body (primary + secondary
+  // text from market_views).
+  function buildContractRulesHTML(d) {{
+    let html = "";
+    if (d.primary) {{
+      html += "<div class='crit-section'><h4>Resolution rule</h4>"
+           + "<div style='font-size:13px;line-height:1.6;color:#c9d1d9;'>"
+           + d.primary.split(/\\n/).map(function (p) {{
+               return "<p style='margin:0 0 10px 0;'>" + p + "</p>";
+             }}).join("")
+           + "</div></div>";
+    }}
+    if (d.secondary) {{
+      html += "<div class='crit-section'><h4>Additional details</h4>"
+           + "<div style='font-size:13px;line-height:1.6;color:#c9d1d9;'>"
+           + d.secondary.split(/\\n/).map(function (p) {{
+               return "<p style='margin:0 0 10px 0;'>" + p + "</p>";
+             }}).join("")
+           + "</div></div>";
+    }}
+    if (!html) {{
+      html = "<div class='crit-section'>"
+           + "<span class='gray'>No extended rules cached yet.</span></div>";
+    }}
+    return html;
+  }}
+  function showContractRules(btn) {{
+    if (!critOverlay || !critModal) return;
+    let data = {{}};
+    try {{
+      data = JSON.parse(btn.dataset.contractRules || "{{}}");
+    }} catch (e) {{}}
+    const h3 = critModal.querySelector("h3");
+    if (h3) h3.textContent = "Contract rules";
+    if (critTicker) critTicker.textContent = "";
+    if (critBody)   critBody.innerHTML = buildContractRulesHTML(data);
+    critOverlay.hidden = false;
+    critModal.hidden   = false;
+  }}
+
   document.addEventListener("click", function (e) {{
+    const contractBtn = e.target.closest(".contract-rules-btn");
+    if (contractBtn) {{
+      e.preventDefault();
+      showContractRules(contractBtn);
+      return;
+    }}
     const ruleBtn = e.target.closest(".criteria-rules-btn");
     if (ruleBtn) {{
       e.preventDefault();
@@ -3636,19 +3696,44 @@ def _render_contract_rules(out: List[str], watchlist: List[dict],
     differs). We pick the first market with a populated rules_primary
     and render that single paragraph verbatim. The strike count and
     range are noted so the user knows it applies across the series.
-    """
-    out.append("<div class='section'><h2>6 · Kalshi rules — how the market resolves</h2>"
-               "<div class='body rules'>")
 
-    # Find a representative rules_primary string.
-    paragraph = ""
+    A small circle-i info button next to the title opens the shared
+    modal with the extended rules (primary + secondary) for a fuller
+    read of how Kalshi resolves the market.
+    """
+    # Find a representative primary + secondary rules string.
+    primary = ""
+    secondary = ""
     for v in watchlist:
-        rp = (v.get("rules_primary") or "").strip()
-        if rp:
-            paragraph = rp
+        if not primary:
+            primary = (v.get("rules_primary") or "").strip()
+        if not secondary:
+            secondary = (v.get("rules_secondary") or "").strip()
+        if primary and secondary:
             break
 
-    if not paragraph:
+    # Encode for the button's data attribute. The popup renders both
+    # paragraphs back-to-back (primary first, secondary as the
+    # detailed explainer).
+    rules_payload = json.dumps({
+        "primary": primary,
+        "secondary": secondary,
+    }, separators=(",", ":"), default=str)
+    info_btn = (
+        ""
+        if not primary
+        else (f"<button type='button' class='contract-rules-btn' "
+              f"data-contract-rules='{html.escape(rules_payload)}' "
+              f"title='See the full contract rules text from Kalshi'>"
+              f"i</button>")
+    )
+    out.append(
+        "<div class='section'><h2 style='display:flex;align-items:center;gap:10px;'>"
+        f"6 · Kalshi rules — how the market resolves {info_btn}</h2>"
+        "<div class='body rules'>"
+    )
+
+    if not primary:
         out.append("<div class='empty'>Rules text not cached yet — "
                    "the next bot tick will populate it from Kalshi.</div>")
         out.append("</div></div>")
@@ -3666,7 +3751,7 @@ def _render_contract_rules(out: List[str], watchlist: List[dict],
         sub = ""
 
     out.append(f"<p style='font-size:15px; line-height:1.6;'>"
-               f"{html.escape(paragraph)}</p>")
+               f"{html.escape(primary)}</p>")
     if sub:
         out.append(f"<p class='small gray'>{sub}</p>")
     out.append("</div></div>")
