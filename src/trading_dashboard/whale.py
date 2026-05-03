@@ -646,6 +646,7 @@ def render_page(
     if summary["n_signals"] == 0:
         _render_empty_state(out)
         out.append("</div></div>")
+        out.append(_BOT_SELECT_NAVIGATE_JS)
         out.append("</body></html>")
         return "".join(out)
 
@@ -673,9 +674,16 @@ def render_page(
     # Bot dropdown onchange handler. The main dashboard wires this up
     # inside _live_update_script, but the whale page doesn't load
     # that script (no live-poll cells to patch). Inline the same
-    # snippet here so switching the bot from this page navigates to
-    # the chosen URL — `<option value=...>` carries the destination.
-    out.append("""<script>
+    # snippet so switching the bot from this page navigates to the
+    # chosen URL — `<option value=...>` carries the destination.
+    out.append(_BOT_SELECT_NAVIGATE_JS)
+    out.append("</body></html>")
+    return "".join(out)
+
+
+# Module-level constant so the empty-state and full-render paths
+# share one source of truth.
+_BOT_SELECT_NAVIGATE_JS = """<script>
 (function () {
   const sel = document.getElementById("bot-select");
   if (!sel) return;
@@ -683,9 +691,7 @@ def render_page(
     if (sel.value) window.location.href = sel.value;
   });
 })();
-</script>""")
-    out.append("</body></html>")
-    return "".join(out)
+</script>"""
 
 
 # --------------------------------------------------------------------------- #
