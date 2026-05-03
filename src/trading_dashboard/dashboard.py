@@ -3053,8 +3053,10 @@ def _render_current_prediction(out: List[str], model: dict | None,
     if not model:
         return
     display = display or {}
-    # Subhead removed per user request — the cards label themselves.
-    out.append("<div class='subsec'>")
+    # No subsec wrapper — match the Summary's plain `<div class='row'>`
+    # structure so the bottom-of-cards → top-of-h3 spacing collapses
+    # naturally and the Watchlist "Active bet" h3 sits at the same
+    # offset Summary's "Active bets" h3 does.
     prob_up = float(model.get("prob_up") or 0)
     change = float(model.get("median_change") or 0)
     q05 = model.get("quantile_05")
@@ -3082,7 +3084,7 @@ def _render_current_prediction(out: List[str], model: dict | None,
                f"<div class='value'>{q05_str}</div></div>")
     out.append(f"<div class='card'><div class='label'>Upper 95%</div>"
                f"<div class='value'>{q95_str}</div></div>")
-    out.append("</div></div>")
+    out.append("</div>")  # /row
 
 
 def _ev_status(ev: float | None) -> tuple[str, str]:
@@ -3331,12 +3333,12 @@ def _render_watchlist(out: List[str], watchlist: List[dict],
     # Active bet h3 → rules button → bet table (or empty state). The
     # rules button always renders so the rule-set context is one click
     # away even when the bot has no open position right now.
-    # margin-top: 2px overrides the default .subhead (16px top) so the
-    # h3 sits right under the prediction cards — same visual rhythm as
-    # the "Active bets" h3 on the Home tab.
+    # Inline style only adds flex layout for the h3 + button row; the
+    # default .subhead margin-top (16px) collapses with the row's
+    # margin-bottom (14px) above to give exactly Summary's rhythm.
     out.append(
         "<h3 class='subhead' "
-        "style='display:flex;align-items:center;gap:8px;margin-top:2px;'>"
+        "style='display:flex;align-items:center;gap:8px;'>"
         f"Active bet {rules_icon_html}</h3>"
     )
     if latest_active:
