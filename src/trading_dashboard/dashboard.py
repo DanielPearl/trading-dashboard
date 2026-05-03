@@ -2410,6 +2410,9 @@ def _render_bot_cards(out: List[str], rollup: dict,
         out.append("<div class='empty'>No bot data yet.</div>")
         return
 
+    # Per-bot perf rows — used for the period-scoped Gain/loss cell.
+    perf_by_name = {name: s for name, s in (rollup.get("per_bot") or [])}
+
     def _fmt_pct(v, decimals=0):
         if v is None:
             return "—"
@@ -2425,7 +2428,12 @@ def _render_bot_cards(out: List[str], rollup: dict,
         name = b.get("name", "—")
         bot_key = b.get("key", "")
         series_ticker = b.get("series_ticker") or "—"
-        strike_count = entry.get("strike_count", 0)
+        # Period-scoped net P&L from this bot's per-bot summary row.
+        perf = perf_by_name.get(name, {})
+        gain_loss = perf.get("period_net_pnl_cents", 0) or 0
+        gl_cls = ("green" if gain_loss > 0
+                   else ("red" if gain_loss < 0 else "gray"))
+        gl_str = fmt_signed_cents(gain_loss)
         # Each card is a link to the bot's Watchlist tab.
         href = (f"?tab=watchlist&bot={html.escape(bot_key)}"
                 if bot_key else "#")
@@ -2460,8 +2468,10 @@ def _render_bot_cards(out: List[str], rollup: dict,
                         f"<dt>ROC AUC</dt><dd>{_fmt_pct(m.get('training_roc_auc'))}</dd>")
             out.append(f"<dt>Recall</dt><dd>{_fmt_pct(m.get('training_recall'))}</dd>"
                         f"<dt>Features</dt><dd>{features}</dd>")
+            # Actual win % paired with the period-scoped Gain/loss
+            # ($) — Strikes was retired per user request.
             out.append(f"<dt>Actual win %</dt><dd class='{a_cls}'>{a_str}</dd>"
-                        f"<dt>Strikes</dt><dd>{strike_count}</dd>")
+                        f"<dt>Gain / loss</dt><dd class='{gl_cls}'>{gl_str}</dd>")
             out.append("</dl>")
 
         # Footer hints at the click affordance — same idiom as the
