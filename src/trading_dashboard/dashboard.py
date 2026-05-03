@@ -144,6 +144,9 @@ def fetch_summary(db_path: str, period_days: int | None = None) -> dict:
         "biggest_win_cents": 0, "biggest_loss_cents": 0,
         "period_bets_made": 0, "period_net_pnl_cents": 0,
         "period_wins": 0, "period_losses": 0,
+        "period_money_spent_cents": 0,
+        "period_money_gained_cents": 0,
+        "potential_gain_cents": 0,
     }
     if not Path(db_path).exists():
         return empty
@@ -192,19 +195,39 @@ def fetch_summary(db_path: str, period_days: int | None = None) -> dict:
                 "SELECT COUNT(*) n FROM trades "
                 "WHERE kind = 'entry' AND substr(created_at, 1, 10) = date('now')"
             ).fetchone()
-            # Period-filtered values: when period_days is None, mirror
-            # the lifetime totals; otherwise scope to the rolling window.
+            # Potential gains from currently-open bets (always live —
+            # never period-scoped, like the active-bets count). For a
+            # YES bet at entry=65c × 10 contracts: potential payout if
+            # the contract resolves on our side = (100−65) × 10 = 350c.
+            potential = c.execute(
+                "SELECT COALESCE(SUM((100 - entry_price_cents) * contracts), 0) v "
+                "FROM positions WHERE status = 'open'"
+            ).fetchone()
+            # Period-filtered values: when period_days is None, scope
+            # to lifetime; otherwise restrict to the rolling window.
             if period_days is None:
                 period_bets_made = total["n"]
                 period_net_pnl = closed_row["pnl"] or 0
                 period_wins = closed_row["wins"] or 0
                 period_losses = closed_row["losses"] or 0
+                spent_row = c.execute(
+                    "SELECT COALESCE(SUM(entry_price_cents * contracts), 0) v "
+                    "FROM positions"
+                ).fetchone()
+                gained_row = c.execute(
+                    "SELECT COALESCE("
+                    "  SUM(entry_price_cents * contracts + realized_pnl_cents), 0"
+                    ") v FROM positions WHERE status = 'closed'"
+                ).fetchone()
+                period_money_spent = spent_row["v"] or 0
+                period_money_gained = gained_row["v"] or 0
             else:
                 # bets_made = opened in the window (open or closed)
+                period_window = f"-{int(period_days)} days"
                 pmade = c.execute(
                     "SELECT COUNT(*) n FROM positions "
                     "WHERE date(opened_at) >= date('now', ?)",
-                    (f"-{int(period_days)} days",),
+                    (period_window,),
                 ).fetchone()
                 pclosed = c.execute(
                     "SELECT COALESCE(SUM(realized_pnl_cents), 0) pnl, "
@@ -212,12 +235,30 @@ def fetch_summary(db_path: str, period_days: int | None = None) -> dict:
                     "  SUM(CASE WHEN realized_pnl_cents < 0 THEN 1 ELSE 0 END) losses "
                     "FROM positions WHERE status = 'closed' "
                     "  AND date(exited_at) >= date('now', ?)",
-                    (f"-{int(period_days)} days",),
+                    (period_window,),
                 ).fetchone()
                 period_bets_made = pmade["n"]
                 period_net_pnl = pclosed["pnl"] or 0
                 period_wins = pclosed["wins"] or 0
                 period_losses = pclosed["losses"] or 0
+                # Money spent = cost basis of every position opened in
+                # the period (open + closed). Bets still live count.
+                spent_row = c.execute(
+                    "SELECT COALESCE(SUM(entry_price_cents * contracts), 0) v "
+                    "FROM positions WHERE date(opened_at) >= date('now', ?)",
+                    (period_window,),
+                ).fetchone()
+                # Money gained = cash returned from positions closed
+                # in the period (entry × contracts + realized_pnl ≥ 0).
+                gained_row = c.execute(
+                    "SELECT COALESCE("
+                    "  SUM(entry_price_cents * contracts + realized_pnl_cents), 0"
+                    ") v FROM positions WHERE status = 'closed' "
+                    "  AND date(exited_at) >= date('now', ?)",
+                    (period_window,),
+                ).fetchone()
+                period_money_spent = spent_row["v"] or 0
+                period_money_gained = gained_row["v"] or 0
     except (sqlite3.OperationalError, sqlite3.DatabaseError):
         return empty
     return {
@@ -240,6 +281,9 @@ def fetch_summary(db_path: str, period_days: int | None = None) -> dict:
         "period_net_pnl_cents": int(period_net_pnl or 0),
         "period_wins": int(period_wins or 0),
         "period_losses": int(period_losses or 0),
+        "period_money_spent_cents": int(period_money_spent or 0),
+        "period_money_gained_cents": int(period_money_gained or 0),
+        "potential_gain_cents": int(potential["v"] or 0),
     }
 
 
@@ -353,6 +397,9 @@ def fetch_global_summary(bots: List[dict],
         "period_net_pnl_cents": 0,
         "period_wins": 0,
         "period_losses": 0,
+        "period_money_spent_cents": 0,
+        "period_money_gained_cents": 0,
+        "potential_gain_cents": 0,    # always current
         # Lifetime fields kept for callers that still want them.
         "total_bets": 0,
         "net_pnl_cents": 0,
@@ -377,6 +424,9 @@ def fetch_global_summary(bots: List[dict],
         rollup["period_net_pnl_cents"] += s.get("period_net_pnl_cents", 0)
         rollup["period_wins"] += s.get("period_wins", 0)
         rollup["period_losses"] += s.get("period_losses", 0)
+        rollup["period_money_spent_cents"] += s.get("period_money_spent_cents", 0)
+        rollup["period_money_gained_cents"] += s.get("period_money_gained_cents", 0)
+        rollup["potential_gain_cents"] += s.get("potential_gain_cents", 0)
         rollup["total_bets"] += s.get("total_bets", 0)
         rollup["net_pnl_cents"] += s.get("realized_pnl_cents", 0)
         rollup["wins"] += s.get("wins_lifetime", 0)
@@ -726,7 +776,10 @@ def build_snapshot(db_path: str, bots: List[dict],
     return {
         "summary": {
             "active_bets": summary.get("active_bets"),
-            "period_bets_made": summary.get("period_bets_made"),
+            "period_closed_bets": period_closed,
+            "period_money_spent_cents": summary.get("period_money_spent_cents"),
+            "period_money_gained_cents": summary.get("period_money_gained_cents"),
+            "potential_gain_cents": summary.get("potential_gain_cents"),
             "period_net_pnl_cents": summary.get("period_net_pnl_cents"),
             "period_win_pct": summary.get("period_win_pct"),
             "period_has_closed": period_closed > 0,
@@ -1842,12 +1895,23 @@ def _live_update_script(current_bot: str, period_key: str = "all") -> str:
 
   function applySnapshot(snap) {{
     // ── Summary cards ──────────────────────────────────────────────
-    // 4 cards: Active bets (live, never period-scoped) | Bets made
-    // | Net gain/loss | Total win % (latter three reflect the period
-    // filter — the snapshot was already fetched with the right window).
+    // 7 cards: Active bets (live) | Closed bets | Money spent
+    // | Money gained | Potential gains (live) | Net gain/loss | Win %.
+    // The middle five reflect the period filter; the snapshot was
+    // already fetched with the right window so we just patch in.
     const s = snap.summary || {{}};
     patch("card-active-bets", String(s.active_bets ?? 0));
-    patch("card-bets-made", String(s.period_bets_made ?? 0));
+    patch("card-closed-bets", String(s.period_closed_bets ?? 0));
+    patch("card-money-spent",
+          (s.period_money_spent_cents ?? 0) === 0
+            ? "$0.00"
+            : fmtSignedCents(-(s.period_money_spent_cents ?? 0)));
+    patch("card-money-gained",
+          "+" + fmtSignedCents(s.period_money_gained_cents).replace(/^[+−-]/, ""),
+          "green");
+    patch("card-potential-gain",
+          "+" + fmtSignedCents(s.potential_gain_cents).replace(/^[+−-]/, ""),
+          "green");
     patch("card-net-pnl", fmtSignedCents(s.period_net_pnl_cents),
           (s.period_net_pnl_cents > 0) ? "green"
             : (s.period_net_pnl_cents < 0 ? "red" : "gray"));
@@ -2268,6 +2332,13 @@ def _render_summary(out: List[str], rollup: dict, active_bets: List[dict],
                             tab_key="home")
 
     # ── Headline cards ────────────────────────────────────────────────
+    closed_bets = (rollup.get("period_wins", 0)
+                   + rollup.get("period_losses", 0))
+    money_spent = rollup.get("period_money_spent_cents", 0)
+    money_gained = rollup.get("period_money_gained_cents", 0)
+    potential_gain = rollup.get("potential_gain_cents", 0)
+    period_tag = (f" <span class='gray small'>"
+                  f"({html.escape(period_label)})</span>")
     out.append("<div class='row'>")
     out.append(f"<div class='card'><div class='label' "
                f"title='Live count of currently-open positions across "
@@ -2276,21 +2347,37 @@ def _render_summary(out: List[str], rollup: dict, active_bets: List[dict],
                f"<div class='value' id='card-active-bets'>"
                f"{rollup['active_bets']}</div></div>")
     out.append(f"<div class='card'><div class='label'>"
-               f"Bets made <span class='gray small'>"
-               f"({html.escape(period_label)})</span></div>"
-               f"<div class='value' id='card-bets-made'>"
-               f"{bets_made}</div></div>")
+               f"Closed bets{period_tag}</div>"
+               f"<div class='value' id='card-closed-bets'>"
+               f"{closed_bets}</div></div>")
+    out.append(f"<div class='card'><div class='label' "
+               f"title='Total cost basis of every position opened in "
+               f"the period (entry × contracts).'>"
+               f"Money spent{period_tag}</div>"
+               f"<div class='value' id='card-money-spent'>"
+               f"{fmt_signed_cents(-money_spent)}</div></div>")
+    out.append(f"<div class='card'><div class='label' "
+               f"title='Total payout received from positions closed in "
+               f"the period (entry × contracts + realized P&amp;L).'>"
+               f"Money gained{period_tag}</div>"
+               f"<div class='value green' id='card-money-gained'>"
+               f"+{fmt_signed_cents(money_gained).lstrip('+')}</div></div>")
+    out.append(f"<div class='card'><div class='label' "
+               f"title='Gross profit if every currently-open position "
+               f"resolves on our side: (100 − entry) × contracts. "
+               f"Live; not period-scoped.'>"
+               f"Potential gains</div>"
+               f"<div class='value green' id='card-potential-gain'>"
+               f"+{fmt_signed_cents(potential_gain).lstrip('+')}</div></div>")
     out.append(f"<div class='card'><div class='label'>"
-               f"Net gain / loss <span class='gray small'>"
-               f"({html.escape(period_label)})</span></div>"
+               f"Net gain / loss{period_tag}</div>"
                f"<div class='value {pnl_cls}' id='card-net-pnl'>"
                f"{fmt_signed_cents(net)}</div></div>")
     out.append(f"<div class='card'><div class='label' "
                f"title='Wins divided by closed bets in the selected "
                f"period. 0-100%; above 50% means winning more than "
                f"losing.'>"
-               f"Total win % <span class='gray small'>"
-               f"({html.escape(period_label)})</span></div>"
+               f"Total win %{period_tag}</div>"
                f"<div class='value {win_cls}' id='card-win-pct'>"
                f"{win_pct_str}</div></div>")
     out.append("</div>")
