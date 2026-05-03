@@ -1437,6 +1437,14 @@ code { background: #161b22; padding: 1px 6px; border-radius: 3px; color: #c9d1d9
     width: min(560px, 92vw); max-height: 80vh;
     display: flex; flex-direction: column;
     z-index: 101; box-shadow: 0 12px 48px rgba(0,0,0,0.6); }
+/* The HTML `hidden` attribute applies `display: none` via the UA
+   stylesheet (specificity 0,1,0). Our `.criteria-modal { display:
+   flex }` rule shares that specificity and wins by source order, so
+   the modal kept showing even after JS set `.hidden = true`. These
+   attribute selectors (specificity 0,2,0) restore the expected
+   behaviour for both the modal and the overlay. */
+.criteria-modal[hidden]   { display: none !important; }
+.criteria-overlay[hidden] { display: none !important; }
 .criteria-modal-head {
     display: flex; align-items: baseline;
     justify-content: space-between;
