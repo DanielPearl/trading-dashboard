@@ -322,7 +322,9 @@ def fetch_recent_bets(db_path: str, limit: int = 25) -> List[dict]:
 def fetch_active_bets_with_marks(db_path: str) -> List[dict]:
     """Open positions joined with their latest mark + latest mtc + the
     most recent market_views row's strike bounds (so the summary table
-    can render the human Question for each row).
+    can render the human Question for each row). The local schema
+    uses strike_low / strike_high (not floor_strike / cap_strike — the
+    Kalshi API names).
     """
     return _safe_query(
         db_path,
@@ -332,10 +334,10 @@ def fetch_active_bets_with_marks(db_path: str) -> List[dict]:
         "       (SELECT mv.minutes_to_close FROM market_views mv "
         "          WHERE mv.ticker = p.ticker "
         "          ORDER BY mv.id DESC LIMIT 1) AS minutes_to_close, "
-        "       (SELECT mv.floor_strike FROM market_views mv "
+        "       (SELECT mv.strike_low FROM market_views mv "
         "          WHERE mv.ticker = p.ticker "
         "          ORDER BY mv.id DESC LIMIT 1) AS floor_strike, "
-        "       (SELECT mv.cap_strike FROM market_views mv "
+        "       (SELECT mv.strike_high FROM market_views mv "
         "          WHERE mv.ticker = p.ticker "
         "          ORDER BY mv.id DESC LIMIT 1) AS cap_strike "
         "FROM positions p LEFT JOIN position_marks m ON p.id = m.position_id "
@@ -377,10 +379,10 @@ def fetch_bet_history(db_path: str, limit: int = 100) -> List[dict]:
             select_cols = base_cols + (", " + ", ".join(extras) if extras else "")
             rows = c.execute(
                 f"SELECT {select_cols}, "
-                f"(SELECT mv.floor_strike FROM market_views mv "
+                f"(SELECT mv.strike_low FROM market_views mv "
                 f"   WHERE mv.ticker = p.ticker "
                 f"   ORDER BY mv.id DESC LIMIT 1) AS floor_strike, "
-                f"(SELECT mv.cap_strike FROM market_views mv "
+                f"(SELECT mv.strike_high FROM market_views mv "
                 f"   WHERE mv.ticker = p.ticker "
                 f"   ORDER BY mv.id DESC LIMIT 1) AS cap_strike "
                 f"FROM positions p WHERE p.status='closed' "
