@@ -1992,11 +1992,6 @@ def _live_update_script(current_bot: str, period_key: str = "all") -> str:
     html += "<dt>Validators met</dt>"
          + "<dd class='green'>100%</dd>";
     html += "</dl></div>";
-    html += "<div class='crit-section' style='font-size:11px;color:#8b949e;'>"
-         + "Numbers above are entry-time snapshots — what the bot saw "
-         + "the moment it opened the position. The full validator list "
-         + "is in the rules popup next to the Active bet title."
-         + "</div>";
     return html;
   }}
   function showCriteria(btn) {{
