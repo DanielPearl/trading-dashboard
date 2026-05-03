@@ -1474,9 +1474,11 @@ code { background: #161b22; padding: 1px 6px; border-radius: 3px; color: #c9d1d9
     max-height: 80vh;
     display: flex; flex-direction: column;
     z-index: 101; box-shadow: 0 12px 48px rgba(0,0,0,0.6); }
-/* Fee suffix on the entry-cost cell — a subtler shade than the base
-   amount so the user reads the base first, fee as add-on. */
-.entry-fee { color: #8b949e; font-weight: 400; }
+/* Fee suffix on the entry-cost cell — same red as the base amount
+   (it's also a cash outflow). Keep the cell on one line so the
+   "−$0.26 + $0.02" pattern stays scannable horizontally. */
+.entry-fee { color: #f85149; font-weight: 400; margin-left: 2px; }
+td.num.red, td.num.green { white-space: nowrap; }
 /* Bot card drift badge — amber pill that lights up when the model's
    training accuracy and live actual-win-% diverge by >10pp on n≥10
    closed bets. Surfaces "this model may have drifted" as a one-look
