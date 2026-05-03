@@ -21,6 +21,7 @@ import argparse
 import html
 import json
 import logging
+import math
 import sqlite3
 import sys
 import time
@@ -816,6 +817,35 @@ def fmt_cents(c: int | float | None) -> str:
     return f"${c/100:+.2f}" if c < 0 else f"${c/100:.2f}"
 
 
+def kalshi_fee_cents(price_cents: int | None,
+                       contracts: int | None) -> int:
+    """Kalshi trading fee per their published formula:
+
+        fee = ceil(0.07 × contracts × price × (1 − price))
+
+    where ``price`` is in dollars and the fee is also in dollars.
+    Equivalent in cents: ``ceil(0.07 × contracts × p × (100 − p) /
+    100)`` where p is the integer-cents price.
+
+    Charged on entry AND on exit (per side). At settlement (price
+    is 0¢ or 100¢) the fee is zero — no risk left to fee.
+
+    Returns 0 cents when inputs are missing or out-of-range so the
+    caller can safely add this to any cost calculation.
+    """
+    if price_cents is None or contracts is None:
+        return 0
+    try:
+        p = int(price_cents)
+        n = int(contracts)
+    except (TypeError, ValueError):
+        return 0
+    if n <= 0 or p <= 0 or p >= 100:
+        return 0
+    raw = 0.07 * n * p * (100 - p) / 100.0
+    return int(math.ceil(raw))
+
+
 def fmt_signed_cents(c: int | None) -> str:
     if c is None:
         return "—"
@@ -1437,9 +1467,27 @@ code { background: #161b22; padding: 1px 6px; border-radius: 3px; color: #c9d1d9
     position: fixed; top: 50%; left: 50%;
     transform: translate(-50%, -50%);
     background: #0d1117; border: 1px solid #30363d; border-radius: 8px;
-    width: min(560px, 92vw); max-height: 80vh;
+    /* Fit-to-content sizing: width sized by what's inside, capped at
+       92vw so it never overflows. Min keeps the title/X spacing
+       readable on tight payloads. */
+    width: max-content; min-width: 320px; max-width: 92vw;
+    max-height: 80vh;
     display: flex; flex-direction: column;
     z-index: 101; box-shadow: 0 12px 48px rgba(0,0,0,0.6); }
+/* Fee suffix on the entry-cost cell — a subtler shade than the base
+   amount so the user reads the base first, fee as add-on. */
+.entry-fee { color: #8b949e; font-weight: 400; }
+/* Bot card drift badge — amber pill that lights up when the model's
+   training accuracy and live actual-win-% diverge by >10pp on n≥10
+   closed bets. Surfaces "this model may have drifted" as a one-look
+   signal without forcing users to compare two cells. */
+.drift-badge { display: inline-block; margin-left: 6px;
+    padding: 1px 6px; border-radius: 4px;
+    background: rgba(212, 153, 0, 0.18);
+    color: #d49900; border: 1px solid rgba(212, 153, 0, 0.35);
+    font-size: 9px; font-weight: 700; text-transform: uppercase;
+    letter-spacing: 0.04em; line-height: 1.5;
+    vertical-align: 2px; }
 /* The HTML `hidden` attribute applies `display: none` via the UA
    stylesheet (specificity 0,1,0). Our `.criteria-modal { display:
    flex }` rule shares that specificity and wins by source order, so
@@ -2522,9 +2570,38 @@ def _render_bot_cards(out: List[str], rollup: dict,
         href = (f"?tab=watchlist&bot={html.escape(bot_key)}"
                 if bot_key else "#")
 
+        # Compute drift-badge HTML (if any) up-front so it can be
+        # rendered inline with the bot name in the card header.
+        # Drift = |training accuracy − live actual-win-%| > 10pp on
+        # n ≥ 10 closed bets.
+        ACTUAL_WIN_MIN_N = 10
+        DRIFT_PP_THRESHOLD = 0.10
+        drift_html = ""
+        if m:
+            a_wins_pre = int(m.get("actual_wins") or 0)
+            a_losses_pre = int(m.get("actual_losses") or 0)
+            a_total_pre = a_wins_pre + a_losses_pre
+            try:
+                acc_train_pre = float(m.get("classifier_accuracy") or 0)
+            except (TypeError, ValueError):
+                acc_train_pre = 0.0
+            if a_total_pre >= ACTUAL_WIN_MIN_N and acc_train_pre > 0:
+                a_pct_pre = a_wins_pre / a_total_pre
+                if abs(acc_train_pre - a_pct_pre) > DRIFT_PP_THRESHOLD:
+                    gap_pp = int(round(abs(acc_train_pre - a_pct_pre) * 100))
+                    drift_html = (
+                        f"<span class='drift-badge' "
+                        f"title='Training accuracy ({acc_train_pre*100:.0f}%) "
+                        f"and live actual-win-% ({a_pct_pre*100:.0f}%) differ "
+                        f"by {gap_pp}pp on {a_total_pre} closed bets — model "
+                        f"may have drifted; a retrain is likely overdue.'"
+                        f">⚠ drift</span>"
+                    )
         out.append(f"<a class='bot-card' href='{href}'>")
         out.append("<div class='bot-card-head'>")
-        out.append(f"<div class='bot-name'>{html.escape(name)}</div>")
+        out.append(
+            f"<div class='bot-name'>{html.escape(name)}{drift_html}</div>"
+        )
         out.append(f"<div class='bot-meta'>{html.escape(series_ticker)}</div>")
         out.append("</div>")
 
@@ -2536,11 +2613,17 @@ def _render_bot_cards(out: List[str], rollup: dict,
             a_wins = int(m.get("actual_wins") or 0)
             a_losses = int(m.get("actual_losses") or 0)
             a_total = a_wins + a_losses
-            if a_total > 0:
-                a_pct = a_wins / a_total
+            # Sample-size guard: hide the % on n<10 — a single closed
+            # loss reading "0%" is misleading. Show "learning (n=X)"
+            # so users know the metric is warming up.
+            a_pct = a_wins / a_total if a_total > 0 else None
+            if a_total >= ACTUAL_WIN_MIN_N:
                 a_str = f"{a_pct*100:.0f}%"
                 a_cls = ("green" if a_pct > 0.55
                          else ("red" if a_pct < 0.45 else ""))
+            elif a_total > 0:
+                a_str = f"learning (n={a_total})"
+                a_cls = "gray"
             else:
                 a_str = "—"
                 a_cls = "gray"
@@ -2552,8 +2635,6 @@ def _render_bot_cards(out: List[str], rollup: dict,
                         f"<dt>ROC AUC</dt><dd>{_fmt_pct(m.get('training_roc_auc'))}</dd>")
             out.append(f"<dt>Recall</dt><dd>{_fmt_pct(m.get('training_recall'))}</dd>"
                         f"<dt>Features</dt><dd>{features}</dd>")
-            # Actual win % paired with the period-scoped Gain/loss
-            # ($) — Strikes was retired per user request.
             out.append(f"<dt>Actual win %</dt><dd class='{a_cls}'>{a_str}</dd>"
                         f"<dt>Gain / loss</dt><dd class='{gl_cls}'>{gl_str}</dd>")
             out.append("</dl>")
@@ -2600,7 +2681,29 @@ def _render_active_bets_table(out: List[str], bets: List[dict],
         badge_cls = "badge-yes" if side == "YES" else "badge-no"
         entry = b.get("entry_price_cents") or 0
         contracts = b.get("contracts", 0) or 0
-        current_c = b.get("mark_yes_ask") if side == "YES" else b.get("mark_no_ask")
+        # Mark-to-market uses the BID (what we'd actually receive
+        # closing the position out), not the ask. The fallback chain
+        # in fetch_active_bets_with_marks COALESCEs onto market_views
+        # for ask; we apply the same fallback for bid here. yes_bid
+        # comes from position_marks; if absent, fall back to the
+        # mid (ask − spread/2 ≈ bid is roughly the same idea).
+        current_c = (b.get("mark_yes_bid")
+                      if side == "YES"
+                      else b.get("mark_no_bid"))
+        if current_c is None:
+            # Last-ditch fallback: mid_cents (less honest than the
+            # bid but better than the ask, which would overstate).
+            mid = b.get("mark_mid")
+            if mid is not None:
+                current_c = mid
+        if current_c is None:
+            # Final fallback: derive bid as 100 - opposing ask, since
+            # at any moment yes_bid + no_ask ≈ 100 in a tight book.
+            opp_ask = (b.get("mark_no_ask")
+                        if side == "YES"
+                        else b.get("mark_yes_ask"))
+            if opp_ask is not None:
+                current_c = max(0, 100 - int(opp_ask))
         bot_name = b.get("_bot_name", "—")
         # Question — rendered in the bot's native display units
         # ($/gal, K claims, $/MMBtu) when display config is attached.
@@ -2618,14 +2721,39 @@ def _render_active_bets_table(out: List[str], bets: List[dict],
                                    and strike_high is not None) else "above"
         question = question_str(direction, strike_low, strike_high,
                                   display=b.get("_display"))
-        # Dollar columns: entry cost, current value, potential gain.
-        entry_cost = entry * contracts / 100.0
-        current_val = ((current_c or 0) * contracts / 100.0
-                        if current_c is not None else None)
-        potential_gain = (100 - entry) * contracts / 100.0
+        # Dollar columns — all incorporate Kalshi trading fees:
+        #   Entry cost     = base cost + entry fee (cash out at open)
+        #   Current        = (bid × contracts − exit fee) / 100
+        #   Potential gain = (100 − entry) × contracts − entry fee
+        #                    (entry fee already paid; settlement at
+        #                     100¢ has zero exit fee)
+        entry_fee_c = kalshi_fee_cents(entry, contracts)
+        entry_cost_base = entry * contracts / 100.0
+        entry_fee_dollars = entry_fee_c / 100.0
+        # Current: net what you'd realize closing now at the bid
+        if current_c is not None:
+            exit_fee_c = kalshi_fee_cents(int(current_c), contracts)
+            current_val = ((current_c * contracts) - exit_fee_c) / 100.0
+        else:
+            current_val = None
+        potential_gain = ((100 - entry) * contracts - entry_fee_c) / 100.0
         current_cell = (f"${current_val:.2f}" if current_val is not None
                          else "—")
+        # Entry-cost cell shows base + fee inline so the user sees
+        # how much of the cost is fee. Tooltip explains.
+        entry_cost_cell = (
+            f"<td class='num red' title='Base entry cost (entry × "
+            f"contracts) + Kalshi trading fee, charged on order open'>"
+            f"−${entry_cost_base:.2f}"
+            f"<span class='entry-fee'> + ${entry_fee_dollars:.2f}</span>"
+            f"</td>"
+        )
         mtc = b.get("minutes_to_close")
+        # Sign / color logic for potential gain — usually positive
+        # (winning side pays $1 minus entry minus fees), but very
+        # high entry prices on extreme strikes can flip negative.
+        pg_sign = "+" if potential_gain >= 0 else "−"
+        pg_cls  = "green" if potential_gain >= 0 else "red"
         bot_td = (f"<td>{html.escape(bot_name)}</td>" if show_bot else "")
         # Build the "why was this bet chosen" payload from entry-time
         # snapshot fields recorded on the position. JS reads this from
@@ -2677,9 +2805,14 @@ def _render_active_bets_table(out: List[str], bets: List[dict],
             f"<td>{html.escape(question)}</td>"
             f"<td class='num'>{contracts}</td>"
             f"<td><span class='badge {badge_cls}'>{side}</span></td>"
-            f"<td class='num red'>−${entry_cost:.2f}</td>"
-            f"<td class='num'>{current_cell}</td>"
-            f"<td class='num green'>+${potential_gain:.2f}</td>"
+            f"{entry_cost_cell}"
+            f"<td class='num' title='Bid × contracts − exit fee — what "
+            f"you would net closing the position at the current market'>"
+            f"{current_cell}</td>"
+            f"<td class='num {pg_cls}' title='(100¢ − entry) × contracts "
+            f"− entry fee. Entry fee already paid; settlement at 100¢ "
+            f"or 0¢ has zero exit fee.'>"
+            f"{pg_sign}${abs(potential_gain):.2f}</td>"
             f"<td class='num'>{time_to_close_str(mtc)}</td>"
             f"<td><button type='button' class='criteria-btn' "
             f"title='Why was this bet chosen?' "
@@ -3337,11 +3470,9 @@ def _render_watchlist(out: List[str], watchlist: List[dict],
         if best_ev_v is None or best_ev_v <= 0:
             badge = f"<span class='badge badge-skip'{tt}>SKIP</span>"
         elif bot_verdict in ("BUY_YES", "BUY_NO"):
-            ask_c = ya_c if best_side_v == "YES" else na_c
-            ask_str = f" @ {ask_c}c" if ask_c is not None else ""
             cls = "badge-yes" if best_side_v == "YES" else "badge-no"
             badge = (f"<span class='badge {cls}'{tt}>"
-                     f"BUY {best_side_v}{ask_str}</span>")
+                     f"BUY {best_side_v}</span>")
         else:
             badge = f"<span class='badge badge-hedge'{tt}>WATCH</span>"
 
