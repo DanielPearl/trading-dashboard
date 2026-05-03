@@ -337,7 +337,7 @@ def render_page(
     (CSS is embedded), so we re-import the CSS string at call site.
     """
     # Imported lazily to avoid a circular import at module load time.
-    from .dashboard import CSS, _render_bot_filter
+    from .dashboard import CSS, _favicon_link, _render_bot_filter
 
     summary = summarize(events)
     rows = standouts(events, sort_by=sort_by, limit=50)
@@ -349,6 +349,7 @@ def render_page(
     out.append("<meta charset='utf-8'>")
     out.append("<meta http-equiv='refresh' content='30'>")
     out.append("<title>Whale Watcher — signal analysis</title>")
+    out.append(_favicon_link())
     out.append(f"<style>{CSS}</style>")
     out.append("<style>"
                ".whale-stats { display:grid; grid-template-columns: repeat(4, 1fr);"

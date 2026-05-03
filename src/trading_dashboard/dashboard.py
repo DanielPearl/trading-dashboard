@@ -817,6 +817,32 @@ def fmt_cents(c: int | float | None) -> str:
     return f"${c/100:+.2f}" if c < 0 else f"${c/100:.2f}"
 
 
+def _favicon_link() -> str:
+    """Return a `<link rel="icon">` tag with an inline SVG data URI.
+
+    The SVG is a stylized chameleon mark in the dashboard's orange +
+    teal palette — same shape & colours as static/favicon.svg. Inline
+    so the dashboard's BaseHTTPRequestHandler doesn't need a separate
+    file-serving route. To swap for a different icon, edit this
+    helper or replace static/favicon.svg and copy its contents here.
+    """
+    # `#` MUST be %23-escaped in data URIs (otherwise it's parsed as a
+    # fragment marker). Spaces + < > render fine in modern browsers.
+    svg = (
+        "<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'>"
+        "<path d='M 32 4 C 50 4 60 14 60 32 C 60 44 52 50 40 50 "
+        "L 28 50 C 18 50 14 56 14 62 L 14 32 C 14 14 22 4 32 4 Z' "
+        "fill='%23F5A623'/>"
+        "<path d='M 40 40 C 56 40 56 56 44 58 C 36 58 32 52 36 46 "
+        "C 38 44 42 44 44 46' fill='none' stroke='%231F8B8B' "
+        "stroke-width='8' stroke-linecap='round'/>"
+        "<circle cx='44' cy='20' r='4' fill='%231F8B8B'/>"
+        "</svg>"
+    )
+    return (f'<link rel="icon" type="image/svg+xml" '
+            f'href="data:image/svg+xml,{svg}"/>')
+
+
 def kalshi_fee_cents(price_cents: int | None,
                        contracts: int | None) -> int:
     """Kalshi trading fee per their published formula:
@@ -1680,6 +1706,7 @@ def render_page(
     # No meta-refresh — JS at the bottom of the page polls /api/snapshot
     # every 5s and patches live cells in place. The page never reloads.
     out.append(f"<title>Kalshi simulation dashboard</title>")
+    out.append(_favicon_link())
     out.append(f"<style>{CSS}</style>")
     out.append("</head><body>")
     out.append(f"<h1>Kalshi simulation dashboard</h1>")

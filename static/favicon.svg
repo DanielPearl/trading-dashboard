@@ -1,0 +1,17 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
+  <!--
+    Chameleon-inspired favicon for the Kalshi trading dashboard.
+    Two-tone: warm orange head/body + teal lower spiral with eye dot.
+    Easy to swap for a real PNG later — the dashboard reads this same
+    SVG as a data URI, so editing this file + redeploying updates the
+    favicon everywhere.
+  -->
+  <!-- Orange head / upper body — a comma-shaped curve that fills the
+       upper-left bulk of the viewBox. -->
+  <path d="M 32 4 C 50 4 60 14 60 32 C 60 44 52 50 40 50 L 28 50 C 18 50 14 56 14 62 L 14 32 C 14 14 22 4 32 4 Z" fill="#F5A623"/>
+  <!-- Teal tail spiral — a stroked curl that loops back into itself,
+       mimicking the lower-right tail of the chameleon image. -->
+  <path d="M 40 40 C 56 40 56 56 44 58 C 36 58 32 52 36 46 C 38 44 42 44 44 46" fill="none" stroke="#1F8B8B" stroke-width="8" stroke-linecap="round"/>
+  <!-- Eye dot, sits in the upper-right of the orange head. -->
+  <circle cx="44" cy="20" r="4" fill="#1F8B8B"/>
+</svg>
