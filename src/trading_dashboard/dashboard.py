@@ -3813,6 +3813,9 @@ class Handler(BaseHTTPRequestHandler):
                     from . import whale
                     qs = parse_qs(parsed.query)
                     sort_by = qs.get("sort", ["recent"])[0]
+                    whale_tab = qs.get("tab", ["home"])[0]
+                    if whale_tab not in {k for k, _ in whale.WHALE_TABS}:
+                        whale_tab = "home"
                     events = whale.load_events(bot.get("signals_path"))
                     orders = whale.load_orders(bot.get("orders_path"))
                     body = whale.render_page(
@@ -3821,6 +3824,7 @@ class Handler(BaseHTTPRequestHandler):
                         available_bots=self.bots,
                         current_bot_key=bot["key"],
                         sort_by=sort_by,
+                        tab_key=whale_tab,
                     )
                     payload = body.encode("utf-8")
                     self.send_response(200)

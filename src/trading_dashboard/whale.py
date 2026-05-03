@@ -8,13 +8,19 @@ Different shape than the gas-bot-style dashboard:
     the bot placed).
   - There are no "users" — Kalshi's public API does not expose trader
     identity on trades. The "user" abstraction here is the *whale event*
-    itself. We surface two views:
-      1. Per-event list of standout signals (sortable).
-      2. Pseudo-identity cohorts: bucket events by ticker prefix × size
-         × direction and rank cohorts that historically pay.
+    itself. As a substitute for "profitable user", we score each signal
+    against a *cohort win rate*: signals matching the same ticker
+    family + size bucket + direction whose +30m checkpoint moved in
+    the bet's favor. High cohort win-rate + high z-score + tight book
+    + meaningful notional ≈ "this looks like someone who knows
+    something" — surfaced as the per-signal "insider probability".
 
 Reads are cheap (small JSONL files) and best-effort — missing files
 render the empty state instead of raising.
+
+Three tabs (Home / Watchlist / History) mirror the main dashboard's
+shape so users can hop between bot-equity and whale-signal context
+without learning a second navigation idiom.
 """
 from __future__ import annotations
 
@@ -22,6 +28,7 @@ import html
 import json
 import logging
 import math
+import time
 from collections import Counter, defaultdict
 from datetime import datetime, timezone
 from pathlib import Path
@@ -31,7 +38,7 @@ log = logging.getLogger("dashboard.whale")
 
 
 # --------------------------------------------------------------------------- #
-# Data loaders
+# Data loaders                                                                #
 # --------------------------------------------------------------------------- #
 
 def load_events(path: str | None, limit: int = 1000) -> List[dict]:
@@ -49,9 +56,6 @@ def load_events(path: str | None, limit: int = 1000) -> List[dict]:
     out: List[dict] = []
     try:
         with p.open() as f:
-            # JSONL is append-only; reading the whole file is fine for
-            # the kind of volumes we expect (tens of thousands of rows
-            # max). If this ever gets hot, switch to seek-from-end.
             for line in f:
                 line = line.strip()
                 if not line:
@@ -68,16 +72,10 @@ def load_events(path: str | None, limit: int = 1000) -> List[dict]:
 
 
 def load_orders(path: str | None, limit: int = 500) -> List[dict]:
-    """Read recent entries from orders.jsonl.
-
-    Schema (from kalshi_whale_bot/main.py::_persist_order):
-      {
-        "ts": iso8601,
-        "signal": {"ticker", "zscore", "direction", "reason"},
-        "order":  {"client_order_id", "side", "count",
-                   "limit_price_cents", "dry_run"}
-      }
-    Exits aren't currently logged here — only entries.
+    """Read recent entries from orders.jsonl. Unused after the tab
+    restructure (entries are surfaced as simulated buys in the
+    Home tab) but kept around so external callers / tests can still
+    poke at the orders file.
     """
     if not path:
         return []
@@ -103,7 +101,7 @@ def load_orders(path: str | None, limit: int = 500) -> List[dict]:
 
 
 # --------------------------------------------------------------------------- #
-# Derived metrics
+# Derived metrics                                                             #
 # --------------------------------------------------------------------------- #
 
 def _last_favorable(event: dict) -> Optional[float]:
@@ -133,7 +131,7 @@ def _ticker_prefix(ticker: str) -> str:
 
 
 def _size_bucket(notional_cents: int) -> str:
-    """Log-bucket bet size into human labels: <$5, $5-$20, $20-$100, $100+."""
+    """Log-bucket bet size into human labels."""
     dollars = notional_cents / 100.0
     if dollars < 5:
         return "<$5"
@@ -146,16 +144,313 @@ def _size_bucket(notional_cents: int) -> str:
     return "$500+"
 
 
-def summarize(events: List[dict]) -> dict:
-    """Top-line aggregate stats for the summary card row."""
+# --------------------------------------------------------------------------- #
+# Cohort win rates — pseudo-identity stand-in                                 #
+# --------------------------------------------------------------------------- #
+
+def compute_cohort_winrates(events: List[dict],
+                              min_n: int = 3
+                              ) -> Dict[Tuple[str, str, str], dict]:
+    """For each (ticker_prefix, size_bucket, direction) cohort, compute
+    historical win rate from completed signals (those with at least one
+    captured checkpoint with favorable_cents > 0 → win).
+
+    Cohorts with fewer than ``min_n`` completed samples are kept but
+    flagged — score callers can choose to weight them lower or skip.
+
+    Returns ``{ (prefix, size, direction): {"win_rate": float, "n": int,
+    "mean_fav_30m": float} }``.
+    """
+    buckets: Dict[Tuple[str, str, str], List[dict]] = defaultdict(list)
+    for e in events:
+        ticker = e.get("ticker") or ""
+        notional = e.get("whale_notional_cents") or 0
+        direction = e.get("direction") or "?"
+        key = (_ticker_prefix(ticker), _size_bucket(int(notional)), direction)
+        buckets[key].append(e)
+
+    out: Dict[Tuple[str, str, str], dict] = {}
+    for key, members in buckets.items():
+        favs = [f for f in (_last_favorable(e) for e in members) if f is not None]
+        if not favs:
+            continue
+        wins = sum(1 for f in favs if f > 0)
+        out[key] = {
+            "win_rate": wins / len(favs),
+            "n": len(favs),
+            "mean_fav_30m": sum(favs) / len(favs),
+        }
+    return out
+
+
+def cohort_winrate_for(event: dict,
+                         cohort_winrates: Dict[Tuple[str, str, str], dict],
+                         min_n: int = 3,
+                         ) -> Optional[float]:
+    """Win rate for the cohort this event belongs to. Returns None when
+    the cohort is too thin (n < min_n) to be trustworthy.
+    """
+    ticker = event.get("ticker") or ""
+    notional = event.get("whale_notional_cents") or 0
+    direction = event.get("direction") or "?"
+    key = (_ticker_prefix(ticker), _size_bucket(int(notional)), direction)
+    row = cohort_winrates.get(key)
+    if row is None:
+        return None
+    if row["n"] < min_n:
+        return None
+    return row["win_rate"]
+
+
+# --------------------------------------------------------------------------- #
+# Insider-probability model                                                   #
+# --------------------------------------------------------------------------- #
+#
+# Heuristic (no labels yet — this is a transparent linear scorer):
+#
+#   z_norm   — z-score of the trade's contract count vs the market's
+#              own rolling lookback. Capped at 10, normalised to [0, 1].
+#   size     — log-cents notional, normalised: 0¢ → 0, $100+ → 1.
+#   dir_conf — direction_confidence (already 0..1).
+#   cohort   — cohort_winrate_for(event); if unknown, default 0.5
+#              (no prior either way).
+#   tight    — book quality at signal time: tighter spread + deeper
+#              book → 1, wide/empty → 0. Insider-y trades happen on
+#              books they didn't have to pay much spread to enter.
+#
+# Weighted sum, then clipped to [0, 1].
+# Weights chosen so each signal contributes ~equally; tunable.
+
+_W_Z       = 0.25
+_W_SIZE    = 0.20
+_W_DIRCONF = 0.15
+_W_COHORT  = 0.30
+_W_TIGHT   = 0.10
+
+
+def insider_score(event: dict,
+                    cohort_winrates: Dict[Tuple[str, str, str], dict]
+                    ) -> float:
+    """Return [0, 1] probability that this whale signal looks like
+    "someone who knows something". Transparent linear combination of
+    the features above — easy to override / tune.
+    """
+    z_raw = float(event.get("zscore") or 0.0)
+    z_norm = max(0.0, min(1.0, z_raw / 10.0))
+
+    notional = float(event.get("whale_notional_cents") or 0)
+    if notional <= 0:
+        size = 0.0
+    else:
+        # log10(cents) ≈ 0..5 (1¢ → 0, $1000 → 5). Normalise to [0, 1]
+        # by dividing by 4 (so $100 = 1).
+        size = max(0.0, min(1.0, math.log10(notional) / 4.0))
+
+    dir_conf = float(event.get("direction_confidence") or 0.0)
+
+    coh = cohort_winrate_for(event, cohort_winrates)
+    cohort = 0.5 if coh is None else float(coh)
+
+    spread = event.get("entry_spread_cents")
+    depth = event.get("entry_depth_within_3c") or 0
+    if spread is None:
+        tight = 0.5
+    else:
+        # Tight = 0¢ spread; loose = 8¢+. Linear in between.
+        sp = max(0, min(8, int(spread)))
+        s_norm = 1.0 - (sp / 8.0)
+        # Depth: 0..200+ contracts within 3¢ of best.
+        d_norm = max(0.0, min(1.0, depth / 200.0))
+        tight = 0.5 * s_norm + 0.5 * d_norm
+
+    raw = (
+        _W_Z       * z_norm   +
+        _W_SIZE    * size     +
+        _W_DIRCONF * dir_conf +
+        _W_COHORT  * cohort   +
+        _W_TIGHT   * tight
+    )
+    return max(0.0, min(1.0, raw))
+
+
+# --------------------------------------------------------------------------- #
+# Validators — mirror the bot's pre-trade checks                              #
+# --------------------------------------------------------------------------- #
+
+# Tunables. Keep these in sync with the bot's validator config when
+# possible; the dashboard re-runs the same logic locally so simulated
+# buys reflect what the bot would actually have entered.
+VALIDATOR_MIN_ZSCORE         = 3.0
+VALIDATOR_MIN_NOTIONAL_CENTS = 5_000   # $50
+VALIDATOR_MIN_DIR_CONF       = 0.5
+VALIDATOR_MAX_SPREAD_CENTS   = 8
+VALIDATOR_MIN_BOOK_DEPTH     = 25      # contracts within 3¢ of best
+VALIDATOR_PROB_LO_CENTS      = 15
+VALIDATOR_PROB_HI_CENTS      = 85
+VALIDATOR_MIN_COHORT_WIN     = 0.50    # need ≥ 50% historical win rate
+VALIDATOR_MIN_COHORT_N       = 5       # … on at least 5 prior signals
+VALIDATOR_INSIDER_THRESHOLD  = 0.65    # score ≥ this → eligible to "buy"
+
+
+def validate_whale(event: dict,
+                     cohort_winrates: Dict[Tuple[str, str, str], dict],
+                     ) -> List[Tuple[str, bool, str]]:
+    """Run every validator and return a list of (name, ok, detail).
+
+    The dashboard surfaces the per-validator pass/fail status next to
+    each candidate so users see exactly which gate a signal cleared
+    and which it didn't — same idiom as the per-bet "criteria met"
+    panel on the main dashboard.
+    """
+    out: List[Tuple[str, bool, str]] = []
+
+    # 1. Z-score (size unusualness)
+    z = float(event.get("zscore") or 0.0)
+    out.append((
+        "Z-score",
+        z >= VALIDATOR_MIN_ZSCORE,
+        f"{z:.2f} (≥ {VALIDATOR_MIN_ZSCORE:.1f} required)",
+    ))
+
+    # 2. Notional floor
+    n_cents = int(event.get("whale_notional_cents") or 0)
+    out.append((
+        "Notional ≥ $50",
+        n_cents >= VALIDATOR_MIN_NOTIONAL_CENTS,
+        f"${n_cents/100:.2f}",
+    ))
+
+    # 3. Direction confidence
+    dc = float(event.get("direction_confidence") or 0.0)
+    out.append((
+        "Direction confidence",
+        dc >= VALIDATOR_MIN_DIR_CONF,
+        f"{dc:.2f} (≥ {VALIDATOR_MIN_DIR_CONF:.2f})",
+    ))
+
+    # 4. Spread at entry
+    sp = event.get("entry_spread_cents")
+    if sp is None:
+        out.append(("Spread ≤ 8¢", False, "no orderbook"))
+    else:
+        out.append((
+            "Spread ≤ 8¢",
+            int(sp) <= VALIDATOR_MAX_SPREAD_CENTS,
+            f"{int(sp)}¢",
+        ))
+
+    # 5. Book depth at entry
+    depth = int(event.get("entry_depth_within_3c") or 0)
+    out.append((
+        "Book depth ≥ 25",
+        depth >= VALIDATOR_MIN_BOOK_DEPTH,
+        f"{depth} contracts",
+    ))
+
+    # 6. Probability bounds
+    mid = event.get("entry_mid_cents")
+    if mid is None:
+        out.append(("Probability in [15¢, 85¢]", False, "no mid"))
+    else:
+        direction = event.get("direction") or "?"
+        implied = float(mid) if direction == "yes" else (100.0 - float(mid))
+        ok = VALIDATOR_PROB_LO_CENTS <= implied <= VALIDATOR_PROB_HI_CENTS
+        out.append((
+            "Probability in [15¢, 85¢]",
+            ok,
+            f"{implied:.0f}¢",
+        ))
+
+    # 7. Cohort win rate (need ≥ N prior signals AND ≥ 50% win rate)
+    ticker = event.get("ticker") or ""
+    notional = event.get("whale_notional_cents") or 0
+    direction = event.get("direction") or "?"
+    key = (_ticker_prefix(ticker), _size_bucket(int(notional)), direction)
+    row = cohort_winrates.get(key)
+    if row is None:
+        out.append(("Cohort track record", False,
+                     "no matching cohort yet"))
+    elif row["n"] < VALIDATOR_MIN_COHORT_N:
+        out.append((
+            "Cohort track record", False,
+            f"only {row['n']} prior signals (need {VALIDATOR_MIN_COHORT_N})",
+        ))
+    else:
+        ok = row["win_rate"] >= VALIDATOR_MIN_COHORT_WIN
+        out.append((
+            "Cohort track record",
+            ok,
+            f"{row['win_rate']*100:.0f}% win rate over {row['n']} prior signals",
+        ))
+
+    return out
+
+
+# --------------------------------------------------------------------------- #
+# Candidate construction                                                      #
+# --------------------------------------------------------------------------- #
+
+def compute_candidates(events: List[dict],
+                         cohort_winrates: Dict[Tuple[str, str, str], dict],
+                         ) -> List[dict]:
+    """Per-signal feature record for the Watchlist tab + simulated-buy
+    detection. Returns one dict per event with:
+      ticker, signal_ts, direction, notional_cents, zscore,
+      entry_mid_cents, entry_spread_cents, entry_depth_within_3c,
+      cohort_winrate (None if unknown), insider_score,
+      validators (list of (name, ok, detail) tuples),
+      all_pass (bool — every validator passed),
+      simulated_buy (bool — all_pass AND insider_score ≥ threshold),
+      last_favorable_cents (None if not yet captured).
+    """
+    out: List[dict] = []
+    for e in events:
+        validators = validate_whale(e, cohort_winrates)
+        all_pass = all(ok for _name, ok, _detail in validators)
+        score = insider_score(e, cohort_winrates)
+        sim_buy = all_pass and score >= VALIDATOR_INSIDER_THRESHOLD
+        last_fav = _last_favorable(e)
+        coh = cohort_winrate_for(e, cohort_winrates)
+        out.append({
+            "ticker": e.get("ticker") or "",
+            "signal_ts": e.get("signal_ts"),
+            "direction": e.get("direction") or "?",
+            "notional_cents": int(e.get("whale_notional_cents") or 0),
+            "zscore": float(e.get("zscore") or 0.0),
+            "whale_count": int(e.get("whale_count") or 0),
+            "entry_mid_cents": e.get("entry_mid_cents"),
+            "entry_spread_cents": e.get("entry_spread_cents"),
+            "entry_depth_within_3c": int(e.get("entry_depth_within_3c") or 0),
+            "direction_confidence": float(
+                e.get("direction_confidence") or 0.0),
+            "cohort_winrate": coh,
+            "insider_score": score,
+            "validators": validators,
+            "all_pass": all_pass,
+            "simulated_buy": sim_buy,
+            "last_favorable_cents": last_fav,
+            "rejection_reason": e.get("rejection_reason"),
+            "entered": bool(e.get("entered")),
+        })
+    return out
+
+
+# --------------------------------------------------------------------------- #
+# Top-line summary stats                                                      #
+# --------------------------------------------------------------------------- #
+
+def summarize(events: List[dict],
+              candidates: Optional[List[dict]] = None,
+              ) -> dict:
+    """Top-line aggregate stats for the Home tab cards."""
     n = len(events)
     if n == 0:
         return {
-            "n_signals": 0, "n_entered": 0, "pct_entered": 0.0,
-            "mean_fav_30m": None, "win_rate_30m": None,
+            "n_signals": 0, "n_simulated_buys": 0,
+            "n_passed_all_validators": 0,
+            "win_rate_30m": None, "mean_fav_30m": None,
             "first_ts": None, "last_ts": None, "verdict": "no signals yet",
         }
-    n_entered = sum(1 for e in events if e.get("entered"))
     favs: List[float] = [
         f for f in (_last_favorable(e) for e in events) if f is not None
     ]
@@ -163,12 +458,17 @@ def summarize(events: List[dict]) -> dict:
     mean_fav = (sum(favs) / n_with_fav) if favs else None
     n_pos = sum(1 for f in favs if f > 0)
     win_rate = (n_pos / n_with_fav) if n_with_fav else None
-    timestamps = [e.get("signal_ts") for e in events if e.get("signal_ts") is not None]
+    timestamps = [e.get("signal_ts") for e in events
+                  if e.get("signal_ts") is not None]
     first_ts = min(timestamps) if timestamps else None
     last_ts = max(timestamps) if timestamps else None
 
-    # Verdict: too-few / noise / clear-edge. Sample sizes for whale
-    # signals are usually small at the start; be honest about it.
+    n_passed = 0
+    n_sim_buys = 0
+    if candidates:
+        n_passed = sum(1 for c in candidates if c["all_pass"])
+        n_sim_buys = sum(1 for c in candidates if c["simulated_buy"])
+
     if n < 50:
         verdict = "too few signals to judge"
     elif mean_fav is None:
@@ -181,51 +481,441 @@ def summarize(events: List[dict]) -> dict:
         verdict = "noise — keep collecting"
 
     return {
-        "n_signals": n, "n_entered": n_entered,
-        "pct_entered": (n_entered / n) if n else 0.0,
-        "mean_fav_30m": mean_fav, "win_rate_30m": win_rate,
+        "n_signals": n,
+        "n_simulated_buys": n_sim_buys,
+        "n_passed_all_validators": n_passed,
+        "win_rate_30m": win_rate,
+        "mean_fav_30m": mean_fav,
         "first_ts": first_ts, "last_ts": last_ts, "verdict": verdict,
     }
 
 
-def standouts(events: List[dict], sort_by: str = "recent",
-              limit: int = 50) -> List[dict]:
-    """Rank standout events. Recognised sorts:
-      - recent     (default; most recent first)
-      - size       (largest notional first)
-      - zscore     (most-anomalous size-vs-history first)
-      - favorable  (best +30m payoff first)
-      - rejected   (only show non-entered, most recent first)
-      - entered    (only show entered, most recent first)
-    """
-    pool = list(events)
-    if sort_by == "rejected":
-        pool = [e for e in pool if not e.get("entered")]
-        pool.sort(key=lambda e: e.get("signal_ts") or 0, reverse=True)
-    elif sort_by == "entered":
-        pool = [e for e in pool if e.get("entered")]
-        pool.sort(key=lambda e: e.get("signal_ts") or 0, reverse=True)
-    elif sort_by == "size":
-        pool.sort(key=lambda e: e.get("whale_notional_cents") or 0, reverse=True)
-    elif sort_by == "zscore":
-        pool.sort(key=lambda e: e.get("zscore") or 0, reverse=True)
-    elif sort_by == "favorable":
-        pool.sort(key=lambda e: _last_favorable(e) if _last_favorable(e) is not None else -1e9,
-                  reverse=True)
-    else:  # recent
-        pool.sort(key=lambda e: e.get("signal_ts") or 0, reverse=True)
-    return pool[:limit]
+# --------------------------------------------------------------------------- #
+# Formatters                                                                  #
+# --------------------------------------------------------------------------- #
 
+def _fmt_dollars(cents: int | float | None) -> str:
+    if cents is None:
+        return "—"
+    return f"${cents/100:.2f}"
+
+
+def _fmt_signed_cents(cents: float | None) -> str:
+    if cents is None:
+        return "—"
+    sign = "+" if cents >= 0 else "−"
+    return f"{sign}{abs(cents):.1f}¢"
+
+
+def _fmt_ts(ts: float | str | None) -> str:
+    if ts is None:
+        return "—"
+    if isinstance(ts, (int, float)):
+        try:
+            dt = datetime.fromtimestamp(float(ts), tz=timezone.utc)
+            return dt.strftime("%Y-%m-%d %H:%M:%SZ")
+        except (TypeError, ValueError, OSError):
+            return "—"
+    return str(ts)[:19].replace("T", " ")
+
+
+def _fmt_pct(p: float | None) -> str:
+    if p is None:
+        return "—"
+    return f"{p*100:.0f}%"
+
+
+def _fmt_age(signal_ts: float | None) -> str:
+    """Compact age string — '3m', '47m', '4.2h', '2.1d'."""
+    if signal_ts is None:
+        return "—"
+    try:
+        secs = max(0, time.time() - float(signal_ts))
+    except (TypeError, ValueError):
+        return "—"
+    if secs < 60:
+        return f"{int(secs)}s"
+    if secs < 3600:
+        return f"{int(secs/60)}m"
+    if secs < 86400:
+        return f"{secs/3600:.1f}h"
+    return f"{secs/86400:.1f}d"
+
+
+# --------------------------------------------------------------------------- #
+# Render — tab-based                                                          #
+# --------------------------------------------------------------------------- #
+
+WHALE_TABS = [
+    ("home", "Home"),
+    ("watchlist", "Watchlist"),
+    ("history", "History"),
+]
+
+
+def render_page(
+    *,
+    events: List[dict],
+    orders: List[dict],
+    available_bots: List[dict],
+    current_bot_key: str,
+    sort_by: str = "recent",
+    tab_key: str = "home",
+) -> str:
+    """Whole HTML page for the whale-watcher view.
+
+    Reuses the standard dashboard's CSS via a lazy import so the
+    layout idioms (cards, tabs, tables, modals) match the main
+    dashboard tabs. Three tabs:
+      Home       — aggregate stats + simulated current bets
+      Watchlist  — every recent unusual whale + its validator status
+      History    — completed signals with realised +30m outcomes
+    """
+    # Imported lazily to avoid a circular import at module load time.
+    from .dashboard import CSS, _favicon_link, _render_bot_filter
+
+    # Compute features once — feed to all three tabs.
+    cohorts = compute_cohort_winrates(events)
+    candidates = compute_candidates(events, cohorts)
+    summary = summarize(events, candidates)
+
+    # Validate tab.
+    valid_tabs = {k for k, _label in WHALE_TABS}
+    active_tab = tab_key if tab_key in valid_tabs else "home"
+
+    out: List[str] = []
+    out.append("<!doctype html><html><head>")
+    out.append("<meta charset='utf-8'>")
+    out.append("<meta http-equiv='refresh' content='30'>")
+    out.append("<title>Whale Watcher — signal analysis</title>")
+    out.append(_favicon_link())
+    out.append(f"<style>{CSS}</style>")
+    out.append("<style>"
+               ".whale-stats { display:grid; grid-template-columns: repeat(4, 1fr);"
+               " gap: 14px; margin: 8px 0 22px 0; }"
+               ".whale-stats .card { padding: 14px 16px; }"
+               ".whale-stats .label { color:#8b949e; font-size:11px; "
+               "text-transform:uppercase; letter-spacing:0.06em; }"
+               ".whale-stats .value { font-size:22px; font-weight:600; "
+               "color:#f0f6fc; margin-top:4px; }"
+               ".verdict.good { color:#3fb950; }"
+               ".verdict.bad  { color:#f85149; }"
+               ".verdict.gray { color:#8b949e; }"
+               ".side-yes { color:#3fb950; font-weight:600; }"
+               ".side-no  { color:#f85149; font-weight:600; }"
+               ".pos { color:#3fb950; }"
+               ".neg { color:#f85149; }"
+               ".whale-score { display:inline-block; padding:2px 8px; "
+                  "border-radius:10px; font-size:11px; font-weight:600; "
+                  "font-variant-numeric: tabular-nums; }"
+               ".whale-score.high { background: rgba(63,185,80,0.18); "
+                  "color:#3fb950; border:1px solid rgba(63,185,80,0.35); }"
+               ".whale-score.med  { background: rgba(212,153,0,0.18); "
+                  "color:#d49900; border:1px solid rgba(212,153,0,0.35); }"
+               ".whale-score.low  { background: rgba(139,148,158,0.15); "
+                  "color:#8b949e; border:1px solid rgba(139,148,158,0.30); }"
+               ".valid-pass { color:#3fb950; }"
+               ".valid-fail { color:#f85149; }"
+               ".valid-pill { display:inline-block; padding:1px 6px; "
+                  "border-radius:4px; font-size:10px; font-weight:600; "
+                  "text-transform:uppercase; letter-spacing:0.04em; "
+                  "margin-right:4px; line-height:1.5; }"
+               ".valid-pill.pass { background:rgba(63,185,80,0.15); "
+                  "color:#3fb950; border:1px solid rgba(63,185,80,0.30); }"
+               ".valid-pill.fail { background:rgba(248,81,73,0.15); "
+                  "color:#f85149; border:1px solid rgba(248,81,73,0.30); }"
+               "</style>")
+    out.append("</head><body>")
+    out.append("<h1>Whale Watcher — signal analysis</h1>")
+    out.append("<div class='meta'>"
+               f"Loaded {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%SZ')}"
+               " · auto-refresh every 30s · "
+               "Kalshi public API does not expose trader identity, so the "
+               "\"insider probability\" below is a heuristic derived from "
+               "the trade's own size / cohort track-record / book quality."
+               "</div>")
+
+    _render_bot_filter(out, available_bots, current_bot_key)
+
+    # ── Tab bar ───────────────────────────────────────────────────────
+    out.append("<div class='tab-bar'>")
+    for k, label in WHALE_TABS:
+        cls = "tab-pill" + (" tab-pill-active" if k == active_tab else "")
+        href = f"?bot={html.escape(current_bot_key)}&tab={html.escape(k)}"
+        out.append(f"<a class='{cls}' href='{href}'>{html.escape(label)}</a>")
+    out.append("</div>")
+
+    if summary["n_signals"] == 0:
+        _render_empty_state(out)
+        out.append("</body></html>")
+        return "".join(out)
+
+    # ── HOME tab ──────────────────────────────────────────────────────
+    home_cls = ("tab-panel" + (" tab-panel-active"
+                                if active_tab == "home" else ""))
+    out.append(f"<div class='{home_cls}'>")
+    _render_summary_cards(out, summary)
+    _render_simulated_buys(out, candidates)
+    out.append("</div>")
+
+    # ── WATCHLIST tab ─────────────────────────────────────────────────
+    wl_cls = ("tab-panel" + (" tab-panel-active"
+                              if active_tab == "watchlist" else ""))
+    out.append(f"<div class='{wl_cls}'>")
+    _render_unusual_whales(out, candidates)
+    out.append("</div>")
+
+    # ── HISTORY tab ───────────────────────────────────────────────────
+    hist_cls = ("tab-panel" + (" tab-panel-active"
+                                if active_tab == "history" else ""))
+    out.append(f"<div class='{hist_cls}'>")
+    _render_signal_history(out, candidates, cohorts)
+    out.append("</div>")
+
+    out.append("</body></html>")
+    return "".join(out)
+
+
+# --------------------------------------------------------------------------- #
+# Per-tab render helpers                                                      #
+# --------------------------------------------------------------------------- #
+
+def _render_summary_cards(out: List[str], summary: dict) -> None:
+    out.append("<div class='whale-stats'>")
+    out.append(f"<div class='card'><div class='label'>Whale signals</div>"
+               f"<div class='value'>{summary['n_signals']}</div></div>")
+    out.append(f"<div class='card'><div class='label'>Passed all validators</div>"
+               f"<div class='value'>{summary['n_passed_all_validators']}</div></div>")
+    out.append(f"<div class='card'><div class='label'>Simulated buys</div>"
+               f"<div class='value'>{summary['n_simulated_buys']}</div></div>")
+    win = summary.get("win_rate_30m")
+    win_cls = ("good" if win is not None and win > 0.55
+               else ("bad" if win is not None and win < 0.45 else "gray"))
+    win_str = _fmt_pct(win) if win is not None else "—"
+    out.append(f"<div class='card'><div class='label'>+30m win rate</div>"
+               f"<div class='value verdict {win_cls}'>{win_str}</div></div>")
+    out.append("</div>")
+
+
+def _render_simulated_buys(out: List[str], candidates: List[dict]) -> None:
+    """Current-bets table — only signals that passed every validator
+    AND have insider_score ≥ threshold. Sort by recency, highest
+    insider score first.
+    """
+    sims = [c for c in candidates if c["simulated_buy"]]
+    sims.sort(key=lambda c: (c.get("signal_ts") or 0, c["insider_score"]),
+                reverse=True)
+
+    out.append("<h3 class='subhead'>Current bets — simulated</h3>")
+    if not sims:
+        out.append("<div class='empty'>No signals have cleared every "
+                   "validator yet. The Watchlist tab shows everything "
+                   "that triggered.</div>")
+        return
+    out.append("<div class='small gray' style='margin-bottom:8px;'>"
+               "Whale signals that passed every gate AND scored "
+               f"≥ {VALIDATOR_INSIDER_THRESHOLD:.2f} on insider probability. "
+               "These are the trades the bot would have placed.</div>")
+    out.append("<table><thead><tr>"
+               "<th>Signal time</th><th>Ticker</th><th>Side</th>"
+               "<th class='num'>Whale size</th><th class='num'>Z-score</th>"
+               "<th class='num'>Entry mid</th><th class='num'>Insider P</th>"
+               "<th class='num'>+30m</th>"
+               "</tr></thead><tbody>")
+    for c in sims[:50]:
+        side_cls = "side-yes" if c["direction"] == "yes" else "side-no"
+        score_cls = _score_class(c["insider_score"])
+        fav = c.get("last_favorable_cents")
+        fav_cls = ("pos" if fav is not None and fav > 0
+                    else ("neg" if fav is not None and fav < 0 else "gray"))
+        out.append(
+            f"<tr><td>{html.escape(_fmt_ts(c['signal_ts']))}</td>"
+            f"<td class='mono'>{html.escape(c['ticker'])}</td>"
+            f"<td><span class='{side_cls}'>{c['direction'].upper()}</span></td>"
+            f"<td class='num'>{_fmt_dollars(c['notional_cents'])}</td>"
+            f"<td class='num'>{c['zscore']:.2f}</td>"
+            f"<td class='num'>"
+            f"{c['entry_mid_cents']:.0f}¢"
+            if c.get('entry_mid_cents') is not None else "<td class='num'>—"
+            f"</td>"
+            f"<td class='num'><span class='whale-score {score_cls}'>"
+            f"{c['insider_score']*100:.0f}%</span></td>"
+            f"<td class='num {fav_cls}'>{_fmt_signed_cents(fav)}</td>"
+            f"</tr>"
+        )
+    out.append("</tbody></table>")
+
+
+def _render_unusual_whales(out: List[str], candidates: List[dict]) -> None:
+    """Watchlist tab — every candidate signal with score + validator
+    pass/fail. Sort by insider score (highest first).
+    """
+    out.append("<h3 class='subhead'>Unusual whale signals</h3>")
+    if not candidates:
+        out.append("<div class='empty'>No signals captured yet.</div>")
+        return
+    out.append("<div class='small gray' style='margin-bottom:8px;'>"
+               "Every flagged whale trade, ranked by insider probability. "
+               "Insider P ≥ "
+               f"{VALIDATOR_INSIDER_THRESHOLD*100:.0f}% AND every validator "
+               "green = the bot would simulate a buy (see Home tab).</div>")
+    pool = sorted(candidates, key=lambda c: c["insider_score"], reverse=True)
+    out.append("<table><thead><tr>"
+               "<th>Age</th><th>Ticker</th><th>Side</th>"
+               "<th class='num'>Bet size</th>"
+               "<th class='num'>Z-score</th>"
+               "<th class='num'>Cohort win %</th>"
+               "<th class='num'>Insider P</th>"
+               "<th>Validators</th>"
+               "<th>Simulate buy?</th>"
+               "</tr></thead><tbody>")
+    for c in pool[:200]:
+        side_cls = "side-yes" if c["direction"] == "yes" else "side-no"
+        score_cls = _score_class(c["insider_score"])
+        coh = c["cohort_winrate"]
+        coh_str = _fmt_pct(coh) if coh is not None else "—"
+        # Validators summary as inline pills.
+        pills = []
+        for name, ok, _detail in c["validators"]:
+            cls = "valid-pill " + ("pass" if ok else "fail")
+            short = name.split(" ")[0][:8]  # compact
+            pills.append(f"<span class='{cls}' title='{html.escape(_validator_tooltip(name, ok, _detail))}'>{html.escape(short)}</span>")
+        sim_badge = (
+            "<span class='badge badge-yes'>YES</span>"
+            if c["simulated_buy"]
+            else "<span class='badge badge-skip'>—</span>"
+        )
+        out.append(
+            f"<tr><td>{html.escape(_fmt_age(c['signal_ts']))}</td>"
+            f"<td class='mono'>{html.escape(c['ticker'])}</td>"
+            f"<td><span class='{side_cls}'>{c['direction'].upper()}</span></td>"
+            f"<td class='num'>{_fmt_dollars(c['notional_cents'])}</td>"
+            f"<td class='num'>{c['zscore']:.2f}</td>"
+            f"<td class='num'>{coh_str}</td>"
+            f"<td class='num'><span class='whale-score {score_cls}'>"
+            f"{c['insider_score']*100:.0f}%</span></td>"
+            f"<td>{''.join(pills)}</td>"
+            f"<td>{sim_badge}</td>"
+            f"</tr>"
+        )
+    out.append("</tbody></table>")
+
+
+def _render_signal_history(out: List[str], candidates: List[dict],
+                             cohorts: Dict[Tuple[str, str, str], dict],
+                             ) -> None:
+    """History tab — completed signals (those with a captured +30m
+    favorable_cents) ordered by time, plus a cohort breakdown table.
+    """
+    completed = [c for c in candidates
+                 if c["last_favorable_cents"] is not None]
+    completed.sort(key=lambda c: c.get("signal_ts") or 0, reverse=True)
+
+    out.append("<h3 class='subhead'>Completed whale signals (with +30m outcome)</h3>")
+    if not completed:
+        out.append("<div class='empty'>No signals have completed their "
+                   "+30m checkpoint yet.</div>")
+    else:
+        out.append("<table><thead><tr>"
+                   "<th>Signal time</th><th>Ticker</th><th>Side</th>"
+                   "<th class='num'>Bet size</th>"
+                   "<th class='num'>Z-score</th>"
+                   "<th class='num'>Insider P</th>"
+                   "<th class='num'>+30m favorable</th>"
+                   "<th>Outcome</th>"
+                   "</tr></thead><tbody>")
+        for c in completed[:200]:
+            side_cls = "side-yes" if c["direction"] == "yes" else "side-no"
+            score_cls = _score_class(c["insider_score"])
+            fav = c["last_favorable_cents"]
+            fav_cls = ("pos" if fav is not None and fav > 0
+                        else ("neg" if fav is not None and fav < 0 else "gray"))
+            outcome = ("WIN" if fav is not None and fav > 0
+                        else ("LOSS" if fav is not None and fav < 0
+                              else "FLAT"))
+            out.append(
+                f"<tr><td>{html.escape(_fmt_ts(c['signal_ts']))}</td>"
+                f"<td class='mono'>{html.escape(c['ticker'])}</td>"
+                f"<td><span class='{side_cls}'>{c['direction'].upper()}</span></td>"
+                f"<td class='num'>{_fmt_dollars(c['notional_cents'])}</td>"
+                f"<td class='num'>{c['zscore']:.2f}</td>"
+                f"<td class='num'><span class='whale-score {score_cls}'>"
+                f"{c['insider_score']*100:.0f}%</span></td>"
+                f"<td class='num {fav_cls}'>{_fmt_signed_cents(fav)}</td>"
+                f"<td class='{fav_cls}'>{outcome}</td>"
+                f"</tr>"
+            )
+        out.append("</tbody></table>")
+
+    # Cohort breakdown
+    rows = sorted(cohorts.items(),
+                    key=lambda kv: kv[1]["win_rate"], reverse=True)
+    if rows:
+        out.append("<h3 class='subhead' style='margin-top:24px;'>"
+                   "Cohort track records</h3>")
+        out.append("<div class='small gray' style='margin-bottom:8px;'>"
+                   "Pseudo-identity buckets (ticker family × bet size × "
+                   "side). Cohort win rate is the score input for the "
+                   "Insider P column above.</div>")
+        out.append("<table><thead><tr>"
+                   "<th>Cohort</th>"
+                   "<th class='num'>n signals</th>"
+                   "<th class='num'>Win rate</th>"
+                   "<th class='num'>Mean +30m</th>"
+                   "</tr></thead><tbody>")
+        for (prefix, size, direction), row in rows[:50]:
+            wr = row["win_rate"]
+            wr_cls = ("pos" if wr > 0.55 else ("neg" if wr < 0.45 else "gray"))
+            mf = row["mean_fav_30m"]
+            mf_cls = ("pos" if mf > 0 else ("neg" if mf < 0 else "gray"))
+            out.append(
+                f"<tr><td><span class='mono'>{html.escape(prefix)}</span> · "
+                f"{html.escape(size)} · "
+                f"<span class='side-{direction}'>{direction.upper()}</span></td>"
+                f"<td class='num'>{row['n']}</td>"
+                f"<td class='num {wr_cls}'>{wr*100:.0f}%</td>"
+                f"<td class='num {mf_cls}'>{_fmt_signed_cents(mf)}</td>"
+                f"</tr>"
+            )
+        out.append("</tbody></table>")
+
+
+def _render_empty_state(out: List[str]) -> None:
+    out.append("<div class='empty' style='padding:40px 20px;'>"
+               "No whale signals captured yet. The whale-watcher bot "
+               "writes one row to <code>signal_tracking.jsonl</code> "
+               "per detected whale event; this page renders them as "
+               "they arrive.</div>")
+
+
+# --------------------------------------------------------------------------- #
+# Helpers                                                                     #
+# --------------------------------------------------------------------------- #
+
+def _score_class(score: float) -> str:
+    if score >= VALIDATOR_INSIDER_THRESHOLD:
+        return "high"
+    if score >= 0.5:
+        return "med"
+    return "low"
+
+
+def _validator_tooltip(name: str, ok: bool, detail: str) -> str:
+    return f"{name}: {'PASS' if ok else 'FAIL'} — {detail}"
+
+
+# --------------------------------------------------------------------------- #
+# Backwards-compat surface — older imports                                    #
+# --------------------------------------------------------------------------- #
+#
+# The legacy single-page render imported `compute_cohorts` etc. Keep
+# thin shims that delegate to the new helpers so any external caller
+# (tests, scripts) continues to work.
 
 def compute_cohorts(events: List[dict], min_n: int = 3) -> List[dict]:
-    """Bucket events by (ticker_prefix, size_bucket, direction) and
-    rank by mean favorable@30m. Cohorts with fewer than `min_n`
-    samples are filtered out — small N is noise.
-
-    Returns list of dicts:
-      { "key": str, "n": int, "n_entered": int, "mean_fav_30m": float,
-        "win_rate": float, "median_size_dollars": float,
-        "ticker_prefix": str, "size_bucket": str, "direction": str }
+    """Legacy-shape cohort list (unchanged shape from prior callers).
+    Computed off the same buckets as compute_cohort_winrates but with
+    extra fields the old UI consumed.
     """
     buckets: Dict[Tuple[str, str, str], List[dict]] = defaultdict(list)
     for e in events:
@@ -234,7 +924,6 @@ def compute_cohorts(events: List[dict], min_n: int = 3) -> List[dict]:
         direction = e.get("direction") or "?"
         key = (_ticker_prefix(ticker), _size_bucket(int(notional)), direction)
         buckets[key].append(e)
-
     out: List[dict] = []
     for (prefix, size, direction), members in buckets.items():
         if len(members) < min_n:
@@ -259,384 +948,32 @@ def compute_cohorts(events: List[dict], min_n: int = 3) -> List[dict]:
             "win_rate": win_rate,
             "median_size_dollars": median,
         })
-    # Rank by mean_fav, but down-weight small N a bit so a 3/3 win rate
-    # doesn't outrank a 8/15 cohort with bigger absolute payoff.
-    out.sort(key=lambda c: c["mean_fav_30m"] * math.log(c["n"] + 1),
-             reverse=True)
+    out.sort(key=lambda r: r["mean_fav_30m"], reverse=True)
     return out
 
 
+def standouts(events: List[dict], sort_by: str = "recent",
+              limit: int = 50) -> List[dict]:
+    """Legacy sorter — kept for any test that still imports it."""
+    pool = list(events)
+    if sort_by == "size":
+        pool.sort(key=lambda e: e.get("whale_notional_cents") or 0, reverse=True)
+    elif sort_by == "zscore":
+        pool.sort(key=lambda e: e.get("zscore") or 0, reverse=True)
+    elif sort_by == "favorable":
+        pool.sort(key=lambda e: _last_favorable(e) if _last_favorable(e) is not None else -1e9,
+                  reverse=True)
+    else:  # recent / unknown
+        pool.sort(key=lambda e: e.get("signal_ts") or 0, reverse=True)
+    return pool[:limit]
+
+
 def rejection_histogram(events: List[dict]) -> List[Tuple[str, int]]:
-    counts: Counter = Counter()
+    """Legacy — count rejection reasons across all events."""
+    cnt: Counter = Counter()
     for e in events:
         if e.get("entered"):
             continue
-        reason = e.get("rejection_reason") or "(no reason recorded)"
-        counts[reason] += 1
-    return counts.most_common(15)
-
-
-# --------------------------------------------------------------------------- #
-# Render helpers — mirror the standard dashboard's CSS classes so the
-# whale page looks at home in the shared shell.
-# --------------------------------------------------------------------------- #
-
-def _fmt_dollars(cents: int | float | None) -> str:
-    if cents is None:
-        return "—"
-    return f"${float(cents) / 100:,.2f}"
-
-
-def _fmt_signed_cents(cents: float | None) -> str:
-    if cents is None:
-        return "—"
-    sign = "+" if cents > 0 else ("−" if cents < 0 else "")
-    return f"{sign}{abs(cents):.1f}c"
-
-
-def _fmt_ts(ts: float | str | None) -> str:
-    if ts is None:
-        return "—"
-    if isinstance(ts, str):
-        try:
-            t = datetime.fromisoformat(ts.replace("Z", "+00:00"))
-        except ValueError:
-            return ts
-    else:
-        t = datetime.fromtimestamp(float(ts), tz=timezone.utc)
-    return t.strftime("%Y-%m-%d %H:%M:%SZ")
-
-
-def _fmt_pct(p: float | None) -> str:
-    if p is None:
-        return "—"
-    return f"{p * 100:.1f}%"
-
-
-def _verdict_class(verdict: str) -> str:
-    if verdict.startswith("looks like"):
-        return "good"
-    if verdict.startswith("fading"):
-        return "bad"
-    if verdict.startswith("too few") or verdict.startswith("no"):
-        return "gray"
-    return ""
-
-
-def render_page(
-    *,
-    events: List[dict],
-    orders: List[dict],
-    available_bots: List[dict],
-    current_bot_key: str,
-    sort_by: str = "recent",
-) -> str:
-    """Whole HTML page for the whale-watcher view.
-
-    Reuses the standard dashboard's CSS via a <link> import isn't possible
-    (CSS is embedded), so we re-import the CSS string at call site.
-    """
-    # Imported lazily to avoid a circular import at module load time.
-    from .dashboard import CSS, _favicon_link, _render_bot_filter
-
-    summary = summarize(events)
-    rows = standouts(events, sort_by=sort_by, limit=50)
-    cohorts = compute_cohorts(events, min_n=3)
-    rej = rejection_histogram(events)
-
-    out: List[str] = []
-    out.append("<!doctype html><html><head>")
-    out.append("<meta charset='utf-8'>")
-    out.append("<meta http-equiv='refresh' content='30'>")
-    out.append("<title>Whale Watcher — signal analysis</title>")
-    out.append(_favicon_link())
-    out.append(f"<style>{CSS}</style>")
-    out.append("<style>"
-               ".whale-stats { display:grid; grid-template-columns: repeat(4, 1fr);"
-               " gap: 14px; margin: 8px 0 22px 0; }"
-               ".whale-stats .card { padding: 14px 16px; }"
-               ".whale-stats .label { color:#8b949e; font-size:11px; "
-               "text-transform:uppercase; letter-spacing:0.06em; }"
-               ".whale-stats .value { font-size:22px; font-weight:600; "
-               "color:#f0f6fc; margin-top:4px; }"
-               ".verdict.good { color:#3fb950; }"
-               ".verdict.bad  { color:#f85149; }"
-               ".verdict.gray { color:#8b949e; }"
-               ".sort-bar { display:flex; gap:8px; margin: 6px 0 14px 0;"
-               " flex-wrap: wrap; }"
-               ".sort-pill { padding: 4px 10px; border:1px solid #30363d;"
-               " border-radius: 999px; color:#8b949e; text-decoration:none;"
-               " font-size: 12px; }"
-               ".sort-pill.active { background:#1f6feb22; color:#58a6ff;"
-               " border-color:#1f6feb55; }"
-               ".dim { color: #8b949e; }"
-               ".side-yes { color:#3fb950; font-weight:600; }"
-               ".side-no  { color:#f85149; font-weight:600; }"
-               ".pos { color:#3fb950; }"
-               ".neg { color:#f85149; }"
-               ".bench { padding: 2px 6px; background:#21262d; border-radius:4px;"
-               " font-family: ui-monospace, SFMono-Regular, Consolas, monospace;"
-               " font-size: 11px; }"
-               "</style>")
-    out.append("</head><body>")
-    out.append("<h1>Whale Watcher — signal analysis</h1>")
-    out.append("<div class='meta'>"
-               f"Loaded {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%SZ')}"
-               " · auto-refresh every 30s · "
-               "Kalshi public API does not expose trader identity, so each "
-               "row below is one anonymous large trade flagged by the bot's "
-               "rolling z-score detector."
-               "</div>")
-
-    _render_bot_filter(out, available_bots, current_bot_key)
-
-    # ------- Aggregate stats card row -------
-    _render_summary_cards(out, summary)
-
-    if summary["n_signals"] == 0:
-        _render_empty_state(out)
-        out.append("</body></html>")
-        return "".join(out)
-
-    # ------- Standout events table -------
-    _render_standouts(out, rows, sort_by)
-
-    # ------- Bot's reactive entries -------
-    _render_orders(out, orders)
-
-    # ------- Cohorts (pseudo-identity) -------
-    _render_cohorts(out, cohorts)
-
-    # ------- Rejection reason histogram -------
-    _render_rejections(out, rej)
-
-    out.append("</body></html>")
-    return "".join(out)
-
-
-def _render_summary_cards(out: List[str], summary: dict) -> None:
-    out.append("<div class='whale-stats'>")
-    out.append("<div class='card'><div class='label'>Signals captured</div>"
-               f"<div class='value'>{summary['n_signals']:,}</div>"
-               f"<div class='dim small'>"
-               f"{_fmt_ts(summary['first_ts'])} → {_fmt_ts(summary['last_ts'])}"
-               "</div></div>")
-    out.append("<div class='card'><div class='label'>Bot entered</div>"
-               f"<div class='value'>{summary['n_entered']:,} "
-               f"<span class='dim small'>({_fmt_pct(summary['pct_entered'])})</span>"
-               "</div><div class='dim small'>signals that survived all gates</div></div>")
-    fav = summary["mean_fav_30m"]
-    fav_cls = "pos" if (fav is not None and fav > 0) else ("neg" if fav is not None and fav < 0 else "")
-    out.append("<div class='card'><div class='label'>Mean favorable @ +30m</div>"
-               f"<div class='value {fav_cls}'>{_fmt_signed_cents(fav)}</div>"
-               "<div class='dim small'>direction-signed mid drift after the whale hit</div>"
-               "</div>")
-    wr = summary["win_rate_30m"]
-    out.append("<div class='card'><div class='label'>Signal win rate @ +30m</div>"
-               f"<div class='value'>{_fmt_pct(wr)}</div>"
-               f"<div class='dim small verdict {_verdict_class(summary['verdict'])}'>"
-               f"{html.escape(summary['verdict'])}</div></div>")
-    out.append("</div>")
-
-
-def _render_empty_state(out: List[str]) -> None:
-    out.append("<div class='section'><h2>No whale events captured yet</h2>"
-               "<div class='body'><div class='empty'>"
-               "Start the whale-watcher bot (<code>systemctl start "
-               "kalshi-whale-bot</code>) and let it run for a few hours. "
-               "Detected whale events are flushed to "
-               "<code>data/signal_tracking.jsonl</code> only after every "
-               "checkpoint resolves (default +1m / +5m / +15m / +30m), "
-               "so the first row takes ~30 minutes to appear."
-               "</div></div></div>")
-
-
-def _render_standouts(out: List[str], rows: List[dict], sort_by: str) -> None:
-    sorts = [
-        ("recent", "Recent"),
-        ("size", "Biggest"),
-        ("zscore", "Most anomalous"),
-        ("favorable", "Best payoff"),
-        ("entered", "Bot entered"),
-        ("rejected", "Bot rejected"),
-    ]
-    out.append("<div class='section'>")
-    out.append("<h2>Standout whale events</h2>")
-    out.append("<div class='body'>")
-    out.append("<div class='sort-bar'>")
-    for key, label in sorts:
-        cls = "sort-pill active" if key == sort_by else "sort-pill"
-        out.append(f"<a class='{cls}' "
-                   f"href='?bot=whale-watcher&sort={key}'>{label}</a>")
-    out.append("</div>")
-    if not rows:
-        out.append("<div class='empty'>No matches.</div></div></div>")
-        return
-
-    out.append("<table>")
-    out.append("<thead><tr>"
-               "<th>When</th><th>Ticker</th><th>Side</th>"
-               "<th class='right'>Size</th>"
-               "<th class='right'>Z</th>"
-               "<th class='right'>Dir conf</th>"
-               "<th>Bot</th>"
-               "<th class='right'>Fav +1m</th>"
-               "<th class='right'>+5m</th>"
-               "<th class='right'>+15m</th>"
-               "<th class='right'>+30m</th>"
-               "</tr></thead><tbody>")
-    for e in rows:
-        side = (e.get("direction") or "?").lower()
-        side_html = (f"<span class='side-{side}'>{side.upper()}</span>"
-                     if side in ("yes", "no") else html.escape(side))
-        if e.get("entered"):
-            bot_cell = "<span class='pos'>ENTERED</span>"
-        else:
-            reason = html.escape(e.get("rejection_reason") or "—")
-            bot_cell = f"<span class='dim' title='{reason}'>skip · {reason}</span>"
-        f1 = _favorable_at(e, 0)
-        f5 = _favorable_at(e, 1)
-        f15 = _favorable_at(e, 2)
-        f30 = _favorable_at(e, 3)
-        out.append(
-            "<tr>"
-            f"<td class='dim small'>{_fmt_ts(e.get('signal_ts'))}</td>"
-            f"<td><span class='bench'>{html.escape(e.get('ticker') or '—')}</span></td>"
-            f"<td>{side_html}</td>"
-            f"<td class='right'>{_fmt_dollars(e.get('whale_notional_cents'))}</td>"
-            f"<td class='right'>{(e.get('zscore') or 0):.1f}</td>"
-            f"<td class='right'>{(e.get('direction_confidence') or 0):.2f}</td>"
-            f"<td>{bot_cell}</td>"
-            f"<td class='right {_pos_neg(f1)}'>{_fmt_signed_cents(f1)}</td>"
-            f"<td class='right {_pos_neg(f5)}'>{_fmt_signed_cents(f5)}</td>"
-            f"<td class='right {_pos_neg(f15)}'>{_fmt_signed_cents(f15)}</td>"
-            f"<td class='right {_pos_neg(f30)}'>{_fmt_signed_cents(f30)}</td>"
-            "</tr>"
-        )
-    out.append("</tbody></table>")
-    out.append("</div></div>")
-
-
-def _pos_neg(v: Optional[float]) -> str:
-    if v is None:
-        return ""
-    return "pos" if v > 0 else ("neg" if v < 0 else "")
-
-
-def _render_orders(out: List[str], orders: List[dict]) -> None:
-    out.append("<div class='section'><h2>Bot's reactive entries</h2>"
-               "<div class='body'>")
-    if not orders:
-        out.append("<div class='empty'>The bot hasn't placed any orders. "
-                   "<code>data/orders.jsonl</code> is missing or empty.</div>"
-                   "</div></div>")
-        return
-    # Most recent first.
-    rows = sorted(orders, key=lambda o: o.get("ts") or "", reverse=True)[:30]
-    out.append("<table>")
-    out.append("<thead><tr>"
-               "<th>When</th><th>Ticker</th><th>Side</th>"
-               "<th class='right'>Count</th>"
-               "<th class='right'>Limit</th>"
-               "<th class='right'>Notional</th>"
-               "<th class='right'>Z</th>"
-               "<th>Reason</th>"
-               "<th>Mode</th>"
-               "</tr></thead><tbody>")
-    for o in rows:
-        order = o.get("order") or {}
-        sig = o.get("signal") or {}
-        side = (order.get("side") or "?").lower()
-        side_html = (f"<span class='side-{side}'>{side.upper()}</span>"
-                     if side in ("yes", "no") else html.escape(side))
-        count = int(order.get("count") or 0)
-        limit_c = int(order.get("limit_price_cents") or 0)
-        notional = count * limit_c
-        mode = "DRY" if order.get("dry_run") else "LIVE"
-        mode_cls = "dim" if order.get("dry_run") else "pos"
-        out.append(
-            "<tr>"
-            f"<td class='dim small'>{_fmt_ts(o.get('ts'))}</td>"
-            f"<td><span class='bench'>{html.escape(sig.get('ticker') or '—')}</span></td>"
-            f"<td>{side_html}</td>"
-            f"<td class='right'>{count}</td>"
-            f"<td class='right'>{limit_c}c</td>"
-            f"<td class='right'>{_fmt_dollars(notional)}</td>"
-            f"<td class='right'>{(sig.get('zscore') or 0):.1f}</td>"
-            f"<td class='dim small'>{html.escape(sig.get('reason') or '—')}</td>"
-            f"<td class='{mode_cls}'>{mode}</td>"
-            "</tr>"
-        )
-    out.append("</tbody></table>")
-    out.append("<div class='dim small' style='margin-top:8px'>"
-               "Realized P&amp;L is not yet plumbed: the whale bot's "
-               "position manager logs exits to journalctl but doesn't "
-               "append them to <code>orders.jsonl</code>. Add an exit "
-               "writer in <code>main.py</code> to surface fills here."
-               "</div>")
-    out.append("</div></div>")
-
-
-def _render_cohorts(out: List[str], cohorts: List[dict]) -> None:
-    out.append("<div class='section'><h2>Cohorts &mdash; pseudo-identity by pattern</h2>")
-    out.append("<div class='body'>")
-    out.append("<div class='dim small' style='margin-bottom:10px'>"
-               "Bucket every whale event by ticker prefix &times; size band &times; "
-               "direction, then rank by mean favorable-cents at +30m, log-weighted "
-               "by sample size. Cohorts with N&lt;3 are filtered out as noise. "
-               "If the same anonymous trader keeps hitting the same kind of market "
-               "with the same kind of size, their pattern bubbles to the top here."
-               "</div>")
-    if not cohorts:
-        out.append("<div class='empty'>No cohort has accumulated 3+ samples yet.</div>"
-                   "</div></div>")
-        return
-    out.append("<table>")
-    out.append("<thead><tr>"
-               "<th>Cohort</th>"
-               "<th class='right'>N</th>"
-               "<th class='right'>Bot took</th>"
-               "<th class='right'>Median size</th>"
-               "<th class='right'>Mean fav +30m</th>"
-               "<th class='right'>Win rate</th>"
-               "</tr></thead><tbody>")
-    for c in cohorts[:30]:
-        fav = c["mean_fav_30m"]
-        out.append(
-            "<tr>"
-            f"<td><span class='bench'>{html.escape(c['key'])}</span></td>"
-            f"<td class='right'>{c['n']}</td>"
-            f"<td class='right'>{c['n_entered']}</td>"
-            f"<td class='right'>${c['median_size_dollars']:,.0f}</td>"
-            f"<td class='right {_pos_neg(fav)}'>{_fmt_signed_cents(fav)}</td>"
-            f"<td class='right'>{_fmt_pct(c['win_rate'])}</td>"
-            "</tr>"
-        )
-    out.append("</tbody></table>")
-    out.append("</div></div>")
-
-
-def _render_rejections(out: List[str], hist: List[Tuple[str, int]]) -> None:
-    out.append("<div class='section'><h2>Why signals were rejected</h2>"
-               "<div class='body'>")
-    if not hist:
-        out.append("<div class='empty'>No rejections recorded — every whale "
-                   "signal cleared every gate. Either the bot hasn't run "
-                   "long enough or your gates are very loose.</div>"
-                   "</div></div>")
-        return
-    out.append("<table style='max-width:640px'>")
-    out.append("<thead><tr><th>Reason</th><th class='right'>Count</th></tr></thead>"
-               "<tbody>")
-    for reason, n in hist:
-        out.append(f"<tr><td>{html.escape(reason)}</td>"
-                   f"<td class='right'>{n}</td></tr>")
-    out.append("</tbody></table>")
-    out.append("<div class='dim small' style='margin-top:8px'>"
-               "Top-of-funnel rejections tell you which validator is "
-               "throttling the strategy. If <code>spread_too_wide</code> "
-               "dominates, you're chasing illiquid markets; tighten "
-               "<code>max_spread_cents</code> or add a market_profile "
-               "override."
-               "</div>")
-    out.append("</div></div>")
+        reason = (e.get("rejection_reason") or "unknown").strip()
+        cnt[reason] += 1
+    return cnt.most_common()
