@@ -3495,6 +3495,15 @@ def _render_watchlist(out: List[str], watchlist: List[dict],
                          latest_active.get("ticker") == ticker)
         bought_side = ((latest_active.get("side") or "").upper()
                        if is_bought else "")
+        # A row is a "good buy opportunity" when the bot would actually
+        # take a position on it: BUY_YES/BUY_NO verdict + positive EV
+        # + no validator flags. Rows that don't clear all three get
+        # greyed out so the user sees only actionable rows in colour.
+        is_buyable = (
+            bot_verdict_pre in ("BUY_YES", "BUY_NO")
+            and best_ev_v is not None and best_ev_v > 0
+            and not flags
+        )
         classes: List[str] = []
         title_attr = ""
         if is_bought:
@@ -3517,11 +3526,17 @@ def _render_watchlist(out: List[str], watchlist: List[dict],
                 tip_parts.append(f"(entry {entry_c}c)")
             title_attr = (" title='"
                           + html.escape(" ".join(tip_parts)) + "'")
-        elif flags:
+        elif not is_buyable:
+            # Not a buy opportunity — grey the whole row. Tooltip
+            # explains why it's de-emphasized.
             classes.append("row-suspect")
-            title_attr = (" title='"
-                          + html.escape("Suspect: " + ", ".join(flags))
-                          + "'")
+            if flags:
+                reason = "Validator flags: " + ", ".join(flags)
+            elif best_ev_v is None or best_ev_v <= 0:
+                reason = "No positive edge"
+            else:
+                reason = "Bot verdict not actionable"
+            title_attr = (" title='" + html.escape(reason) + "'")
         row_cls = (f" class='{' '.join(classes)}'" if classes else "") + title_attr
 
         # Pre-format EV cells (BE YES + Best columns removed — EV cells
