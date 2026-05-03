@@ -1461,14 +1461,10 @@ tr.row-bought td { opacity: 1 !important; }
    bar reads as anchored, not floating. */
 tr.row-bought.bought-yes td { background: rgba(63, 185, 80, 0.06); }
 tr.row-bought.bought-no  td { background: rgba(248, 81, 73, 0.06); }
-tr.row-bought.bought-yes td:first-child {
-    border-left: 3px solid #3fb950;
-    background: rgba(63, 185, 80, 0.12);
-}
-tr.row-bought.bought-no td:first-child {
-    border-left: 3px solid #f85149;
-    background: rgba(248, 81, 73, 0.12);
-}
+/* First cell keeps the colored left bar but uses the same tint as the
+   rest of the row, so the row reads as one even band of color. */
+tr.row-bought.bought-yes td:first-child { border-left: 3px solid #3fb950; }
+tr.row-bought.bought-no  td:first-child { border-left: 3px solid #f85149; }
 tr.row-bought.bought-yes td.mono a.ticker-link,
 tr.row-bought.bought-yes td.mono { color: #3fb950; font-weight: 600; }
 tr.row-bought.bought-no  td.mono a.ticker-link,
