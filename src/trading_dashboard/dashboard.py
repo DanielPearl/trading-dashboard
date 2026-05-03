@@ -1074,18 +1074,22 @@ def svg_kalshi_chart(history: List[dict], display: dict,
                        f"stroke-width='2' fill='none'/>")
 
     # Horizontal strike line — dotted, drawn ONLY for an active bet.
-    # YES position → segments above the dotted line are green;
-    # NO  position → segments below the dotted line are green.
-    # (The closest-to-money strike highlight was retired — it's noisy
-    # without a real position to anchor it to.)
+    # YES position → green dotted line, label reads "Above $X"
+    # NO  position → red dotted line, label reads "Not above $X"
+    # The colour communicates "your winning territory": YES bets win
+    # when the underlying ends up above the line (green = win), NO
+    # bets win when it stays below (red = the threshold you don't
+    # want to be above).
     if strike_is_active_bet and strike_in_range and reference_strike is not None:
         ys = y_at(float(reference_strike))
-        line_color = above_color if side != "NO" else below_color
+        is_no = (side == "NO")
+        line_color = "#f85149" if is_no else "#3fb950"
+        label_strike = fmt_underlying(float(reference_strike), display)
+        label = (f"Not above {label_strike}" if is_no
+                 else f"Above {label_strike}")
         out.append(f"<line x1='{pad_l}' y1='{ys}' x2='{width-pad_r}' y2='{ys}' "
                    f"stroke='{line_color}' stroke-width='1.5' "
                    f"stroke-dasharray='4,4' opacity='0.95'/>")
-        label_strike = fmt_underlying(float(reference_strike), display)
-        label = f"Above {label_strike}"
         label_x = pad_l + inner_w * 0.5
         out.append(f"<text x='{label_x:.0f}' y='{ys-6}' fill='{line_color}' "
                    f"font-size='11' text-anchor='middle' opacity='0.95'>"
