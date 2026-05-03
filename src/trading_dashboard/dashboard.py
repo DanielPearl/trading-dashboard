@@ -1417,21 +1417,19 @@ code { background: #161b22; padding: 1px 6px; border-radius: 3px; color: #c9d1d9
     transition: background 120ms, border-color 120ms, color 120ms; }
 .criteria-btn:hover { background: #2d333b; border-color: #1f6feb;
     color: #f0f6fc; }
-/* Bigger sibling — used for the Watchlist "what does the bot need
-   before it'll buy" reference popup. Same modal target. */
+/* Used for the "what does the bot need before it'll buy" reference
+   popup, rendered inline next to the Active-bet h3 as the same
+   circle-i info-icon affordance as the per-row criteria-btn. */
 .criteria-rules-btn {
-    background: #161b22; color: #c9d1d9; border: 1px solid #30363d;
-    border-radius: 6px; padding: 6px 14px; font-size: 12px;
-    font-weight: 500; cursor: pointer; line-height: 1.4;
-    transition: background 120ms, border-color 120ms; }
-.criteria-rules-btn:hover { background: #21262d; border-color: #1f6feb;
+    background: #21262d; color: #8b949e; border: 1px solid #30363d;
+    border-radius: 50%; width: 22px; height: 22px; padding: 0;
+    font-family: Georgia, "Times New Roman", serif;
+    font-style: italic; font-weight: 700;
+    font-size: 13px; line-height: 1; cursor: pointer;
+    display: inline-flex; align-items: center; justify-content: center;
+    transition: background 120ms, border-color 120ms, color 120ms; }
+.criteria-rules-btn:hover { background: #2d333b; border-color: #1f6feb;
     color: #f0f6fc; }
-.criteria-rules-btn::before {
-    content: ""; display: inline-block;
-    width: 14px; height: 14px; margin-right: 6px;
-    vertical-align: -2px;
-    background: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='14' height='14' viewBox='0 0 14 14'><circle cx='7' cy='7' r='6' fill='none' stroke='%238b949e' stroke-width='1.2'/><circle cx='7' cy='4' r='0.9' fill='%238b949e'/><rect x='6.3' y='6' width='1.4' height='5' fill='%238b949e' rx='0.3'/></svg>") no-repeat center;
-}
 .criteria-overlay {
     position: fixed; inset: 0; background: rgba(0,0,0,0.55);
     z-index: 100; }
@@ -1749,6 +1747,19 @@ def render_page(
         "  <div class='criteria-modal-body' id='criteria-modal-body'></div>"
         "</div>"
     )
+    # Stash the gating config in a window global so the per-bet popup
+    # can list "validators that were met" without bloating every
+    # criteria-btn payload. These are global rules (same for all bots),
+    # so one publish per page is enough.
+    buy_criteria_payload = json.dumps({
+        "edge": edge_cfg or {},
+        "validators": validator_cfg or {},
+        "risk": risk_caps or {},
+        "hedge": hedge_cfg or {},
+    }, separators=(",", ":"), default=str)
+    out.append(
+        f"<script>window.__BUY_CRITERIA__ = {buy_criteria_payload};</script>"
+    )
     out.append(_live_update_script(current_bot, period_key=period_key))
     out.append("</body></html>")
     return "".join(out)
@@ -1954,17 +1965,7 @@ def _live_update_script(current_bot: str, period_key: str = "all") -> str:
     return sign + "$" + Math.abs(v).toFixed(3);
   }}
   function buildCriteriaHTML(c) {{
-    const sideBadge = "<span class='badge badge-" +
-      (c.side === "YES" ? "yes" : "no") + "'>" + c.side + "</span>";
-    let html = "<div class='crit-section'><h4>The trade</h4><dl>";
-    html += "<dt>Bot</dt><dd>" + (c.bot || "—") + "</dd>";
-    html += "<dt>Question</dt><dd>" + (c.question || "—") + "</dd>";
-    html += "<dt>Side</dt><dd>" + sideBadge + "</dd>";
-    html += "<dt>Entry price</dt><dd>" + (c.entry || 0) + "c</dd>";
-    html += "<dt>Contracts</dt><dd>" + (c.contracts || 0) + "</dd>";
-    html += "<dt>Opened</dt><dd>" + (c.opened || "—") + "</dd>";
-    html += "</dl></div>";
-    html += "<div class='crit-section'><h4>Why we took it</h4><dl>";
+    let html = "<div class='crit-section'><h4>Why we took it</h4><dl>";
     html += "<dt>Model probability</dt><dd>" + fmtPct(c.model_p) + "</dd>";
     html += "<dt>Market probability</dt><dd>" + fmtPct(c.kalshi_p) + "</dd>";
     let edgeCls = "gray";
@@ -1986,9 +1987,57 @@ def _live_update_script(current_bot: str, period_key: str = "all") -> str:
     html += "<dt>Break-even probability</dt><dd>"
          + fmtPct(c.break_even) + "</dd>";
     html += "</dl></div>";
+
+    // Validators that were met — every gate the bot checks before
+    // placing a bet. Since the bet exists, it cleared all of them.
+    const r = (window.__BUY_CRITERIA__) || {{}};
+    const e = r.edge || {{}};
+    const v = r.validators || {{}};
+    const checks = [];
+    if (e.min_edge_yes != null && c.side === "YES")
+      checks.push(["Edge YES ≥ " + (e.min_edge_yes * 100).toFixed(0) + " pts", true]);
+    if (e.min_edge_no != null && c.side === "NO")
+      checks.push(["Edge NO ≥ " + (e.min_edge_no * 100).toFixed(0) + " pts", true]);
+    if (e.min_ev_per_contract != null)
+      checks.push(["EV / contract ≥ $" + Number(e.min_ev_per_contract).toFixed(2), true]);
+    if (e.min_model_confidence != null)
+      checks.push(["Model confidence ≥ " + (e.min_model_confidence * 100).toFixed(0) + "%", true]);
+    if (e.min_model_accuracy != null)
+      checks.push(["Model accuracy ≥ " + (e.min_model_accuracy * 100).toFixed(0) + "%", true]);
+    if (e.min_prob_edge_over_breakeven != null)
+      checks.push(["Edge over break-even ≥ " + (e.min_prob_edge_over_breakeven * 100).toFixed(0) + " pts", true]);
+    if (v.max_spread_cents != null)
+      checks.push(["Spread ≤ " + v.max_spread_cents + "¢", true]);
+    if (Array.isArray(v.prob_bounds_cents) && v.prob_bounds_cents.length === 2)
+      checks.push(["Probability in [" + v.prob_bounds_cents[0] + "¢, " + v.prob_bounds_cents[1] + "¢]", true]);
+    if (v.min_volume != null)
+      checks.push(["Volume ≥ " + v.min_volume, true]);
+    if (v.min_open_interest != null)
+      checks.push(["Open interest ≥ " + v.min_open_interest, true]);
+    if (v.min_book_depth_contracts != null)
+      checks.push(["Book depth ≥ " + v.min_book_depth_contracts + " contracts", true]);
+    if (v.min_depth_at_best_ask != null)
+      checks.push(["Depth at best ask ≥ " + v.min_depth_at_best_ask, true]);
+    if (v.min_minutes_to_close != null && v.max_minutes_to_close != null)
+      checks.push(["Time to close in [" + fmtMin(v.min_minutes_to_close) + ", " + fmtMin(v.max_minutes_to_close) + "]", true]);
+    if (v.basis_risk_strike_window_dollars != null)
+      checks.push(["Strike within ±$" + Number(v.basis_risk_strike_window_dollars).toFixed(2) + " of model median", true]);
+    if (v.basis_risk_max_hours_to_close != null)
+      checks.push(["Within basis-risk window (" + v.basis_risk_max_hours_to_close + "h)", true]);
+
+    if (checks.length) {{
+      html += "<div class='crit-section'><h4>Validators that were met</h4>";
+      html += "<dl>";
+      checks.forEach(function (row) {{
+        html += "<dt class='green'>✓</dt><dd>" + row[0] + "</dd>";
+      }});
+      html += "</dl></div>";
+    }}
+
     html += "<div class='crit-section' style='font-size:11px;color:#8b949e;'>"
-         + "Numbers are entry-time snapshots — what the bot saw the moment "
-         + "it opened the position.</div>";
+         + "Numbers above are entry-time snapshots — what the bot saw "
+         + "the moment it opened the position. Every validator listed "
+         + "had to pass before this bet was placed.</div>";
     return html;
   }}
   function showCriteria(btn) {{
@@ -3129,29 +3178,32 @@ def _render_watchlist(out: List[str], watchlist: List[dict],
     # themselves).
     _render_current_prediction(out, model, display=display)
 
-    # Buy-criteria reference payload — emitted as a button BELOW the
-    # Active-bet h3 so the rule-set context sits between the section
-    # title and the bet table.
+    # Buy-criteria reference button — rendered as a small circle-i info
+    # icon inline with the Active-bet h3 so it sits next to the
+    # section title (compact, doesn't take a row of its own). Click
+    # opens the same shared modal with the full rules.
     rules_payload = json.dumps({
         "edge": edge_cfg or {},
         "validators": validator_cfg or {},
         "risk": risk_caps or {},
         "hedge": hedge_cfg or {},
     }, separators=(",", ":"), default=str)
-    rules_btn_html = (
-        "<div style='margin: 4px 0 10px 0;'>"
+    rules_icon_html = (
         "<button type='button' class='criteria-rules-btn' "
-        f"data-rules='{html.escape(rules_payload)}'>"
-        "What does this bot need before it'll buy?"
-        "</button></div>"
+        f"data-rules='{html.escape(rules_payload)}' "
+        f"title=\"What does this bot need before it'll buy?\">"
+        "i</button>"
     )
 
     # ── This bot's active bet ────────────────────────────────────────
     # Active bet h3 → rules button → bet table (or empty state). The
     # rules button always renders so the rule-set context is one click
     # away even when the bot has no open position right now.
-    out.append("<h3 class='subhead'>Active bet</h3>")
-    out.append(rules_btn_html)
+    out.append(
+        "<h3 class='subhead' "
+        "style='display:flex;align-items:center;gap:8px;'>"
+        f"Active bet {rules_icon_html}</h3>"
+    )
     if latest_active:
         enriched = dict(latest_active)
         # Strike data from the matching watchlist row (keyed by ticker).
