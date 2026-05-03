@@ -2177,12 +2177,27 @@ def _live_update_script(current_bot: str, period_key: str = "all") -> str:
     critModal.hidden   = false;
   }}
 
-  // Build the extended contract-rules popup body (primary + secondary
-  // text from market_views).
+  // Contract-rules popup body. Kalshi's API only exposes a short
+  // rules_primary string (and sometimes a rules_secondary block);
+  // the *full* rules live in Kalshi's web UI. Render a clear link
+  // to the market's "View full rules" page on Kalshi as the primary
+  // affordance, with the cached short text shown as quick context.
   function buildContractRulesHTML(d) {{
     let html = "";
+    if (d.kalshi_url) {{
+      html += "<div class='crit-section'>"
+           + "<a href='" + d.kalshi_url + "' target='_blank' "
+           + "rel='noopener noreferrer' "
+           + "style='display:inline-block;padding:8px 14px;"
+           + "background:#1f6feb;color:#fff;text-decoration:none;"
+           + "border-radius:6px;font-weight:600;font-size:13px;'>"
+           + "View full rules on Kalshi ↗</a>"
+           + "<div class='gray' style='font-size:11px;margin-top:6px;'>"
+           + "Kalshi's web UI shows the complete rules text, including "
+           + "settlement sources and edge cases.</div></div>";
+    }}
     if (d.primary) {{
-      html += "<div class='crit-section'><h4>Resolution rule</h4>"
+      html += "<div class='crit-section'><h4>Quick summary</h4>"
            + "<div style='font-size:13px;line-height:1.6;color:#c9d1d9;'>"
            + d.primary.split(/\\n/).map(function (p) {{
                return "<p style='margin:0 0 10px 0;'>" + p + "</p>";
@@ -2199,7 +2214,7 @@ def _live_update_script(current_bot: str, period_key: str = "all") -> str:
     }}
     if (!html) {{
       html = "<div class='crit-section'>"
-           + "<span class='gray'>No extended rules cached yet.</span></div>";
+           + "<span class='gray'>No rules cached yet.</span></div>";
     }}
     return html;
   }}
@@ -3704,27 +3719,39 @@ def _render_contract_rules(out: List[str], watchlist: List[dict],
     # Find a representative primary + secondary rules string.
     primary = ""
     secondary = ""
+    sample_ticker = ""
     for v in watchlist:
+        if not sample_ticker and v.get("ticker"):
+            sample_ticker = v.get("ticker")
         if not primary:
             primary = (v.get("rules_primary") or "").strip()
         if not secondary:
             secondary = (v.get("rules_secondary") or "").strip()
-        if primary and secondary:
+        if primary and secondary and sample_ticker:
             break
 
-    # Encode for the button's data attribute. The popup renders both
-    # paragraphs back-to-back (primary first, secondary as the
-    # detailed explainer).
+    # Build the Kalshi market URL — clicking "View full rules on Kalshi"
+    # in the popup opens the live market page where Kalshi's web UI
+    # shows the full rules text (which is more detailed than what the
+    # API returns in rules_primary / rules_secondary).
+    series_lower = ((sample_ticker.split("-", 1)[0] if sample_ticker else "")
+                    .lower())
+    kalshi_url = (f"https://kalshi.com/markets/{series_lower}"
+                  if series_lower else "")
+
+    # Encode for the button's data attribute. The popup renders the
+    # cached text + a prominent link to Kalshi's full-rules page.
     rules_payload = json.dumps({
         "primary": primary,
         "secondary": secondary,
+        "kalshi_url": kalshi_url,
     }, separators=(",", ":"), default=str)
     info_btn = (
         ""
         if not primary
         else (f"<button type='button' class='contract-rules-btn' "
               f"data-contract-rules='{html.escape(rules_payload)}' "
-              f"title='See the full contract rules text from Kalshi'>"
+              f"title='See the full contract rules from Kalshi'>"
               f"i</button>")
     )
     out.append(
