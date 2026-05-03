@@ -577,9 +577,17 @@ def fetch_underlying_history(series_ticker: str,
         else:
             lookback_hours = 24
 
+    # Daily candles only make sense for contracts that span multiple
+    # days. KXNATGASD-style 1-day events at period=1440 yield 0-1
+    # candles → empty chart. Auto-downgrade to hourly when the event
+    # lifetime is too short to populate a daily series.
+    effective_period = period_minutes
+    if period_minutes >= 1440 and lookback_hours < 48:
+        effective_period = 60
+
     history = _interpolate_event_history(
         c, series_ticker, markets, anchor_value=None,
-        period_minutes=period_minutes, lookback_hours=lookback_hours,
+        period_minutes=effective_period, lookback_hours=lookback_hours,
         max_strikes=max_strikes,
     )
     return history, atm, markets, contract_open_ts, contract_close_ts, event_title
