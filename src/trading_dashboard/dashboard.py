@@ -1522,6 +1522,12 @@ code { background: #161b22; padding: 1px 6px; border-radius: 3px; color: #c9d1d9
 .bot-card-block dl { margin: 0; display: grid;
     grid-template-columns: max-content 1fr; gap: 4px 12px;
     font-size: 12px; line-height: 1.45; }
+/* Wide variant: 2 label-value pairs per row at full card width so the
+   7-row model-strength list reads as a compact 4×2 grid. */
+.bot-card-block dl.bot-card-dl-wide {
+    grid-template-columns: max-content 1fr max-content 1fr;
+    gap: 6px 24px;
+}
 .bot-card-block dt { color: #8b949e; }
 .bot-card-block dd { margin: 0; color: #c9d1d9;
     font-variant-numeric: tabular-nums; text-align: right; }
@@ -1690,15 +1696,10 @@ def render_page(
                      period_key=period_key, current_bot=current_bot)
     out.append("</div>")  # /home panel
 
-    # ── PERFORMANCE tab — per-bot cards: stats + model + rules ──────
+    # ── PERFORMANCE tab — per-bot cards: model stats + rules ───────
     _open_panel("performance")
-    out.append("<div class='section'><h2>Bot performance "
-               f"<span class='small gray'>({html.escape(period_label)})"
-               f"</span></h2><div class='body'>")
-    # Period filter pills at the top so the user can rescope without
-    # leaving the tab.
-    _render_period_filter(out, period_key, current_bot=current_bot,
-                            tab_key="performance")
+    out.append("<div class='section'><h2>Bot performance</h2>"
+               "<div class='body'>")
     _render_bot_cards(out, global_summary, bot_models, period_label)
     out.append("</div></div>")
     out.append("</div>")  # /performance panel
@@ -2264,23 +2265,15 @@ def _render_summary(out: List[str], rollup: dict, active_bets: List[dict],
 def _render_bot_cards(out: List[str], rollup: dict,
                         bot_models: List[dict] | None,
                         period_label: str) -> None:
-    """Per-bot card grid for the Performance tab. One card per bot,
-    each containing three mini-blocks side-by-side:
-        Performance — Bets made / Active / Net P&L / Win % / Best / Worst
-        Model       — Accuracy / Precision / Recall / F1 / ROC AUC /
-                      Features / Actual win %
-        Rules       — Kalshi resolution rule paragraph + strike count
-
-    Source data is the period-scoped per-bot summary (from rollup) +
-    the latest model snapshot + a representative rules_primary string
-    pulled from the bot's watchlist at request time.
+    """Per-bot card for the Performance tab. One card per bot,
+    containing the model strength metrics + the contract resolution
+    rules paragraph. Trading-performance numbers (Bets made / P&L /
+    Win %) live on the Home tab's summary cards; this view is the
+    "what's in this bot" reference card.
     """
     if not bot_models:
         out.append("<div class='empty'>No bot data yet.</div>")
         return
-
-    # Index per-bot perf rows by name for quick lookup.
-    perf_by_name = {name: s for name, s in (rollup.get("per_bot") or [])}
 
     def _fmt_pct(v, decimals=0):
         if v is None:
@@ -2296,7 +2289,6 @@ def _render_bot_cards(out: List[str], rollup: dict,
         b = entry.get("bot") or {}
         m = entry.get("model") or {}
         name = b.get("name", "—")
-        s = perf_by_name.get(name, {})
         rules_text = entry.get("rules_text") or ""
         strike_count = entry.get("strike_count", 0)
         strike_lo = entry.get("strike_lo")
@@ -2309,44 +2301,7 @@ def _render_bot_cards(out: List[str], rollup: dict,
         out.append(f"<div class='bot-meta'>{html.escape(series_ticker)}</div>")
         out.append("</div>")  # /head
 
-        # Three blocks side by side (auto-collapsing to fewer columns
-        # at narrow widths via the CSS grid auto-fit).
-        out.append("<div class='bot-card-grid'>")
-
-        # ── Performance block ───────────────────────────────────────
-        bets_made = s.get("period_bets_made", 0)
-        active = s.get("open_count", 0)
-        net = s.get("period_net_pnl_cents", 0)
-        wins = s.get("period_wins", 0)
-        losses = s.get("period_losses", 0)
-        closed = wins + losses
-        win_pct = (wins / closed) if closed else None
-        win_str = f"{win_pct*100:.0f}%" if win_pct is not None else "—"
-        win_cls = ("green" if win_pct is not None and win_pct > 0.5
-                   else ("red" if win_pct is not None and win_pct < 0.5
-                          else "gray"))
-        net_cls = "green" if net > 0 else ("red" if net < 0 else "gray")
-        best = s.get("biggest_win_cents", 0) or 0
-        worst = s.get("biggest_loss_cents", 0) or 0
-        out.append("<div class='bot-card-block'>")
-        out.append(
-            f"<h4>Performance "
-            f"<span style='text-transform:none;letter-spacing:0;font-weight:400;color:#6e7681;'>"
-            f"({html.escape(period_label)})</span></h4>"
-        )
-        out.append("<dl>")
-        out.append(f"<dt>Bets made</dt><dd>{bets_made}</dd>")
-        out.append(f"<dt>Active</dt><dd>{active}</dd>")
-        out.append(f"<dt>Net P&amp;L</dt><dd class='{net_cls}'>"
-                   f"{fmt_signed_cents(net)}</dd>")
-        out.append(f"<dt>Win %</dt><dd class='{win_cls}'>{win_str}</dd>")
-        out.append(f"<dt>Best bet</dt><dd class='green'>"
-                   f"{fmt_signed_cents(best) if best else '—'}</dd>")
-        out.append(f"<dt>Worst bet</dt><dd class='red'>"
-                   f"{fmt_signed_cents(worst) if worst else '—'}</dd>")
-        out.append("</dl></div>")
-
-        # ── Model block ─────────────────────────────────────────────
+        # ── Model block (full width — single block per card now) ───
         out.append("<div class='bot-card-block'>")
         out.append("<h4>Model strength</h4>")
         if not m:
@@ -2370,7 +2325,8 @@ def _render_bot_cards(out: List[str], rollup: dict,
             else:
                 a_str = "—"
                 a_cls = "gray"
-            out.append("<dl>")
+            # Two-column dl works well at full width.
+            out.append("<dl class='bot-card-dl-wide'>")
             out.append(f"<dt>Accuracy</dt><dd>{acc_str}</dd>")
             out.append(f"<dt>Precision</dt><dd>{prec_str}</dd>")
             out.append(f"<dt>Recall</dt><dd>{rec_str}</dd>")
@@ -2380,22 +2336,9 @@ def _render_bot_cards(out: List[str], rollup: dict,
             out.append(f"<dt>Actual win %</dt><dd class='{a_cls}'>"
                        f"{a_str}</dd>")
             out.append("</dl>")
-        out.append("</div>")
+        out.append("</div>")  # /model block
 
-        # ── Strike summary (slim, sits next to Model when there's room) ──
-        out.append("<div class='bot-card-block'>")
-        out.append("<h4>Active contracts</h4>")
-        out.append("<dl>")
-        out.append(f"<dt>Strikes open</dt><dd>{strike_count}</dd>")
-        if strike_lo is not None and strike_hi is not None:
-            out.append(f"<dt>Range</dt><dd>"
-                       f"${strike_lo:.3f} – ${strike_hi:.3f}</dd>")
-        else:
-            out.append("<dt>Range</dt><dd class='gray'>—</dd>")
-        out.append("</dl></div>")
-        out.append("</div>")  # /grid
-
-        # ── Rules paragraph (full width, under the grid) ─────────────
+        # ── Rules paragraph ─────────────────────────────────────────
         if rules_text:
             out.append("<div class='bot-rules'>")
             if strike_count and strike_lo is not None and strike_hi is not None:
