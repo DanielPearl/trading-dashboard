@@ -1813,15 +1813,19 @@ def _live_update_script(current_bot: str) -> str:
     cursor.setAttribute("pointer-events", "none");
     svg.appendChild(cursor);
 
-    // The hero forecast price element (top-left of the chart card).
-    // While the user scrubs the chart, we swap its text for the value
-    // at the cursor; on mouseleave we restore the live current. The
-    // hero stores its current text in `data-current-text` so live
-    // polling updates it without us re-reading the DOM each time.
+    // The hero forecast price + change-indicator elements (top-left
+    // of the chart card). While the user scrubs the chart, we swap
+    // the price for the value at the cursor AND the change indicator
+    // for (cursor − earliest); on mouseleave we restore both from
+    // their data-current-text / data-current-class attrs.
     const hero = wrap.closest(".wl-hero");
     const heroPrice = hero ? hero.querySelector(".wl-hero-price") : null;
     const heroPriceText = heroPrice ? heroPrice.querySelector(
         ".wl-hero-price-text") : null;
+    const heroChange = hero ? hero.querySelector(".wl-hero-change") : null;
+    // Earliest forecast value — anchor for the (Δ from start of chart)
+    // delta the change indicator displays.
+    const earliestValue = points.length ? points[0][1] : null;
 
     function fmtTs(ts) {{
       const d = new Date(ts * 1000);
@@ -1908,9 +1912,28 @@ def _live_update_script(current_bot: str) -> str:
       return {{ ts: closer[0], value: closer[1] }};
     }}
 
+    // Format an absolute delta in the bot's units, no sign. The arrow
+    // (▲/▼) is added separately so we can color it via class.
+    function fmtDeltaAbs(raw) {{
+      if (raw === null || raw === undefined || !isFinite(raw)) return "—";
+      const v = Math.abs(raw) / (fmt.divisor || 1);
+      const n = v.toLocaleString("en-US", {{
+        minimumFractionDigits: fmt.decimals,
+        maximumFractionDigits: fmt.decimals,
+      }});
+      if (fmt.unit_position === "prefix") return (fmt.unit || "") + n;
+      if (fmt.unit_position === "suffix") return n + (fmt.unit || "");
+      return n;
+    }}
+
     function restoreHero() {{
       if (heroPrice && heroPriceText) {{
         heroPriceText.textContent = heroPrice.dataset.currentText || "";
+      }}
+      if (heroChange) {{
+        heroChange.textContent = heroChange.dataset.currentText || "";
+        const cls = heroChange.dataset.currentClass || "";
+        heroChange.className = "wl-hero-change" + (cls ? " " + cls : "");
       }}
     }}
 
@@ -1948,6 +1971,16 @@ def _live_update_script(current_bot: str) -> str:
           "<div class='wl-chart-tip-time'>" + fmtTs(np.ts) + "</div>"
           + "<div class='wl-chart-tip-value'>" + fmtValue(np.value) + "</div>";
         if (heroPriceText) heroPriceText.textContent = fmtValue(np.value);
+        // Update the ▲/▼ change indicator to (cursor value − earliest)
+        // — same Δ semantics as the live indicator, just anchored to
+        // wherever the user is hovering instead of "now".
+        if (heroChange && earliestValue !== null) {{
+          const delta = np.value - earliestValue;
+          const arrow = delta >= 0 ? "▲" : "▼";
+          const cls = delta >= 0 ? "pos" : "neg";
+          heroChange.textContent = arrow + " " + fmtDeltaAbs(delta);
+          heroChange.className = "wl-hero-change " + cls;
+        }}
       }} else {{
         tip.innerHTML =
           "<div class='wl-chart-tip-time'>" + fmtTs(cursorTs) + "</div>";
@@ -2896,8 +2929,13 @@ def _render_watchlist_hero(out: List[str],
         arrow = "▲" if value_change >= 0 else "▼"
     change_display = (change_body if not arrow
                       else f"{arrow} {change_body}")
+    # Tag the change indicator with its live text + class so the hover
+    # JS can swap to (cursor − earliest) while scrubbing and restore
+    # the live current on leave. The class encodes pos/neg coloring.
     out.append(
-        f"<div class='wl-hero-change {change_cls}'>"
+        f"<div class='wl-hero-change {change_cls}' "
+        f"data-current-text='{html.escape(change_display)}' "
+        f"data-current-class='{html.escape(change_cls)}'>"
         f"{html.escape(change_display)}"
         f"</div>"
     )
