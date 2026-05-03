@@ -1501,47 +1501,51 @@ code { background: #161b22; padding: 1px 6px; border-radius: 3px; color: #c9d1d9
     margin-bottom: -1px; font-weight: 600; }
 .tab-panel { display: none; }
 .tab-panel-active { display: block; }
-/* Per-bot performance cards on the Performance tab. Each bot is a
-   self-contained block with three side-by-side mini-tables (Stats /
-   Model / Rules) so the comparison reads "by bot" not "by metric". */
-.bot-card { background: #0d1117; border: 1px solid #21262d;
-    border-radius: 8px; padding: 14px 16px; margin-bottom: 14px; }
+/* Per-bot performance cards on the Performance tab. Cards align in a
+   grid (auto-fit so they reflow at narrow widths) and are clickable —
+   the whole card is an anchor to that bot's Watchlist tab. */
+.bot-cards-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+    grid-auto-rows: 1fr;
+    gap: 14px;
+}
+.bot-card { display: flex; flex-direction: column;
+    background: #0d1117; border: 1px solid #21262d;
+    border-radius: 8px; padding: 14px 16px;
+    color: inherit; text-decoration: none;
+    transition: border-color 120ms, background 120ms,
+                transform 120ms; }
+.bot-card:hover {
+    border-color: #1f6feb; background: #11161d;
+    transform: translateY(-1px);
+}
 .bot-card-head { display: flex; align-items: baseline;
     justify-content: space-between; gap: 12px;
     border-bottom: 1px solid #21262d; padding-bottom: 8px;
-    margin-bottom: 12px; }
-.bot-card-head .bot-name { font-size: 16px; font-weight: 700;
+    margin-bottom: 10px; }
+.bot-card-head .bot-name { font-size: 14px; font-weight: 700;
     color: #f0f6fc; letter-spacing: -0.2px; }
-.bot-card-head .bot-meta { font-size: 11px; color: #8b949e; }
-.bot-card-grid { display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
-    gap: 16px; }
-.bot-card-block h4 { font-size: 11px; text-transform: uppercase;
-    letter-spacing: 0.06em; color: #8b949e; font-weight: 600;
-    margin: 0 0 8px 0; }
-.bot-card-block dl { margin: 0; display: grid;
-    grid-template-columns: max-content 1fr; gap: 4px 12px;
-    font-size: 12px; line-height: 1.45; }
-/* Wide variant: 2 label-value pairs per row at full card width so the
-   7-row model-strength list reads as a compact 4×2 grid. */
-.bot-card-block dl.bot-card-dl-wide {
+.bot-card-head .bot-meta { font-size: 10px; color: #8b949e;
+    text-transform: uppercase; letter-spacing: 0.04em; }
+.bot-card dl { margin: 0; display: grid;
     grid-template-columns: max-content 1fr max-content 1fr;
-    gap: 6px 24px;
-}
-.bot-card-block dt { color: #8b949e; }
-.bot-card-block dd { margin: 0; color: #c9d1d9;
+    gap: 4px 12px;
+    font-size: 12px; line-height: 1.45; }
+.bot-card dt { color: #8b949e; }
+.bot-card dd { margin: 0; color: #c9d1d9;
     font-variant-numeric: tabular-nums; text-align: right; }
-.bot-card-block dd.green { color: #3fb950; }
-.bot-card-block dd.red   { color: #f85149; }
-.bot-card-block dd.gray  { color: #6e7681; }
-.bot-rules { margin-top: 14px; padding-top: 12px;
-    border-top: 1px solid #21262d; font-size: 12px; line-height: 1.55;
-    color: #c9d1d9; }
-.bot-rules .label { color: #8b949e; font-size: 11px;
+.bot-card dd.green { color: #3fb950; }
+.bot-card dd.red   { color: #f85149; }
+.bot-card dd.gray  { color: #6e7681; }
+.bot-card-foot {
+    margin-top: auto; padding-top: 10px;
+    border-top: 1px solid #21262d;
+    font-size: 10px; color: #6e7681;
+    display: flex; justify-content: space-between;
     text-transform: uppercase; letter-spacing: 0.06em;
-    font-weight: 600; margin-right: 6px; }
-.bot-rules .strike-meta { color: #8b949e; font-size: 11px;
-    margin-bottom: 4px; }
+}
+.bot-card-foot .arrow { color: #8b949e; }
 /* Watchlist row that fails one or more validations (horizon mismatch,
    wide spread, edge<cost, etc.). Rendered visible but de-emphasized. */
 tr.row-suspect td { opacity: 0.55; }
@@ -2265,11 +2269,11 @@ def _render_summary(out: List[str], rollup: dict, active_bets: List[dict],
 def _render_bot_cards(out: List[str], rollup: dict,
                         bot_models: List[dict] | None,
                         period_label: str) -> None:
-    """Per-bot card for the Performance tab. One card per bot,
-    containing the model strength metrics + the contract resolution
-    rules paragraph. Trading-performance numbers (Bets made / P&L /
-    Win %) live on the Home tab's summary cards; this view is the
-    "what's in this bot" reference card.
+    """Per-bot card grid for the Performance tab. Compact, clickable —
+    each card is an anchor to the bot's Watchlist tab. Cards align on
+    a fixed grid (auto-fit minmax 280px) so they share row + column
+    edges. Contract rules live on the Watchlist tab to keep these
+    cards skimmable.
     """
     if not bot_models:
         out.append("<div class='empty'>No bot data yet.</div>")
@@ -2277,43 +2281,35 @@ def _render_bot_cards(out: List[str], rollup: dict,
 
     def _fmt_pct(v, decimals=0):
         if v is None:
-            return ("—", "gray")
+            return "—"
         try:
-            f = float(v)
+            return f"{float(v)*100:.{decimals}f}%"
         except (TypeError, ValueError):
-            return ("—", "gray")
-        cls = "green" if f > 0.5 else ("red" if f < 0.45 else "")
-        return (f"{f*100:.{decimals}f}%", cls)
+            return "—"
 
+    out.append("<div class='bot-cards-grid'>")
     for entry in bot_models:
         b = entry.get("bot") or {}
         m = entry.get("model") or {}
         name = b.get("name", "—")
-        rules_text = entry.get("rules_text") or ""
-        strike_count = entry.get("strike_count", 0)
-        strike_lo = entry.get("strike_lo")
-        strike_hi = entry.get("strike_hi")
+        bot_key = b.get("key", "")
         series_ticker = b.get("series_ticker") or "—"
+        strike_count = entry.get("strike_count", 0)
+        # Each card is a link to the bot's Watchlist tab.
+        href = (f"?tab=watchlist&bot={html.escape(bot_key)}"
+                if bot_key else "#")
 
-        out.append("<div class='bot-card'>")
+        out.append(f"<a class='bot-card' href='{href}'>")
         out.append("<div class='bot-card-head'>")
         out.append(f"<div class='bot-name'>{html.escape(name)}</div>")
         out.append(f"<div class='bot-meta'>{html.escape(series_ticker)}</div>")
-        out.append("</div>")  # /head
+        out.append("</div>")
 
-        # ── Model block (full width — single block per card now) ───
-        out.append("<div class='bot-card-block'>")
-        out.append("<h4>Model strength</h4>")
         if not m:
-            out.append("<dl><dt class='gray'>—</dt>"
-                       "<dd class='gray'>no snapshot</dd></dl>")
+            out.append("<dl><dt class='gray'>Model</dt>"
+                       "<dd class='gray' style='grid-column:span 3;text-align:left;'>"
+                       "no snapshot yet</dd></dl>")
         else:
-            acc_str, _ = _fmt_pct(m.get("classifier_accuracy"), decimals=1)
-            prec_str, _ = _fmt_pct(m.get("training_precision"))
-            rec_str, _ = _fmt_pct(m.get("training_recall"))
-            f1_str, _ = _fmt_pct(m.get("training_f1"))
-            roc_str, _ = _fmt_pct(m.get("training_roc_auc"))
-            features = int(m.get("feature_count") or 0)
             a_wins = int(m.get("actual_wins") or 0)
             a_losses = int(m.get("actual_losses") or 0)
             a_total = a_wins + a_losses
@@ -2325,39 +2321,26 @@ def _render_bot_cards(out: List[str], rollup: dict,
             else:
                 a_str = "—"
                 a_cls = "gray"
-            # Two-column dl works well at full width.
-            out.append("<dl class='bot-card-dl-wide'>")
-            out.append(f"<dt>Accuracy</dt><dd>{acc_str}</dd>")
-            out.append(f"<dt>Precision</dt><dd>{prec_str}</dd>")
-            out.append(f"<dt>Recall</dt><dd>{rec_str}</dd>")
-            out.append(f"<dt>F1</dt><dd>{f1_str}</dd>")
-            out.append(f"<dt>ROC AUC</dt><dd>{roc_str}</dd>")
-            out.append(f"<dt>Features</dt><dd>{features}</dd>")
-            out.append(f"<dt>Actual win %</dt><dd class='{a_cls}'>"
-                       f"{a_str}</dd>")
+            features = int(m.get("feature_count") or 0)
+            out.append("<dl>")
+            out.append(f"<dt>Accuracy</dt><dd>{_fmt_pct(m.get('classifier_accuracy'), 1)}</dd>"
+                        f"<dt>F1</dt><dd>{_fmt_pct(m.get('training_f1'))}</dd>")
+            out.append(f"<dt>Precision</dt><dd>{_fmt_pct(m.get('training_precision'))}</dd>"
+                        f"<dt>ROC AUC</dt><dd>{_fmt_pct(m.get('training_roc_auc'))}</dd>")
+            out.append(f"<dt>Recall</dt><dd>{_fmt_pct(m.get('training_recall'))}</dd>"
+                        f"<dt>Features</dt><dd>{features}</dd>")
+            out.append(f"<dt>Actual win %</dt><dd class='{a_cls}'>{a_str}</dd>"
+                        f"<dt>Strikes</dt><dd>{strike_count}</dd>")
             out.append("</dl>")
-        out.append("</div>")  # /model block
 
-        # ── Rules paragraph ─────────────────────────────────────────
-        if rules_text:
-            out.append("<div class='bot-rules'>")
-            if strike_count and strike_lo is not None and strike_hi is not None:
-                out.append(
-                    f"<div class='strike-meta'>"
-                    f"Applies to <b>{strike_count}</b> active contracts "
-                    f"(strikes ${strike_lo:.3f} – ${strike_hi:.3f})."
-                    f"</div>"
-                )
-            out.append(f"<span class='label'>Rules</span>"
-                       f"{html.escape(rules_text)}")
-            out.append("</div>")
-        else:
-            out.append("<div class='bot-rules'>"
-                       "<span class='label'>Rules</span>"
-                       "<span class='gray'>not cached yet — the next bot "
-                       "tick will populate it.</span></div>")
-
-        out.append("</div>")  # /bot-card
+        # Footer hints at the click affordance — same idiom as the
+        # ticker cells in the watchlist (subtle "go here" signal).
+        out.append("<div class='bot-card-foot'>"
+                   "<span>View watchlist</span>"
+                   "<span class='arrow'>›</span>"
+                   "</div>")
+        out.append("</a>")  # /bot-card
+    out.append("</div>")  # /bot-cards-grid
 
 
 def _render_bot_models_table(out: List[str],
