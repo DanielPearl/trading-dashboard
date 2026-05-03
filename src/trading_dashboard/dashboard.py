@@ -1673,9 +1673,11 @@ def render_page(
                      if b["key"] == current_bot and b.get("available")]):
         _render_bot_unavailable(out, current_bot)
     else:
-        # Active bet for this bot sits above the watchlist so the held
-        # strike's context is visible alongside the strike ladder.
-        _render_active_bet(out, latest_active, watchlist, bot_closed_positions)
+        # Per-bot active-bet detail panel was retired here per user
+        # request — active bets live on the Home tab now (the active
+        # bets table under the summary cards covers all open positions
+        # across all bots). The strike line on the chart still marks
+        # the currently-held strike for visual context.
         _render_watchlist(out, watchlist, model,
                           underlying_history=underlying_history,
                           display=display,
