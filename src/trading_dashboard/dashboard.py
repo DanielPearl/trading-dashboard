@@ -2615,17 +2615,15 @@ def _render_bot_cards(out: List[str], rollup: dict,
             a_wins = int(m.get("actual_wins") or 0)
             a_losses = int(m.get("actual_losses") or 0)
             a_total = a_wins + a_losses
-            # Sample-size guard: hide the % on n<10 — a single closed
-            # loss reading "0%" is misleading. Show "learning (n=X)"
-            # so users know the metric is warming up.
+            # Show the real percentage at any sample size (per user
+            # request). n=0 still shows "—" to distinguish "no data
+            # yet" from "0%". The drift-badge logic above keeps its
+            # n ≥ 10 guard since drift needs a meaningful sample.
             a_pct = a_wins / a_total if a_total > 0 else None
-            if a_total >= ACTUAL_WIN_MIN_N:
+            if a_total > 0:
                 a_str = f"{a_pct*100:.0f}%"
                 a_cls = ("green" if a_pct > 0.55
                          else ("red" if a_pct < 0.45 else ""))
-            elif a_total > 0:
-                a_str = f"learning (n={a_total})"
-                a_cls = "gray"
             else:
                 a_str = "—"
                 a_cls = "gray"
