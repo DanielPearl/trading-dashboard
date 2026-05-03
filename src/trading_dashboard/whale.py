@@ -297,8 +297,12 @@ VALIDATOR_INSIDER_THRESHOLD  = 0.65    # score ≥ this → eligible to "buy"
 # whale_detector min_notional_cents (5000c = $50) used by the bot —
 # the dashboard wants to *show* every big bet, not just the
 # z-score-anomalous ones.
-LIVE_MIN_NOTIONAL_CENTS = 2_000          # $20+ trades surface
-LIVE_LOOKBACK_HOURS     = 6              # recent activity window
+LIVE_MIN_NOTIONAL_CENTS = 500            # $5+ trades surface (these
+                                         # markets are thin so the bar
+                                         # is set low to populate the
+                                         # page; bump for sportsbook-
+                                         # scale series)
+LIVE_LOOKBACK_HOURS     = 24             # recent activity window
 
 
 def validate_whale(event: dict,
@@ -451,11 +455,14 @@ def fetch_live_big_bets(series_tickers: List[str],
             # `yes_price_dollars` / `no_price_dollars` (dollar
             # strings like "0.6500"). Normalise once.
             def _trade_count(t):
+                # Kalshi sends count_fp as a float (e.g. 46.85). Round
+                # to whole contracts — Kalshi's UI displays the
+                # rounded integer too.
                 c = t.get("count_fp")
                 if c is None:
                     c = t.get("count")
                 try:
-                    return int(c) if c is not None else 0
+                    return int(round(float(c))) if c is not None else 0
                 except (TypeError, ValueError):
                     return 0
 
