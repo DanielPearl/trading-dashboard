@@ -412,10 +412,13 @@ def _interpolate_event_history(client: "KalshiClient",
         return []
 
     # Kalshi's candlesticks API only supports period_interval ∈ {1,60,
-    # 1440}. For a target period that's sub-hourly (e.g. 15-min), fetch
-    # 1-min candles and bucket them down to the target. >=60 maps 1:1
-    # to Kalshi's hourly bars.
-    if period_minutes >= 60:
+    # 1440}. Three resolution paths:
+    #   * >=1440 → daily bars from Kalshi (1:1, one point per day)
+    #   * >=60   → hourly bars from Kalshi (1:1)
+    #   * <60    → fetch 1-min bars and bucket down to the target window
+    if period_minutes >= 1440:
+        api_period = 1440
+    elif period_minutes >= 60:
         api_period = 60
     else:
         api_period = 1
@@ -433,7 +436,7 @@ def _interpolate_event_history(client: "KalshiClient",
         if not was_cached:
             time.sleep(0.1)
         ts_to_yes: Dict[float, float] = {}
-        if api_period == 60 or period_minutes <= 1:
+        if api_period in (60, 1440) or period_minutes <= 1:
             # 1:1 mapping — every candle is one data point.
             for cdl in candles:
                 ts = cdl.get("end_period_ts")

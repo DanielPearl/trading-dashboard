@@ -737,6 +737,27 @@ def confidence_pct(prob: float | None,
     return int(round(raw * accuracy * 100))
 
 
+def _smooth_values(values: List[float], window: int = 3) -> List[float]:
+    """Centered moving average for the chart polyline.
+
+    Smooths just the visual line — the data-points payload used by the
+    hover tooltip stays on the raw values so hovering still surfaces the
+    actual underlying. Window=3 is intentionally small: enough to take
+    the edge off jitter, not enough to lag perceptibly.
+    """
+    n = len(values)
+    if n < 3 or window < 2:
+        return list(values)
+    half = window // 2
+    out: List[float] = []
+    for i in range(n):
+        lo = max(0, i - half)
+        hi = min(n, i + half + 1)
+        seg = values[lo:hi]
+        out.append(sum(seg) / len(seg))
+    return out
+
+
 def svg_kalshi_chart(history: List[dict], display: dict,
                       reference_strike: float | None = None,
                       strike_side: str | None = None,
@@ -787,10 +808,17 @@ def svg_kalshi_chart(history: List[dict], display: dict,
         t_min = pts_in[0][0]
     t_span = max(1.0, t_max - t_min)
 
+    # Smoothed values for the visible polyline (centered MA). Raw values
+    # stay in `pts_in` for the hover-tooltip JSON payload so hovering
+    # still surfaces the actual underlying, not the smoothed estimate.
+    smoothed_vals = _smooth_values([v for _, v in pts_in], window=3)
+    pts_plot: List[Tuple[float, float]] = [(t, sv) for (t, _), sv
+                                            in zip(pts_in, smoothed_vals)]
+
     # Auto-scale the y-axis to the actual data range with 8% padding.
     # When there's an active bet, also include its strike in the range
     # so the dotted reference line is always visible on the chart.
-    values = [v for _, v in pts_in]
+    values = list(smoothed_vals)
     if strike_is_active_bet and reference_strike is not None:
         values = values + [float(reference_strike)]
     vmin = min(values)
@@ -862,17 +890,17 @@ def svg_kalshi_chart(history: List[dict], display: dict,
         above_color, below_color = "#3fb950", "#c9d1d9"
 
     if not strike_in_range or reference_strike is None:
-        path = " ".join(f"{x_at(t):.1f},{y_at(v):.1f}" for t, v in pts_in)
+        path = " ".join(f"{x_at(t):.1f},{y_at(v):.1f}" for t, v in pts_plot)
         out.append(f"<polyline points='{path}' stroke='#c9d1d9' "
                    f"stroke-width='2' fill='none'/>")
     else:
         strike = float(reference_strike)
         runs: List[Tuple[bool, List[Tuple[float, float]]]] = []
-        cur_above = pts_in[0][1] >= strike
-        cur_run: List[Tuple[float, float]] = [(x_at(pts_in[0][0]), y_at(pts_in[0][1]))]
+        cur_above = pts_plot[0][1] >= strike
+        cur_run: List[Tuple[float, float]] = [(x_at(pts_plot[0][0]), y_at(pts_plot[0][1]))]
         for i in range(1, n):
-            t_prev, v_prev = pts_in[i - 1]
-            t_curr, v_curr = pts_in[i]
+            t_prev, v_prev = pts_plot[i - 1]
+            t_curr, v_curr = pts_plot[i]
             new_above = v_curr >= strike
             if new_above == cur_above:
                 cur_run.append((x_at(t_curr), y_at(v_curr)))
@@ -1374,9 +1402,11 @@ tr.row-bought.bought-no  td.mono { color: #f85149; font-weight: 600; }
     gap: 12px; margin-bottom: 12px; }
 .wl-hero-stats { display: flex; align-items: baseline; gap: 14px;
     flex-wrap: wrap; }
-.wl-hero-price { font-size: 36px; font-weight: 700; color: #f0f6fc;
-    letter-spacing: -0.5px; }
-.wl-hero-change { font-size: 16px; font-weight: 600; color: #8b949e; }
+.wl-hero-price { font-size: 24px; font-weight: 700; color: #f0f6fc;
+    letter-spacing: -0.3px; }
+.wl-hero-price-label { font-size: 12px; font-weight: 500; color: #8b949e;
+    text-transform: lowercase; margin-left: 4px; letter-spacing: 0.02em; }
+.wl-hero-change { font-size: 14px; font-weight: 600; color: #8b949e; }
 .wl-hero-change.pos { color: #3fb950; }
 .wl-hero-change.neg { color: #f85149; }
 .wl-hero-mtc { font-size: 12px; color: #8b949e; flex: 0 0 auto; }
@@ -2631,9 +2661,12 @@ def _render_watchlist_hero(out: List[str],
             except (TypeError, ValueError):
                 continue
 
-    pct_change = None
-    if current is not None and earliest_value is not None and earliest_value != 0:
-        pct_change = (current - earliest_value) / abs(earliest_value) * 100.0
+    # Raw value delta over the visible chart window (e.g. "▼ 9.05K").
+    # Replaces the prior percent-change indicator: the user wants to see
+    # the actual underlying delta in native units, not a normalized %.
+    value_change: float | None = None
+    if current is not None and earliest_value is not None:
+        value_change = current - earliest_value
 
     # Total Kalshi volume across the visible watchlist + soonest close.
     vols = [int(r.get("volume") or 0) for r in watchlist
@@ -2647,8 +2680,16 @@ def _render_watchlist_hero(out: List[str],
     # Per-bot display formatting + active-strike overlay (if any).
     label = display.get("underlying_label", "Underlying") if display else "Underlying"
     current_str = fmt_underlying(current, display)
-    pct_str = "—" if pct_change is None else f"{pct_change:+.2f}%"
-    pct_cls = "" if pct_change is None else ("pos" if pct_change >= 0 else "neg")
+    # Format the raw delta in the bot's native units, then strip the
+    # leading sign (the arrow already conveys direction).
+    if value_change is None:
+        change_body = "—"
+        change_cls = ""
+    else:
+        signed = _fmt_signed_underlying(value_change, display)
+        # _fmt_signed_underlying emits "+" or "−" as the first char.
+        change_body = signed.lstrip("+−-")
+        change_cls = "pos" if value_change >= 0 else "neg"
 
     active_strike = None
     active_side = None
@@ -2683,12 +2724,21 @@ def _render_watchlist_hero(out: List[str],
     out.append("<div class='wl-hero'>")
     out.append("<div class='wl-hero-top'>")
     out.append("<div class='wl-hero-stats'>")
-    out.append(f"<div class='wl-hero-price'>{html.escape(current_str)}</div>")
+    out.append(
+        f"<div class='wl-hero-price'>{html.escape(current_str)}"
+        f"<span class='wl-hero-price-label'>forecast</span>"
+        f"</div>"
+    )
     arrow = ""
-    if pct_change is not None:
-        arrow = "▲" if pct_change >= 0 else "▼"
-    pct_display = pct_str if not arrow else f"{arrow} {pct_str.lstrip('+-')}"
-    out.append(f"<div class='wl-hero-change {pct_cls}'>{html.escape(pct_display)}</div>")
+    if value_change is not None:
+        arrow = "▲" if value_change >= 0 else "▼"
+    change_display = (change_body if not arrow
+                      else f"{arrow} {change_body}")
+    out.append(
+        f"<div class='wl-hero-change {change_cls}'>"
+        f"{html.escape(change_display)}"
+        f"</div>"
+    )
     out.append("</div>")  # /wl-hero-stats
     out.append(f"<div class='wl-hero-mtc'>"
                f"<span class='label'>Closes in</span> "
