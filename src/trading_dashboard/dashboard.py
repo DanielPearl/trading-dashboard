@@ -2671,9 +2671,10 @@ def _render_active_bets_table(out: List[str], bets: List[dict],
     out.append("<table><thead><tr>"
                f"<th>Opened</th>{bot_th}<th>Ticker</th><th>Question</th>"
                "<th class='num'>Contracts</th><th>Side</th>"
-               "<th class='num' title='Entry price × contracts — cash at risk'>Entry cost</th>"
-               "<th class='num' title='Current ask × contracts — what the position is worth right now'>Current</th>"
-               "<th class='num' title='(100 − entry) × contracts — gross profit if our side wins'>Potential gain</th>"
+               "<th class='num' title='Implied probability of our side at entry (= entry price in ¢).'>Entry prob</th>"
+               "<th class='num' title='Implied probability of our side right now, taken from the market mid.'>Current prob</th>"
+               "<th class='num' title='Entry prob × contracts + Kalshi entry fee — total cash out at open'>Entry cost</th>"
+               "<th class='num' title='(100¢ − entry) × contracts − entry fee — gross profit if our side wins'>Potential gain</th>"
                "<th class='num' title='Time until the contract resolves'>Closes in</th>"
                "<th></th>"
                "</tr></thead><tbody>")
@@ -2683,29 +2684,6 @@ def _render_active_bets_table(out: List[str], bets: List[dict],
         badge_cls = "badge-yes" if side == "YES" else "badge-no"
         entry = b.get("entry_price_cents") or 0
         contracts = b.get("contracts", 0) or 0
-        # Mark-to-market uses the BID (what we'd actually receive
-        # closing the position out), not the ask. The fallback chain
-        # in fetch_active_bets_with_marks COALESCEs onto market_views
-        # for ask; we apply the same fallback for bid here. yes_bid
-        # comes from position_marks; if absent, fall back to the
-        # mid (ask − spread/2 ≈ bid is roughly the same idea).
-        current_c = (b.get("mark_yes_bid")
-                      if side == "YES"
-                      else b.get("mark_no_bid"))
-        if current_c is None:
-            # Last-ditch fallback: mid_cents (less honest than the
-            # bid but better than the ask, which would overstate).
-            mid = b.get("mark_mid")
-            if mid is not None:
-                current_c = mid
-        if current_c is None:
-            # Final fallback: derive bid as 100 - opposing ask, since
-            # at any moment yes_bid + no_ask ≈ 100 in a tight book.
-            opp_ask = (b.get("mark_no_ask")
-                        if side == "YES"
-                        else b.get("mark_yes_ask"))
-            if opp_ask is not None:
-                current_c = max(0, 100 - int(opp_ask))
         bot_name = b.get("_bot_name", "—")
         # Question — rendered in the bot's native display units
         # ($/gal, K claims, $/MMBtu) when display config is attached.
@@ -2723,33 +2701,69 @@ def _render_active_bets_table(out: List[str], bets: List[dict],
                                    and strike_high is not None) else "above"
         question = question_str(direction, strike_low, strike_high,
                                   display=b.get("_display"))
+        # Probability columns — entry prob is just entry_price_cents
+        # (1 cent = 1% implied probability for the side bet on).
+        # Current prob is the market's view of "this side wins" right
+        # now, derived from the mid where available with graceful
+        # fallbacks for bots that don't write position_marks.
+        entry_prob_pct = entry  # cents == percent
+        # Compute mid for the YES side first, then flip for NO bets.
+        mid_yes = b.get("mark_mid")
+        if mid_yes is None:
+            ya = b.get("mark_yes_ask")
+            yb = b.get("mark_yes_bid")
+            if ya is not None and yb is not None:
+                mid_yes = (int(ya) + int(yb)) / 2.0
+            elif ya is not None:
+                mid_yes = int(ya)
+            else:
+                # Derive from the opposing side's ask (no_ask ≈ 100−yes)
+                na = b.get("mark_no_ask")
+                if na is not None:
+                    mid_yes = max(0, 100 - int(na))
+        if mid_yes is None:
+            current_prob_pct = None
+        else:
+            current_prob_pct = (float(mid_yes) if side == "YES"
+                                 else 100.0 - float(mid_yes))
         # Dollar columns — all incorporate Kalshi trading fees:
-        #   Entry cost     = base cost + entry fee (cash out at open)
-        #   Current        = (bid × contracts − exit fee) / 100
+        #   Entry cost     = entry prob × contracts + entry fee
         #   Potential gain = (100 − entry) × contracts − entry fee
         #                    (entry fee already paid; settlement at
         #                     100¢ has zero exit fee)
         entry_fee_c = kalshi_fee_cents(entry, contracts)
         entry_cost_base = entry * contracts / 100.0
         entry_fee_dollars = entry_fee_c / 100.0
-        # Current: net what you'd realize closing now at the bid
-        if current_c is not None:
-            exit_fee_c = kalshi_fee_cents(int(current_c), contracts)
-            current_val = ((current_c * contracts) - exit_fee_c) / 100.0
-        else:
-            current_val = None
         potential_gain = ((100 - entry) * contracts - entry_fee_c) / 100.0
-        current_cell = (f"${current_val:.2f}" if current_val is not None
-                         else "—")
         # Entry-cost cell shows base + fee inline so the user sees
         # how much of the cost is fee. Tooltip explains.
         entry_cost_cell = (
-            f"<td class='num red' title='Base entry cost (entry × "
-            f"contracts) + Kalshi trading fee, charged on order open'>"
+            f"<td class='num red' title='Entry prob × contracts + "
+            f"Kalshi entry fee — total cash out at open'>"
             f"−${entry_cost_base:.2f}"
             f"<span class='entry-fee'> + ${entry_fee_dollars:.2f}</span>"
             f"</td>"
         )
+        # Probability cells — colored by direction of move for the
+        # side we hold. Current > entry = market drifted in our
+        # favor (green), < entry = against us (red).
+        entry_prob_cell = f"<td class='num'>{entry_prob_pct}%</td>"
+        if current_prob_pct is None:
+            current_prob_cell = "<td class='num gray'>—</td>"
+        else:
+            cp = current_prob_pct
+            if cp > entry_prob_pct + 0.5:
+                cp_cls = "green"
+            elif cp < entry_prob_pct - 0.5:
+                cp_cls = "red"
+            else:
+                cp_cls = ""
+            current_prob_cell = (
+                f"<td class='num {cp_cls}' title='Market mid for our "
+                f"side right now. Compare to Entry prob — higher = "
+                f"market has moved in our favor.'>"
+                f"{cp:.0f}%</td>"
+            )
         mtc = b.get("minutes_to_close")
         # Sign / color logic for potential gain — usually positive
         # (winning side pays $1 minus entry minus fees), but very
@@ -2807,10 +2821,9 @@ def _render_active_bets_table(out: List[str], bets: List[dict],
             f"<td>{html.escape(question)}</td>"
             f"<td class='num'>{contracts}</td>"
             f"<td><span class='badge {badge_cls}'>{side}</span></td>"
+            f"{entry_prob_cell}"
+            f"{current_prob_cell}"
             f"{entry_cost_cell}"
-            f"<td class='num' title='Bid × contracts − exit fee — what "
-            f"you would net closing the position at the current market'>"
-            f"{current_cell}</td>"
             f"<td class='num {pg_cls}' title='(100¢ − entry) × contracts "
             f"− entry fee. Entry fee already paid; settlement at 100¢ "
             f"or 0¢ has zero exit fee.'>"
