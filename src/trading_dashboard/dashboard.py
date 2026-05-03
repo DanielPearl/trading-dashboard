@@ -127,8 +127,14 @@ def fetch_closed_positions(db_path: str, limit: int = 100) -> List[dict]:
         "ORDER BY exited_at DESC LIMIT ?", (limit,))
 
 
-def fetch_summary(db_path: str) -> dict:
-    """Lifetime + recent stats used by the Summary section."""
+def fetch_summary(db_path: str, period_days: int | None = None) -> dict:
+    """Lifetime + recent stats used by the Summary section.
+
+    ``period_days`` filters the period-scoped fields (period_bets_made,
+    period_net_pnl_cents, period_wins, period_losses) to bets that
+    opened (for bets_made) or closed (for P&L/wins/losses) within the
+    last N days. None → lifetime.
+    """
     empty = {
         "total_bets": 0, "open_count": 0, "exposure_cents": 0,
         "closed_count": 0, "realized_pnl_cents": 0,
@@ -136,6 +142,8 @@ def fetch_summary(db_path: str) -> dict:
         "avg_win_cents": 0, "avg_loss_cents": 0,
         "bets_today": 0, "this_week_pnl_cents": 0,
         "biggest_win_cents": 0, "biggest_loss_cents": 0,
+        "period_bets_made": 0, "period_net_pnl_cents": 0,
+        "period_wins": 0, "period_losses": 0,
     }
     if not Path(db_path).exists():
         return empty
@@ -184,6 +192,32 @@ def fetch_summary(db_path: str) -> dict:
                 "SELECT COUNT(*) n FROM trades "
                 "WHERE kind = 'entry' AND substr(created_at, 1, 10) = date('now')"
             ).fetchone()
+            # Period-filtered values: when period_days is None, mirror
+            # the lifetime totals; otherwise scope to the rolling window.
+            if period_days is None:
+                period_bets_made = total["n"]
+                period_net_pnl = closed_row["pnl"] or 0
+                period_wins = closed_row["wins"] or 0
+                period_losses = closed_row["losses"] or 0
+            else:
+                # bets_made = opened in the window (open or closed)
+                pmade = c.execute(
+                    "SELECT COUNT(*) n FROM positions "
+                    "WHERE date(opened_at) >= date('now', ?)",
+                    (f"-{int(period_days)} days",),
+                ).fetchone()
+                pclosed = c.execute(
+                    "SELECT COALESCE(SUM(realized_pnl_cents), 0) pnl, "
+                    "  SUM(CASE WHEN realized_pnl_cents > 0 THEN 1 ELSE 0 END) wins, "
+                    "  SUM(CASE WHEN realized_pnl_cents < 0 THEN 1 ELSE 0 END) losses "
+                    "FROM positions WHERE status = 'closed' "
+                    "  AND date(exited_at) >= date('now', ?)",
+                    (f"-{int(period_days)} days",),
+                ).fetchone()
+                period_bets_made = pmade["n"]
+                period_net_pnl = pclosed["pnl"] or 0
+                period_wins = pclosed["wins"] or 0
+                period_losses = pclosed["losses"] or 0
     except (sqlite3.OperationalError, sqlite3.DatabaseError):
         return empty
     return {
@@ -202,6 +236,10 @@ def fetch_summary(db_path: str) -> dict:
         "this_week_wins": int(this_week_wl["wins"] or 0),
         "this_week_losses": int(this_week_wl["losses"] or 0),
         "bets_today": int(bets_today["n"] or 0),
+        "period_bets_made": int(period_bets_made or 0),
+        "period_net_pnl_cents": int(period_net_pnl or 0),
+        "period_wins": int(period_wins or 0),
+        "period_losses": int(period_losses or 0),
     }
 
 
@@ -300,24 +338,26 @@ def fetch_bet_history(db_path: str, limit: int = 100) -> List[dict]:
     return [dict(r) for r in rows]
 
 
-def fetch_global_summary(bots: List[dict]) -> dict:
-    """Cross-bot rollup. The summary card row at the top of the dashboard
-    does NOT change when the user switches bots in the filter — these are
-    totals across every registered bot.
+def fetch_global_summary(bots: List[dict],
+                          period_days: int | None = None) -> dict:
+    """Cross-bot rollup for the Summary section's headline cards.
 
-    Best-bot strategy: the bot with the highest realized P&L; ties go to
-    the one with the most lifetime bets (more proof of edge).
+    ``active_bets`` is always the live across-bots count regardless of
+    the period filter (per user spec — current state, not historical).
+    The other rolled-up fields (``period_bets_made``,
+    ``period_net_pnl_cents``, ``period_win_pct``) honor ``period_days``.
     """
     rollup = {
+        "active_bets": 0,            # always current — never period-scoped
+        "period_bets_made": 0,
+        "period_net_pnl_cents": 0,
+        "period_wins": 0,
+        "period_losses": 0,
+        # Lifetime fields kept for callers that still want them.
         "total_bets": 0,
-        "active_bets": 0,
         "net_pnl_cents": 0,
-        "weekly_pnl_cents": 0,
         "wins": 0,
         "losses": 0,
-        "weekly_wins": 0,
-        "weekly_losses": 0,
-        "bets_today": 0,
         "best_bot_name": "—",
         "best_bot_pnl_cents": 0,
         "per_bot": [],
@@ -331,18 +371,17 @@ def fetch_global_summary(bots: List[dict]) -> dict:
         # stays focused on the recurrent-series bots.
         if b.get("dashboard_type") and b["dashboard_type"] != "standard":
             continue
-        s = fetch_summary(b["db_path"])
-        rollup["total_bets"] += s.get("total_bets", 0)
+        s = fetch_summary(b["db_path"], period_days=period_days)
         rollup["active_bets"] += s.get("open_count", 0)
+        rollup["period_bets_made"] += s.get("period_bets_made", 0)
+        rollup["period_net_pnl_cents"] += s.get("period_net_pnl_cents", 0)
+        rollup["period_wins"] += s.get("period_wins", 0)
+        rollup["period_losses"] += s.get("period_losses", 0)
+        rollup["total_bets"] += s.get("total_bets", 0)
         rollup["net_pnl_cents"] += s.get("realized_pnl_cents", 0)
-        rollup["weekly_pnl_cents"] += s.get("this_week_pnl_cents", 0)
         rollup["wins"] += s.get("wins_lifetime", 0)
         rollup["losses"] += s.get("losses_lifetime", 0)
-        rollup["weekly_wins"] += s.get("this_week_wins", 0)
-        rollup["weekly_losses"] += s.get("this_week_losses", 0)
-        rollup["bets_today"] += s.get("bets_today", 0)
         rollup["per_bot"].append((b["name"], s))
-        # Track the best one by realized P&L; ties broken by total_bets.
         better = (
             s.get("realized_pnl_cents", 0) > rollup["best_bot_pnl_cents"]
             or (s.get("realized_pnl_cents", 0) == rollup["best_bot_pnl_cents"]
@@ -352,14 +391,9 @@ def fetch_global_summary(bots: List[dict]) -> dict:
         if better:
             rollup["best_bot_name"] = b["name"]
             rollup["best_bot_pnl_cents"] = s.get("realized_pnl_cents", 0)
-    total_closed = rollup["wins"] + rollup["losses"]
-    # Plain win percent: wins / total closed. 0–100% scale, no losses term.
-    rollup["win_pct"] = (
-        rollup["wins"] / total_closed if total_closed else 0.0
-    )
-    weekly_closed = rollup["weekly_wins"] + rollup["weekly_losses"]
-    rollup["weekly_win_pct"] = (
-        rollup["weekly_wins"] / weekly_closed if weekly_closed else 0.0
+    period_closed = rollup["period_wins"] + rollup["period_losses"]
+    rollup["period_win_pct"] = (
+        rollup["period_wins"] / period_closed if period_closed else 0.0
     )
     return rollup
 
@@ -619,7 +653,8 @@ def fetch_decisions(decisions_path: str, limit: int = 60) -> List[dict]:
 
 
 def build_snapshot(db_path: str, bots: List[dict],
-                    edge_cfg: dict) -> dict:
+                    edge_cfg: dict,
+                    period_days: int | None = None) -> dict:
     """Compact JSON snapshot for live page updates.
 
     The browser polls this every few seconds and patches DOM cells in
@@ -635,7 +670,7 @@ def build_snapshot(db_path: str, bots: List[dict],
       • A monotonically-increasing tick counter for the JS to detect
         skipped updates.
     """
-    summary = fetch_global_summary(bots)
+    summary = fetch_global_summary(bots, period_days=period_days)
     watchlist = fetch_watchlist(db_path)
     active_bets = fetch_active_bets_with_marks(db_path)
 
@@ -686,18 +721,15 @@ def build_snapshot(db_path: str, bots: List[dict],
             "unreal_pnl_cents": unrealized_pnl_cents(ab),
         })
 
+    period_closed = (summary.get("period_wins", 0)
+                     + summary.get("period_losses", 0))
     return {
         "summary": {
-            "total_bets": summary.get("total_bets"),
             "active_bets": summary.get("active_bets"),
-            "net_pnl_cents": summary.get("net_pnl_cents"),
-            "weekly_pnl_cents": summary.get("weekly_pnl_cents"),
-            "win_pct": summary.get("win_pct"),
-            "weekly_win_pct": summary.get("weekly_win_pct"),
-            "wins": summary.get("wins"),
-            "losses": summary.get("losses"),
-            "weekly_wins": summary.get("weekly_wins"),
-            "weekly_losses": summary.get("weekly_losses"),
+            "period_bets_made": summary.get("period_bets_made"),
+            "period_net_pnl_cents": summary.get("period_net_pnl_cents"),
+            "period_win_pct": summary.get("period_win_pct"),
+            "period_has_closed": period_closed > 0,
         },
         "watchlist": rows,
         "active_bets": actives,
@@ -1556,6 +1588,7 @@ def render_page(
     hedge_cfg: dict,
     available_bots: List[dict],
     current_bot: str,
+    period_key: str = "all",
 ) -> str:
     out: List[str] = []
     out.append("<!doctype html><html><head>")
@@ -1571,10 +1604,12 @@ def render_page(
 
     # SECTION 1 — Global summary (cards + active bets + history). Identical
     # regardless of which bot is selected in the filter below.
-    _render_summary(out, global_summary, global_active_bets, global_history)
+    _render_summary(out, global_summary, global_active_bets, global_history,
+                     period_key=period_key, current_bot=current_bot)
 
-    # SECTION 2 — Bot filter.
-    _render_bot_filter(out, available_bots, current_bot)
+    # SECTION 2 — Bot filter (preserves the active period in its links).
+    _render_bot_filter(out, available_bots, current_bot,
+                       period_key=period_key)
 
     # If the selected bot doesn't have a populated DB, stop here.
     if (not watchlist and not latest_active
@@ -1616,21 +1651,24 @@ def render_page(
     _render_contract_rules(out, watchlist, current_bot)
 
     # Live-update JS: polls /api/snapshot every 5s and patches summary
-    # cards + watchlist cells in place. No page reload, no scroll loss.
-    out.append(_live_update_script(current_bot))
+    # cards + watchlist cells in place. Pass the period so the live
+    # cards keep matching the user's filter selection between polls.
+    out.append(_live_update_script(current_bot, period_key=period_key))
     out.append("</body></html>")
     return "".join(out)
 
 
-def _live_update_script(current_bot: str) -> str:
+def _live_update_script(current_bot: str, period_key: str = "all") -> str:
     """Self-contained JS block that fetches /api/snapshot every 5s
     and patches DOM cells with new values. Highlights changed cells
     briefly so updates are visible.
     """
     bot_param = html.escape(current_bot)
+    period_param = html.escape(period_key)
     return f"""<script>
 (function () {{
   const BOT = "{bot_param}";
+  const PERIOD = "{period_param}";
   const POLL_MS = 5000;
 
   // Format helpers — must mirror the server-side rendering in render_page.
@@ -1687,23 +1725,18 @@ def _live_update_script(current_bot: str) -> str:
 
   function applySnapshot(snap) {{
     // ── Summary cards ──────────────────────────────────────────────
+    // 4 cards: Active bets (live, never period-scoped) | Bets made
+    // | Net gain/loss | Total win % (latter three reflect the period
+    // filter — the snapshot was already fetched with the right window).
     const s = snap.summary || {{}};
-    const wins = s.wins || 0, losses = s.losses || 0;
-    const wWins = s.weekly_wins || 0, wLosses = s.weekly_losses || 0;
-    patch("card-total-bets", String(s.total_bets ?? 0));
     patch("card-active-bets", String(s.active_bets ?? 0));
-    patch("card-net-pnl", fmtSignedCents(s.net_pnl_cents),
-          (s.net_pnl_cents > 0) ? "green"
-            : (s.net_pnl_cents < 0 ? "red" : "gray"));
-    patch("card-win-pct", fmtPct(s.win_pct, (wins+losses) > 0),
-          (s.win_pct > 0.5) ? "green"
-            : ((wins+losses) > 0 && s.win_pct < 0.5 ? "red" : "gray"));
-    patch("card-weekly-pnl", fmtSignedCents(s.weekly_pnl_cents),
-          (s.weekly_pnl_cents > 0) ? "green"
-            : (s.weekly_pnl_cents < 0 ? "red" : "gray"));
-    patch("card-weekly-win-pct", fmtPct(s.weekly_win_pct, (wWins+wLosses) > 0),
-          (s.weekly_win_pct > 0.5) ? "green"
-            : ((wWins+wLosses) > 0 && s.weekly_win_pct < 0.5 ? "red" : "gray"));
+    patch("card-bets-made", String(s.period_bets_made ?? 0));
+    patch("card-net-pnl", fmtSignedCents(s.period_net_pnl_cents),
+          (s.period_net_pnl_cents > 0) ? "green"
+            : (s.period_net_pnl_cents < 0 ? "red" : "gray"));
+    patch("card-win-pct", fmtPct(s.period_win_pct, !!s.period_has_closed),
+          (s.period_win_pct > 0.5) ? "green"
+            : (s.period_has_closed && s.period_win_pct < 0.5 ? "red" : "gray"));
 
     // ── Watchlist rows ─────────────────────────────────────────────
     const minEv = snap.min_ev || 0.03;
@@ -1766,7 +1799,8 @@ def _live_update_script(current_bot: str) -> str:
   }}
 
   function poll() {{
-    fetch("/api/snapshot?bot=" + encodeURIComponent(BOT),
+    fetch("/api/snapshot?bot=" + encodeURIComponent(BOT)
+          + "&period=" + encodeURIComponent(PERIOD),
           {{cache: "no-store"}})
       .then(function (r) {{ return r.ok ? r.json() : null; }})
       .then(function (snap) {{ if (snap) applySnapshot(snap); }})
@@ -1987,57 +2021,96 @@ def _live_update_script(current_bot: str) -> str:
 # Section helpers
 # --------------------------------------------------------------------------- #
 
+PERIOD_OPTIONS = [
+    ("day", "Day", 1),
+    ("week", "Week", 7),
+    ("month", "Month", 30),
+    ("year", "Year", 365),
+    ("all", "All-time", None),
+]
+
+
+def _period_days(period_key: str) -> int | None:
+    """Map ``?period=X`` query value to the rolling-window day count
+    used by the SQL filters. Unknown / missing → None (lifetime).
+    """
+    for key, _label, days in PERIOD_OPTIONS:
+        if key == period_key:
+            return days
+    return None
+
+
 def _render_summary(out: List[str], rollup: dict, active_bets: List[dict],
-                    history: List[dict]) -> None:
-    """Section 1 — global cross-bot summary. Does NOT change when the
-    user switches bots in the filter. Active bets table on top, full
-    closed-bet history collapsed underneath (per request)."""
-    net = rollup["net_pnl_cents"]
+                    history: List[dict],
+                    period_key: str = "all",
+                    current_bot: str = "") -> None:
+    """Section 1 — global cross-bot summary. Period filter pills control
+    the "Bets made / Net gain / Total win %" cards; "Active bets" is
+    always live (per user spec). Switching bots in the per-bot filter
+    below leaves these cards unchanged.
+    """
+    period_label = next(
+        (lbl for k, lbl, _ in PERIOD_OPTIONS if k == period_key),
+        "All-time",
+    )
+    bets_made = rollup.get("period_bets_made", 0)
+    net = rollup.get("period_net_pnl_cents", 0)
     pnl_cls = "green" if net > 0 else ("red" if net < 0 else "gray")
-    weekly = rollup["weekly_pnl_cents"]
-    weekly_cls = "green" if weekly > 0 else ("red" if weekly < 0 else "gray")
-    # Plain win percent: wins / closed. 0-100% scale. Above 50% = green
-    # (the bot is winning more than it loses), below 50% = red.
-    win_pct = rollup["win_pct"]
-    has_closed = (rollup["wins"] + rollup["losses"]) > 0
+    win_pct = rollup.get("period_win_pct", 0.0)
+    has_closed = (rollup.get("period_wins", 0)
+                  + rollup.get("period_losses", 0)) > 0
     win_cls = ("green" if win_pct > 0.5
                else ("red" if has_closed and win_pct < 0.5 else "gray"))
     win_pct_str = f"{win_pct*100:.0f}%" if has_closed else "—"
-    wwin_pct = rollup["weekly_win_pct"]
-    has_weekly_closed = (rollup["weekly_wins"] + rollup["weekly_losses"]) > 0
-    wwin_cls = ("green" if wwin_pct > 0.5
-                else ("red" if has_weekly_closed and wwin_pct < 0.5 else "gray"))
-    wwin_pct_str = f"{wwin_pct*100:.0f}%" if has_weekly_closed else "—"
 
     out.append("<div class='section'><h2>1 · Summary — across all bots</h2>"
                "<div class='body summary-body'>")
-    out.append("<div class='small' style='margin-bottom:14px;'>"
-               "Lifetime totals across every registered bot. This panel "
-               "does not change when you switch bots in the filter.</div>")
-    # Single-value cards only — no sub-labels. Each shows just the headline
-    # number; the value font is sized up to fill the freed space.
+    out.append("<div class='small' style='margin-bottom:10px;'>"
+               "Cross-bot totals. Use the period filter to scope the "
+               "cards; Active bets is always the live count.</div>")
+
+    # ── Period filter pills ───────────────────────────────────────────
+    out.append("<div class='filter-pills' style='margin-bottom:14px;'>")
+    for key, label, _days in PERIOD_OPTIONS:
+        cls = "filter-pill"
+        if key == period_key:
+            cls += " filter-pill-active"
+        # Preserve the current bot selection in the link so switching
+        # the period doesn't kick the user back to the default bot.
+        bot_qs = (f"&bot={html.escape(current_bot)}"
+                  if current_bot else "")
+        out.append(
+            f"<a class='{cls}' href='?period={key}{bot_qs}'>"
+            f"{html.escape(label)}</a>"
+        )
+    out.append("</div>")
+
+    # ── Headline cards ────────────────────────────────────────────────
     out.append("<div class='row'>")
-    out.append(f"<div class='card'><div class='label'>Total bets made</div>"
-               f"<div class='value' id='card-total-bets'>{rollup['total_bets']}</div></div>")
-    out.append(f"<div class='card'><div class='label'>Active bets</div>"
-               f"<div class='value' id='card-active-bets'>{rollup['active_bets']}</div></div>")
-    out.append(f"<div class='card'><div class='label'>Total net gain / loss</div>"
-               f"<div class='value {pnl_cls}' id='card-net-pnl'>{fmt_signed_cents(net)}</div></div>")
     out.append(f"<div class='card'><div class='label' "
-               f"title='Lifetime wins divided by closed bets. 0-100%; "
-               f"above 50% means winning more than losing.'>"
-               f"Total win percent</div>"
-               f"<div class='value {win_cls}' id='card-win-pct'>{win_pct_str}</div></div>")
-    # Weekly sits second-from-right; both P&L cards stay green/red.
+               f"title='Live count of currently-open positions across "
+               f"all bots. Not affected by the period filter.'>"
+               f"Active bets</div>"
+               f"<div class='value' id='card-active-bets'>"
+               f"{rollup['active_bets']}</div></div>")
+    out.append(f"<div class='card'><div class='label'>"
+               f"Bets made <span class='gray small'>"
+               f"({html.escape(period_label)})</span></div>"
+               f"<div class='value' id='card-bets-made'>"
+               f"{bets_made}</div></div>")
+    out.append(f"<div class='card'><div class='label'>"
+               f"Net gain / loss <span class='gray small'>"
+               f"({html.escape(period_label)})</span></div>"
+               f"<div class='value {pnl_cls}' id='card-net-pnl'>"
+               f"{fmt_signed_cents(net)}</div></div>")
     out.append(f"<div class='card'><div class='label' "
-               f"title='Realized P&amp;L from bets closed in the last "
-               f"7 days.'>Weekly net gain / loss</div>"
-               f"<div class='value {weekly_cls}' id='card-weekly-pnl'>{fmt_signed_cents(weekly)}</div></div>")
-    out.append(f"<div class='card'><div class='label' "
-               f"title='Wins divided by closed bets in the last 7 days. "
-               f"0-100%, same scale as lifetime win percent.'>"
-               f"Weekly win percent</div>"
-               f"<div class='value {wwin_cls}' id='card-weekly-win-pct'>{wwin_pct_str}</div></div>")
+               f"title='Wins divided by closed bets in the selected "
+               f"period. 0-100%; above 50% means winning more than "
+               f"losing.'>"
+               f"Total win % <span class='gray small'>"
+               f"({html.escape(period_label)})</span></div>"
+               f"<div class='value {win_cls}' id='card-win-pct'>"
+               f"{win_pct_str}</div></div>")
     out.append("</div>")
 
     # Active bets list. Same table used in Section 5 below for consistency.
@@ -2223,11 +2296,15 @@ def _render_bet_history_block(out: List[str], history: List[dict],
 
 
 def _render_bot_filter(out: List[str], available_bots: List[dict],
-                       current_bot: str) -> None:
+                       current_bot: str,
+                       period_key: str = "all") -> None:
     """Slim filter bar: pill buttons, one per bot. Selected pill is
     highlighted; others are clickable links that switch via the
-    ?bot= query param. No section box / heading — this is a filter,
-    not a content section."""
+    ?bot= query param. The ?period= filter from the summary is
+    preserved across switches so users don't lose their period choice
+    when changing bots."""
+    period_qs = (f"&period={html.escape(period_key)}"
+                 if period_key and period_key != "all" else "")
     out.append("<div class='bot-filter-bar'>")
     out.append("<span class='filter-label'>Bot</span>")
     for b in available_bots:
@@ -2239,7 +2316,8 @@ def _render_bot_filter(out: List[str], available_bots: List[dict],
         cls = " ".join(classes)
         avail_marker = "" if b.get("available", True) else " <span class='small gray'>(no data)</span>"
         out.append(
-            f"<a href='?bot={html.escape(b['key'])}' class='{cls}'>"
+            f"<a href='?bot={html.escape(b['key'])}{period_qs}' "
+            f"class='{cls}'>"
             f"{html.escape(b['name'])}{avail_marker}</a>"
         )
     out.append("</div>")
@@ -3787,6 +3865,12 @@ class Handler(BaseHTTPRequestHandler):
         if parsed.path in ("/", "/index.html"):
             try:
                 bot = self._resolve_bot(parsed.query)
+                # Period filter for the summary cards: ?period=day|week|month|year|all
+                qs_top = parse_qs(parsed.query)
+                period_key = qs_top.get("period", ["all"])[0]
+                if period_key not in {k for k, _, _ in PERIOD_OPTIONS}:
+                    period_key = "all"
+                period_days = _period_days(period_key)
 
                 # Whale-watcher uses a different page entirely — JSONL
                 # source, signal-analysis-style render. Dispatch early so
@@ -3880,7 +3964,8 @@ class Handler(BaseHTTPRequestHandler):
 
                 # Global cross-bot fetches (these power the Summary section
                 # which is identical regardless of which bot is selected).
-                global_summary = fetch_global_summary(self.bots)
+                global_summary = fetch_global_summary(self.bots,
+                                                       period_days=period_days)
                 global_active_bets: List[dict] = []
                 global_history: List[dict] = []
                 for b in self.bots:
@@ -3926,6 +4011,7 @@ class Handler(BaseHTTPRequestHandler):
                     hedge_cfg=self.hedge_cfg,
                     available_bots=self.bots,
                     current_bot=bot["key"],
+                    period_key=period_key,
                 )
             except Exception:  # noqa: BLE001
                 log.exception("dashboard render failed")
@@ -3951,6 +4037,11 @@ class Handler(BaseHTTPRequestHandler):
             # cell id so the JS can do straightforward DOM lookups.
             try:
                 bot = self._resolve_bot(parsed.query)
+                qs_snap = parse_qs(parsed.query)
+                snap_period = qs_snap.get("period", ["all"])[0]
+                if snap_period not in {k for k, _, _ in PERIOD_OPTIONS}:
+                    snap_period = "all"
+                snap_period_days = _period_days(snap_period)
                 if bot.get("dashboard_type") == "whale":
                     # Whale page uses meta-refresh, not the JS poller.
                     # Return a minimal stub so any client polling this
@@ -3959,7 +4050,8 @@ class Handler(BaseHTTPRequestHandler):
                 else:
                     db_path = bot["db_path"]
                     payload_dict = build_snapshot(db_path, self.bots,
-                                                   self.edge_cfg)
+                                                   self.edge_cfg,
+                                                   period_days=snap_period_days)
             except Exception:  # noqa: BLE001
                 log.exception("snapshot endpoint failed")
                 self.send_response(500)
