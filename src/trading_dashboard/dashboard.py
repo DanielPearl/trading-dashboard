@@ -3712,53 +3712,23 @@ def _render_contract_rules(out: List[str], watchlist: List[dict],
     and render that single paragraph verbatim. The strike count and
     range are noted so the user knows it applies across the series.
 
-    A small circle-i info button next to the title opens the shared
-    modal with the extended rules (primary + secondary) for a fuller
-    read of how Kalshi resolves the market.
+    No info-button popup here — Kalshi's "View full rules" web-UI text
+    isn't exposed via their public API (the API only returns
+    rules_primary, which is what's shown verbatim below). Scraping
+    the Kalshi UI would be fragile + against their TOS, so we just
+    show the rules_primary and accept that it's the short summary.
     """
-    # Find a representative primary + secondary rules string.
+    out.append("<div class='section'><h2>6 · Kalshi rules — "
+               "how the market resolves</h2>"
+               "<div class='body rules'>")
+
+    # Find a representative rules_primary string.
     primary = ""
-    secondary = ""
-    sample_ticker = ""
     for v in watchlist:
-        if not sample_ticker and v.get("ticker"):
-            sample_ticker = v.get("ticker")
-        if not primary:
-            primary = (v.get("rules_primary") or "").strip()
-        if not secondary:
-            secondary = (v.get("rules_secondary") or "").strip()
-        if primary and secondary and sample_ticker:
+        rp = (v.get("rules_primary") or "").strip()
+        if rp:
+            primary = rp
             break
-
-    # Build the Kalshi market URL — clicking "View full rules on Kalshi"
-    # in the popup opens the live market page where Kalshi's web UI
-    # shows the full rules text (which is more detailed than what the
-    # API returns in rules_primary / rules_secondary).
-    series_lower = ((sample_ticker.split("-", 1)[0] if sample_ticker else "")
-                    .lower())
-    kalshi_url = (f"https://kalshi.com/markets/{series_lower}"
-                  if series_lower else "")
-
-    # Encode for the button's data attribute. The popup renders the
-    # cached text + a prominent link to Kalshi's full-rules page.
-    rules_payload = json.dumps({
-        "primary": primary,
-        "secondary": secondary,
-        "kalshi_url": kalshi_url,
-    }, separators=(",", ":"), default=str)
-    info_btn = (
-        ""
-        if not primary
-        else (f"<button type='button' class='contract-rules-btn' "
-              f"data-contract-rules='{html.escape(rules_payload)}' "
-              f"title='See the full contract rules from Kalshi'>"
-              f"i</button>")
-    )
-    out.append(
-        "<div class='section'><h2 style='display:flex;align-items:center;gap:10px;'>"
-        f"6 · Kalshi rules — how the market resolves {info_btn}</h2>"
-        "<div class='body rules'>"
-    )
 
     if not primary:
         out.append("<div class='empty'>Rules text not cached yet — "
