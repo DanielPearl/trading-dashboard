@@ -639,7 +639,7 @@ def render_page(
     # Bot filter sits BELOW the tabs (inside the section body, like the
     # main dashboard's Watchlist tab does it).
     out.append("<div class='section'><h2>"
-               "Watchlist — whale signals (potential insiders)</h2>"
+               "Watchlist — model vs market</h2>"
                "<div class='body'>")
     _render_bot_filter(out, available_bots, current_bot_key)
 

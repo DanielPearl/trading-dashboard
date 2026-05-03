@@ -3370,11 +3370,9 @@ def _render_watchlist(out: List[str], watchlist: List[dict],
                       available_bots: List[dict] | None = None,
                       current_bot: str = "",
                       period_key: str = "all") -> None:
-    accuracy = float(model["classifier_accuracy"]) if model and model.get("classifier_accuracy") else None
-    accuracy_label = (f"{accuracy*100:.0f}%" if accuracy else "untrained")
-    out.append(f"<div class='section'><h2>4 · Watchlist — model vs market "
-               f"<span class='small gray'>(model historical accuracy {accuracy_label}; "
-               f"confidence is scaled by it)</span></h2><div class='body'>")
+    out.append("<div class='section'><h2>"
+               "Watchlist — model vs market</h2>"
+               "<div class='body'>")
     # Bot dropdown sits between the watchlist title and the current
     # prediction so the active bot is clearly tied to the section it
     # scopes (per user request).
