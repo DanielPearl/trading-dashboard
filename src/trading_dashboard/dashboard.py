@@ -2035,8 +2035,7 @@ def _render_summary(out: List[str], rollup: dict, active_bets: List[dict],
     out.append("<h3 class='subhead'>Active bets — currently open</h3>")
     _render_active_bets_table(out, active_bets, empty_msg="No active bets right now.")
 
-    # Historical (closed) bets directly under active bets, per user request.
-    _render_bet_history_block(out, history, heading="Historical bets — closed")
+    # Historical bets section retired per user request.
     out.append("</div></div>")
 
 
@@ -2666,9 +2665,6 @@ def _render_active_bet(out: List[str], pos: dict | None,
                "<div class='body'>")
     if not pos:
         out.append("<div class='empty'>No active bets right now.</div>")
-        # Still show this bot's closed history below the empty notice.
-        _render_bet_history_block(out, closed_history,
-                                  heading="Historical bets — closed (this bot)")
         out.append("</div></div>")
         return
 
@@ -2756,10 +2752,7 @@ def _render_active_bet(out: List[str], pos: dict | None,
     # whether the bet is going to resolve YES or NO.
     out.append("</div>")  # /hero-card
 
-    # Per request: closed-bet history with the same columns as Section 1's
-    # bet history. Scoped to THIS bot.
-    _render_bet_history_block(out, closed_history,
-                              heading="Historical bets — closed (this bot)")
+    # Per-bot historical bets list retired per user request.
     out.append("</div></div>")
 
 
@@ -3215,11 +3208,7 @@ def _render_watchlist(out: List[str], watchlist: List[dict],
                    f"<td class='num {ev_no_cls}' data-field='ev_no'>{ev_no_str}</td>"
                    f"<td data-field='verdict'>{badge}</td></tr>")
     out.append("</tbody></table></div>")
-    # Buy-criteria reference sits directly under the watchlist table so
-    # any WATCH/SKIP verdict can be cross-referenced against the rules
-    # in one glance.
-    _render_buy_criteria_table(out, edge_cfg, validator_cfg,
-                                risk_caps, hedge_cfg)
+    # Buy-criteria reference table retired per user request.
     out.append("</div></div>")
 
 
