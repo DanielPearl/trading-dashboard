@@ -1388,21 +1388,36 @@ tr.row-suspect td:nth-last-child(2) { opacity: 0.85; }  /* keep gap legible */
    the ticker. Wins specificity over row-suspect so a held position is
    never dimmed. */
 tr.row-bought td { opacity: 1 !important; }
-/* Side-colored treatment: green for YES, red for NO. The first cell
-   gets a 3px colored left bar to flag the row at a glance; the ticker
-   text picks up the same color so it's readable from across the page. */
+/* Side-colored treatment: green for YES, red for NO. A 3px colored
+   left bar flags the row at a glance, and a faint tint runs across
+   every cell so the held strike pops without overpowering the table.
+   The first cell carries a slightly stronger tint near the bar so the
+   bar reads as anchored, not floating. */
+tr.row-bought.bought-yes td { background: rgba(63, 185, 80, 0.06); }
+tr.row-bought.bought-no  td { background: rgba(248, 81, 73, 0.06); }
 tr.row-bought.bought-yes td:first-child {
     border-left: 3px solid #3fb950;
-    background: rgba(63, 185, 80, 0.08);
+    background: rgba(63, 185, 80, 0.12);
 }
 tr.row-bought.bought-no td:first-child {
     border-left: 3px solid #f85149;
-    background: rgba(248, 81, 73, 0.08);
+    background: rgba(248, 81, 73, 0.12);
 }
 tr.row-bought.bought-yes td.mono a.ticker-link,
 tr.row-bought.bought-yes td.mono { color: #3fb950; font-weight: 600; }
 tr.row-bought.bought-no  td.mono a.ticker-link,
 tr.row-bought.bought-no  td.mono { color: #f85149; font-weight: 600; }
+/* Watchlist table: fixed scrolling viewport so the strike list never
+   pushes the rest of the page off-screen. Sticky header keeps the
+   column labels in view as the user scrolls. */
+.watchlist-scroll { max-height: 360px; overflow-y: auto;
+    border: 1px solid #21262d; border-radius: 6px;
+    margin-top: 4px; }
+.watchlist-scroll table { margin: 0; border: none; }
+.watchlist-scroll thead th {
+    position: sticky; top: 0; z-index: 1;
+    background: #161b22; box-shadow: 0 1px 0 #30363d;
+}
 .section h2 .small { text-transform: none; letter-spacing: 0; font-size: 11px; font-weight: 400; }
 /* Watchlist hero — Kalshi-style market header above the strikes table.
    Layout mirrors the live Kalshi market page: title + countdown on top,
@@ -2877,7 +2892,8 @@ def _render_watchlist(out: List[str], watchlist: List[dict],
     # grouped | Verdict (rightmost). Chance was redundant with Kalshi
     # YES (same midpoint of the bid/ask); volume and closes-in live in
     # the hero header instead of being repeated per row.
-    out.append("<table><thead><tr>"
+    out.append("<div class='watchlist-scroll'>"
+               "<table><thead><tr>"
                "<th>Ticker</th><th>Question</th>"
                "<th class='num' title='Open interest — number of contracts currently held open on this strike.'>Contracts</th>"
                "<th class='num'>Kalshi YES %</th>"
@@ -3061,7 +3077,7 @@ def _render_watchlist(out: List[str], watchlist: List[dict],
                    f"<td class='num {ev_yes_cls}' data-field='ev_yes'>{ev_yes_str}</td>"
                    f"<td class='num {ev_no_cls}' data-field='ev_no'>{ev_no_str}</td>"
                    f"<td data-field='verdict'>{badge}</td></tr>")
-    out.append("</tbody></table>")
+    out.append("</tbody></table></div>")
     # Buy-criteria reference sits directly under the watchlist table so
     # any WATCH/SKIP verdict can be cross-referenced against the rules
     # in one glance.
