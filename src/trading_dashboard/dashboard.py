@@ -238,7 +238,10 @@ def fetch_recent_bets(db_path: str, limit: int = 25) -> List[dict]:
 
 
 def fetch_active_bets_with_marks(db_path: str) -> List[dict]:
-    """Open positions joined with their latest mark + latest mtc."""
+    """Open positions joined with their latest mark + latest mtc + the
+    most recent market_views row's strike bounds (so the summary table
+    can render the human Question for each row).
+    """
     return _safe_query(
         db_path,
         "SELECT p.*, "
@@ -246,7 +249,13 @@ def fetch_active_bets_with_marks(db_path: str) -> List[dict]:
         "       m.no_ask_cents AS mark_no_ask, "
         "       (SELECT mv.minutes_to_close FROM market_views mv "
         "          WHERE mv.ticker = p.ticker "
-        "          ORDER BY mv.id DESC LIMIT 1) AS minutes_to_close "
+        "          ORDER BY mv.id DESC LIMIT 1) AS minutes_to_close, "
+        "       (SELECT mv.floor_strike FROM market_views mv "
+        "          WHERE mv.ticker = p.ticker "
+        "          ORDER BY mv.id DESC LIMIT 1) AS floor_strike, "
+        "       (SELECT mv.cap_strike FROM market_views mv "
+        "          WHERE mv.ticker = p.ticker "
+        "          ORDER BY mv.id DESC LIMIT 1) AS cap_strike "
         "FROM positions p LEFT JOIN position_marks m ON p.id = m.position_id "
         "WHERE p.status = 'open' ORDER BY p.opened_at DESC")
 
@@ -2042,17 +2051,21 @@ def _render_summary(out: List[str], rollup: dict, active_bets: List[dict],
 def _render_active_bets_table(out: List[str], bets: List[dict],
                               empty_msg: str = "No active bets.") -> None:
     """Shared renderer used by both Section 1 (cross-bot summary) and
-    Section 5 (the currently-filtered bot's active bet). One source of
-    truth so the columns stay in lockstep.
+    the per-bot active-bet view. Columns:
+        Opened | Bot | Ticker | Question | Contracts | Side
+        | Entry cost | Current | Potential gain | Closes in
+    Entry cost / Current / Potential gain are in dollars (per-position
+    totals), not per-contract cents — matches how a trader reads the
+    P&L of an open position at a glance.
     """
     if not bets:
         out.append(f"<div class='empty'>{html.escape(empty_msg)}</div>")
         return
     out.append("<table><thead><tr>"
-               "<th>Opened</th><th>Bot</th><th>Ticker</th><th>Side</th>"
-               "<th class='num'>Entry</th><th class='num'>Current</th>"
-               "<th class='num'>Contracts</th>"
-               "<th class='num' title='Entry price × contracts — cash at risk'>Cost</th>"
+               "<th>Opened</th><th>Bot</th><th>Ticker</th><th>Question</th>"
+               "<th class='num'>Contracts</th><th>Side</th>"
+               "<th class='num' title='Entry price × contracts — cash at risk'>Entry cost</th>"
+               "<th class='num' title='Current ask × contracts — what the position is worth right now'>Current</th>"
                "<th class='num' title='(100 − entry) × contracts — gross profit if our side wins'>Potential gain</th>"
                "<th class='num' title='Time until the contract resolves'>Closes in</th>"
                "</tr></thead><tbody>")
@@ -2062,20 +2075,41 @@ def _render_active_bets_table(out: List[str], bets: List[dict],
         badge_cls = "badge-yes" if side == "YES" else "badge-no"
         entry = b.get("entry_price_cents") or 0
         contracts = b.get("contracts", 0) or 0
-        current = b.get("mark_yes_ask") if side == "YES" else b.get("mark_no_ask")
+        current_c = b.get("mark_yes_ask") if side == "YES" else b.get("mark_no_ask")
         bot_name = b.get("_bot_name", "—")
-        cost = entry * contracts / 100.0
+        # Question — rendered in the bot's native display units
+        # ($/gal, K claims, $/MMBtu) when display config is attached.
+        floor = b.get("floor_strike")
+        cap = b.get("cap_strike")
+        try:
+            strike_low = float(floor) if floor is not None else None
+        except (TypeError, ValueError):
+            strike_low = None
+        try:
+            strike_high = float(cap) if cap is not None else None
+        except (TypeError, ValueError):
+            strike_high = None
+        direction = "between" if (strike_low is not None
+                                   and strike_high is not None) else "above"
+        question = question_str(direction, strike_low, strike_high,
+                                  display=b.get("_display"))
+        # Dollar columns: entry cost, current value, potential gain.
+        entry_cost = entry * contracts / 100.0
+        current_val = ((current_c or 0) * contracts / 100.0
+                        if current_c is not None else None)
         potential_gain = (100 - entry) * contracts / 100.0
+        current_cell = (f"${current_val:.2f}" if current_val is not None
+                         else "—")
         mtc = b.get("minutes_to_close")
         out.append(
             f"<tr><td>{html.escape(opened)}</td>"
             f"<td>{html.escape(bot_name)}</td>"
             f"<td class='mono'>{html.escape(b['ticker'])}</td>"
-            f"<td><span class='badge {badge_cls}'>{side}</span></td>"
-            f"<td class='num'>{entry}c</td>"
-            f"<td class='num'>{cents_or_dash(current)}</td>"
+            f"<td>{html.escape(question)}</td>"
             f"<td class='num'>{contracts}</td>"
-            f"<td class='num red'>−${cost:.2f}</td>"
+            f"<td><span class='badge {badge_cls}'>{side}</span></td>"
+            f"<td class='num red'>−${entry_cost:.2f}</td>"
+            f"<td class='num'>{current_cell}</td>"
             f"<td class='num green'>+${potential_gain:.2f}</td>"
             f"<td class='num'>{time_to_close_str(mtc)}</td></tr>"
         )
@@ -2716,10 +2750,14 @@ def _render_active_bet(out: List[str], pos: dict | None,
                f"opened {html.escape(opened)} UTC</div>")
 
     # Active-bets table (same columns as Section 1's summary view).
-    # Bot-name fallback: if not already attached, infer from the
-    # ticker prefix.
+    # Pull strike + display info from the matching watchlist row so the
+    # Question column renders in the bot's native units. Bot-name
+    # fallback: if not already attached, infer from the ticker prefix.
     enriched = dict(pos)
     enriched.setdefault("minutes_to_close", mtc)
+    if wl:
+        enriched.setdefault("floor_strike", wl.get("strike_low"))
+        enriched.setdefault("cap_strike", wl.get("strike_high"))
     if not enriched.get("_bot_name"):
         ticker = (enriched.get("ticker") or "")
         if ticker.startswith("KXJOBLESSCLAIMS"):
@@ -3852,6 +3890,10 @@ class Handler(BaseHTTPRequestHandler):
                         continue
                     for ab in fetch_active_bets_with_marks(b["db_path"]):
                         ab["_bot_name"] = b["name"]
+                        # Attach the bot's display config so the
+                        # question column can be formatted in the bot's
+                        # native units (K claims vs $ vs ...).
+                        ab["_display"] = b.get("display") or {}
                         global_active_bets.append(ab)
                     for h in fetch_bet_history(b["db_path"], limit=50):
                         h["_bot_name"] = b["name"]
