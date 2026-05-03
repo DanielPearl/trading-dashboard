@@ -2588,6 +2588,8 @@ def _render_active_bets_table(out: List[str], bets: List[dict],
         out.append(f"<div class='empty'>{html.escape(empty_msg)}</div>")
         return
     bot_th = "<th>Bot</th>" if show_bot else ""
+    # Last column is the per-row info button — no header label needed
+    # (the icon is self-explanatory; tooltip on hover spells it out).
     out.append("<table><thead><tr>"
                f"<th>Opened</th>{bot_th}<th>Ticker</th><th>Question</th>"
                "<th class='num'>Contracts</th><th>Side</th>"
@@ -2595,7 +2597,7 @@ def _render_active_bets_table(out: List[str], bets: List[dict],
                "<th class='num' title='Current ask × contracts — what the position is worth right now'>Current</th>"
                "<th class='num' title='(100 − entry) × contracts — gross profit if our side wins'>Potential gain</th>"
                "<th class='num' title='Time until the contract resolves'>Closes in</th>"
-               "<th title='Why this bet was chosen — model probability, market price, edge, EV.'>Assessment</th>"
+               "<th></th>"
                "</tr></thead><tbody>")
     for b in bets:
         opened = (b.get("opened_at") or "")[:19].replace("T", " ")
@@ -3127,18 +3129,17 @@ def _render_watchlist(out: List[str], watchlist: List[dict],
     # themselves).
     _render_current_prediction(out, model, display=display)
 
-    # ── Buy criteria + validators reference button ───────────────────
-    # Sits directly above the Active bet section so the rule-set
-    # context is right next to the bet it scopes. Opens the shared
-    # modal with all thresholds the bot checks before placing a bet.
+    # Buy-criteria reference payload — emitted as a button BELOW the
+    # Active-bet h3 so the rule-set context sits between the section
+    # title and the bet table.
     rules_payload = json.dumps({
         "edge": edge_cfg or {},
         "validators": validator_cfg or {},
         "risk": risk_caps or {},
         "hedge": hedge_cfg or {},
     }, separators=(",", ":"), default=str)
-    out.append(
-        "<div style='margin: 14px 0 10px 0;'>"
+    rules_btn_html = (
+        "<div style='margin: 4px 0 10px 0;'>"
         "<button type='button' class='criteria-rules-btn' "
         f"data-rules='{html.escape(rules_payload)}'>"
         "What does this bot need before it'll buy?"
@@ -3146,11 +3147,11 @@ def _render_watchlist(out: List[str], watchlist: List[dict],
     )
 
     # ── This bot's active bet ────────────────────────────────────────
-    # Mirrors the active-bets table from the Home tab — but scoped to
-    # the currently-selected bot, with the Bot column dropped (the
-    # section is already bot-scoped). Enrich the raw position with
-    # strike / display info so Question + Current render in the
-    # bot's native units.
+    # Active bet h3 → rules button → bet table (or empty state). The
+    # rules button always renders so the rule-set context is one click
+    # away even when the bot has no open position right now.
+    out.append("<h3 class='subhead'>Active bet</h3>")
+    out.append(rules_btn_html)
     if latest_active:
         enriched = dict(latest_active)
         # Strike data from the matching watchlist row (keyed by ticker).
@@ -3171,7 +3172,6 @@ def _render_watchlist(out: List[str], watchlist: List[dict],
             if enriched.get("mark_no_ask") is None:
                 enriched["mark_no_ask"] = wl_match.get("no_ask_cents")
         enriched["_display"] = display or {}
-        out.append("<h3 class='subhead'>Active bet</h3>")
         _render_active_bets_table(out, [enriched],
                                     show_bot=False)
 
