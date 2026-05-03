@@ -2745,8 +2745,10 @@ def _render_active_bet(out: List[str], pos: dict | None,
     # than what it looked like at entry.
     _render_ev_diagnostic(out, pos, side, entry)
 
-    # ── "Why this trade was taken" panel ───────────────────────────────
-    _render_why_panel(out, pos, mtc, wl)
+    # "Why this trade was taken" panel removed per user request — the
+    # data was already redundant with the EV diagnostic above and the
+    # watchlist row's gate flags. _render_why_panel left in the file
+    # in case it gets re-wired later.
 
     # The per-position market-price chart that lived here was retired:
     # the watchlist hero chart now shows the underlying with a horizontal
