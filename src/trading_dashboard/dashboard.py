@@ -1670,7 +1670,6 @@ def render_page(
     # visible. URL persists the choice via ?tab=X.
     tabs = [
         ("home", "Home"),
-        ("performance", "Performance"),
         ("watchlist", "Watchlist"),
         ("history", "History"),
     ]
@@ -1694,19 +1693,18 @@ def render_page(
         "All-time",
     )
 
-    # ── HOME tab — summary statistics + currently-open bets ───────────
+    # ── HOME tab — summary cards + active bets + per-bot perf cards ──
+    # Performance and Home were merged per user request; the bot-card
+    # grid sits below the summary section as a "what's in each bot"
+    # overview that doubles as a click-through to each bot's Watchlist.
     _open_panel("home")
     _render_summary(out, global_summary, global_active_bets, global_history,
                      period_key=period_key, current_bot=current_bot)
-    out.append("</div>")  # /home panel
-
-    # ── PERFORMANCE tab — per-bot cards: model stats + rules ───────
-    _open_panel("performance")
     out.append("<div class='section'><h2>Bot performance</h2>"
                "<div class='body'>")
     _render_bot_cards(out, global_summary, bot_models, period_label)
     out.append("</div></div>")
-    out.append("</div>")  # /performance panel
+    out.append("</div>")  # /home panel
 
     # ── WATCHLIST tab — bot filter + chart + active bet detail ────────
     _open_panel("watchlist")
@@ -4225,7 +4223,11 @@ class Handler(BaseHTTPRequestHandler):
                 period_days = _period_days(period_key)
                 # Active tab for the per-bot pane: ?tab=watchlist|model|activebet|rules
                 tab_key = qs_top.get("tab", ["home"])[0]
-                if tab_key not in {"home", "performance", "watchlist", "history"}:
+                # `performance` was merged into `home`; legacy URLs
+                # silently redirect to home so deep links keep working.
+                if tab_key == "performance":
+                    tab_key = "home"
+                if tab_key not in {"home", "watchlist", "history"}:
                     tab_key = "home"
 
                 # Whale-watcher uses a different page entirely — JSONL
