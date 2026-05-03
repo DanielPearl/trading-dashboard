@@ -534,6 +534,27 @@ def _merge_kalshi_with_local(kalshi_markets: List[dict],
     return base
 
 
+def _bisect_close(sorted_ts: List[float], target: float,
+                   tolerance_seconds: float) -> int | None:
+    """Return an index in sorted_ts within `tolerance_seconds` of
+    `target`, or None. Used by the chart's data-merger to dedup
+    overlapping Kalshi candle / local model-snapshot timestamps.
+    """
+    import bisect
+    if not sorted_ts:
+        return None
+    i = bisect.bisect_left(sorted_ts, target)
+    candidates = []
+    if i > 0:
+        candidates.append((abs(sorted_ts[i - 1] - target), i - 1))
+    if i < len(sorted_ts):
+        candidates.append((abs(sorted_ts[i] - target), i))
+    if not candidates:
+        return None
+    delta, idx = min(candidates)
+    return idx if delta <= tolerance_seconds else None
+
+
 def fetch_underlying_history(db_path: str, hours: int = 72,
                               max_points: int = 400) -> List[dict]:
     """Time-series of the bot's underlying value (model_snapshots.current_gas_price)
@@ -3524,10 +3545,13 @@ class Handler(BaseHTTPRequestHandler):
                 # comes up empty (bot service not writing market_views,
                 # or the bot is currently between events). Done after
                 # the Kalshi fetch since both share the cache.
-                # Local model_snapshots fallback (used if Kalshi is down).
-                # 7 days covers any weekly contract.
+                # Local model_snapshots — the bot writes one per tick
+                # with the underlying value pulled from its own data
+                # source (EIA / FRED / etc.). Used to fill gaps in the
+                # 5-day chart where Kalshi candle data is sparse (e.g.
+                # natgas weekend gaps, prior events with thin trading).
                 underlying_history = fetch_underlying_history(
-                    db_path, hours=7 * 24,
+                    db_path, hours=5 * 24, max_points=2000,
                 )
                 # Kalshi-derived underlying via strike-ladder interpolation
                 # — same data source Kalshi uses for the chart at the top
@@ -3559,6 +3583,39 @@ class Handler(BaseHTTPRequestHandler):
                         kalshi_markets, contract_open_ts = [], None
                         contract_close_ts = None
                         event_title = None
+                # Union local model_snapshots with Kalshi candle data so
+                # the 5-day chart stays dense even when Kalshi has gaps
+                # (e.g. weekends, between-event windows). Local snapshots
+                # carry the bot's own EIA/FRED reading; Kalshi candles
+                # carry the market's intraday view. Both are "real"
+                # underlying values — combining them just fills the gaps.
+                if underlying_history:
+                    from datetime import datetime as _dt
+                    converted: List[dict] = []
+                    for r in underlying_history:
+                        v = r.get("value")
+                        ts_str = r.get("captured_at")
+                        if v is None or ts_str is None:
+                            continue
+                        try:
+                            ts = _dt.fromisoformat(
+                                str(ts_str).replace("Z", "+00:00")
+                            ).timestamp()
+                            converted.append({"ts": float(ts), "value": float(v)})
+                        except (TypeError, ValueError):
+                            continue
+                    if converted:
+                        # Dedup: if a Kalshi candle and a local snapshot
+                        # land within 30 min of each other, prefer Kalshi
+                        # (it's the actual market-derived value).
+                        kalshi_ts = sorted(r["ts"] for r in kalshi_history)
+                        merged = list(kalshi_history)
+                        for r in converted:
+                            close_idx = _bisect_close(kalshi_ts, r["ts"], 1800)
+                            if close_idx is None:
+                                merged.append(r)
+                        merged.sort(key=lambda r: r["ts"])
+                        kalshi_history = merged
 
                 # Hybrid watchlist: Kalshi spine + merged local data.
                 # Kalshi gives us the canonical, always-up-to-date strike
