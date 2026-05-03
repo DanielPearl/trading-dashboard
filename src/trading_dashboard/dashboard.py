@@ -2816,9 +2816,11 @@ def _render_active_bets_table(out: List[str], bets: List[dict],
             f"{entry_prob_cell}"
             f"{current_prob_cell}"
             f"{entry_cost_cell}"
-            f"<td class='num {pg_cls}' title='(100¢ − entry) × contracts "
-            f"− entry fee. Entry fee already paid; settlement at 100¢ "
-            f"or 0¢ has zero exit fee.'>"
+            f"<td class='num {pg_cls}' title='"
+            f"(100¢ − {entry}¢) × {contracts} contracts − ${entry_fee_dollars:.2f} fee = "
+            f"${(100 - entry) * contracts / 100.0:.2f} − ${entry_fee_dollars:.2f} = "
+            f"${potential_gain:.2f}. Entry fee already paid; settlement "
+            f"at 100¢ or 0¢ has zero exit fee.'>"
             f"{pg_sign}${abs(potential_gain):.2f}</td>"
             f"<td class='num'>{time_to_close_str(mtc)}</td>"
             f"<td><button type='button' class='criteria-btn' "
@@ -3448,20 +3450,20 @@ def _render_watchlist(out: List[str], watchlist: List[dict],
             flags.append("thin volume")
 
         # My YES / My NO cells render in default white when the bot
-        # would actually buy that side (positive EV + all gates passed
-        # for that side). Otherwise grey them out — there's no
-        # actionable edge so the user shouldn't see a highlighted
-        # number.
+        # would actually buy that side (positive EV + bot_verdict =
+        # BUY_X means all the bot's gates passed). Otherwise grey them
+        # out — there's no actionable edge so the user shouldn't see
+        # a highlighted number.
         ev_yes_v = v.get("_ev_yes")
         ev_no_v = v.get("_ev_no")
         bot_verdict_pre = v.get("bot_verdict", "SKIP")
         my_yes_cls = "gray"
         my_no_cls = "gray"
         if (bot_verdict_pre == "BUY_YES"
-                and ev_yes_v is not None and ev_yes_v >= 0.03):
+                and ev_yes_v is not None and ev_yes_v > 0):
             my_yes_cls = ""   # default white — actionable side
         if (bot_verdict_pre == "BUY_NO"
-                and ev_no_v is not None and ev_no_v >= 0.03):
+                and ev_no_v is not None and ev_no_v > 0):
             my_no_cls = ""    # default white — actionable side
 
         # ── Verdict — driven by EV first, gates second ─────────────────
