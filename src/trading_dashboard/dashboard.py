@@ -913,40 +913,34 @@ def svg_kalshi_chart(history: List[dict], display: dict,
                    f"font-size='11' text-anchor='middle' opacity='0.95'>"
                    f"{html.escape(label)}</text>")
 
-    # X-axis: 5 evenly-spaced date labels across the chart. Each gets a
-    # faint dotted vertical guideline and "May 2 · 3pm" style label.
-    # Even spacing (vs irregular midnight ticks) matches what Kalshi
-    # does and keeps the bottom row visually balanced regardless of
-    # whether the contract is 2 days old or 7.
-    # One label per CALENDAR DAY in the contract life — from open to
-    # close, no skipping. Each label is anchored at midnight UTC of
-    # that day, except the first (anchored at open_time) and the last
-    # (anchored at close_time).
+    # X-axis: one label per UNIQUE day in the contract span, EVENLY
+    # SPACED across the chart's width regardless of where each midnight
+    # actually falls in time. Visually decouples label position from
+    # the time axis (the polyline still uses real time) so the bottom
+    # row stays balanced even on lopsided spans.
     from datetime import timedelta
     dt_min = datetime.fromtimestamp(t_min, tz=timezone.utc)
     dt_max = datetime.fromtimestamp(t_max, tz=timezone.utc)
-    tick_points: List[Tuple[float, str]] = []
-    tick_points.append((t_min, dt_min.strftime("%b %-d")))
-    next_midnight = (dt_min.replace(hour=0, minute=0, second=0, microsecond=0)
-                     + timedelta(days=1))
-    while next_midnight < dt_max:
-        # Skip the boundary if it'd be visually right next to t_min.
-        if next_midnight.timestamp() - t_min > 600:
-            tick_points.append((next_midnight.timestamp(),
-                                next_midnight.strftime("%b %-d")))
-        next_midnight += timedelta(days=1)
+    day_labels: List[str] = [dt_min.strftime("%b %-d")]
+    cur = dt_min.replace(hour=0, minute=0, second=0, microsecond=0) + timedelta(days=1)
+    while cur < dt_max:
+        lbl = cur.strftime("%b %-d")
+        if lbl != day_labels[-1]:
+            day_labels.append(lbl)
+        cur += timedelta(days=1)
     last_label = dt_max.strftime("%b %-d")
-    if not tick_points or tick_points[-1][1] != last_label:
-        tick_points.append((t_max, last_label))
-    for i, (ts, label) in enumerate(tick_points):
-        frac = (ts - t_min) / t_span if t_span > 0 else 0.0
+    if last_label != day_labels[-1]:
+        day_labels.append(last_label)
+    n = max(1, len(day_labels) - 1)
+    for i, label in enumerate(day_labels):
+        frac = i / n if n else 0.5
         x = pad_l + frac * inner_w
         out.append(f"<line x1='{x:.1f}' y1='{pad_t}' x2='{x:.1f}' "
                    f"y2='{height-pad_b}' stroke='#1f2530' stroke-width='1' "
                    f"stroke-dasharray='2,3' opacity='0.7'/>")
         if i == 0:
             anchor, tx = "start", x
-        elif i == len(tick_points) - 1:
+        elif i == len(day_labels) - 1:
             anchor, tx = "end", x
         else:
             anchor, tx = "middle", x
