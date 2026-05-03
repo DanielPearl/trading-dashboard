@@ -1923,9 +1923,6 @@ def _live_update_script(current_bot: str, period_key: str = "all") -> str:
     const heroPriceText = heroPrice ? heroPrice.querySelector(
         ".wl-hero-price-text") : null;
     const heroChange = hero ? hero.querySelector(".wl-hero-change") : null;
-    // Earliest forecast value — anchor for the (Δ from start of chart)
-    // delta the change indicator displays.
-    const earliestValue = points.length ? points[0][1] : null;
 
     function fmtTs(ts) {{
       const d = new Date(ts * 1000);
@@ -1950,6 +1947,10 @@ def _live_update_script(current_bot: str, period_key: str = "all") -> str:
     try {{ points = JSON.parse(wrap.dataset.points || "[]"); }} catch (e) {{}}
     try {{ fmt = Object.assign(fmt, JSON.parse(wrap.dataset.fmt || "{{}}")); }}
     catch (e) {{}}
+    // Earliest recorded value — anchor for the (Δ from start of chart)
+    // delta the change indicator displays. Computed AFTER points are
+    // parsed (let-declared above; would TDZ-throw if accessed earlier).
+    const earliestValue = points.length ? points[0][1] : null;
 
     function fmtValue(raw) {{
       if (raw === null || raw === undefined || !isFinite(raw)) return "—";
