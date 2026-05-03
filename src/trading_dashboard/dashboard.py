@@ -2590,7 +2590,7 @@ def _render_active_bets_table(out: List[str], bets: List[dict],
                "<th class='num' title='Current ask × contracts — what the position is worth right now'>Current</th>"
                "<th class='num' title='(100 − entry) × contracts — gross profit if our side wins'>Potential gain</th>"
                "<th class='num' title='Time until the contract resolves'>Closes in</th>"
-               "<th title='Why this bet was chosen — model probability, market price, edge, EV.'>Why?</th>"
+               "<th title='Why this bet was chosen — model probability, market price, edge, EV.'>Assessment</th>"
                "</tr></thead><tbody>")
     for b in bets:
         opened = (b.get("opened_at") or "")[:19].replace("T", " ")
@@ -2680,7 +2680,8 @@ def _render_active_bets_table(out: List[str], bets: List[dict],
             f"<td class='num green'>+${potential_gain:.2f}</td>"
             f"<td class='num'>{time_to_close_str(mtc)}</td>"
             f"<td><button type='button' class='criteria-btn' "
-            f"data-criteria='{criteria_json}'>Why?</button></td>"
+            f"title='Why was this bet chosen?' "
+            f"data-criteria='{criteria_json}'>?</button></td>"
             f"</tr>"
         )
     out.append("</tbody></table>")
