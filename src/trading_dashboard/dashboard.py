@@ -2303,20 +2303,22 @@ def _render_bot_cards(out: List[str], rollup: dict,
 
 
 def _render_active_bets_table(out: List[str], bets: List[dict],
-                              empty_msg: str = "No active bets.") -> None:
+                              empty_msg: str = "No active bets.",
+                              show_bot: bool = True) -> None:
     """Shared renderer used by both Section 1 (cross-bot summary) and
-    the per-bot active-bet view. Columns:
-        Opened | Bot | Ticker | Question | Contracts | Side
+    the per-bot view inside the Watchlist tab. Columns:
+        Opened | [Bot] | Ticker | Question | Contracts | Side
         | Entry cost | Current | Potential gain | Closes in
-    Entry cost / Current / Potential gain are in dollars (per-position
-    totals), not per-contract cents — matches how a trader reads the
-    P&L of an open position at a glance.
+    The Bot column is skipped when ``show_bot`` is False (per-bot view
+    where the bot is implied by the surrounding section). Entry cost /
+    Current / Potential gain are in dollars (per-position totals).
     """
     if not bets:
         out.append(f"<div class='empty'>{html.escape(empty_msg)}</div>")
         return
+    bot_th = "<th>Bot</th>" if show_bot else ""
     out.append("<table><thead><tr>"
-               "<th>Opened</th><th>Bot</th><th>Ticker</th><th>Question</th>"
+               f"<th>Opened</th>{bot_th}<th>Ticker</th><th>Question</th>"
                "<th class='num'>Contracts</th><th>Side</th>"
                "<th class='num' title='Entry price × contracts — cash at risk'>Entry cost</th>"
                "<th class='num' title='Current ask × contracts — what the position is worth right now'>Current</th>"
@@ -2355,9 +2357,10 @@ def _render_active_bets_table(out: List[str], bets: List[dict],
         current_cell = (f"${current_val:.2f}" if current_val is not None
                          else "—")
         mtc = b.get("minutes_to_close")
+        bot_td = (f"<td>{html.escape(bot_name)}</td>" if show_bot else "")
         out.append(
             f"<tr><td>{html.escape(opened)}</td>"
-            f"<td>{html.escape(bot_name)}</td>"
+            f"{bot_td}"
             f"<td class='mono'>{html.escape(b['ticker'])}</td>"
             f"<td>{html.escape(question)}</td>"
             f"<td class='num'>{contracts}</td>"
@@ -2804,6 +2807,36 @@ def _render_watchlist(out: List[str], watchlist: List[dict],
     # Current-prediction card row (no subtitle — the cards label
     # themselves).
     _render_current_prediction(out, model, display=display)
+
+    # ── This bot's active bet ────────────────────────────────────────
+    # Just below the boxes, mirror the active-bets table from the Home
+    # tab — but scoped to the currently-selected bot, with the Bot
+    # column dropped (the section is already bot-scoped). Enrich the
+    # raw position with strike / display info so Question + Current
+    # render in the bot's native units.
+    if latest_active:
+        enriched = dict(latest_active)
+        # Strike data from the matching watchlist row (keyed by ticker).
+        wl_match = next(
+            (w for w in (watchlist or [])
+             if w.get("ticker") == latest_active.get("ticker")),
+            None,
+        )
+        if wl_match:
+            enriched.setdefault("floor_strike", wl_match.get("strike_low"))
+            enriched.setdefault("cap_strike", wl_match.get("strike_high"))
+            enriched.setdefault("minutes_to_close",
+                                  wl_match.get("minutes_to_close"))
+            # mark fallback for bots that don't write position_marks —
+            # use the latest watchlist mark so Current renders.
+            if enriched.get("mark_yes_ask") is None:
+                enriched["mark_yes_ask"] = wl_match.get("yes_ask_cents")
+            if enriched.get("mark_no_ask") is None:
+                enriched["mark_no_ask"] = wl_match.get("no_ask_cents")
+        enriched["_display"] = display or {}
+        out.append("<h3 class='subhead'>Active bet</h3>")
+        _render_active_bets_table(out, [enriched],
+                                    show_bot=False)
 
     # ── Hero header + chart (Kalshi-style) ────────────────────────────────
     # Top-line metrics for the underlying the bot tracks: current value,
