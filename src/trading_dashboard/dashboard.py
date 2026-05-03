@@ -1501,6 +1501,41 @@ code { background: #161b22; padding: 1px 6px; border-radius: 3px; color: #c9d1d9
     margin-bottom: -1px; font-weight: 600; }
 .tab-panel { display: none; }
 .tab-panel-active { display: block; }
+/* Per-bot performance cards on the Performance tab. Each bot is a
+   self-contained block with three side-by-side mini-tables (Stats /
+   Model / Rules) so the comparison reads "by bot" not "by metric". */
+.bot-card { background: #0d1117; border: 1px solid #21262d;
+    border-radius: 8px; padding: 14px 16px; margin-bottom: 14px; }
+.bot-card-head { display: flex; align-items: baseline;
+    justify-content: space-between; gap: 12px;
+    border-bottom: 1px solid #21262d; padding-bottom: 8px;
+    margin-bottom: 12px; }
+.bot-card-head .bot-name { font-size: 16px; font-weight: 700;
+    color: #f0f6fc; letter-spacing: -0.2px; }
+.bot-card-head .bot-meta { font-size: 11px; color: #8b949e; }
+.bot-card-grid { display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+    gap: 16px; }
+.bot-card-block h4 { font-size: 11px; text-transform: uppercase;
+    letter-spacing: 0.06em; color: #8b949e; font-weight: 600;
+    margin: 0 0 8px 0; }
+.bot-card-block dl { margin: 0; display: grid;
+    grid-template-columns: max-content 1fr; gap: 4px 12px;
+    font-size: 12px; line-height: 1.45; }
+.bot-card-block dt { color: #8b949e; }
+.bot-card-block dd { margin: 0; color: #c9d1d9;
+    font-variant-numeric: tabular-nums; text-align: right; }
+.bot-card-block dd.green { color: #3fb950; }
+.bot-card-block dd.red   { color: #f85149; }
+.bot-card-block dd.gray  { color: #6e7681; }
+.bot-rules { margin-top: 14px; padding-top: 12px;
+    border-top: 1px solid #21262d; font-size: 12px; line-height: 1.55;
+    color: #c9d1d9; }
+.bot-rules .label { color: #8b949e; font-size: 11px;
+    text-transform: uppercase; letter-spacing: 0.06em;
+    font-weight: 600; margin-right: 6px; }
+.bot-rules .strike-meta { color: #8b949e; font-size: 11px;
+    margin-bottom: 4px; }
 /* Watchlist row that fails one or more validations (horizon mismatch,
    wide spread, edge<cost, etc.). Rendered visible but de-emphasized. */
 tr.row-suspect td { opacity: 0.55; }
@@ -1655,12 +1690,16 @@ def render_page(
                      period_key=period_key, current_bot=current_bot)
     out.append("</div>")  # /home panel
 
-    # ── PERFORMANCE tab — per-bot bets/pnl/win + per-bot model stats ──
+    # ── PERFORMANCE tab — per-bot cards: stats + model + rules ──────
     _open_panel("performance")
-    out.append("<div class='section'><h2>Bot performance</h2>"
-               "<div class='body'>")
-    _render_bot_performance(out, global_summary, period_label)
-    _render_bot_models_table(out, bot_models)
+    out.append("<div class='section'><h2>Bot performance "
+               f"<span class='small gray'>({html.escape(period_label)})"
+               f"</span></h2><div class='body'>")
+    # Period filter pills at the top so the user can rescope without
+    # leaving the tab.
+    _render_period_filter(out, period_key, current_bot=current_bot,
+                            tab_key="performance")
+    _render_bot_cards(out, global_summary, bot_models, period_label)
     out.append("</div></div>")
     out.append("</div>")  # /performance panel
 
@@ -2220,6 +2259,162 @@ def _render_summary(out: List[str], rollup: dict, active_bets: List[dict],
     _render_active_bets_table(out, active_bets, empty_msg="No active bets right now.")
 
     out.append("</div></div>")
+
+
+def _render_bot_cards(out: List[str], rollup: dict,
+                        bot_models: List[dict] | None,
+                        period_label: str) -> None:
+    """Per-bot card grid for the Performance tab. One card per bot,
+    each containing three mini-blocks side-by-side:
+        Performance — Bets made / Active / Net P&L / Win % / Best / Worst
+        Model       — Accuracy / Precision / Recall / F1 / ROC AUC /
+                      Features / Actual win %
+        Rules       — Kalshi resolution rule paragraph + strike count
+
+    Source data is the period-scoped per-bot summary (from rollup) +
+    the latest model snapshot + a representative rules_primary string
+    pulled from the bot's watchlist at request time.
+    """
+    if not bot_models:
+        out.append("<div class='empty'>No bot data yet.</div>")
+        return
+
+    # Index per-bot perf rows by name for quick lookup.
+    perf_by_name = {name: s for name, s in (rollup.get("per_bot") or [])}
+
+    def _fmt_pct(v, decimals=0):
+        if v is None:
+            return ("—", "gray")
+        try:
+            f = float(v)
+        except (TypeError, ValueError):
+            return ("—", "gray")
+        cls = "green" if f > 0.5 else ("red" if f < 0.45 else "")
+        return (f"{f*100:.{decimals}f}%", cls)
+
+    for entry in bot_models:
+        b = entry.get("bot") or {}
+        m = entry.get("model") or {}
+        name = b.get("name", "—")
+        s = perf_by_name.get(name, {})
+        rules_text = entry.get("rules_text") or ""
+        strike_count = entry.get("strike_count", 0)
+        strike_lo = entry.get("strike_lo")
+        strike_hi = entry.get("strike_hi")
+        series_ticker = b.get("series_ticker") or "—"
+
+        out.append("<div class='bot-card'>")
+        out.append("<div class='bot-card-head'>")
+        out.append(f"<div class='bot-name'>{html.escape(name)}</div>")
+        out.append(f"<div class='bot-meta'>{html.escape(series_ticker)}</div>")
+        out.append("</div>")  # /head
+
+        # Three blocks side by side (auto-collapsing to fewer columns
+        # at narrow widths via the CSS grid auto-fit).
+        out.append("<div class='bot-card-grid'>")
+
+        # ── Performance block ───────────────────────────────────────
+        bets_made = s.get("period_bets_made", 0)
+        active = s.get("open_count", 0)
+        net = s.get("period_net_pnl_cents", 0)
+        wins = s.get("period_wins", 0)
+        losses = s.get("period_losses", 0)
+        closed = wins + losses
+        win_pct = (wins / closed) if closed else None
+        win_str = f"{win_pct*100:.0f}%" if win_pct is not None else "—"
+        win_cls = ("green" if win_pct is not None and win_pct > 0.5
+                   else ("red" if win_pct is not None and win_pct < 0.5
+                          else "gray"))
+        net_cls = "green" if net > 0 else ("red" if net < 0 else "gray")
+        best = s.get("biggest_win_cents", 0) or 0
+        worst = s.get("biggest_loss_cents", 0) or 0
+        out.append("<div class='bot-card-block'>")
+        out.append(
+            f"<h4>Performance "
+            f"<span style='text-transform:none;letter-spacing:0;font-weight:400;color:#6e7681;'>"
+            f"({html.escape(period_label)})</span></h4>"
+        )
+        out.append("<dl>")
+        out.append(f"<dt>Bets made</dt><dd>{bets_made}</dd>")
+        out.append(f"<dt>Active</dt><dd>{active}</dd>")
+        out.append(f"<dt>Net P&amp;L</dt><dd class='{net_cls}'>"
+                   f"{fmt_signed_cents(net)}</dd>")
+        out.append(f"<dt>Win %</dt><dd class='{win_cls}'>{win_str}</dd>")
+        out.append(f"<dt>Best bet</dt><dd class='green'>"
+                   f"{fmt_signed_cents(best) if best else '—'}</dd>")
+        out.append(f"<dt>Worst bet</dt><dd class='red'>"
+                   f"{fmt_signed_cents(worst) if worst else '—'}</dd>")
+        out.append("</dl></div>")
+
+        # ── Model block ─────────────────────────────────────────────
+        out.append("<div class='bot-card-block'>")
+        out.append("<h4>Model strength</h4>")
+        if not m:
+            out.append("<dl><dt class='gray'>—</dt>"
+                       "<dd class='gray'>no snapshot</dd></dl>")
+        else:
+            acc_str, _ = _fmt_pct(m.get("classifier_accuracy"), decimals=1)
+            prec_str, _ = _fmt_pct(m.get("training_precision"))
+            rec_str, _ = _fmt_pct(m.get("training_recall"))
+            f1_str, _ = _fmt_pct(m.get("training_f1"))
+            roc_str, _ = _fmt_pct(m.get("training_roc_auc"))
+            features = int(m.get("feature_count") or 0)
+            a_wins = int(m.get("actual_wins") or 0)
+            a_losses = int(m.get("actual_losses") or 0)
+            a_total = a_wins + a_losses
+            if a_total > 0:
+                a_pct = a_wins / a_total
+                a_str = f"{a_pct*100:.0f}%"
+                a_cls = ("green" if a_pct > 0.55
+                         else ("red" if a_pct < 0.45 else ""))
+            else:
+                a_str = "—"
+                a_cls = "gray"
+            out.append("<dl>")
+            out.append(f"<dt>Accuracy</dt><dd>{acc_str}</dd>")
+            out.append(f"<dt>Precision</dt><dd>{prec_str}</dd>")
+            out.append(f"<dt>Recall</dt><dd>{rec_str}</dd>")
+            out.append(f"<dt>F1</dt><dd>{f1_str}</dd>")
+            out.append(f"<dt>ROC AUC</dt><dd>{roc_str}</dd>")
+            out.append(f"<dt>Features</dt><dd>{features}</dd>")
+            out.append(f"<dt>Actual win %</dt><dd class='{a_cls}'>"
+                       f"{a_str}</dd>")
+            out.append("</dl>")
+        out.append("</div>")
+
+        # ── Strike summary (slim, sits next to Model when there's room) ──
+        out.append("<div class='bot-card-block'>")
+        out.append("<h4>Active contracts</h4>")
+        out.append("<dl>")
+        out.append(f"<dt>Strikes open</dt><dd>{strike_count}</dd>")
+        if strike_lo is not None and strike_hi is not None:
+            out.append(f"<dt>Range</dt><dd>"
+                       f"${strike_lo:.3f} – ${strike_hi:.3f}</dd>")
+        else:
+            out.append("<dt>Range</dt><dd class='gray'>—</dd>")
+        out.append("</dl></div>")
+        out.append("</div>")  # /grid
+
+        # ── Rules paragraph (full width, under the grid) ─────────────
+        if rules_text:
+            out.append("<div class='bot-rules'>")
+            if strike_count and strike_lo is not None and strike_hi is not None:
+                out.append(
+                    f"<div class='strike-meta'>"
+                    f"Applies to <b>{strike_count}</b> active contracts "
+                    f"(strikes ${strike_lo:.3f} – ${strike_hi:.3f})."
+                    f"</div>"
+                )
+            out.append(f"<span class='label'>Rules</span>"
+                       f"{html.escape(rules_text)}")
+            out.append("</div>")
+        else:
+            out.append("<div class='bot-rules'>"
+                       "<span class='label'>Rules</span>"
+                       "<span class='gray'>not cached yet — the next bot "
+                       "tick will populate it.</span></div>")
+
+        out.append("</div>")  # /bot-card
 
 
 def _render_bot_models_table(out: List[str],
@@ -4222,7 +4417,35 @@ class Handler(BaseHTTPRequestHandler):
                         h["_bot_name"] = b["name"]
                         global_history.append(h)
                     m = fetch_latest_model(b["db_path"])
-                    bot_models.append({"bot": b, "model": m})
+                    # Pull contract rules from the bot's watchlist —
+                    # any one populated row will do (the rules_primary
+                    # text is the same template across the whole series).
+                    rules_text = ""
+                    strike_count = 0
+                    strike_lo = strike_hi = None
+                    bot_wl = fetch_watchlist(b["db_path"])
+                    for wv in bot_wl:
+                        if not rules_text:
+                            rt = (wv.get("rules_primary") or "").strip()
+                            if rt:
+                                rules_text = rt
+                        sl = wv.get("strike_low")
+                        if sl is not None:
+                            strike_count += 1
+                            try:
+                                slf = float(sl)
+                                strike_lo = slf if strike_lo is None else min(strike_lo, slf)
+                                strike_hi = slf if strike_hi is None else max(strike_hi, slf)
+                            except (TypeError, ValueError):
+                                pass
+                    bot_models.append({
+                        "bot": b,
+                        "model": m,
+                        "rules_text": rules_text,
+                        "strike_count": strike_count,
+                        "strike_lo": strike_lo,
+                        "strike_hi": strike_hi,
+                    })
                 global_active_bets.sort(key=lambda x: x.get("opened_at", ""), reverse=True)
                 global_history.sort(key=lambda x: x.get("exited_at", ""), reverse=True)
                 # Period-filter the history so the History tab agrees
