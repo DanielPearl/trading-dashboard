@@ -1485,6 +1485,22 @@ code { background: #161b22; padding: 1px 6px; border-radius: 3px; color: #c9d1d9
 .filter-pill-active:hover { background: #1f6feb; border-color: #1f6feb; }
 .filter-pill-disabled { color: #6e7681; cursor: not-allowed; opacity: 0.7; }
 .filter-pill-disabled:hover { background: #21262d; border-color: #30363d; }
+/* Tab bar for the per-bot detail panes. Same pill idiom as the bot/
+   period filters above, slightly slimmer so the visual hierarchy reads
+   "filter > tab > content". */
+.tab-bar { display: flex; align-items: center; gap: 6px;
+    padding: 0 0 10px 0; margin: 4px 0 12px;
+    border-bottom: 1px solid #21262d; flex-wrap: wrap; }
+.tab-pill { background: transparent; color: #8b949e; cursor: pointer;
+    padding: 6px 14px; border-radius: 6px 6px 0 0; font-size: 13px;
+    border: 1px solid transparent; line-height: 1.4;
+    text-decoration: none; transition: color 120ms, background 120ms; }
+.tab-pill:hover { color: #c9d1d9; background: #1c2128; }
+.tab-pill-active { color: #f0f6fc; background: #21262d;
+    border-color: #30363d; border-bottom-color: #21262d;
+    margin-bottom: -1px; font-weight: 600; }
+.tab-panel { display: none; }
+.tab-panel-active { display: block; }
 /* Watchlist row that fails one or more validations (horizon mismatch,
    wide spread, edge<cost, etc.). Rendered visible but de-emphasized. */
 tr.row-suspect td { opacity: 0.55; }
@@ -1589,6 +1605,7 @@ def render_page(
     available_bots: List[dict],
     current_bot: str,
     period_key: str = "all",
+    tab_key: str = "watchlist",
 ) -> str:
     out: List[str] = []
     out.append("<!doctype html><html><head>")
@@ -1618,16 +1635,32 @@ def render_page(
         out.append("</body></html>")
         return "".join(out)
 
-    # SECTION 2 — Model (strength + current prediction).
-    _render_model_section(out, model)
+    # ── Tab bar: collapses the per-bot detail sections (Watchlist,
+    # Model, Active bet, Rules) into one viewport. The page now fits
+    # without endless scroll; users switch panes with the tab pills.
+    tabs = [
+        ("watchlist", "Watchlist"),
+        ("model", "Model"),
+        ("activebet", "Active bet"),
+        ("rules", "Rules"),
+    ]
+    valid_tabs = {k for k, _ in tabs}
+    active_tab = tab_key if tab_key in valid_tabs else "watchlist"
+    out.append("<div class='tab-bar'>")
+    for k, label in tabs:
+        cls = "tab-pill" + (" tab-pill-active" if k == active_tab else "")
+        out.append(
+            f"<a class='{cls}' data-tab='{html.escape(k)}' "
+            f"href='#tab-{html.escape(k)}'>{html.escape(label)}</a>"
+        )
+    out.append("</div>")
 
-    # SECTION 3 — Active bet (just the latest one) + this bot's closed history.
-    _render_active_bet(out, latest_active, watchlist, bot_closed_positions)
+    def _open_panel(name: str) -> None:
+        cls = "tab-panel" + (" tab-panel-active" if name == active_tab else "")
+        out.append(f"<div class='{cls}' data-panel='{html.escape(name)}'>")
 
-    # SECTION 4 — Watchlist + the bot's full buy-criteria table directly
-    # underneath it (so verdicts and rules live side-by-side). The hero
-    # header at the top of this section shows the underlying value and
-    # an SVG chart with the active-bet strike overlaid (if any).
+    # ── Watchlist tab — chart + scrollable strike table. Default. ─────
+    _open_panel("watchlist")
     _render_watchlist(out, watchlist, model,
                       underlying_history=underlying_history,
                       display=display,
@@ -1641,14 +1674,22 @@ def render_page(
                       validator_cfg=validator_cfg,
                       risk_caps=risk_caps,
                       hedge_cfg=hedge_cfg)
+    out.append("</div>")  # /watchlist panel
 
-    # Decision-diagnostics section retired per user request — most of
-    # the content was small-sample noise on early closed-bet history,
-    # and the headline accuracy + EV calibration are already surfaced
-    # in the model + watchlist sections above.
+    # ── Model tab ────────────────────────────────────────────────────
+    _open_panel("model")
+    _render_model_section(out, model)
+    out.append("</div>")
 
-    # SECTION 5 — Kalshi rules per contract.
+    # ── Active bet tab ───────────────────────────────────────────────
+    _open_panel("activebet")
+    _render_active_bet(out, latest_active, watchlist, bot_closed_positions)
+    out.append("</div>")
+
+    # ── Rules tab ────────────────────────────────────────────────────
+    _open_panel("rules")
     _render_contract_rules(out, watchlist, current_bot)
+    out.append("</div>")
 
     # Live-update JS: polls /api/snapshot every 5s and patches summary
     # cards + watchlist cells in place. Pass the period so the live
@@ -1810,6 +1851,35 @@ def _live_update_script(current_bot: str, period_key: str = "all") -> str:
   // Initial fetch on load + recurring poll.
   poll();
   setInterval(poll, POLL_MS);
+
+  // ── Tab switcher ────────────────────────────────────────────────
+  // Clicks on a tab pill toggle the .tab-pill-active class on the bar
+  // and the .tab-panel-active class on the matching panel. Updates
+  // ?tab=X via history.replaceState so reloads + the period filter
+  // preserve the active tab.
+  const tabBar = document.querySelector(".tab-bar");
+  if (tabBar) {{
+    tabBar.querySelectorAll(".tab-pill").forEach(function (pill) {{
+      pill.addEventListener("click", function (e) {{
+        e.preventDefault();
+        const key = pill.getAttribute("data-tab");
+        if (!key) return;
+        tabBar.querySelectorAll(".tab-pill").forEach(function (p) {{
+          p.classList.toggle("tab-pill-active",
+                              p.getAttribute("data-tab") === key);
+        }});
+        document.querySelectorAll(".tab-panel").forEach(function (panel) {{
+          panel.classList.toggle("tab-panel-active",
+                                   panel.getAttribute("data-panel") === key);
+        }});
+        try {{
+          const url = new URL(window.location.href);
+          url.searchParams.set("tab", key);
+          history.replaceState(null, "", url.toString());
+        }} catch (err) {{ /* old browser; skip */ }}
+      }});
+    }});
+  }}
 
   // ── Hover crosshair on the underlying chart ───────────────────
   // The SVG carries data-* attrs with t_min/t_max + chart geometry.
@@ -2113,12 +2183,77 @@ def _render_summary(out: List[str], rollup: dict, active_bets: List[dict],
                f"{win_pct_str}</div></div>")
     out.append("</div>")
 
-    # Active bets list. Same table used in Section 5 below for consistency.
+    # Active bets list — same table used in the per-bot view below.
     out.append("<h3 class='subhead'>Active bets — currently open</h3>")
     _render_active_bets_table(out, active_bets, empty_msg="No active bets right now.")
 
-    # Historical bets section retired per user request.
+    # Per-bot performance breakdown (period-scoped).
+    _render_bot_performance(out, rollup, period_label)
+
     out.append("</div></div>")
+
+
+def _render_bot_performance(out: List[str], rollup: dict,
+                              period_label: str) -> None:
+    """One-row-per-bot performance table. Each bot's stats come from
+    fetch_summary's period_* fields, which already respect the active
+    ?period= filter, so the headline ("How each bot is performing
+    {period}") matches what the user selected above.
+    """
+    per_bot = rollup.get("per_bot", []) or []
+    out.append(
+        f"<h3 class='subhead' style='margin-top:18px;'>"
+        f"How each bot is performing "
+        f"<span class='gray small'>({html.escape(period_label)})</span>"
+        f"</h3>"
+    )
+    if not per_bot:
+        out.append("<div class='empty'>No bot data yet.</div>")
+        return
+    out.append(
+        "<table><thead><tr>"
+        "<th>Bot</th>"
+        "<th class='num'>Bets made</th>"
+        "<th class='num'>Active</th>"
+        "<th class='num'>Net P&amp;L</th>"
+        "<th class='num'>Win %</th>"
+        "<th class='num' title='Largest realized win on a single bet, in the selected period.'>Best bet</th>"
+        "<th class='num' title='Largest realized loss on a single bet, in the selected period.'>Worst bet</th>"
+        "</tr></thead><tbody>"
+    )
+    for name, s in per_bot:
+        bets_made = s.get("period_bets_made", 0)
+        active = s.get("open_count", 0)
+        net = s.get("period_net_pnl_cents", 0)
+        wins = s.get("period_wins", 0)
+        losses = s.get("period_losses", 0)
+        closed = wins + losses
+        win_pct = (wins / closed) if closed else None
+        win_str = f"{win_pct*100:.0f}%" if win_pct is not None else "—"
+        win_cls = ("green" if win_pct is not None and win_pct > 0.5
+                   else ("red" if win_pct is not None and win_pct < 0.5
+                          else "gray"))
+        net_cls = ("green" if net > 0
+                   else ("red" if net < 0 else "gray"))
+        # Best / worst bets — period-scoped values aren't computed in
+        # fetch_summary yet, so fall back to lifetime extremes for now.
+        # Most users care about the headline number; the extremes are
+        # supplementary.
+        best = s.get("biggest_win_cents", 0) or 0
+        worst = s.get("biggest_loss_cents", 0) or 0
+        best_str = fmt_signed_cents(best) if best else "—"
+        worst_str = fmt_signed_cents(worst) if worst else "—"
+        out.append(
+            f"<tr><td>{html.escape(name)}</td>"
+            f"<td class='num'>{bets_made}</td>"
+            f"<td class='num'>{active}</td>"
+            f"<td class='num {net_cls}'>{fmt_signed_cents(net)}</td>"
+            f"<td class='num {win_cls}'>{win_str}</td>"
+            f"<td class='num green'>{best_str}</td>"
+            f"<td class='num red'>{worst_str}</td>"
+            f"</tr>"
+        )
+    out.append("</tbody></table>")
 
 
 def _render_active_bets_table(out: List[str], bets: List[dict],
@@ -3871,6 +4006,10 @@ class Handler(BaseHTTPRequestHandler):
                 if period_key not in {k for k, _, _ in PERIOD_OPTIONS}:
                     period_key = "all"
                 period_days = _period_days(period_key)
+                # Active tab for the per-bot pane: ?tab=watchlist|model|activebet|rules
+                tab_key = qs_top.get("tab", ["watchlist"])[0]
+                if tab_key not in {"watchlist", "model", "activebet", "rules"}:
+                    tab_key = "watchlist"
 
                 # Whale-watcher uses a different page entirely — JSONL
                 # source, signal-analysis-style render. Dispatch early so
@@ -4012,6 +4151,7 @@ class Handler(BaseHTTPRequestHandler):
                     available_bots=self.bots,
                     current_bot=bot["key"],
                     period_key=period_key,
+                    tab_key=tab_key,
                 )
             except Exception:  # noqa: BLE001
                 log.exception("dashboard render failed")
