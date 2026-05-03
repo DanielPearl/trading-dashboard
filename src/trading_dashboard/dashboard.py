@@ -4144,8 +4144,15 @@ def main(argv: list[str] | None = None) -> int:
     # unavailable bot in the dropdown shows a friendly stub.
     bots: list[dict] = []
     for b in cfg.bots:
-        # For whale-type bots `db_path` points at a JSONL (signal_tracking),
-        # so the same `available = path exists` check works.
+        # Whale-type bots are "always available" from the dashboard's
+        # POV — an empty signal_tracking.jsonl just means no signals
+        # yet, not that the bot is offline. Showing "(no data)" next
+        # to the dropdown name is misleading; the page itself renders
+        # a clear empty-state when there are zero events.
+        if b.dashboard_type == "whale":
+            available = True
+        else:
+            available = Path(b.db_path).exists()
         bots.append({
             "key": b.key,
             "name": b.name,
@@ -4163,7 +4170,7 @@ def main(argv: list[str] | None = None) -> int:
                 "divisor": b.display.divisor,
                 "chart_period_minutes": b.display.chart_period_minutes,
             },
-            "available": Path(b.db_path).exists(),
+            "available": available,
         })
 
     host = args.host or cfg.host

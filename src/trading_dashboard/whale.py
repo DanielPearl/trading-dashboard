@@ -885,11 +885,7 @@ def _render_signal_history(out: List[str], candidates: List[dict],
 
 
 def _render_empty_state(out: List[str]) -> None:
-    out.append("<div class='empty' style='padding:40px 20px;'>"
-               "No whale signals captured yet. The whale-watcher bot "
-               "writes one row to <code>signal_tracking.jsonl</code> "
-               "per detected whale event; this page renders them as "
-               "they arrive.</div>")
+    out.append("<div class='empty'>No whale signals captured yet.</div>")
 
 
 # --------------------------------------------------------------------------- #
