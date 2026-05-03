@@ -21,9 +21,9 @@ bots:
       underlying_unit: "$"
       underlying_decimals: 2
       unit_position: prefix
-      # Weekly contract — sample once per day for a clean N-day line.
-      # Kalshi has period_interval=1440 (daily candles); the dashboard
-      # passes that straight through, no client-side bucketing.
+      # AAA gas survey publishes once per day → daily Kalshi candles
+      # are the natural resolution. The chart depicts day-over-day
+      # change; hovering snaps to the nearest recorded day.
       chart_period_minutes: 1440
   - key: unemployment-claims
     name: Jobless Claims
@@ -37,10 +37,8 @@ bots:
       unit_position: suffix
       # Bot stores raw count (189000); display in thousands → "189K".
       divisor: 1000.0
-      # Sample line at 15-min resolution. The market trades briskly
-      # enough to populate sub-hourly bars; 60-min misses the
-      # intraday wiggles.
-      chart_period_minutes: 15
+      # 1-min raw candles — capture every recorded change.
+      chart_period_minutes: 1
   - key: natural-gas
     name: Natural Gas Prices
     # Lives at /root/peak-load/ on the droplet — directory keeps its old
@@ -53,9 +51,9 @@ bots:
       underlying_unit: "$"
       underlying_decimals: 2
       unit_position: prefix
-      # Daily resolution. KXNATGASD settles once a day, so showing
-      # intraday candles is noise — one point per close-of-day matches
-      # how the contract actually moves.
+      # Daily Henry Hub close. KXNATGASD events that span <48h
+      # auto-downgrade to hourly inside fetch_underlying_history (a
+      # single-day daily series would be 0-1 points).
       chart_period_minutes: 1440
   - key: whale-watcher
     name: Whale Watcher

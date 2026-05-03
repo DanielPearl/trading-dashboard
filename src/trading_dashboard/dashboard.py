@@ -540,7 +540,10 @@ def fetch_underlying_history(db_path: str, hours: int = 72,
     """Time-series of the bot's underlying value (model_snapshots.current_gas_price)
     over the last N hours. Used to draw the watchlist hero chart.
 
-    Returns rows oldest-first as `[{"captured_at": "...", "value": float}, ...]`.
+    Each row carries both ``captured_at`` (ISO string for compatibility
+    with older code paths) and ``ts`` (unix seconds, what
+    ``svg_kalshi_chart`` reads). Empty list when the bot's DB doesn't
+    exist or has no snapshots in the window.
     """
     if not Path(db_path).exists():
         return []
@@ -554,9 +557,33 @@ def fetch_underlying_history(db_path: str, hours: int = 72,
                 "ORDER BY captured_at ASC LIMIT ?",
                 (f"-{int(hours)} hours", max_points),
             ).fetchall()
-        return [dict(r) for r in rows]
     except (sqlite3.OperationalError, sqlite3.DatabaseError):
         return []
+    out: List[dict] = []
+    for r in rows:
+        d = dict(r)
+        ts = _iso_to_unix(d.get("captured_at"))
+        if ts is not None:
+            d["ts"] = ts
+        out.append(d)
+    return out
+
+
+def _iso_to_unix(s: str | None) -> float | None:
+    """Parse SQLite's `YYYY-MM-DD HH:MM:SS` (UTC) strings into unix
+    seconds. Returns None on malformed input — callers fall back to the
+    captured_at string.
+    """
+    if not s:
+        return None
+    try:
+        if "T" in s:
+            dt = datetime.fromisoformat(s.replace("Z", "+00:00"))
+        else:
+            dt = datetime.strptime(s, "%Y-%m-%d %H:%M:%S").replace(tzinfo=timezone.utc)
+        return dt.timestamp()
+    except (TypeError, ValueError):
+        return None
 
 
 def fetch_decisions(decisions_path: str, limit: int = 60) -> List[dict]:
@@ -758,6 +785,60 @@ def _smooth_values(values: List[float], window: int = 3) -> List[float]:
     return out
 
 
+def _empty_chart_frame(width: int = 760, height: int = 220,
+                        contract_open_ts: float | None = None,
+                        contract_close_ts: float | None = None) -> str:
+    """Empty-state chart: just the frame (gridlines + day ticks if a
+    contract span is known), no polyline. Used when fewer than 2
+    snapshots have been recorded — the user wants to see the chart's
+    silhouette even when there's nothing to plot yet.
+    """
+    pad_l, pad_r, pad_t, pad_b = 12, 64, 14, 30
+    inner_w = width - pad_l - pad_r
+    out: List[str] = [
+        f"<div class='wl-chart-wrap'>"
+        f"<svg width='100%' height='{height}' viewBox='0 0 {width} {height}' "
+        f"preserveAspectRatio='none' style='display:block'>"
+    ]
+    # 5 horizontal gridlines, no labels (no data range to anchor them to).
+    for i in range(5):
+        y = pad_t + (i / 4.0) * (height - pad_t - pad_b)
+        out.append(f"<line x1='{pad_l}' y1='{y}' x2='{width-pad_r}' y2='{y}' "
+                   f"stroke='#1f2530' stroke-width='1'/>")
+    # Day ticks across the contract span (if known).
+    if contract_open_ts is not None:
+        from datetime import timedelta
+        t_min = float(contract_open_ts)
+        t_max = float(contract_close_ts) if contract_close_ts else (
+            t_min + 24 * 3600)
+        dt_min = datetime.fromtimestamp(t_min, tz=timezone.utc)
+        dt_max = datetime.fromtimestamp(t_max, tz=timezone.utc)
+        day_labels: List[str] = [dt_min.strftime("%b %-d")]
+        cur = dt_min.replace(hour=0, minute=0, second=0, microsecond=0) + timedelta(days=1)
+        while cur < dt_max:
+            lbl = cur.strftime("%b %-d")
+            if lbl != day_labels[-1]:
+                day_labels.append(lbl)
+            cur += timedelta(days=1)
+        last_label = dt_max.strftime("%b %-d")
+        if last_label != day_labels[-1]:
+            day_labels.append(last_label)
+        n = max(1, len(day_labels) - 1)
+        for i, label in enumerate(day_labels):
+            frac = i / n if n else 0.5
+            x = pad_l + frac * inner_w
+            out.append(f"<line x1='{x:.1f}' y1='{pad_t}' x2='{x:.1f}' "
+                       f"y2='{height-pad_b}' stroke='#1f2530' stroke-width='1' "
+                       f"stroke-dasharray='2,3' opacity='0.7'/>")
+            anchor = "start" if i == 0 else (
+                "end" if i == len(day_labels) - 1 else "middle")
+            out.append(f"<text x='{x:.0f}' y='{height-10}' fill='#8b949e' "
+                       f"font-size='10' text-anchor='{anchor}'>"
+                       f"{html.escape(label)}</text>")
+    out.append("</svg></div>")
+    return "".join(out)
+
+
 def svg_kalshi_chart(history: List[dict], display: dict,
                       reference_strike: float | None = None,
                       strike_side: str | None = None,
@@ -786,11 +867,9 @@ def svg_kalshi_chart(history: List[dict], display: dict,
         except (TypeError, ValueError):
             continue
     if len(pts_in) < 2:
-        return ("<div class='empty' style='padding:24px'>"
-                "Live Kalshi chart is loading… (or the strike ladder "
-                "doesn't have enough trade history yet to derive an "
-                "implied underlying price). Refreshes every 60 seconds."
-                "</div>")
+        return _empty_chart_frame(width=width, height=height,
+                                    contract_open_ts=contract_open_ts,
+                                    contract_close_ts=contract_close_ts)
 
     # Y-axis labels go on the right edge (matches Kalshi's market page),
     # so reserve the right padding instead of the left. Bottom padding
@@ -808,17 +887,16 @@ def svg_kalshi_chart(history: List[dict], display: dict,
         t_min = pts_in[0][0]
     t_span = max(1.0, t_max - t_min)
 
-    # Smoothed values for the visible polyline (centered MA). Raw values
-    # stay in `pts_in` for the hover-tooltip JSON payload so hovering
-    # still surfaces the actual underlying, not the smoothed estimate.
-    smoothed_vals = _smooth_values([v for _, v in pts_in], window=3)
-    pts_plot: List[Tuple[float, float]] = [(t, sv) for (t, _), sv
-                                            in zip(pts_in, smoothed_vals)]
+    # The visible polyline plots the raw recorded values — what the
+    # underlying actually was at each Kalshi-recorded tick. No smoothing
+    # or bucketing: the line and the hover-tooltip values are the same
+    # series, so what you see scrubbing matches what you see on the line.
+    pts_plot: List[Tuple[float, float]] = list(pts_in)
 
     # Auto-scale the y-axis to the actual data range with 8% padding.
     # When there's an active bet, also include its strike in the range
     # so the dotted reference line is always visible on the chart.
-    values = list(smoothed_vals)
+    values = [v for _, v in pts_in]
     if strike_is_active_bet and reference_strike is not None:
         values = values + [float(reference_strike)]
     vmin = min(values)
@@ -1376,21 +1454,36 @@ tr.row-suspect td:nth-last-child(2) { opacity: 0.85; }  /* keep gap legible */
    the ticker. Wins specificity over row-suspect so a held position is
    never dimmed. */
 tr.row-bought td { opacity: 1 !important; }
-/* Side-colored treatment: green for YES, red for NO. The first cell
-   gets a 3px colored left bar to flag the row at a glance; the ticker
-   text picks up the same color so it's readable from across the page. */
+/* Side-colored treatment: green for YES, red for NO. A 3px colored
+   left bar flags the row at a glance, and a faint tint runs across
+   every cell so the held strike pops without overpowering the table.
+   The first cell carries a slightly stronger tint near the bar so the
+   bar reads as anchored, not floating. */
+tr.row-bought.bought-yes td { background: rgba(63, 185, 80, 0.06); }
+tr.row-bought.bought-no  td { background: rgba(248, 81, 73, 0.06); }
 tr.row-bought.bought-yes td:first-child {
     border-left: 3px solid #3fb950;
-    background: rgba(63, 185, 80, 0.08);
+    background: rgba(63, 185, 80, 0.12);
 }
 tr.row-bought.bought-no td:first-child {
     border-left: 3px solid #f85149;
-    background: rgba(248, 81, 73, 0.08);
+    background: rgba(248, 81, 73, 0.12);
 }
 tr.row-bought.bought-yes td.mono a.ticker-link,
 tr.row-bought.bought-yes td.mono { color: #3fb950; font-weight: 600; }
 tr.row-bought.bought-no  td.mono a.ticker-link,
 tr.row-bought.bought-no  td.mono { color: #f85149; font-weight: 600; }
+/* Watchlist table: fixed scrolling viewport so the strike list never
+   pushes the rest of the page off-screen. Sticky header keeps the
+   column labels in view as the user scrolls. */
+.watchlist-scroll { max-height: 360px; overflow-y: auto;
+    border: 1px solid #21262d; border-radius: 6px;
+    margin-top: 4px; }
+.watchlist-scroll table { margin: 0; border: none; }
+.watchlist-scroll thead th {
+    position: sticky; top: 0; z-index: 1;
+    background: #161b22; box-shadow: 0 1px 0 #30363d;
+}
 .section h2 .small { text-transform: none; letter-spacing: 0; font-size: 11px; font-weight: 400; }
 /* Watchlist hero — Kalshi-style market header above the strikes table.
    Layout mirrors the live Kalshi market page: title + countdown on top,
@@ -1720,6 +1813,20 @@ def _live_update_script(current_bot: str) -> str:
     cursor.setAttribute("pointer-events", "none");
     svg.appendChild(cursor);
 
+    // The hero forecast price + change-indicator elements (top-left
+    // of the chart card). While the user scrubs the chart, we swap
+    // the price for the value at the cursor AND the change indicator
+    // for (cursor − earliest); on mouseleave we restore both from
+    // their data-current-text / data-current-class attrs.
+    const hero = wrap.closest(".wl-hero");
+    const heroPrice = hero ? hero.querySelector(".wl-hero-price") : null;
+    const heroPriceText = heroPrice ? heroPrice.querySelector(
+        ".wl-hero-price-text") : null;
+    const heroChange = hero ? hero.querySelector(".wl-hero-change") : null;
+    // Earliest forecast value — anchor for the (Δ from start of chart)
+    // delta the change indicator displays.
+    const earliestValue = points.length ? points[0][1] : null;
+
     function fmtTs(ts) {{
       const d = new Date(ts * 1000);
       const months = ["Jan","Feb","Mar","Apr","May","Jun",
@@ -1735,9 +1842,9 @@ def _live_update_script(current_bot: str) -> str:
     }}
 
     // (ts, value) pairs + the bot's display formatting for the hover
-    // tooltip. Linear-interpolate between adjacent points so the
-    // tooltip value is continuous as the cursor moves between data
-    // points (matches Kalshi's behaviour).
+    // tooltip. Always snaps to the nearest recorded point so scrubbing
+    // anywhere across the chart shows the time + value of the closest
+    // forecast Kalshi recorded — no tolerance check, no interpolation.
     let points = [];
     let fmt = {{ divisor: 1.0, decimals: 2, unit: "", unit_position: "prefix" }};
     try {{ points = JSON.parse(wrap.dataset.points || "[]"); }} catch (e) {{}}
@@ -1756,21 +1863,52 @@ def _live_update_script(current_bot: str) -> str:
       return n;
     }}
 
-    function valueAt(ts) {{
+    // Snap to the nearest recorded point; always returns one as long
+    // as the points array is non-empty. The cursor's mapping is to the
+    // closest recorded forecast — both the popup date stamp and value
+    // come from that point, so they always agree.
+    function nearestPoint(ts) {{
       if (!points.length) return null;
-      // Binary search for the bracket [points[lo], points[hi]] around ts.
       let lo = 0, hi = points.length - 1;
-      if (ts <= points[lo][0]) return points[lo][1];
-      if (ts >= points[hi][0]) return points[hi][1];
+      if (ts <= points[lo][0]) {{
+        return {{ ts: points[lo][0], value: points[lo][1] }};
+      }}
+      if (ts >= points[hi][0]) {{
+        return {{ ts: points[hi][0], value: points[hi][1] }};
+      }}
       while (hi - lo > 1) {{
         const mid = (lo + hi) >> 1;
         if (points[mid][0] <= ts) lo = mid; else hi = mid;
       }}
-      const t0 = points[lo][0], v0 = points[lo][1];
-      const t1 = points[hi][0], v1 = points[hi][1];
-      if (t1 === t0) return v0;
-      const a = (ts - t0) / (t1 - t0);
-      return v0 + a * (v1 - v0);
+      const dLo = Math.abs(ts - points[lo][0]);
+      const dHi = Math.abs(ts - points[hi][0]);
+      const closer = dLo <= dHi ? points[lo] : points[hi];
+      return {{ ts: closer[0], value: closer[1] }};
+    }}
+
+    // Format an absolute delta in the bot's units, no sign. The arrow
+    // (▲/▼) is added separately so we can color it via class.
+    function fmtDeltaAbs(raw) {{
+      if (raw === null || raw === undefined || !isFinite(raw)) return "—";
+      const v = Math.abs(raw) / (fmt.divisor || 1);
+      const n = v.toLocaleString("en-US", {{
+        minimumFractionDigits: fmt.decimals,
+        maximumFractionDigits: fmt.decimals,
+      }});
+      if (fmt.unit_position === "prefix") return (fmt.unit || "") + n;
+      if (fmt.unit_position === "suffix") return n + (fmt.unit || "");
+      return n;
+    }}
+
+    function restoreHero() {{
+      if (heroPrice && heroPriceText) {{
+        heroPriceText.textContent = heroPrice.dataset.currentText || "";
+      }}
+      if (heroChange) {{
+        heroChange.textContent = heroChange.dataset.currentText || "";
+        const cls = heroChange.dataset.currentClass || "";
+        heroChange.className = "wl-hero-change" + (cls ? " " + cls : "");
+      }}
     }}
 
     svg.addEventListener("mousemove", function (e) {{
@@ -1781,6 +1919,7 @@ def _live_update_script(current_bot: str) -> str:
         cursor.setAttribute("opacity", "0");
         dimRect.setAttribute("opacity", "0");
         tip.hidden = true;
+        restoreHero();
         return;
       }}
       cursor.setAttribute("x1", x);
@@ -1794,11 +1933,33 @@ def _live_update_script(current_bot: str) -> str:
       dimRect.setAttribute("opacity", "0.65");
 
       const frac = (x - padL) / innerW;
-      const ts = tmin + frac * (tmax - tmin);
-      const val = valueAt(ts);
-      tip.innerHTML =
-        "<div class='wl-chart-tip-time'>" + fmtTs(ts) + "</div>"
-        + "<div class='wl-chart-tip-value'>" + fmtValue(val) + "</div>";
+      const cursorTs = tmin + frac * (tmax - tmin);
+      const np = nearestPoint(cursorTs);
+      // When a recorded point is in range, stamp the popup AND swap
+      // the hero forecast price for the value at the cursor. When no
+      // point is near (gap in the data) we still show the cursor date
+      // in the popup, but leave the hero on the live current so we
+      // never display an unsourced value up top.
+      if (np !== null) {{
+        tip.innerHTML =
+          "<div class='wl-chart-tip-time'>" + fmtTs(np.ts) + "</div>"
+          + "<div class='wl-chart-tip-value'>" + fmtValue(np.value) + "</div>";
+        if (heroPriceText) heroPriceText.textContent = fmtValue(np.value);
+        // Update the ▲/▼ change indicator to (cursor value − earliest)
+        // — same Δ semantics as the live indicator, just anchored to
+        // wherever the user is hovering instead of "now".
+        if (heroChange && earliestValue !== null) {{
+          const delta = np.value - earliestValue;
+          const arrow = delta >= 0 ? "▲" : "▼";
+          const cls = delta >= 0 ? "pos" : "neg";
+          heroChange.textContent = arrow + " " + fmtDeltaAbs(delta);
+          heroChange.className = "wl-hero-change " + cls;
+        }}
+      }} else {{
+        tip.innerHTML =
+          "<div class='wl-chart-tip-time'>" + fmtTs(cursorTs) + "</div>";
+        restoreHero();
+      }}
       tip.hidden = false;
       // Anchor the tooltip in pixel space relative to the wrap so it
       // tracks the cursor regardless of how the SVG is scaled.
@@ -1809,6 +1970,7 @@ def _live_update_script(current_bot: str) -> str:
     svg.addEventListener("mouseleave", function () {{
       cursor.setAttribute("opacity", "0");
       dimRect.setAttribute("opacity", "0");
+      restoreHero();
       tip.hidden = true;
     }});
   }});
@@ -2614,19 +2776,21 @@ def _render_watchlist_hero(out: List[str],
                             contract_open_ts: float | None = None,
                             contract_close_ts: float | None = None,
                             event_title: str | None = None) -> None:
-    """Kalshi-style hero block: current underlying value, % change, total
-    Kalshi volume on the watchlist, time-to-close on the soonest market,
-    and an SVG chart of the underlying. If there's an active position,
-    a horizontal line on the chart marks the strike the user bought.
+    """Kalshi-style hero block: current implied-underlying forecast,
+    value delta, time-to-close on the soonest market, and a chart of
+    the forecast over the contract life. The hero forecast value
+    updates as the user scrubs the line — the JS swaps it for the
+    value at the cursor's timestamp, then restores the live current
+    when the cursor leaves the chart.
     """
-    # Prefer Kalshi-derived underlying data for "current value" and
-    # "% change". It's fresher (updates with every Kalshi tick) and
-    # works even when the bot service isn't running locally. Falls back
-    # to the bot's own model_snapshot only if Kalshi data is missing.
+    # Pull current + earliest from the Kalshi-forecast series (the
+    # implied-underlying derived from the strike ladder). That's the
+    # series the chart plots, so the hero forecast and the chart
+    # endpoints line up. Falls back to local snapshots / latest model
+    # snapshot only if the Kalshi feed is unavailable.
     current: float | None = None
     earliest_value: float | None = None
     if kalshi_history:
-        # Take latest from Kalshi.
         for r in reversed(kalshi_history):
             v = r.get("value")
             if v is None:
@@ -2724,8 +2888,13 @@ def _render_watchlist_hero(out: List[str],
     out.append("<div class='wl-hero'>")
     out.append("<div class='wl-hero-top'>")
     out.append("<div class='wl-hero-stats'>")
+    # data-current-text holds the live forecast in display form. The
+    # hover JS swaps the price span's text for the value at the cursor
+    # while scrubbing, then restores this string on mouseleave.
     out.append(
-        f"<div class='wl-hero-price'>{html.escape(current_str)}"
+        f"<div class='wl-hero-price' data-current-text='"
+        f"{html.escape(current_str)}'>"
+        f"<span class='wl-hero-price-text'>{html.escape(current_str)}</span>"
         f"<span class='wl-hero-price-label'>forecast</span>"
         f"</div>"
     )
@@ -2734,8 +2903,13 @@ def _render_watchlist_hero(out: List[str],
         arrow = "▲" if value_change >= 0 else "▼"
     change_display = (change_body if not arrow
                       else f"{arrow} {change_body}")
+    # Tag the change indicator with its live text + class so the hover
+    # JS can swap to (cursor − earliest) while scrubbing and restore
+    # the live current on leave. The class encodes pos/neg coloring.
     out.append(
-        f"<div class='wl-hero-change {change_cls}'>"
+        f"<div class='wl-hero-change {change_cls}' "
+        f"data-current-text='{html.escape(change_display)}' "
+        f"data-current-class='{html.escape(change_cls)}'>"
         f"{html.escape(change_display)}"
         f"</div>"
     )
@@ -2755,26 +2929,18 @@ def _render_watchlist_hero(out: List[str],
     strike_side = active_side
     strike_is_active = active_strike is not None
 
-    # Chart: prefer Kalshi-derived underlying (matches Kalshi's market-
-    # page chart axis). Falls back to the bot's own model_snapshots if
-    # Kalshi creds aren't configured or the series has no candle history.
-    if kalshi_history:
-        out.append(svg_kalshi_chart(
-            kalshi_history, display,
-            reference_strike=reference_strike,
-            strike_side=strike_side,
-            strike_is_active_bet=strike_is_active,
-            contract_open_ts=contract_open_ts,
-            contract_close_ts=contract_close_ts,
-            total_volume=total_volume,
-        ))
-    else:
-        out.append(svg_underlying_chart(
-            underlying_history, current, display,
-            reference_strike=reference_strike,
-            strike_side=strike_side,
-            strike_is_active_bet=strike_is_active,
-        ))
+    # Chart plots Kalshi's implied-underlying forecast. Empty frame
+    # renders when the strike ladder hasn't produced enough data points
+    # yet (svg_kalshi_chart handles the <2 case internally).
+    out.append(svg_kalshi_chart(
+        kalshi_history or [], display,
+        reference_strike=reference_strike,
+        strike_side=strike_side,
+        strike_is_active_bet=strike_is_active,
+        contract_open_ts=contract_open_ts,
+        contract_close_ts=contract_close_ts,
+        total_volume=total_volume,
+    ))
     out.append("</div>")
 
 
@@ -2865,7 +3031,8 @@ def _render_watchlist(out: List[str], watchlist: List[dict],
     # grouped | Verdict (rightmost). Chance was redundant with Kalshi
     # YES (same midpoint of the bid/ask); volume and closes-in live in
     # the hero header instead of being repeated per row.
-    out.append("<table><thead><tr>"
+    out.append("<div class='watchlist-scroll'>"
+               "<table><thead><tr>"
                "<th>Ticker</th><th>Question</th>"
                "<th class='num' title='Open interest — number of contracts currently held open on this strike.'>Contracts</th>"
                "<th class='num'>Kalshi YES %</th>"
@@ -3049,7 +3216,7 @@ def _render_watchlist(out: List[str], watchlist: List[dict],
                    f"<td class='num {ev_yes_cls}' data-field='ev_yes'>{ev_yes_str}</td>"
                    f"<td class='num {ev_no_cls}' data-field='ev_no'>{ev_no_str}</td>"
                    f"<td data-field='verdict'>{badge}</td></tr>")
-    out.append("</tbody></table>")
+    out.append("</tbody></table></div>")
     # Buy-criteria reference sits directly under the watchlist table so
     # any WATCH/SKIP verdict can be cross-referenced against the rules
     # in one glance.
@@ -3631,18 +3798,19 @@ class Handler(BaseHTTPRequestHandler):
                 # comes up empty (bot service not writing market_views,
                 # or the bot is currently between events). Done after
                 # the Kalshi fetch since both share the cache.
-                # Local model_snapshots fallback for the chart only
-                # when Kalshi creds aren't configured. 7 days covers
-                # any weekly contract.
+                # Local snapshots — kept around as the secondary source
+                # for the hero current-value (used as a final fallback
+                # if Kalshi creds are missing).
                 underlying_history = fetch_underlying_history(
-                    db_path, hours=7 * 24,
+                    db_path, hours=7 * 24, max_points=5000,
                 )
-                # Kalshi-derived underlying via strike-ladder interpolation
-                # — same data source Kalshi uses for the chart at the top
-                # of every market page. Lookback auto-sized to span the
-                # full life of whichever event is currently open. When
-                # that event resolves and Kalshi opens the next one, the
-                # chart and ATM market roll over automatically.
+                # Chart source: Kalshi's implied-underlying forecast,
+                # derived from the strike ladder. Same series Kalshi
+                # itself plots on every market page — for each
+                # candle timestamp, find the strike where YES=50% and
+                # interpolate. Per-bot resolution comes from
+                # display.chart_period_minutes (gas bots → daily;
+                # jobless → 1-min so every recorded change shows up).
                 kalshi_history: List[dict] = []
                 atm_market: dict | None = None
                 kalshi_markets: List[dict] = []
