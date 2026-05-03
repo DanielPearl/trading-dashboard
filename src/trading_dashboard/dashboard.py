@@ -1736,20 +1736,16 @@ def render_page(
     out.append("</div></div>")
     out.append("</div>")  # /home panel
 
-    # ── WATCHLIST tab — bot filter + chart + active bet detail ────────
+    # ── WATCHLIST tab — chart + strike ladder + Kalshi rules ─────────
     _open_panel("watchlist")
-    _render_bot_filter(out, available_bots, current_bot,
-                       period_key=period_key)
     if (not watchlist and not latest_active
             and not [b for b in available_bots
                      if b["key"] == current_bot and b.get("available")]):
         _render_bot_unavailable(out, current_bot)
     else:
-        # Per-bot active-bet detail panel was retired here per user
-        # request — active bets live on the Home tab now (the active
-        # bets table under the summary cards covers all open positions
-        # across all bots). The strike line on the chart still marks
-        # the currently-held strike for visual context.
+        # Bot dropdown is rendered inside _render_watchlist (below the
+        # section title, above the current-prediction card) so it sits
+        # with the section it scopes.
         _render_watchlist(out, watchlist, model,
                           underlying_history=underlying_history,
                           display=display,
@@ -1762,7 +1758,10 @@ def render_page(
                           edge_cfg=edge_cfg,
                           validator_cfg=validator_cfg,
                           risk_caps=risk_caps,
-                          hedge_cfg=hedge_cfg)
+                          hedge_cfg=hedge_cfg,
+                          available_bots=available_bots,
+                          current_bot=current_bot,
+                          period_key=period_key)
         _render_contract_rules(out, watchlist, current_bot)
     out.append("</div>")  # /watchlist panel
 
@@ -3472,12 +3471,21 @@ def _render_watchlist(out: List[str], watchlist: List[dict],
                       edge_cfg: dict | None = None,
                       validator_cfg: dict | None = None,
                       risk_caps: dict | None = None,
-                      hedge_cfg: dict | None = None) -> None:
+                      hedge_cfg: dict | None = None,
+                      available_bots: List[dict] | None = None,
+                      current_bot: str = "",
+                      period_key: str = "all") -> None:
     accuracy = float(model["classifier_accuracy"]) if model and model.get("classifier_accuracy") else None
     accuracy_label = (f"{accuracy*100:.0f}%" if accuracy else "untrained")
     out.append(f"<div class='section'><h2>4 · Watchlist — model vs market "
                f"<span class='small gray'>(model historical accuracy {accuracy_label}; "
                f"confidence is scaled by it)</span></h2><div class='body'>")
+    # Bot dropdown sits between the watchlist title and the current
+    # prediction so the active bot is clearly tied to the section it
+    # scopes (per user request).
+    if available_bots:
+        _render_bot_filter(out, available_bots, current_bot,
+                            period_key=period_key)
     # Current prediction (moved here from the Model section per request).
     _render_current_prediction(out, model, display=display)
 
