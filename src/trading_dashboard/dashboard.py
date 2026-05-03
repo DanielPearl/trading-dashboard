@@ -3117,10 +3117,14 @@ def _render_watchlist(out: List[str], watchlist: List[dict],
     if available_bots:
         _render_bot_filter(out, available_bots, current_bot,
                             period_key=period_key)
-    # Buy criteria + validators reference button — opens the shared
-    # modal with the full set of thresholds the bot checks before
-    # placing a bet. Sits inline with the bot dropdown so it reads
-    # as part of the section's "what scopes this view" controls.
+    # Current-prediction card row (no subtitle — the cards label
+    # themselves).
+    _render_current_prediction(out, model, display=display)
+
+    # ── Buy criteria + validators reference button ───────────────────
+    # Sits directly above the Active bet section so the rule-set
+    # context is right next to the bet it scopes. Opens the shared
+    # modal with all thresholds the bot checks before placing a bet.
     rules_payload = json.dumps({
         "edge": edge_cfg or {},
         "validators": validator_cfg or {},
@@ -3128,22 +3132,19 @@ def _render_watchlist(out: List[str], watchlist: List[dict],
         "hedge": hedge_cfg or {},
     }, separators=(",", ":"), default=str)
     out.append(
-        "<div style='margin: -8px 0 12px 0;'>"
+        "<div style='margin: 14px 0 10px 0;'>"
         "<button type='button' class='criteria-rules-btn' "
         f"data-rules='{html.escape(rules_payload)}'>"
         "What does this bot need before it'll buy?"
         "</button></div>"
     )
-    # Current-prediction card row (no subtitle — the cards label
-    # themselves).
-    _render_current_prediction(out, model, display=display)
 
     # ── This bot's active bet ────────────────────────────────────────
-    # Just below the boxes, mirror the active-bets table from the Home
-    # tab — but scoped to the currently-selected bot, with the Bot
-    # column dropped (the section is already bot-scoped). Enrich the
-    # raw position with strike / display info so Question + Current
-    # render in the bot's native units.
+    # Mirrors the active-bets table from the Home tab — but scoped to
+    # the currently-selected bot, with the Bot column dropped (the
+    # section is already bot-scoped). Enrich the raw position with
+    # strike / display info so Question + Current render in the
+    # bot's native units.
     if latest_active:
         enriched = dict(latest_active)
         # Strike data from the matching watchlist row (keyed by ticker).
