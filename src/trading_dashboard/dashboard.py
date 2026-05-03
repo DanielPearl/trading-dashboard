@@ -348,12 +348,14 @@ def fetch_bet_history(db_path: str, limit: int = 100) -> List[dict]:
     Tolerates schema drift across bots. ``gas_price_at_close`` only exists
     on the gas-prices simulator schema; for other bots (e.g. whale-watcher)
     we still want their closed bets to appear in the cross-bot Summary,
-    just with an empty Gas-at-close cell.
+    just with an empty Gas-at-close cell. floor_strike + cap_strike are
+    pulled via subqueries on market_views so the bet-history view can
+    render the human Question text per row.
     """
     if not Path(db_path).exists():
         return []
-    base_cols = ("id, ticker, side, entry_price_cents, exit_price_cents, "
-                 "contracts, realized_pnl_cents, opened_at, exited_at")
+    base_cols = ("p.id, p.ticker, p.side, p.entry_price_cents, p.exit_price_cents, "
+                 "p.contracts, p.realized_pnl_cents, p.opened_at, p.exited_at")
     try:
         with closing(_conn(db_path)) as c:
             # Probe the schema once instead of try/except-ing the full query;
@@ -364,7 +366,7 @@ def fetch_bet_history(db_path: str, limit: int = 100) -> List[dict]:
                 # No positions table at all (e.g. natural-gas bot writes
                 # only model_snapshots + market_views). Empty history.
                 return []
-            extras = [c_ for c_ in (
+            extras = [f"p.{c_}" for c_ in (
                 "gas_price_at_close",
                 "model_yes_prob_at_entry",
                 "kalshi_yes_prob_at_entry",
@@ -374,8 +376,15 @@ def fetch_bet_history(db_path: str, limit: int = 100) -> List[dict]:
             ) if c_ in cols]
             select_cols = base_cols + (", " + ", ".join(extras) if extras else "")
             rows = c.execute(
-                f"SELECT {select_cols} FROM positions WHERE status='closed' "
-                f"ORDER BY exited_at DESC LIMIT ?", (limit,),
+                f"SELECT {select_cols}, "
+                f"(SELECT mv.floor_strike FROM market_views mv "
+                f"   WHERE mv.ticker = p.ticker "
+                f"   ORDER BY mv.id DESC LIMIT 1) AS floor_strike, "
+                f"(SELECT mv.cap_strike FROM market_views mv "
+                f"   WHERE mv.ticker = p.ticker "
+                f"   ORDER BY mv.id DESC LIMIT 1) AS cap_strike "
+                f"FROM positions p WHERE p.status='closed' "
+                f"ORDER BY p.exited_at DESC LIMIT ?", (limit,),
             ).fetchall()
     except (sqlite3.OperationalError, sqlite3.DatabaseError):
         return []
@@ -1901,10 +1910,10 @@ def _live_update_script(current_bot: str, period_key: str = "all") -> str:
 
   function applySnapshot(snap) {{
     // ── Summary cards ──────────────────────────────────────────────
-    // 7 cards: Active bets (live) | Closed bets | Money spent
-    // | Money gained | Potential gains (live) | Net gain/loss | Win %.
-    // The middle five reflect the period filter; the snapshot was
-    // already fetched with the right window so we just patch in.
+    // 6 cards: Active bets (live) | Closed bets | Money spent
+    // | Money gained | Net gain/loss | Win %. The middle four reflect
+    // the period filter; the snapshot was already fetched with the
+    // right window so we just patch in.
     const s = snap.summary || {{}};
     patch("card-active-bets", String(s.active_bets ?? 0));
     patch("card-closed-bets", String(s.period_closed_bets ?? 0));
@@ -1914,9 +1923,6 @@ def _live_update_script(current_bot: str, period_key: str = "all") -> str:
             : fmtSignedCents(-(s.period_money_spent_cents ?? 0)));
     patch("card-money-gained",
           "+" + fmtSignedCents(s.period_money_gained_cents).replace(/^[+−-]/, ""),
-          "green");
-    patch("card-potential-gain",
-          "+" + fmtSignedCents(s.potential_gain_cents).replace(/^[+−-]/, ""),
           "green");
     patch("card-net-pnl", fmtSignedCents(s.period_net_pnl_cents),
           (s.period_net_pnl_cents > 0) ? "green"
@@ -2338,13 +2344,14 @@ def _render_summary(out: List[str], rollup: dict, active_bets: List[dict],
                             tab_key="home")
 
     # ── Headline cards ────────────────────────────────────────────────
+    # 6 cards (Potential gains was dropped per user request). Card
+    # labels carry no "(period)" tag — the dropdown above scopes
+    # everything visible on the page already, so the parenthetical
+    # was redundant.
     closed_bets = (rollup.get("period_wins", 0)
                    + rollup.get("period_losses", 0))
     money_spent = rollup.get("period_money_spent_cents", 0)
     money_gained = rollup.get("period_money_gained_cents", 0)
-    potential_gain = rollup.get("potential_gain_cents", 0)
-    period_tag = (f" <span class='gray small'>"
-                  f"({html.escape(period_label)})</span>")
     out.append("<div class='row'>")
     out.append(f"<div class='card'><div class='label' "
                f"title='Live count of currently-open positions across "
@@ -2353,37 +2360,30 @@ def _render_summary(out: List[str], rollup: dict, active_bets: List[dict],
                f"<div class='value' id='card-active-bets'>"
                f"{rollup['active_bets']}</div></div>")
     out.append(f"<div class='card'><div class='label'>"
-               f"Closed bets{period_tag}</div>"
+               f"Closed bets</div>"
                f"<div class='value' id='card-closed-bets'>"
                f"{closed_bets}</div></div>")
     out.append(f"<div class='card'><div class='label' "
                f"title='Total cost basis of every position opened in "
                f"the period (entry × contracts).'>"
-               f"Money spent{period_tag}</div>"
+               f"Money spent</div>"
                f"<div class='value' id='card-money-spent'>"
                f"{fmt_signed_cents(-money_spent)}</div></div>")
     out.append(f"<div class='card'><div class='label' "
                f"title='Total payout received from positions closed in "
                f"the period (entry × contracts + realized P&amp;L).'>"
-               f"Money gained{period_tag}</div>"
+               f"Money gained</div>"
                f"<div class='value green' id='card-money-gained'>"
                f"+{fmt_signed_cents(money_gained).lstrip('+')}</div></div>")
-    out.append(f"<div class='card'><div class='label' "
-               f"title='Gross profit if every currently-open position "
-               f"resolves on our side: (100 − entry) × contracts. "
-               f"Live; not period-scoped.'>"
-               f"Potential gains</div>"
-               f"<div class='value green' id='card-potential-gain'>"
-               f"+{fmt_signed_cents(potential_gain).lstrip('+')}</div></div>")
     out.append(f"<div class='card'><div class='label'>"
-               f"Net gain / loss{period_tag}</div>"
+               f"Net gain / loss</div>"
                f"<div class='value {pnl_cls}' id='card-net-pnl'>"
                f"{fmt_signed_cents(net)}</div></div>")
     out.append(f"<div class='card'><div class='label' "
                f"title='Wins divided by closed bets in the selected "
                f"period. 0-100%; above 50% means winning more than "
                f"losing.'>"
-               f"Total win %{period_tag}</div>"
+               f"Total win %</div>"
                f"<div class='value {win_cls}' id='card-win-pct'>"
                f"{win_pct_str}</div></div>")
     out.append("</div>")
@@ -2690,30 +2690,18 @@ def _render_bet_history_block(out: List[str], history: List[dict],
 
     head = (
         "<table><thead><tr>"
-        "<th>Closed</th><th>Ticker</th><th>Side</th>"
+        "<th>Closed</th><th>Bot</th><th>Ticker</th><th>Question</th>"
+        "<th>Side</th>"
         "<th class='num'>Entry</th><th class='num'>Exit</th>"
         "<th class='num'>Contracts</th>"
         "<th class='num' title='Model probability for the side we bet on, recorded at entry.'>Model p</th>"
         "<th class='num' title='Net EV per contract at entry: (model_p − entry_price) − half-spread. "
-        "Positive = +EV trade. Compare with realized P&amp;L to spot model→trade translation gaps.'>Entry EV</th>"
-        "<th class='num' title='Underlying gas price ($/gal, EIA national "
-        "average) at the moment this bet closed. EIA differs from AAA "
-        "(Kalshi resolution) by ~1-3¢.'>Gas at close</th>"
+        "Positive = +EV trade.'>Entry EV</th>"
+        "<th class='num' title='Underlying value at the moment this bet closed (in the bot’s native units).'>Value at close</th>"
         "<th class='num'>P&amp;L</th>"
         "<th>Outcome</th>"
-        "<th title='Post-trade error classification — see tooltip on each cell. "
-        "Helps separate process errors (we shouldn’t have taken the trade) "
-        "from variance (good bet, bad outcome).'>Error type</th>"
         "</tr></thead><tbody>"
     )
-
-    error_explainers = {
-        "BAD_BET": "Entry-time EV was already negative. Should not have been taken.",
-        "EXECUTION_BAD_PRICE": "Break-even probability was extreme (>85%); paid too much for too thin an edge.",
-        "LOW_CONFIDENCE_TRADE": "Model probability for the chosen side was 50–60%; signal too weak.",
-        "MODEL_OVERCONFIDENT": "Model said >75% on this side, but the trade lost. Calibration miss.",
-        "GOOD_BET_BAD_OUTCOME": "Entry EV was positive — this is variance, not a process error.",
-    }
 
     def render_row(b):
         closed = (b.get("exited_at") or "")[:19].replace("T", " ")
@@ -2725,8 +2713,31 @@ def _render_bet_history_block(out: List[str], history: List[dict],
         pnl = b.get("realized_pnl_cents") or 0
         pnl_cls_ = "green" if pnl > 0 else ("red" if pnl < 0 else "gray")
         outcome = "WON" if pnl > 0 else ("LOST" if pnl < 0 else "FLAT")
-        gas_close = b.get("gas_price_at_close")
-        gas_str = f"${gas_close:.3f}" if gas_close is not None else "—"
+        # Value at close — uses the bot's display config so jobless
+        # renders "189K" (no decimals) and gas/natgas render "$2.79".
+        display = b.get("_display") or {}
+        value_at_close = b.get("gas_price_at_close")
+        value_str = (fmt_underlying(value_at_close, display)
+                     if value_at_close is not None else "—")
+        bot_name = b.get("_bot_name", "—")
+        # Question — rendered in the bot's native units when display
+        # config is attached. Strikes pulled via market_views subquery
+        # in fetch_bet_history.
+        floor = b.get("floor_strike")
+        cap = b.get("cap_strike")
+        try:
+            strike_low = float(floor) if floor is not None else None
+        except (TypeError, ValueError):
+            strike_low = None
+        try:
+            strike_high = float(cap) if cap is not None else None
+        except (TypeError, ValueError):
+            strike_high = None
+        direction = ("between" if (strike_low is not None
+                                    and strike_high is not None)
+                     else "above")
+        question = question_str(direction, strike_low, strike_high,
+                                  display=display)
         # Selected-side model prob: YES bet = model_yes_prob; NO bet = 1 - that.
         m_yes = b.get("model_yes_prob_at_entry")
         if m_yes is not None:
@@ -2740,29 +2751,19 @@ def _render_bet_history_block(out: List[str], history: List[dict],
             ev_cls = "gray"
         else:
             ev_str, ev_cls = (f"${ev:+.3f}", _ev_status(ev)[0])
-        err = b.get("error_type") or ""
-        if err:
-            err_cls = ("red" if err in ("BAD_BET", "EXECUTION_BAD_PRICE",
-                                        "MODEL_OVERCONFIDENT")
-                       else ("yellow" if err == "LOW_CONFIDENCE_TRADE"
-                             else "gray"))
-            err_tt = error_explainers.get(err, err)
-            err_html = (f"<span class='status-pill {err_cls}' "
-                        f"title='{html.escape(err_tt)}'>{html.escape(err)}</span>")
-        else:
-            err_html = "<span class='small gray'>—</span>"
         return (f"<tr><td>{html.escape(closed)}</td>"
+                f"<td>{html.escape(bot_name)}</td>"
                 f"<td class='mono'>{html.escape(b['ticker'])}</td>"
+                f"<td>{html.escape(question)}</td>"
                 f"<td><span class='badge {badge_cls}'>{side}</span></td>"
                 f"<td class='num'>{entry}c</td>"
                 f"<td class='num'>{cents_or_dash(exit_c)}</td>"
                 f"<td class='num'>{contracts}</td>"
                 f"<td class='num'>{mp_str}</td>"
                 f"<td class='num {ev_cls}'>{ev_str}</td>"
-                f"<td class='num'>{gas_str}</td>"
+                f"<td class='num'>{value_str}</td>"
                 f"<td class='num {pnl_cls_}'>{fmt_signed_cents(pnl)}</td>"
-                f"<td class='{pnl_cls_}'>{outcome}</td>"
-                f"<td>{err_html}</td></tr>")
+                f"<td class='{pnl_cls_}'>{outcome}</td></tr>")
 
     out.append(head)
     for b in history[:shown_initially]:
@@ -4310,8 +4311,8 @@ def _render_contract_rules(out: List[str], watchlist: List[dict],
     if strikes:
         lo, hi = min(strikes), max(strikes)
         sub = (f"This rule applies to <b>{len(strikes)}</b> active contracts "
-               f"in this series, with strikes from <b>${lo:.3f}</b> to "
-               f"<b>${hi:.3f}</b>.")
+               f"in this series, with strikes from <b>${lo:.2f}</b> to "
+               f"<b>${hi:.2f}</b>.")
     else:
         sub = ""
 
@@ -4487,6 +4488,7 @@ class Handler(BaseHTTPRequestHandler):
                         global_active_bets.append(ab)
                     for h in fetch_bet_history(b["db_path"], limit=50):
                         h["_bot_name"] = b["name"]
+                        h["_display"] = b.get("display") or {}
                         global_history.append(h)
                     m = fetch_latest_model(b["db_path"])
                     # Pull contract rules from the bot's watchlist —
