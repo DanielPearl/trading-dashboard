@@ -2744,25 +2744,17 @@ def _render_active_bets_table(out: List[str], bets: List[dict],
             f"<span class='entry-fee'> + ${entry_fee_dollars:.2f}</span>"
             f"</td>"
         )
-        # Probability cells — colored by direction of move for the
-        # side we hold. Current > entry = market drifted in our
-        # favor (green), < entry = against us (red).
+        # Probability cells — both rendered in the default white text;
+        # the user can compare entry vs current at a glance without
+        # the color cue (which was tracking direction of market move).
         entry_prob_cell = f"<td class='num'>{entry_prob_pct}%</td>"
         if current_prob_pct is None:
             current_prob_cell = "<td class='num gray'>—</td>"
         else:
-            cp = current_prob_pct
-            if cp > entry_prob_pct + 0.5:
-                cp_cls = "green"
-            elif cp < entry_prob_pct - 0.5:
-                cp_cls = "red"
-            else:
-                cp_cls = ""
             current_prob_cell = (
-                f"<td class='num {cp_cls}' title='Market mid for our "
-                f"side right now. Compare to Entry prob — higher = "
-                f"market has moved in our favor.'>"
-                f"{cp:.0f}%</td>"
+                f"<td class='num' title='Market mid for our side right "
+                f"now. Compare to Entry prob to see how the market has "
+                f"moved.'>{current_prob_pct:.0f}%</td>"
             )
         mtc = b.get("minutes_to_close")
         # Sign / color logic for potential gain — usually positive
