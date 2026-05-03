@@ -777,15 +777,12 @@ def svg_kalshi_chart(history: List[dict], display: dict,
     inner_w = width - pad_l - pad_r
     inner_h = height - pad_t - pad_b
     n = len(pts_in)
-    # X-axis spans contract open → NOW (today). The line fills the
-    # whole chart instead of leaving empty space until contract close.
-    # close_time still drives the daily-label generation below so the
-    # user sees one tick per day up to the present.
-    t_min = float(contract_open_ts) if contract_open_ts else pts_in[0][0]
-    if t_min > pts_in[0][0]:
-        t_min = pts_in[0][0]
+    # X-axis spans the past 5 days → now. Settlement anchors from prior
+    # resolved events get stitched in upstream so daily-cycle series
+    # (KXNATGASD) have anchor points across the full 5-day window.
     now_ts = time.time()
     t_max = max(now_ts, pts_in[-1][0])
+    t_min = t_max - 5 * 86400
     t_span = max(1.0, t_max - t_min)
 
     # Auto-scale the y-axis to the actual data range with 8% padding.

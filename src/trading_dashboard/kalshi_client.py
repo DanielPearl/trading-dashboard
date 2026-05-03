@@ -165,27 +165,39 @@ class KalshiClient:
     # Endpoints we care about                                          #
     # ---------------------------------------------------------------- #
 
-    def list_markets(self, series_ticker: str, status: str = "open",
+    def list_markets(self, series_ticker: Optional[str] = None,
+                     event_ticker: Optional[str] = None,
+                     status: Optional[str] = "open",
                      limit: int = 200) -> List[dict]:
-        """Returns the current open markets in a series. Cached 60s.
+        """Markets in a series (or one event). Cached 5min.
+
+        If ``event_ticker`` is given, scopes to that one event regardless
+        of status. Otherwise filters by ``series_ticker`` + ``status``.
 
         Each market dict has the canonical Kalshi fields:
             ticker, event_ticker, floor_strike, cap_strike,
             yes_ask_dollars, yes_bid_dollars, no_ask_dollars,
-            volume_fp, open_interest_fp, last_price_dollars, ...
+            volume_fp, open_interest_fp, last_price_dollars,
+            expiration_value, expected_expiration_time, ...
         """
-        cache_key = f"markets:{series_ticker}:{status}:{limit}"
+        if event_ticker:
+            cache_key = f"markets-evt:{event_ticker}:{limit}"
+        else:
+            cache_key = f"markets:{series_ticker}:{status}:{limit}"
         cached = _CACHE.get(cache_key)
         if cached is not None:
             return cached
         out: List[dict] = []
         cursor: Optional[str] = None
         while True:
-            params: Dict[str, Any] = {
-                "series_ticker": series_ticker,
-                "status": status,
-                "limit": limit,
-            }
+            params: Dict[str, Any] = {"limit": limit}
+            if event_ticker:
+                params["event_ticker"] = event_ticker
+            else:
+                if series_ticker:
+                    params["series_ticker"] = series_ticker
+                if status:
+                    params["status"] = status
             if cursor:
                 params["cursor"] = cursor
             resp = self._get("/markets", params=params)
@@ -217,6 +229,38 @@ class KalshiClient:
         event = resp.get("event") or resp
         _CACHE.put(cache_key, event)
         return event
+
+    def list_events(self, series_ticker: str,
+                    statuses: Tuple[str, ...] = ("open", "settled"),
+                    limit: int = 50) -> List[dict]:
+        """Events in a series across the given status filter, most-
+        recent first. Cached 5min. Used to assemble multi-event history
+        windows (e.g. 5-day rolling charts on daily-cycle bots).
+        """
+        cache_key = f"events:{series_ticker}:{','.join(statuses)}:{limit}"
+        cached = _CACHE.get(cache_key)
+        if cached is not None:
+            return cached
+        out: List[dict] = []
+        for status in statuses:
+            cursor: Optional[str] = None
+            while True:
+                params: Dict[str, Any] = {
+                    "series_ticker": series_ticker,
+                    "status": status,
+                    "limit": limit,
+                }
+                if cursor:
+                    params["cursor"] = cursor
+                resp = self._get("/events", params=params)
+                if not resp:
+                    break
+                out.extend(resp.get("events") or [])
+                cursor = resp.get("cursor") or None
+                if not cursor:
+                    break
+        _CACHE.put(cache_key, out)
+        return out
 
     def candlesticks(self, series_ticker: str, market_ticker: str,
                      period_minutes: int = 60,
@@ -318,6 +362,49 @@ def _candle_yes_prob(cdl: dict) -> Optional[float]:
     if ya_c is not None and yb_c is not None:
         return (ya_c + yb_c) / 2.0
     return ya_c if ya_c is not None else yb_c
+
+
+def fetch_settlement_anchors(series_ticker: str,
+                              lookback_days: int = 5,
+                              client: Optional["KalshiClient"] = None,
+                              ) -> List[dict]:
+    """One settlement anchor per resolved event in the past N days.
+
+    Each event's settled markets share the same expiration_value (the
+    actual underlying at settlement). For a 5-day chart on a daily-cycle
+    series like KXNATGASD this gives ~5 historical anchor points to
+    pair with the current event's intraday line. Cached via list_events
+    + per-event list_markets.
+
+    Returns a list of {"ts": float, "value": float} sorted by ts.
+    """
+    c = client or default_client()
+    if not c.available:
+        return []
+    cutoff = time.time() - lookback_days * 86400
+    events = c.list_events(series_ticker,
+                            statuses=("settled",), limit=lookback_days * 5)
+    anchors: List[dict] = []
+    seen_events: set = set()
+    for event in events:
+        evt_ticker = event.get("event_ticker")
+        if not evt_ticker or evt_ticker in seen_events:
+            continue
+        seen_events.add(evt_ticker)
+        last_updated = _parse_iso(event.get("last_updated_ts"))
+        if last_updated and last_updated < cutoff:
+            continue
+        # Need just one market per event to read the shared
+        # expiration_value + expected_expiration_time.
+        markets = c.list_markets(event_ticker=evt_ticker, limit=5)
+        for m in markets:
+            exp_value = _to_float(m.get("expiration_value"))
+            exp_time = _parse_iso(m.get("expected_expiration_time"))
+            if exp_value is not None and exp_time is not None and exp_time >= cutoff:
+                anchors.append({"ts": float(exp_time), "value": float(exp_value)})
+                break
+    anchors.sort(key=lambda r: r["ts"])
+    return anchors
 
 
 def _parse_iso(ts: str | None) -> Optional[float]:
@@ -482,5 +569,21 @@ def fetch_underlying_history(series_ticker: str,
                 implied = pairs[0][0]
         if implied is not None:
             history.append({"ts": float(ts), "value": float(implied)})
+
+    # Stitch in settlement anchors from the past 5 days. For short-cycle
+    # series (KXNATGASD daily) this gives prior-day anchor points so the
+    # 5-day chart isn't empty on the left. For weekly series the current
+    # event already covers most of the window; anchors fill the rest.
+    anchors = fetch_settlement_anchors(series_ticker, lookback_days=5,
+                                        client=c)
+    if anchors:
+        # Drop any anchor that overlaps the current event's intraday
+        # window — the live data is more accurate than the settlement
+        # snapshot for that period.
+        if history:
+            min_intraday_ts = min(r["ts"] for r in history)
+            anchors = [a for a in anchors if a["ts"] < min_intraday_ts]
+        history = anchors + history
+        history.sort(key=lambda r: r["ts"])
 
     return history, atm, markets, contract_open_ts, contract_close_ts, event_title
