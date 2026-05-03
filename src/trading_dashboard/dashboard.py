@@ -1698,6 +1698,10 @@ def render_page(
     _open_panel("history")
     out.append("<div class='section'><h2>Contract history</h2>"
                "<div class='body'>")
+    # Same Day/Week/Month/Year/All-time pill bar as Home; clicking
+    # keeps the user on the History tab and just narrows the rows.
+    _render_period_filter(out, period_key, current_bot=current_bot,
+                            tab_key="history")
     _render_bet_history_block(
         out, global_history,
         heading=f"Closed bets ({period_label})",
@@ -2125,6 +2129,31 @@ def _period_days(period_key: str) -> int | None:
     return None
 
 
+def _render_period_filter(out: List[str], period_key: str,
+                            current_bot: str = "",
+                            tab_key: str = "home") -> None:
+    """Period filter pill bar (Day · Week · Month · Year · All-time).
+    Used on Home, Performance, and History tabs. Each pill link
+    preserves the active bot + tab so switching the period doesn't
+    bounce the user out of their current view.
+    """
+    out.append("<div class='filter-pills' style='margin-bottom:14px;'>")
+    for key, label, _days in PERIOD_OPTIONS:
+        cls = "filter-pill"
+        if key == period_key:
+            cls += " filter-pill-active"
+        bot_qs = (f"&bot={html.escape(current_bot)}"
+                  if current_bot else "")
+        tab_qs = (f"&tab={html.escape(tab_key)}"
+                  if tab_key and tab_key != "home" else "")
+        out.append(
+            f"<a class='{cls}' "
+            f"href='?period={key}{bot_qs}{tab_qs}'>"
+            f"{html.escape(label)}</a>"
+        )
+    out.append("</div>")
+
+
 def _render_summary(out: List[str], rollup: dict, active_bets: List[dict],
                     history: List[dict],
                     period_key: str = "all",
@@ -2154,21 +2183,9 @@ def _render_summary(out: List[str], rollup: dict, active_bets: List[dict],
                "Cross-bot totals. Use the period filter to scope the "
                "cards; Active bets is always the live count.</div>")
 
-    # ── Period filter pills ───────────────────────────────────────────
-    out.append("<div class='filter-pills' style='margin-bottom:14px;'>")
-    for key, label, _days in PERIOD_OPTIONS:
-        cls = "filter-pill"
-        if key == period_key:
-            cls += " filter-pill-active"
-        # Preserve the current bot selection in the link so switching
-        # the period doesn't kick the user back to the default bot.
-        bot_qs = (f"&bot={html.escape(current_bot)}"
-                  if current_bot else "")
-        out.append(
-            f"<a class='{cls}' href='?period={key}{bot_qs}'>"
-            f"{html.escape(label)}</a>"
-        )
-    out.append("</div>")
+    # ── Period filter pills (shared helper, also used on History) ────
+    _render_period_filter(out, period_key, current_bot=current_bot,
+                            tab_key="home")
 
     # ── Headline cards ────────────────────────────────────────────────
     out.append("<div class='row'>")
