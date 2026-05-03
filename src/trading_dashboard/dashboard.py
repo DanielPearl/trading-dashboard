@@ -877,12 +877,14 @@ def _empty_chart_frame(width: int = 760, height: int = 220,
         y = pad_t + (i / 4.0) * (height - pad_t - pad_b)
         out.append(f"<line x1='{pad_l}' y1='{y}' x2='{width-pad_r}' y2='{y}' "
                    f"stroke='#1f2530' stroke-width='1'/>")
-    # Day ticks across the contract span (if known).
+    # Day ticks across [contract_open, now] — chart always ends at
+    # the current date, never extends into the future even when the
+    # contract isn't closed yet. (contract_close_ts is intentionally
+    # ignored here for that reason.)
     if contract_open_ts is not None:
         from datetime import timedelta
         t_min = float(contract_open_ts)
-        t_max = float(contract_close_ts) if contract_close_ts else (
-            t_min + 24 * 3600)
+        t_max = max(t_min, time.time())
         dt_min = datetime.fromtimestamp(t_min, tz=timezone.utc)
         dt_max = datetime.fromtimestamp(t_max, tz=timezone.utc)
         day_labels: List[str] = [dt_min.strftime("%b %-d")]
@@ -950,10 +952,12 @@ def svg_kalshi_chart(history: List[dict], display: dict,
     inner_w = width - pad_l - pad_r
     inner_h = height - pad_t - pad_b
     n = len(pts_in)
-    # X-axis spans contract open → NOW. Each chart shows only the
-    # current event's lifetime, no multi-event stitching.
+    # X-axis spans contract open → NOW. Always ends at current date,
+    # never extended into the future even when the contract is still
+    # open. Future-dated data points (clock skew etc.) are clipped to
+    # now since the user's spec is "end at current date".
     now_ts = time.time()
-    t_max = max(now_ts, pts_in[-1][0])
+    t_max = now_ts
     t_min = float(contract_open_ts) if contract_open_ts else pts_in[0][0]
     if t_min > pts_in[0][0]:
         t_min = pts_in[0][0]
