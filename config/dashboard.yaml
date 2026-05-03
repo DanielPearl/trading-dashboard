@@ -22,7 +22,7 @@ bots:
       underlying_decimals: 2
       unit_position: prefix
   - key: unemployment-claims
-    name: Unemployment Claims
+    name: Jobless Claims
     db_path: /root/unemployment-claims/data/sim.db
     decisions_path: /root/unemployment-claims/data/decisions.jsonl
     series_ticker: KXJOBLESSCLAIMS
@@ -34,7 +34,7 @@ bots:
       # Bot stores raw count (189000); display in thousands → "189K".
       divisor: 1000.0
   - key: natural-gas
-    name: Natural Gas
+    name: Natural Gas Prices
     # Lives at /root/peak-load/ on the droplet — directory keeps its old
     # name from before the bot was rebuilt around the KXNATGASD market.
     db_path: /root/peak-load/data/sim.db

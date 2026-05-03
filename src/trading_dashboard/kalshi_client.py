@@ -468,48 +468,6 @@ def _interpolate_event_history(client: "KalshiClient",
     return history
 
 
-def fetch_settlement_anchors(series_ticker: str,
-                              lookback_days: int = 5,
-                              client: Optional["KalshiClient"] = None,
-                              ) -> List[dict]:
-    """One settlement anchor per resolved event in the past N days.
-
-    Each event's settled markets share the same expiration_value (the
-    actual underlying at settlement). For a 5-day chart on a daily-cycle
-    series like KXNATGASD this gives ~5 historical anchor points to
-    pair with the current event's intraday line. Cached via list_events
-    + per-event list_markets.
-
-    Returns a list of {"ts": float, "value": float} sorted by ts.
-    """
-    c = client or default_client()
-    if not c.available:
-        return []
-    cutoff = time.time() - lookback_days * 86400
-    events = c.list_events(series_ticker,
-                            statuses=("settled",), limit=lookback_days * 5)
-    anchors: List[dict] = []
-    seen_events: set = set()
-    for event in events:
-        evt_ticker = event.get("event_ticker")
-        if not evt_ticker or evt_ticker in seen_events:
-            continue
-        seen_events.add(evt_ticker)
-        last_updated = _parse_iso(event.get("last_updated_ts"))
-        if last_updated and last_updated < cutoff:
-            continue
-        # Need just one market per event to read the shared
-        # expiration_value + expected_expiration_time.
-        markets = c.list_markets(event_ticker=evt_ticker, limit=5)
-        for m in markets:
-            exp_value = _to_float(m.get("expiration_value"))
-            exp_time = _parse_iso(m.get("expected_expiration_time"))
-            if exp_value is not None and exp_time is not None and exp_time >= cutoff:
-                anchors.append({"ts": float(exp_time), "value": float(exp_value)})
-                break
-    anchors.sort(key=lambda r: r["ts"])
-    return anchors
-
 
 def _parse_iso(ts: str | None) -> Optional[float]:
     if not ts:
@@ -573,57 +531,19 @@ def fetch_underlying_history(series_ticker: str,
         event = c.get_event(atm["event_ticker"])
         if event:
             event_title = event.get("title")
-    # Multi-event 5-day window: every event in the series with markets
-    # that have candle data in the past 5 days contributes to history.
-    # OPEN events get strike-ladder interpolation by current YES≈50%.
-    # SETTLED events get strike-ladder interpolation by proximity to
-    # expiration_value (the strikes that bracketed the actual outcome —
-    # those carry the most informative intraday price action).
-    LOOKBACK_DAYS = 5
-    cutoff_ts = time.time() - LOOKBACK_DAYS * 86400
-    candle_lookback_h = LOOKBACK_DAYS * 24
+    # Auto-size lookback to span the current event's life. Cap at 7
+    # days so Kalshi doesn't reject an absurdly long range with a fine
+    # period_interval.
+    if lookback_hours is None:
+        if contract_open_ts is not None:
+            elapsed_h = max(1, int((time.time() - contract_open_ts) / 3600) + 1)
+            lookback_hours = min(elapsed_h, 7 * 24)
+        else:
+            lookback_hours = 24
 
-    history: List[dict] = []
-
-    # 1. Current open event.
-    open_history = _interpolate_event_history(
+    history = _interpolate_event_history(
         c, series_ticker, markets, anchor_value=None,
-        period_minutes=period_minutes, lookback_hours=candle_lookback_h,
+        period_minutes=period_minutes, lookback_hours=lookback_hours,
         max_strikes=max_strikes,
     )
-    history.extend(open_history)
-
-    # 2. Settled events in the past 5 days.
-    settled_events = c.list_events(series_ticker, statuses=("settled",),
-                                    limit=LOOKBACK_DAYS * 5)
-    seen_events: set = set()
-    for event in settled_events:
-        evt_ticker = event.get("event_ticker")
-        if not evt_ticker or evt_ticker in seen_events:
-            continue
-        seen_events.add(evt_ticker)
-        last_updated = _parse_iso(event.get("last_updated_ts"))
-        if last_updated and last_updated < cutoff_ts:
-            continue
-        evt_markets = c.list_markets(event_ticker=evt_ticker, limit=200)
-        if not evt_markets:
-            continue
-        # Read the event's settlement value from any of its markets.
-        anchor_value: Optional[float] = None
-        for m in evt_markets:
-            v = _to_float(m.get("expiration_value"))
-            if v is not None:
-                anchor_value = v
-                break
-        evt_history = _interpolate_event_history(
-            c, series_ticker, evt_markets, anchor_value=anchor_value,
-            period_minutes=period_minutes, lookback_hours=candle_lookback_h,
-            max_strikes=max_strikes,
-        )
-        # Trim to the 5-day window so a stale event that ran for a week
-        # doesn't pull in old data.
-        evt_history = [r for r in evt_history if r["ts"] >= cutoff_ts]
-        history.extend(evt_history)
-
-    history.sort(key=lambda r: r["ts"])
     return history, atm, markets, contract_open_ts, contract_close_ts, event_title
