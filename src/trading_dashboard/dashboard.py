@@ -1965,32 +1965,24 @@ def _live_update_script(current_bot: str, period_key: str = "all") -> str:
     return sign + "$" + Math.abs(v).toFixed(3);
   }}
   function buildCriteriaHTML(c) {{
+    // Every value in this popup is rendered green: the bet only
+    // exists because each criterion cleared, so every line is a
+    // "this passed" datapoint.
     let html = "<div class='crit-section'><h4>Why we took it</h4><dl>";
-    html += "<dt>Model probability</dt><dd>" + fmtPct(c.model_p) + "</dd>";
-    html += "<dt>Market probability</dt><dd>" + fmtPct(c.kalshi_p) + "</dd>";
-    let edgeCls = "gray";
-    if (c.edge_pts !== null && isFinite(c.edge_pts)) {{
-      edgeCls = c.edge_pts > 0 ? "green" : (c.edge_pts < 0 ? "red" : "gray");
-    }}
+    html += "<dt>Model probability</dt><dd class='green'>"
+         + fmtPct(c.model_p) + "</dd>";
+    html += "<dt>Market probability</dt><dd class='green'>"
+         + fmtPct(c.kalshi_p) + "</dd>";
     const edgeStr = (c.edge_pts === null || !isFinite(c.edge_pts))
       ? "—"
       : (c.edge_pts >= 0 ? "+" : "−")
         + Math.abs(c.edge_pts).toFixed(0) + " pts";
-    html += "<dt>Edge</dt><dd class='" + edgeCls + "'>" + edgeStr + "</dd>";
-    let evCls = "gray";
-    if (c.entry_ev !== null && isFinite(c.entry_ev)) {{
-      evCls = c.entry_ev > 0 ? "green"
-            : (c.entry_ev < 0 ? "red" : "gray");
-    }}
-    html += "<dt>Entry EV / contract</dt><dd class='" + evCls + "'>"
+    html += "<dt>Edge</dt><dd class='green'>" + edgeStr + "</dd>";
+    html += "<dt>Entry EV / contract</dt><dd class='green'>"
          + fmtCents3(c.entry_ev) + "</dd>";
-    html += "<dt>Break-even probability</dt><dd>"
+    html += "<dt>Break-even probability</dt><dd class='green'>"
          + fmtPct(c.break_even) + "</dd>";
-    // Since the bet was placed, every gate the bot checks must have
-    // cleared — surface that as a single "100%" line rather than a
-    // long list of identical green checks.
-    html += "<dt>Validators met</dt>"
-         + "<dd class='green'>100%</dd>";
+    html += "<dt>Validators met</dt><dd class='green'>100%</dd>";
     html += "</dl></div>";
     return html;
   }}
