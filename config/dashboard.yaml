@@ -21,10 +21,11 @@ bots:
       underlying_unit: "$"
       underlying_decimals: 2
       unit_position: prefix
-      # Weekly contract — sample once per day for a clean N-day line.
-      # Kalshi has period_interval=1440 (daily candles); the dashboard
-      # passes that straight through, no client-side bucketing.
-      chart_period_minutes: 1440
+      # 1-min candles — every change Kalshi has recorded for the
+      # underlying. Same resolution Kalshi shows on its own market page.
+      # X-axis still labels one tick per day (label code is independent
+      # of data-point density).
+      chart_period_minutes: 1
   - key: unemployment-claims
     name: Jobless Claims
     db_path: /root/unemployment-claims/data/sim.db
@@ -37,10 +38,8 @@ bots:
       unit_position: suffix
       # Bot stores raw count (189000); display in thousands → "189K".
       divisor: 1000.0
-      # Sample line at 15-min resolution. The market trades briskly
-      # enough to populate sub-hourly bars; 60-min misses the
-      # intraday wiggles.
-      chart_period_minutes: 15
+      # 1-min raw candles — capture every recorded change.
+      chart_period_minutes: 1
   - key: natural-gas
     name: Natural Gas Prices
     # Lives at /root/peak-load/ on the droplet — directory keeps its old
@@ -53,10 +52,8 @@ bots:
       underlying_unit: "$"
       underlying_decimals: 2
       unit_position: prefix
-      # Daily resolution. KXNATGASD settles once a day, so showing
-      # intraday candles is noise — one point per close-of-day matches
-      # how the contract actually moves.
-      chart_period_minutes: 1440
+      # 1-min candles — every recorded Henry Hub change.
+      chart_period_minutes: 1
   - key: whale-watcher
     name: Whale Watcher
     # Whale bot uses signal-analysis JSONLs instead of a sim.db. db_path

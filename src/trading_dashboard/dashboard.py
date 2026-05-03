@@ -808,17 +808,15 @@ def svg_kalshi_chart(history: List[dict], display: dict,
         t_min = pts_in[0][0]
     t_span = max(1.0, t_max - t_min)
 
-    # Smoothed values for the visible polyline (centered MA). Raw values
-    # stay in `pts_in` for the hover-tooltip JSON payload so hovering
-    # still surfaces the actual underlying, not the smoothed estimate.
-    smoothed_vals = _smooth_values([v for _, v in pts_in], window=3)
-    pts_plot: List[Tuple[float, float]] = [(t, sv) for (t, _), sv
-                                            in zip(pts_in, smoothed_vals)]
+    # Plot raw values — every recorded Kalshi candle, no smoothing or
+    # bucketing. The hover tooltip and the visible polyline read from
+    # the same series so what you see is what got recorded.
+    pts_plot: List[Tuple[float, float]] = list(pts_in)
 
     # Auto-scale the y-axis to the actual data range with 8% padding.
     # When there's an active bet, also include its strike in the range
     # so the dotted reference line is always visible on the chart.
-    values = list(smoothed_vals)
+    values = [v for _, v in pts_in]
     if strike_is_active_bet and reference_strike is not None:
         values = values + [float(reference_strike)]
     vmin = min(values)
