@@ -1427,10 +1427,13 @@ code { background: #161b22; padding: 1px 6px; border-radius: 3px; color: #c9d1d9
     font-size: 12px; line-height: 1.45; }
 .bot-card dt { color: #8b949e; }
 .bot-card dd { margin: 0; color: #c9d1d9;
-    font-variant-numeric: tabular-nums; text-align: right; }
-.bot-card dd.green { color: #3fb950; }
-.bot-card dd.red   { color: #f85149; }
-.bot-card dd.gray  { color: #6e7681; }
+    font-variant-numeric: tabular-nums; text-align: right;
+    font-weight: 500; }
+/* High-specificity + !important so the green/red gain-loss colors
+   land regardless of any other .green/.red cascade rules. */
+.bot-card dl dd.green { color: #3fb950 !important; font-weight: 600; }
+.bot-card dl dd.red   { color: #f85149 !important; font-weight: 600; }
+.bot-card dl dd.gray  { color: #6e7681 !important; }
 .bot-card-foot {
     margin-top: auto; padding-top: 10px;
     border-top: 1px solid #21262d;
@@ -1844,6 +1847,14 @@ def _live_update_script(current_bot: str, period_key: str = "all") -> str:
         e.preventDefault();
         const key = pill.getAttribute("data-tab");
         if (!key) return;
+        // Special-case History: full-page navigate WITHOUT preserving
+        // the period — the History tab should default to all-time
+        // every time the user opens it. Other tabs JS-swap (snappy
+        // and preserves period from elsewhere on the page).
+        if (key === "history") {{
+          window.location.href = "?tab=history";
+          return;
+        }}
         tabBar.querySelectorAll(".tab-pill").forEach(function (p) {{
           p.classList.toggle("tab-pill-active",
                               p.getAttribute("data-tab") === key);
