@@ -3447,19 +3447,22 @@ def _render_watchlist(out: List[str], watchlist: List[dict],
         if volume is not None and volume < 50:
             flags.append("thin volume")
 
-        # Color my-yes / my-no cells when one side is meaningfully better
-        # than the other (using EV directly, not gap-based heuristics).
+        # My YES / My NO cells render in default white when the bot
+        # would actually buy that side (positive EV + all gates passed
+        # for that side). Otherwise grey them out — there's no
+        # actionable edge so the user shouldn't see a highlighted
+        # number.
         ev_yes_v = v.get("_ev_yes")
         ev_no_v = v.get("_ev_no")
-        my_yes_cls = ""
-        my_no_cls = ""
-        if not flags and ev_yes_v is not None and ev_no_v is not None:
-            if ev_yes_v >= 0.03 and ev_yes_v > ev_no_v:
-                my_yes_cls = "green"
-                my_no_cls = "red"
-            elif ev_no_v >= 0.03 and ev_no_v > ev_yes_v:
-                my_yes_cls = "red"
-                my_no_cls = "green"
+        bot_verdict_pre = v.get("bot_verdict", "SKIP")
+        my_yes_cls = "gray"
+        my_no_cls = "gray"
+        if (bot_verdict_pre == "BUY_YES"
+                and ev_yes_v is not None and ev_yes_v >= 0.03):
+            my_yes_cls = ""   # default white — actionable side
+        if (bot_verdict_pre == "BUY_NO"
+                and ev_no_v is not None and ev_no_v >= 0.03):
+            my_no_cls = ""    # default white — actionable side
 
         # ── Verdict — driven by EV first, gates second ─────────────────
         # Rules:
