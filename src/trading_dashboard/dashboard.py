@@ -2281,9 +2281,6 @@ def _render_summary(out: List[str], rollup: dict, active_bets: List[dict],
 
     out.append("<div class='section'><h2>1 · Summary — across all bots</h2>"
                "<div class='body summary-body'>")
-    out.append("<div class='small' style='margin-bottom:10px;'>"
-               "Cross-bot totals. Use the period filter to scope the "
-               "cards; Active bets is always the live count.</div>")
 
     # ── Period filter pills (shared helper, also used on History) ────
     _render_period_filter(out, period_key, current_bot=current_bot,
