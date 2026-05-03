@@ -1598,12 +1598,12 @@ def render_page(
                       risk_caps=risk_caps,
                       hedge_cfg=hedge_cfg)
 
-    # SECTION 5 — Diagnostics (Translation, Calibration, TTC buckets,
-    # Quality Score, Market Flow). Driven by closed-bet history; small
-    # sample sizes are surfaced honestly instead of hidden.
-    _render_diagnostics(out, bot_closed_positions)
+    # Decision-diagnostics section retired per user request — most of
+    # the content was small-sample noise on early closed-bet history,
+    # and the headline accuracy + EV calibration are already surfaced
+    # in the model + watchlist sections above.
 
-    # SECTION 6 — Kalshi rules per contract.
+    # SECTION 5 — Kalshi rules per contract.
     _render_contract_rules(out, watchlist, current_bot)
 
     # Live-update JS: polls /api/snapshot every 5s and patches summary
