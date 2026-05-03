@@ -560,47 +560,39 @@ def render_page(
     available_bots: List[dict],
     current_bot_key: str,
     sort_by: str = "recent",
-    tab_key: str = "home",
+    tab_key: str = "watchlist",  # ignored, kept for backwards-compat
 ) -> str:
     """Whole HTML page for the whale-watcher view.
 
-    Reuses the standard dashboard's CSS via a lazy import so the
-    layout idioms (cards, tabs, tables, modals) match the main
-    dashboard tabs. Three tabs:
-      Home       — aggregate stats + simulated current bets
-      Watchlist  — every recent unusual whale + its validator status
-      History    — completed signals with realised +30m outcomes
+    Layout matches the main dashboard's Watchlist tab so the user
+    has one navigation idiom across all bots:
+
+        [Home] [Watchlist] [History]   ← top-level dashboard tabs
+        Bot: [Whale Watcher ▾]         ← bot dropdown
+        [stats cards row]              ← summary stats in boxes
+        [insider candidates table]     ← the main content
+
+    The top-level tabs link to /?tab=home and /?tab=history (the
+    main dashboard pages) — clicking Watchlist stays here. So
+    selecting whale-watcher in the bot dropdown swaps the watchlist
+    body for the insider-candidates view; selecting any other bot
+    swaps to the strike-ladder + chart view.
     """
     # Imported lazily to avoid a circular import at module load time.
     from .dashboard import CSS, _favicon_link, _render_bot_filter
 
-    # Compute features once — feed to all three tabs.
     cohorts = compute_cohort_winrates(events)
     candidates = compute_candidates(events, cohorts)
     summary = summarize(events, candidates)
-
-    # Validate tab.
-    valid_tabs = {k for k, _label in WHALE_TABS}
-    active_tab = tab_key if tab_key in valid_tabs else "home"
 
     out: List[str] = []
     out.append("<!doctype html><html><head>")
     out.append("<meta charset='utf-8'>")
     out.append("<meta http-equiv='refresh' content='30'>")
-    out.append("<title>Whale Watcher — signal analysis</title>")
+    out.append("<title>Whale Watcher — Kalshi simulation dashboard</title>")
     out.append(_favicon_link())
     out.append(f"<style>{CSS}</style>")
     out.append("<style>"
-               ".whale-stats { display:grid; grid-template-columns: repeat(4, 1fr);"
-               " gap: 14px; margin: 8px 0 22px 0; }"
-               ".whale-stats .card { padding: 14px 16px; }"
-               ".whale-stats .label { color:#8b949e; font-size:11px; "
-               "text-transform:uppercase; letter-spacing:0.06em; }"
-               ".whale-stats .value { font-size:22px; font-weight:600; "
-               "color:#f0f6fc; margin-top:4px; }"
-               ".verdict.good { color:#3fb950; }"
-               ".verdict.bad  { color:#f85149; }"
-               ".verdict.gray { color:#8b949e; }"
                ".side-yes { color:#3fb950; font-weight:600; }"
                ".side-no  { color:#f85149; font-weight:600; }"
                ".pos { color:#3fb950; }"
@@ -614,8 +606,6 @@ def render_page(
                   "color:#d49900; border:1px solid rgba(212,153,0,0.35); }"
                ".whale-score.low  { background: rgba(139,148,158,0.15); "
                   "color:#8b949e; border:1px solid rgba(139,148,158,0.30); }"
-               ".valid-pass { color:#3fb950; }"
-               ".valid-fail { color:#f85149; }"
                ".valid-pill { display:inline-block; padding:1px 6px; "
                   "border-radius:4px; font-size:10px; font-weight:600; "
                   "text-transform:uppercase; letter-spacing:0.04em; "
@@ -626,52 +616,59 @@ def render_page(
                   "color:#f85149; border:1px solid rgba(248,81,73,0.30); }"
                "</style>")
     out.append("</head><body>")
-    out.append("<h1>Whale Watcher — signal analysis</h1>")
+    out.append("<h1>Kalshi simulation dashboard</h1>")
     out.append("<div class='meta'>"
                f"Loaded {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%SZ')}"
-               " · auto-refresh every 30s · "
-               "Kalshi public API does not expose trader identity, so the "
-               "\"insider probability\" below is a heuristic derived from "
-               "the trade's own size / cohort track-record / book quality."
-               "</div>")
+               " · live updates every 30s · DRY-RUN mode (no real orders)</div>")
 
-    _render_bot_filter(out, available_bots, current_bot_key)
-
-    # ── Tab bar ───────────────────────────────────────────────────────
+    # ── Top-level dashboard tabs (above the bot filter, link to the
+    # main dashboard's pages so the navigation is one idiom across
+    # the whole app). Watchlist is the active tab — that's what this
+    # whale view is, a Watchlist variant.
+    main_tabs = [
+        ("home",      "Home",      "?tab=home"),
+        ("watchlist", "Watchlist", f"?tab=watchlist&bot={html.escape(current_bot_key)}"),
+        ("history",   "History",   "?tab=history"),
+    ]
     out.append("<div class='tab-bar'>")
-    for k, label in WHALE_TABS:
-        cls = "tab-pill" + (" tab-pill-active" if k == active_tab else "")
-        href = f"?bot={html.escape(current_bot_key)}&tab={html.escape(k)}"
+    for key, label, href in main_tabs:
+        cls = "tab-pill" + (" tab-pill-active" if key == "watchlist" else "")
         out.append(f"<a class='{cls}' href='{href}'>{html.escape(label)}</a>")
     out.append("</div>")
 
+    # Bot filter sits BELOW the tabs (inside the section body, like the
+    # main dashboard's Watchlist tab does it).
+    out.append("<div class='section'><h2>"
+               "Watchlist — whale signals (potential insiders)</h2>"
+               "<div class='body'>")
+    _render_bot_filter(out, available_bots, current_bot_key)
+
     if summary["n_signals"] == 0:
         _render_empty_state(out)
+        out.append("</div></div>")
         out.append("</body></html>")
         return "".join(out)
 
-    # ── HOME tab ──────────────────────────────────────────────────────
-    home_cls = ("tab-panel" + (" tab-panel-active"
-                                if active_tab == "home" else ""))
-    out.append(f"<div class='{home_cls}'>")
+    # Stats cards row — mirrors the prediction-cards rhythm on the
+    # regular Watchlist tab. Same `<div class='row compact'>` shape.
     _render_summary_cards(out, summary)
+
+    # Simulated buys ("current bets" equivalent — sits where Active
+    # bet sits on the regular Watchlist tab).
     _render_simulated_buys(out, candidates)
-    out.append("</div>")
 
-    # ── WATCHLIST tab ─────────────────────────────────────────────────
-    wl_cls = ("tab-panel" + (" tab-panel-active"
-                              if active_tab == "watchlist" else ""))
-    out.append(f"<div class='{wl_cls}'>")
+    # Main table — "huge bets that could be insiders". This is the
+    # whale-watcher analog of the strike-ladder ticker table on the
+    # regular Watchlist tab. Each row is one suspicious whale trade
+    # ranked by insider probability.
     _render_unusual_whales(out, candidates)
-    out.append("</div>")
 
-    # ── HISTORY tab ───────────────────────────────────────────────────
-    hist_cls = ("tab-panel" + (" tab-panel-active"
-                                if active_tab == "history" else ""))
-    out.append(f"<div class='{hist_cls}'>")
+    # Past whales with realised outcomes — same role as Kalshi rules
+    # at the bottom of the regular Watchlist tab (reference content
+    # that lives below the actionable view).
     _render_signal_history(out, candidates, cohorts)
-    out.append("</div>")
 
+    out.append("</div></div>")  # /body /section
     out.append("</body></html>")
     return "".join(out)
 
@@ -681,19 +678,23 @@ def render_page(
 # --------------------------------------------------------------------------- #
 
 def _render_summary_cards(out: List[str], summary: dict) -> None:
-    out.append("<div class='whale-stats'>")
+    """Stats cards row — same `<div class='row compact'>` shape as the
+    main dashboard's Watchlist prediction-cards so they line up
+    visually across bots.
+    """
+    win = summary.get("win_rate_30m")
+    win_cls = ("green" if win is not None and win > 0.55
+               else ("red" if win is not None and win < 0.45 else "gray"))
+    win_str = _fmt_pct(win) if win is not None else "—"
+    out.append("<div class='row compact'>")
     out.append(f"<div class='card'><div class='label'>Whale signals</div>"
                f"<div class='value'>{summary['n_signals']}</div></div>")
-    out.append(f"<div class='card'><div class='label'>Passed all validators</div>"
+    out.append(f"<div class='card'><div class='label'>Passed validators</div>"
                f"<div class='value'>{summary['n_passed_all_validators']}</div></div>")
     out.append(f"<div class='card'><div class='label'>Simulated buys</div>"
                f"<div class='value'>{summary['n_simulated_buys']}</div></div>")
-    win = summary.get("win_rate_30m")
-    win_cls = ("good" if win is not None and win > 0.55
-               else ("bad" if win is not None and win < 0.45 else "gray"))
-    win_str = _fmt_pct(win) if win is not None else "—"
     out.append(f"<div class='card'><div class='label'>+30m win rate</div>"
-               f"<div class='value verdict {win_cls}'>{win_str}</div></div>")
+               f"<div class='value {win_cls}'>{win_str}</div></div>")
     out.append("</div>")
 
 
@@ -747,10 +748,13 @@ def _render_simulated_buys(out: List[str], candidates: List[dict]) -> None:
 
 
 def _render_unusual_whales(out: List[str], candidates: List[dict]) -> None:
-    """Watchlist tab — every candidate signal with score + validator
-    pass/fail. Sort by insider score (highest first).
+    """The main table on the whale-watcher Watchlist tab — every
+    candidate signal with score + validator pass/fail. Sort by
+    insider score (highest first). Replaces the strike-ladder table
+    that the regular bots show on this tab.
     """
-    out.append("<h3 class='subhead'>Unusual whale signals</h3>")
+    out.append("<h3 class='subhead'>"
+               "Huge bets that could be insiders</h3>")
     if not candidates:
         out.append("<div class='empty'>No signals captured yet.</div>")
         return
@@ -758,7 +762,7 @@ def _render_unusual_whales(out: List[str], candidates: List[dict]) -> None:
                "Every flagged whale trade, ranked by insider probability. "
                "Insider P ≥ "
                f"{VALIDATOR_INSIDER_THRESHOLD*100:.0f}% AND every validator "
-               "green = the bot would simulate a buy (see Home tab).</div>")
+               "green = the bot simulates a buy (shown in Current bets above).</div>")
     pool = sorted(candidates, key=lambda c: c["insider_score"], reverse=True)
     out.append("<table><thead><tr>"
                "<th>Age</th><th>Ticker</th><th>Side</th>"
