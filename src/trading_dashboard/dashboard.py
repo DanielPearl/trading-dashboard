@@ -2119,8 +2119,15 @@ def _live_update_script(current_bot: str, period_key: str = "all") -> str:
   }}
   function showRules(btn) {{
     if (!critOverlay || !critModal) return;
-    let data = {{}};
-    try {{ data = JSON.parse(btn.dataset.rules || "{{}}"); }} catch (e) {{}}
+    // Prefer per-button data-rules payload; fall back to the global
+    // window.__BUY_CRITERIA__ stash so callers without explicit
+    // configs still open the same modal.
+    let data = (window.__BUY_CRITERIA__ || {{}});
+    try {{
+      const local = btn.dataset && btn.dataset.rules
+        ? JSON.parse(btn.dataset.rules) : null;
+      if (local && Object.keys(local).length) data = local;
+    }} catch (e) {{}}
     const h3 = critModal.querySelector("h3");
     if (h3) h3.textContent = "Buy criteria & validators";
     if (critTicker) critTicker.textContent = "";
@@ -2525,7 +2532,17 @@ def _render_summary(out: List[str], rollup: dict, active_bets: List[dict],
     out.append("</div>")
 
     # Active bets list — same table used in the per-bot view below.
-    out.append("<h3 class='subhead'>Active bets — currently open</h3>")
+    # Same circle-i info button as on the Watchlist tab — opens the
+    # shared rules popup ("What does the bot need before it'll buy?")
+    # using window.__BUY_CRITERIA__ as the data source.
+    out.append(
+        "<h3 class='subhead' "
+        "style='display:flex;align-items:center;gap:8px;'>"
+        "Active bets "
+        "<button type='button' class='criteria-rules-btn' "
+        "title=\"What does the bot need before it'll buy?\">i</button>"
+        "</h3>"
+    )
     _render_active_bets_table(out, active_bets, empty_msg="No active bets right now.")
 
     out.append("</div></div>")
