@@ -1540,6 +1540,7 @@ def render_page(
     watchlist: List[dict],
     underlying_history: List[dict],
     display: dict,
+    kalshi_history: List[dict],
     atm_market: dict | None,
     contract_open_ts: float | None,
     contract_close_ts: float | None,
@@ -1591,6 +1592,7 @@ def render_page(
                       underlying_history=underlying_history,
                       display=display,
                       latest_active=latest_active,
+                      kalshi_history=kalshi_history,
                       atm_market=atm_market,
                       contract_open_ts=contract_open_ts,
                       contract_close_ts=contract_close_ts,
@@ -1811,6 +1813,16 @@ def _live_update_script(current_bot: str) -> str:
     cursor.setAttribute("pointer-events", "none");
     svg.appendChild(cursor);
 
+    // The hero forecast price element (top-left of the chart card).
+    // While the user scrubs the chart, we swap its text for the value
+    // at the cursor; on mouseleave we restore the live current. The
+    // hero stores its current text in `data-current-text` so live
+    // polling updates it without us re-reading the DOM each time.
+    const hero = wrap.closest(".wl-hero");
+    const heroPrice = hero ? hero.querySelector(".wl-hero-price") : null;
+    const heroPriceText = heroPrice ? heroPrice.querySelector(
+        ".wl-hero-price-text") : null;
+
     function fmtTs(ts) {{
       const d = new Date(ts * 1000);
       const months = ["Jan","Feb","Mar","Apr","May","Jun",
@@ -1896,6 +1908,12 @@ def _live_update_script(current_bot: str) -> str:
       return {{ ts: closer[0], value: closer[1] }};
     }}
 
+    function restoreHero() {{
+      if (heroPrice && heroPriceText) {{
+        heroPriceText.textContent = heroPrice.dataset.currentText || "";
+      }}
+    }}
+
     svg.addEventListener("mousemove", function (e) {{
       const rect = svg.getBoundingClientRect();
       // Cursor's x in viewBox space (the SVG scales to the wrap's width).
@@ -1904,6 +1922,7 @@ def _live_update_script(current_bot: str) -> str:
         cursor.setAttribute("opacity", "0");
         dimRect.setAttribute("opacity", "0");
         tip.hidden = true;
+        restoreHero();
         return;
       }}
       cursor.setAttribute("x1", x);
@@ -1919,17 +1938,20 @@ def _live_update_script(current_bot: str) -> str:
       const frac = (x - padL) / innerW;
       const cursorTs = tmin + frac * (tmax - tmin);
       const np = nearestPoint(cursorTs);
-      // When a recorded point is in range, stamp the popup with the
-      // recorded timestamp + value; otherwise show only the cursor's
-      // date so the user knows where they are without implying a value
-      // was captured.
+      // When a recorded point is in range, stamp the popup AND swap
+      // the hero forecast price for the value at the cursor. When no
+      // point is near (gap in the data) we still show the cursor date
+      // in the popup, but leave the hero on the live current so we
+      // never display an unsourced value up top.
       if (np !== null) {{
         tip.innerHTML =
           "<div class='wl-chart-tip-time'>" + fmtTs(np.ts) + "</div>"
           + "<div class='wl-chart-tip-value'>" + fmtValue(np.value) + "</div>";
+        if (heroPriceText) heroPriceText.textContent = fmtValue(np.value);
       }} else {{
         tip.innerHTML =
           "<div class='wl-chart-tip-time'>" + fmtTs(cursorTs) + "</div>";
+        restoreHero();
       }}
       tip.hidden = false;
       // Anchor the tooltip in pixel space relative to the wrap so it
@@ -1941,6 +1963,7 @@ def _live_update_script(current_bot: str) -> str:
     svg.addEventListener("mouseleave", function () {{
       cursor.setAttribute("opacity", "0");
       dimRect.setAttribute("opacity", "0");
+      restoreHero();
       tip.hidden = true;
     }});
   }});
@@ -2741,25 +2764,27 @@ def _render_watchlist_hero(out: List[str],
                             underlying_history: List[dict],
                             display: dict,
                             latest_active: dict | None,
+                            kalshi_history: List[dict] | None = None,
                             atm_market: dict | None = None,
                             contract_open_ts: float | None = None,
                             contract_close_ts: float | None = None,
                             event_title: str | None = None) -> None:
-    """Kalshi-style hero block: current underlying value, value delta,
-    time-to-close on the soonest market, and an SVG chart of the
-    underlying built from the bot's own recorded snapshots. If there's
-    an active position, a horizontal line on the chart marks the
-    strike the user bought.
+    """Kalshi-style hero block: current implied-underlying forecast,
+    value delta, time-to-close on the soonest market, and a chart of
+    the forecast over the contract life. The hero forecast value
+    updates as the user scrubs the line — the JS swaps it for the
+    value at the cursor's timestamp, then restores the live current
+    when the cursor leaves the chart.
     """
-    # Current + earliest values come from the bot's own recorded
-    # snapshots (model_snapshots.current_gas_price). That's the single
-    # source of truth for the chart now — the strike-ladder
-    # interpolation was retired in favor of plotting the actual values
-    # the bot observed at each tick.
+    # Pull current + earliest from the Kalshi-forecast series (the
+    # implied-underlying derived from the strike ladder). That's the
+    # series the chart plots, so the hero forecast and the chart
+    # endpoints line up. Falls back to local snapshots / latest model
+    # snapshot only if the Kalshi feed is unavailable.
     current: float | None = None
     earliest_value: float | None = None
-    if underlying_history:
-        for r in reversed(underlying_history):
+    if kalshi_history:
+        for r in reversed(kalshi_history):
             v = r.get("value")
             if v is None:
                 continue
@@ -2768,6 +2793,21 @@ def _render_watchlist_hero(out: List[str],
                 break
             except (TypeError, ValueError):
                 continue
+        for r in kalshi_history:
+            v = r.get("value")
+            if v is None:
+                continue
+            try:
+                earliest_value = float(v)
+                break
+            except (TypeError, ValueError):
+                continue
+    if current is None and model is not None and model.get("current_gas_price") is not None:
+        try:
+            current = float(model["current_gas_price"])
+        except (TypeError, ValueError):
+            current = None
+    if earliest_value is None and underlying_history:
         for r in underlying_history:
             v = r.get("value")
             if v is None:
@@ -2777,14 +2817,6 @@ def _render_watchlist_hero(out: List[str],
                 break
             except (TypeError, ValueError):
                 continue
-    # Final fallback for "current": the bot's most-recent model_snapshot
-    # (already on the page in the prediction card). Lets the hero show
-    # *something* even when the snapshots table is empty for older bots.
-    if current is None and model is not None and model.get("current_gas_price") is not None:
-        try:
-            current = float(model["current_gas_price"])
-        except (TypeError, ValueError):
-            current = None
 
     # Raw value delta over the visible chart window (e.g. "▼ 9.05K").
     # Replaces the prior percent-change indicator: the user wants to see
@@ -2849,8 +2881,13 @@ def _render_watchlist_hero(out: List[str],
     out.append("<div class='wl-hero'>")
     out.append("<div class='wl-hero-top'>")
     out.append("<div class='wl-hero-stats'>")
+    # data-current-text holds the live forecast in display form. The
+    # hover JS swaps the price span's text for the value at the cursor
+    # while scrubbing, then restores this string on mouseleave.
     out.append(
-        f"<div class='wl-hero-price'>{html.escape(current_str)}"
+        f"<div class='wl-hero-price' data-current-text='"
+        f"{html.escape(current_str)}'>"
+        f"<span class='wl-hero-price-text'>{html.escape(current_str)}</span>"
         f"<span class='wl-hero-price-label'>forecast</span>"
         f"</div>"
     )
@@ -2880,12 +2917,11 @@ def _render_watchlist_hero(out: List[str],
     strike_side = active_side
     strike_is_active = active_strike is not None
 
-    # Chart: plot the bot's actual recorded snapshots. svg_kalshi_chart
-    # renders an empty frame (axes + gridlines, no polyline) when
-    # there's not enough history yet — matches the user's request to
-    # show the chart shape even when there's no data.
+    # Chart plots Kalshi's implied-underlying forecast. Empty frame
+    # renders when the strike ladder hasn't produced enough data points
+    # yet (svg_kalshi_chart handles the <2 case internally).
     out.append(svg_kalshi_chart(
-        underlying_history, display,
+        kalshi_history or [], display,
         reference_strike=reference_strike,
         strike_side=strike_side,
         strike_is_active_bet=strike_is_active,
@@ -2901,6 +2937,7 @@ def _render_watchlist(out: List[str], watchlist: List[dict],
                       underlying_history: List[dict] | None = None,
                       display: dict | None = None,
                       latest_active: dict | None = None,
+                      kalshi_history: List[dict] | None = None,
                       atm_market: dict | None = None,
                       contract_open_ts: float | None = None,
                       contract_close_ts: float | None = None,
@@ -2925,6 +2962,7 @@ def _render_watchlist(out: List[str], watchlist: List[dict],
     _render_watchlist_hero(out, watchlist, model,
                            underlying_history or [],
                            display or {}, latest_active,
+                           kalshi_history=kalshi_history,
                            atm_market=atm_market,
                            contract_open_ts=contract_open_ts,
                            contract_close_ts=contract_close_ts,
@@ -3748,38 +3786,42 @@ class Handler(BaseHTTPRequestHandler):
                 # comes up empty (bot service not writing market_views,
                 # or the bot is currently between events). Done after
                 # the Kalshi fetch since both share the cache.
-                # Underlying chart source: the bot's own recorded
-                # snapshots from model_snapshots. Each row is a real
-                # observation of the underlying value at the time the
-                # bot ran (sourced from whatever feed the bot uses —
-                # AAA gas, EIA, Pyth, etc.). 7 days covers any weekly
-                # contract; max_points is generous enough that
-                # high-cadence bots don't get truncated.
+                # Local snapshots — kept around as the secondary source
+                # for the hero current-value (used as a final fallback
+                # if Kalshi creds are missing).
                 underlying_history = fetch_underlying_history(
                     db_path, hours=7 * 24, max_points=5000,
                 )
-                # Event metadata only — atm market + contract span +
-                # title. The strike-ladder candle interpolation was
-                # retired: it was an approximation of the underlying,
-                # and the dashboard now plots the real recorded values
-                # from the bot's snapshots instead.
+                # Chart source: Kalshi's implied-underlying forecast,
+                # derived from the strike ladder. Same series Kalshi
+                # itself plots on every market page — for each
+                # candle timestamp, find the strike where YES=50% and
+                # interpolate. Per-bot resolution comes from
+                # display.chart_period_minutes (gas bots → daily;
+                # jobless → 1-min so every recorded change shows up).
+                kalshi_history: List[dict] = []
                 atm_market: dict | None = None
                 kalshi_markets: List[dict] = []
                 contract_open_ts: float | None = None
                 contract_close_ts: float | None = None
                 event_title: str | None = None
                 series_ticker = bot.get("series_ticker")
+                chart_period = int(((bot.get("display") or {}).get(
+                    "chart_period_minutes")) or 60)
                 if series_ticker:
                     from . import kalshi_client
                     try:
-                        (atm_market, kalshi_markets,
+                        (kalshi_history, atm_market, kalshi_markets,
                          contract_open_ts, contract_close_ts,
                          event_title) = (
-                            kalshi_client.fetch_event_metadata(series_ticker)
+                            kalshi_client.fetch_underlying_history(
+                                series_ticker,
+                                period_minutes=chart_period,
+                            )
                         )
                     except Exception:  # noqa: BLE001
-                        log.exception("kalshi event metadata fetch failed")
-                        atm_market = None
+                        log.exception("kalshi candlestick fetch failed")
+                        kalshi_history, atm_market = [], None
                         kalshi_markets, contract_open_ts = [], None
                         contract_close_ts = None
                         event_title = None
@@ -3832,6 +3874,7 @@ class Handler(BaseHTTPRequestHandler):
                     watchlist=watchlist,
                     underlying_history=underlying_history,
                     display=bot.get("display") or {},
+                    kalshi_history=kalshi_history,
                     atm_market=atm_market,
                     contract_open_ts=contract_open_ts,
                     contract_close_ts=contract_close_ts,
