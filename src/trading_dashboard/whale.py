@@ -446,11 +446,41 @@ def fetch_live_big_bets(series_tickers: List[str],
             except Exception:  # noqa: BLE001
                 log.exception("whale: fetch_trades failed for %s", ticker)
                 continue
+            # Kalshi /markets/trades returns count as `count_fp` (a
+            # fixed-point integer count) and prices as
+            # `yes_price_dollars` / `no_price_dollars` (dollar
+            # strings like "0.6500"). Normalise once.
+            def _trade_count(t):
+                c = t.get("count_fp")
+                if c is None:
+                    c = t.get("count")
+                try:
+                    return int(c) if c is not None else 0
+                except (TypeError, ValueError):
+                    return 0
+
+            def _trade_price_cents(t, side: str):
+                # side = "yes" or "no"
+                key = f"{side}_price_dollars"
+                v = t.get(key)
+                if v is None:
+                    v = t.get(f"{side}_price")  # legacy field name
+                if v is None:
+                    return 0
+                try:
+                    f = float(v)
+                except (TypeError, ValueError):
+                    return 0
+                # Heuristic: if value is < 5 it's dollars; otherwise
+                # already cents. Kalshi's _dollars suffix is reliable
+                # so we expect dollars in the range [0, 1].
+                return int(round(f * 100)) if f < 5 else int(f)
+
             # Per-ticker z-score: how unusual is each trade's count
             # relative to the other trades we're seeing on the same
             # market in the lookback window? Cheap stand-in for the
             # rolling-stats approach the bot uses on its live tape.
-            counts = [int(t.get("count") or 0) for t in trades]
+            counts = [_trade_count(t) for t in trades]
             if len(counts) >= 5:
                 mean_c = sum(counts) / len(counts)
                 var = sum((c - mean_c) ** 2 for c in counts) / len(counts)
@@ -459,14 +489,14 @@ def fetch_live_big_bets(series_tickers: List[str],
                 mean_c = std_c = 0.0
             for t in trades:
                 trade_id = t.get("trade_id") or (
-                    f"{ticker}:{t.get('created_time')}:{t.get('count')}"
+                    f"{ticker}:{t.get('created_time')}:{_trade_count(t)}"
                 )
                 if trade_id in seen_trade_ids:
                     continue
                 seen_trade_ids.add(trade_id)
-                count = int(t.get("count") or 0)
-                yes_price = int(t.get("yes_price") or 0)
-                no_price = int(t.get("no_price") or 0)
+                count = _trade_count(t)
+                yes_price = _trade_price_cents(t, "yes")
+                no_price = _trade_price_cents(t, "no")
                 # Notional = whichever side was actually paid.
                 price = yes_price if yes_price > 0 else no_price
                 notional = count * price
