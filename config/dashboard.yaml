@@ -21,11 +21,10 @@ bots:
       underlying_unit: "$"
       underlying_decimals: 2
       unit_position: prefix
-      # 1-min candles — every change Kalshi has recorded for the
-      # underlying. Same resolution Kalshi shows on its own market page.
-      # X-axis still labels one tick per day (label code is independent
-      # of data-point density).
-      chart_period_minutes: 1
+      # AAA gas survey publishes once per day → daily Kalshi candles
+      # are the natural resolution. The chart depicts day-over-day
+      # change; hovering snaps to the nearest recorded day.
+      chart_period_minutes: 1440
   - key: unemployment-claims
     name: Jobless Claims
     db_path: /root/unemployment-claims/data/sim.db
@@ -52,8 +51,10 @@ bots:
       underlying_unit: "$"
       underlying_decimals: 2
       unit_position: prefix
-      # 1-min candles — every recorded Henry Hub change.
-      chart_period_minutes: 1
+      # Daily Henry Hub close. KXNATGASD events that span <48h
+      # auto-downgrade to hourly inside fetch_underlying_history (a
+      # single-day daily series would be 0-1 points).
+      chart_period_minutes: 1440
   - key: whale-watcher
     name: Whale Watcher
     # Whale bot uses signal-analysis JSONLs instead of a sim.db. db_path

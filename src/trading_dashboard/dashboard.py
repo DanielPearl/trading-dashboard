@@ -808,29 +808,16 @@ def svg_kalshi_chart(history: List[dict], display: dict,
         t_min = pts_in[0][0]
     t_span = max(1.0, t_max - t_min)
 
-    # Smooth the visible polyline while preserving every recorded
-    # change in the hover-tooltip JSON below. Window scales with point
-    # density: more points → wider window, so the smoothed line still
-    # reads as smooth at 1-min resolution but stays close to the raw
-    # series. Hover always reports the actual recorded value at that
-    # timestamp, never the smoothed one.
-    n_pts = len(pts_in)
-    if n_pts >= 400:
-        smooth_window = 11
-    elif n_pts >= 100:
-        smooth_window = 7
-    elif n_pts >= 30:
-        smooth_window = 5
-    else:
-        smooth_window = 3
-    smoothed_vals = _smooth_values([v for _, v in pts_in], window=smooth_window)
-    pts_plot: List[Tuple[float, float]] = [(t, sv) for (t, _), sv
-                                            in zip(pts_in, smoothed_vals)]
+    # The visible polyline plots the raw recorded values — what the
+    # underlying actually was at each Kalshi-recorded tick. No smoothing
+    # or bucketing: the line and the hover-tooltip values are the same
+    # series, so what you see scrubbing matches what you see on the line.
+    pts_plot: List[Tuple[float, float]] = list(pts_in)
 
     # Auto-scale the y-axis to the actual data range with 8% padding.
     # When there's an active bet, also include its strike in the range
     # so the dotted reference line is always visible on the chart.
-    values = list(smoothed_vals)
+    values = [v for _, v in pts_in]
     if strike_is_active_bet and reference_strike is not None:
         values = values + [float(reference_strike)]
     vmin = min(values)
@@ -1762,14 +1749,36 @@ def _live_update_script(current_bot: str) -> str:
     }}
 
     // (ts, value) pairs + the bot's display formatting for the hover
-    // tooltip. Linear-interpolate between adjacent points so the
-    // tooltip value is continuous as the cursor moves between data
-    // points (matches Kalshi's behaviour).
+    // tooltip. Snaps to the nearest recorded data point; if the cursor
+    // is more than half a typical interval away from any recorded
+    // point, returns null so the tooltip hides the value line. The
+    // user wants the popup to show only values that were actually
+    // captured — no interpolation between data points.
     let points = [];
     let fmt = {{ divisor: 1.0, decimals: 2, unit: "", unit_position: "prefix" }};
     try {{ points = JSON.parse(wrap.dataset.points || "[]"); }} catch (e) {{}}
     try {{ fmt = Object.assign(fmt, JSON.parse(wrap.dataset.fmt || "{{}}")); }}
     catch (e) {{}}
+
+    // Median spacing between recorded points. Used as the "is the
+    // cursor near a recorded point" yardstick — if the closest point
+    // is more than ~60% of the median spacing away, treat it as a gap
+    // and hide the value (the user explicitly asked: don't show a value
+    // for time ranges where no value was captured).
+    let medianGapSec = 0;
+    if (points.length > 1) {{
+      const gaps = [];
+      for (let i = 1; i < points.length; i++) {{
+        gaps.push(points[i][0] - points[i - 1][0]);
+      }}
+      gaps.sort(function (a, b) {{ return a - b; }});
+      medianGapSec = gaps[Math.floor(gaps.length / 2)] || 0;
+    }}
+    // Tolerance: closest point must be within this many seconds of
+    // the cursor's timestamp to count as "captured at that time".
+    // Floor so daily series get ~14h tolerance (roomy enough to cover
+    // the whole day, tight enough to flag a fully-missing day).
+    const tolSec = Math.max(60, medianGapSec * 0.6);
 
     function fmtValue(raw) {{
       if (raw === null || raw === undefined || !isFinite(raw)) return "—";
@@ -1783,21 +1792,31 @@ def _live_update_script(current_bot: str) -> str:
       return n;
     }}
 
-    function valueAt(ts) {{
+    // Snap to the nearest recorded point; return null if no point is
+    // within the tolerance window. Returns {{ts, value}} so the popup
+    // can also stamp the actual recorded timestamp (not the cursor's
+    // hovered position) — that's what the user is reading off the line.
+    function nearestPoint(ts) {{
       if (!points.length) return null;
-      // Binary search for the bracket [points[lo], points[hi]] around ts.
       let lo = 0, hi = points.length - 1;
-      if (ts <= points[lo][0]) return points[lo][1];
-      if (ts >= points[hi][0]) return points[hi][1];
+      if (ts <= points[lo][0]) {{
+        return Math.abs(points[lo][0] - ts) <= tolSec
+          ? {{ ts: points[lo][0], value: points[lo][1] }} : null;
+      }}
+      if (ts >= points[hi][0]) {{
+        return Math.abs(points[hi][0] - ts) <= tolSec
+          ? {{ ts: points[hi][0], value: points[hi][1] }} : null;
+      }}
       while (hi - lo > 1) {{
         const mid = (lo + hi) >> 1;
         if (points[mid][0] <= ts) lo = mid; else hi = mid;
       }}
-      const t0 = points[lo][0], v0 = points[lo][1];
-      const t1 = points[hi][0], v1 = points[hi][1];
-      if (t1 === t0) return v0;
-      const a = (ts - t0) / (t1 - t0);
-      return v0 + a * (v1 - v0);
+      const dLo = Math.abs(ts - points[lo][0]);
+      const dHi = Math.abs(ts - points[hi][0]);
+      const closer = dLo <= dHi ? points[lo] : points[hi];
+      const dist = Math.min(dLo, dHi);
+      if (dist > tolSec) return null;
+      return {{ ts: closer[0], value: closer[1] }};
     }}
 
     svg.addEventListener("mousemove", function (e) {{
@@ -1821,11 +1840,20 @@ def _live_update_script(current_bot: str) -> str:
       dimRect.setAttribute("opacity", "0.65");
 
       const frac = (x - padL) / innerW;
-      const ts = tmin + frac * (tmax - tmin);
-      const val = valueAt(ts);
-      tip.innerHTML =
-        "<div class='wl-chart-tip-time'>" + fmtTs(ts) + "</div>"
-        + "<div class='wl-chart-tip-value'>" + fmtValue(val) + "</div>";
+      const cursorTs = tmin + frac * (tmax - tmin);
+      const np = nearestPoint(cursorTs);
+      // When a recorded point is in range, stamp the popup with the
+      // recorded timestamp + value; otherwise show only the cursor's
+      // date so the user knows where they are without implying a value
+      // was captured.
+      if (np !== null) {{
+        tip.innerHTML =
+          "<div class='wl-chart-tip-time'>" + fmtTs(np.ts) + "</div>"
+          + "<div class='wl-chart-tip-value'>" + fmtValue(np.value) + "</div>";
+      }} else {{
+        tip.innerHTML =
+          "<div class='wl-chart-tip-time'>" + fmtTs(cursorTs) + "</div>";
+      }}
       tip.hidden = false;
       // Anchor the tooltip in pixel space relative to the wrap so it
       // tracks the cursor regardless of how the SVG is scaled.
