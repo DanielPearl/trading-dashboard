@@ -299,12 +299,26 @@ def fetch_active_bets_with_marks(db_path: str) -> List[dict]:
     can render the human Question for each row). The local schema
     uses strike_low / strike_high (not floor_strike / cap_strike — the
     Kalshi API names).
+
+    For ``mark_yes_ask`` / ``mark_no_ask`` we COALESCE position_marks
+    onto market_views so bots that don't write the position_marks
+    table (e.g. natural-gas, which only emits model_snapshots +
+    market_views) still show a live "Current" cell on the Home tab's
+    active-bets table.
     """
     return _safe_query(
         db_path,
         "SELECT p.*, "
-        "       m.yes_ask_cents AS mark_yes_ask, "
-        "       m.no_ask_cents AS mark_no_ask, "
+        "       COALESCE(m.yes_ask_cents, "
+        "         (SELECT mv.yes_ask_cents FROM market_views mv "
+        "            WHERE mv.ticker = p.ticker "
+        "            ORDER BY mv.id DESC LIMIT 1)"
+        "       ) AS mark_yes_ask, "
+        "       COALESCE(m.no_ask_cents, "
+        "         (SELECT mv.no_ask_cents FROM market_views mv "
+        "            WHERE mv.ticker = p.ticker "
+        "            ORDER BY mv.id DESC LIMIT 1)"
+        "       ) AS mark_no_ask, "
         "       (SELECT mv.minutes_to_close FROM market_views mv "
         "          WHERE mv.ticker = p.ticker "
         "          ORDER BY mv.id DESC LIMIT 1) AS minutes_to_close, "
