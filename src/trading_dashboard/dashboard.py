@@ -1806,15 +1806,21 @@ def render_page(
 
     # ── HISTORY tab — closed-bet history across all bots ──────────────
     _open_panel("history")
-    out.append("<div class='section'><h2>Contract history</h2>"
-               "<div class='body'>")
-    # Same Day/Week/Month/Year/All-time pill bar as Home; clicking
-    # keeps the user on the History tab and just narrows the rows.
+    out.append(
+        f"<div class='section'><h2>Contract history "
+        f"<span class='small gray'>({html.escape(period_label)})"
+        f"</span></h2>"
+        f"<div class='body'>"
+    )
+    # Day/Week/Month/Year/All-time dropdown; clicking keeps the user
+    # on the History tab and just narrows the rows.
     _render_period_filter(out, period_key, current_bot=current_bot,
                             tab_key="history")
+    # Pass heading="" so the table renders without a duplicate
+    # subhead — the section title above already carries the period.
     _render_bet_history_block(
         out, global_history,
-        heading=f"Closed bets ({period_label})",
+        heading="",
         shown_initially=20,
     )
     out.append("</div></div>")
@@ -2672,9 +2678,12 @@ def _render_bet_history_block(out: List[str], history: List[dict],
     the lifetime trade ledger directly under its active-bets table.
 
     Uses HTML <details>/<summary> so the first ``shown_initially`` rows
-    are visible and the rest are collapsible — no JS.
+    are visible and the rest are collapsible — no JS. Pass an empty
+    ``heading`` to render the table without a subhead — useful when the
+    enclosing section's title already names the period.
     """
-    out.append(f"<h3 class='subhead'>{html.escape(heading)}</h3>")
+    if heading:
+        out.append(f"<h3 class='subhead'>{html.escape(heading)}</h3>")
     if not history:
         out.append("<div class='empty'>No closed bets yet.</div>")
         return
