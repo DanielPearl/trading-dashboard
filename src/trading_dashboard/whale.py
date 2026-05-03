@@ -669,6 +669,21 @@ def render_page(
     _render_signal_history(out, candidates, cohorts)
 
     out.append("</div></div>")  # /body /section
+
+    # Bot dropdown onchange handler. The main dashboard wires this up
+    # inside _live_update_script, but the whale page doesn't load
+    # that script (no live-poll cells to patch). Inline the same
+    # snippet here so switching the bot from this page navigates to
+    # the chosen URL — `<option value=...>` carries the destination.
+    out.append("""<script>
+(function () {
+  const sel = document.getElementById("bot-select");
+  if (!sel) return;
+  sel.addEventListener("change", function () {
+    if (sel.value) window.location.href = sel.value;
+  });
+})();
+</script>""")
     out.append("</body></html>")
     return "".join(out)
 
