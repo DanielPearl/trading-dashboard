@@ -3331,9 +3331,12 @@ def _render_watchlist(out: List[str], watchlist: List[dict],
     # Active bet h3 → rules button → bet table (or empty state). The
     # rules button always renders so the rule-set context is one click
     # away even when the bot has no open position right now.
+    # margin-top: 2px overrides the default .subhead (16px top) so the
+    # h3 sits right under the prediction cards — same visual rhythm as
+    # the "Active bets" h3 on the Home tab.
     out.append(
         "<h3 class='subhead' "
-        "style='display:flex;align-items:center;gap:8px;'>"
+        "style='display:flex;align-items:center;gap:8px;margin-top:2px;'>"
         f"Active bet {rules_icon_html}</h3>"
     )
     if latest_active:
