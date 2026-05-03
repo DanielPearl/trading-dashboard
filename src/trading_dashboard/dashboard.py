@@ -1842,36 +1842,14 @@ def _live_update_script(current_bot: str) -> str:
     }}
 
     // (ts, value) pairs + the bot's display formatting for the hover
-    // tooltip. Snaps to the nearest recorded data point; if the cursor
-    // is more than half a typical interval away from any recorded
-    // point, returns null so the tooltip hides the value line. The
-    // user wants the popup to show only values that were actually
-    // captured — no interpolation between data points.
+    // tooltip. Always snaps to the nearest recorded point so scrubbing
+    // anywhere across the chart shows the time + value of the closest
+    // forecast Kalshi recorded — no tolerance check, no interpolation.
     let points = [];
     let fmt = {{ divisor: 1.0, decimals: 2, unit: "", unit_position: "prefix" }};
     try {{ points = JSON.parse(wrap.dataset.points || "[]"); }} catch (e) {{}}
     try {{ fmt = Object.assign(fmt, JSON.parse(wrap.dataset.fmt || "{{}}")); }}
     catch (e) {{}}
-
-    // Median spacing between recorded points. Used as the "is the
-    // cursor near a recorded point" yardstick — if the closest point
-    // is more than ~60% of the median spacing away, treat it as a gap
-    // and hide the value (the user explicitly asked: don't show a value
-    // for time ranges where no value was captured).
-    let medianGapSec = 0;
-    if (points.length > 1) {{
-      const gaps = [];
-      for (let i = 1; i < points.length; i++) {{
-        gaps.push(points[i][0] - points[i - 1][0]);
-      }}
-      gaps.sort(function (a, b) {{ return a - b; }});
-      medianGapSec = gaps[Math.floor(gaps.length / 2)] || 0;
-    }}
-    // Tolerance: closest point must be within this many seconds of
-    // the cursor's timestamp to count as "captured at that time".
-    // Floor so daily series get ~14h tolerance (roomy enough to cover
-    // the whole day, tight enough to flag a fully-missing day).
-    const tolSec = Math.max(60, medianGapSec * 0.6);
 
     function fmtValue(raw) {{
       if (raw === null || raw === undefined || !isFinite(raw)) return "—";
@@ -1885,20 +1863,18 @@ def _live_update_script(current_bot: str) -> str:
       return n;
     }}
 
-    // Snap to the nearest recorded point; return null if no point is
-    // within the tolerance window. Returns {{ts, value}} so the popup
-    // can also stamp the actual recorded timestamp (not the cursor's
-    // hovered position) — that's what the user is reading off the line.
+    // Snap to the nearest recorded point; always returns one as long
+    // as the points array is non-empty. The cursor's mapping is to the
+    // closest recorded forecast — both the popup date stamp and value
+    // come from that point, so they always agree.
     function nearestPoint(ts) {{
       if (!points.length) return null;
       let lo = 0, hi = points.length - 1;
       if (ts <= points[lo][0]) {{
-        return Math.abs(points[lo][0] - ts) <= tolSec
-          ? {{ ts: points[lo][0], value: points[lo][1] }} : null;
+        return {{ ts: points[lo][0], value: points[lo][1] }};
       }}
       if (ts >= points[hi][0]) {{
-        return Math.abs(points[hi][0] - ts) <= tolSec
-          ? {{ ts: points[hi][0], value: points[hi][1] }} : null;
+        return {{ ts: points[hi][0], value: points[hi][1] }};
       }}
       while (hi - lo > 1) {{
         const mid = (lo + hi) >> 1;
@@ -1907,8 +1883,6 @@ def _live_update_script(current_bot: str) -> str:
       const dLo = Math.abs(ts - points[lo][0]);
       const dHi = Math.abs(ts - points[hi][0]);
       const closer = dLo <= dHi ? points[lo] : points[hi];
-      const dist = Math.min(dLo, dHi);
-      if (dist > tolSec) return null;
       return {{ ts: closer[0], value: closer[1] }};
     }}
 
