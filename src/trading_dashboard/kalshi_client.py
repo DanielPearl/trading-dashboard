@@ -577,17 +577,12 @@ def fetch_underlying_history(series_ticker: str,
         else:
             lookback_hours = 24
 
-    # Daily candles only make sense for contracts that span multiple
-    # days. KXNATGASD-style 1-day events at period=1440 yield 0-1
-    # candles → empty chart. Auto-downgrade to hourly only when the
-    # contract's *full* lifetime is short — for a weekly contract just
-    # past its open, we still want daily even though only ~hours have
-    # elapsed (the chart will fill in over the week).
-    full_span_h: Optional[float] = None
-    if contract_open_ts is not None and contract_close_ts is not None:
-        full_span_h = (contract_close_ts - contract_open_ts) / 3600.0
+    # Daily candles need ≥48h of elapsed history to yield more than
+    # 1-2 useful points. Below that, auto-downgrade to hourly so the
+    # chart isn't empty for fresh contracts. Weekly contracts that
+    # outlive 48h naturally re-promote to daily on the next render.
     effective_period = period_minutes
-    if period_minutes >= 1440 and full_span_h is not None and full_span_h < 48:
+    if period_minutes >= 1440 and lookback_hours < 48:
         effective_period = 60
 
     history = _interpolate_event_history(
