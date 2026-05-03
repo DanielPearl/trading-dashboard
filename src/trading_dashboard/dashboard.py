@@ -3449,22 +3449,16 @@ def _render_watchlist(out: List[str], watchlist: List[dict],
         if volume is not None and volume < 50:
             flags.append("thin volume")
 
-        # My YES / My NO cells render in default white when the bot
-        # would actually buy that side (positive EV + bot_verdict =
-        # BUY_X means all the bot's gates passed). Otherwise grey them
-        # out — there's no actionable edge so the user shouldn't see
-        # a highlighted number.
+        # My YES / My NO render in default white. Row-level dimming
+        # via row-suspect handles "this strike isn't a buy" — once
+        # the row is actionable (white), BOTH probabilities render
+        # at full opacity so the user can read the model's view of
+        # each side cleanly.
         ev_yes_v = v.get("_ev_yes")
         ev_no_v = v.get("_ev_no")
         bot_verdict_pre = v.get("bot_verdict", "SKIP")
-        my_yes_cls = "gray"
-        my_no_cls = "gray"
-        if (bot_verdict_pre == "BUY_YES"
-                and ev_yes_v is not None and ev_yes_v > 0):
-            my_yes_cls = ""   # default white — actionable side
-        if (bot_verdict_pre == "BUY_NO"
-                and ev_no_v is not None and ev_no_v > 0):
-            my_no_cls = ""    # default white — actionable side
+        my_yes_cls = ""
+        my_no_cls = ""
 
         # ── Verdict — driven by EV first, gates second ─────────────────
         # Rules:
