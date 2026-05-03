@@ -1405,11 +1405,16 @@ code { background: #161b22; padding: 1px 6px; border-radius: 3px; color: #c9d1d9
 /* "Why?" button on each active-bets row + the criteria modal it
    opens. Single shared modal at page bottom; JS populates the body
    from data-criteria on the clicked button. */
+/* Per-row info button — circle with an italic "i" inside, mirroring
+   common information-icon affordances. */
 .criteria-btn {
-    background: #21262d; color: #c9d1d9; border: 1px solid #30363d;
-    border-radius: 6px; padding: 4px 10px; font-size: 11px;
-    font-weight: 500; cursor: pointer; line-height: 1.4;
-    transition: background 120ms, border-color 120ms; }
+    background: #21262d; color: #8b949e; border: 1px solid #30363d;
+    border-radius: 50%; width: 22px; height: 22px; padding: 0;
+    font-family: Georgia, "Times New Roman", serif;
+    font-style: italic; font-weight: 700;
+    font-size: 13px; line-height: 1; cursor: pointer;
+    display: inline-flex; align-items: center; justify-content: center;
+    transition: background 120ms, border-color 120ms, color 120ms; }
 .criteria-btn:hover { background: #2d333b; border-color: #1f6feb;
     color: #f0f6fc; }
 /* Bigger sibling — used for the Watchlist "what does the bot need
@@ -2681,7 +2686,7 @@ def _render_active_bets_table(out: List[str], bets: List[dict],
             f"<td class='num'>{time_to_close_str(mtc)}</td>"
             f"<td><button type='button' class='criteria-btn' "
             f"title='Why was this bet chosen?' "
-            f"data-criteria='{criteria_json}'>?</button></td>"
+            f"data-criteria='{criteria_json}'>i</button></td>"
             f"</tr>"
         )
     out.append("</tbody></table>")
