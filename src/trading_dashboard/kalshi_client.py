@@ -591,3 +591,34 @@ def fetch_underlying_history(series_ticker: str,
         max_strikes=max_strikes,
     )
     return history, atm, markets, contract_open_ts, contract_close_ts, event_title
+
+
+def fetch_event_metadata(series_ticker: str,
+                          client: Optional[KalshiClient] = None,
+                          ) -> Tuple[Optional[dict], List[dict], Optional[float], Optional[float], Optional[str]]:
+    """Slim metadata-only fetch for the currently-open event in a series.
+
+    Same payload as ``fetch_underlying_history`` minus the candle history
+    — useful when the chart is sourced from the bot's own recorded
+    snapshots rather than from the Kalshi strike ladder. Skips the
+    expensive per-strike candlestick fetches.
+
+    Returns ``(atm_market, markets, contract_open_ts, contract_close_ts,
+    event_title)`` — the same metadata fields the dashboard needs to
+    frame the chart (x-axis span, contract title, ATM strike).
+    """
+    c = client or default_client()
+    if not c.available:
+        return None, [], None, None, None
+    markets = c.list_markets(series_ticker)
+    if not markets:
+        return None, [], None, None, None
+    atm = pick_atm_market(markets)
+    contract_open_ts = _parse_iso(atm.get("open_time")) if atm else None
+    contract_close_ts = _parse_iso(atm.get("close_time")) if atm else None
+    event_title: Optional[str] = None
+    if atm and atm.get("event_ticker"):
+        event = c.get_event(atm["event_ticker"])
+        if event:
+            event_title = event.get("title")
+    return atm, markets, contract_open_ts, contract_close_ts, event_title

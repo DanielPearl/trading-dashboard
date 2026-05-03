@@ -540,7 +540,10 @@ def fetch_underlying_history(db_path: str, hours: int = 72,
     """Time-series of the bot's underlying value (model_snapshots.current_gas_price)
     over the last N hours. Used to draw the watchlist hero chart.
 
-    Returns rows oldest-first as `[{"captured_at": "...", "value": float}, ...]`.
+    Each row carries both ``captured_at`` (ISO string for compatibility
+    with older code paths) and ``ts`` (unix seconds, what
+    ``svg_kalshi_chart`` reads). Empty list when the bot's DB doesn't
+    exist or has no snapshots in the window.
     """
     if not Path(db_path).exists():
         return []
@@ -554,9 +557,33 @@ def fetch_underlying_history(db_path: str, hours: int = 72,
                 "ORDER BY captured_at ASC LIMIT ?",
                 (f"-{int(hours)} hours", max_points),
             ).fetchall()
-        return [dict(r) for r in rows]
     except (sqlite3.OperationalError, sqlite3.DatabaseError):
         return []
+    out: List[dict] = []
+    for r in rows:
+        d = dict(r)
+        ts = _iso_to_unix(d.get("captured_at"))
+        if ts is not None:
+            d["ts"] = ts
+        out.append(d)
+    return out
+
+
+def _iso_to_unix(s: str | None) -> float | None:
+    """Parse SQLite's `YYYY-MM-DD HH:MM:SS` (UTC) strings into unix
+    seconds. Returns None on malformed input — callers fall back to the
+    captured_at string.
+    """
+    if not s:
+        return None
+    try:
+        if "T" in s:
+            dt = datetime.fromisoformat(s.replace("Z", "+00:00"))
+        else:
+            dt = datetime.strptime(s, "%Y-%m-%d %H:%M:%S").replace(tzinfo=timezone.utc)
+        return dt.timestamp()
+    except (TypeError, ValueError):
+        return None
 
 
 def fetch_decisions(decisions_path: str, limit: int = 60) -> List[dict]:
@@ -758,6 +785,60 @@ def _smooth_values(values: List[float], window: int = 3) -> List[float]:
     return out
 
 
+def _empty_chart_frame(width: int = 760, height: int = 220,
+                        contract_open_ts: float | None = None,
+                        contract_close_ts: float | None = None) -> str:
+    """Empty-state chart: just the frame (gridlines + day ticks if a
+    contract span is known), no polyline. Used when fewer than 2
+    snapshots have been recorded — the user wants to see the chart's
+    silhouette even when there's nothing to plot yet.
+    """
+    pad_l, pad_r, pad_t, pad_b = 12, 64, 14, 30
+    inner_w = width - pad_l - pad_r
+    out: List[str] = [
+        f"<div class='wl-chart-wrap'>"
+        f"<svg width='100%' height='{height}' viewBox='0 0 {width} {height}' "
+        f"preserveAspectRatio='none' style='display:block'>"
+    ]
+    # 5 horizontal gridlines, no labels (no data range to anchor them to).
+    for i in range(5):
+        y = pad_t + (i / 4.0) * (height - pad_t - pad_b)
+        out.append(f"<line x1='{pad_l}' y1='{y}' x2='{width-pad_r}' y2='{y}' "
+                   f"stroke='#1f2530' stroke-width='1'/>")
+    # Day ticks across the contract span (if known).
+    if contract_open_ts is not None:
+        from datetime import timedelta
+        t_min = float(contract_open_ts)
+        t_max = float(contract_close_ts) if contract_close_ts else (
+            t_min + 24 * 3600)
+        dt_min = datetime.fromtimestamp(t_min, tz=timezone.utc)
+        dt_max = datetime.fromtimestamp(t_max, tz=timezone.utc)
+        day_labels: List[str] = [dt_min.strftime("%b %-d")]
+        cur = dt_min.replace(hour=0, minute=0, second=0, microsecond=0) + timedelta(days=1)
+        while cur < dt_max:
+            lbl = cur.strftime("%b %-d")
+            if lbl != day_labels[-1]:
+                day_labels.append(lbl)
+            cur += timedelta(days=1)
+        last_label = dt_max.strftime("%b %-d")
+        if last_label != day_labels[-1]:
+            day_labels.append(last_label)
+        n = max(1, len(day_labels) - 1)
+        for i, label in enumerate(day_labels):
+            frac = i / n if n else 0.5
+            x = pad_l + frac * inner_w
+            out.append(f"<line x1='{x:.1f}' y1='{pad_t}' x2='{x:.1f}' "
+                       f"y2='{height-pad_b}' stroke='#1f2530' stroke-width='1' "
+                       f"stroke-dasharray='2,3' opacity='0.7'/>")
+            anchor = "start" if i == 0 else (
+                "end" if i == len(day_labels) - 1 else "middle")
+            out.append(f"<text x='{x:.0f}' y='{height-10}' fill='#8b949e' "
+                       f"font-size='10' text-anchor='{anchor}'>"
+                       f"{html.escape(label)}</text>")
+    out.append("</svg></div>")
+    return "".join(out)
+
+
 def svg_kalshi_chart(history: List[dict], display: dict,
                       reference_strike: float | None = None,
                       strike_side: str | None = None,
@@ -786,11 +867,9 @@ def svg_kalshi_chart(history: List[dict], display: dict,
         except (TypeError, ValueError):
             continue
     if len(pts_in) < 2:
-        return ("<div class='empty' style='padding:24px'>"
-                "Live Kalshi chart is loading… (or the strike ladder "
-                "doesn't have enough trade history yet to derive an "
-                "implied underlying price). Refreshes every 60 seconds."
-                "</div>")
+        return _empty_chart_frame(width=width, height=height,
+                                    contract_open_ts=contract_open_ts,
+                                    contract_close_ts=contract_close_ts)
 
     # Y-axis labels go on the right edge (matches Kalshi's market page),
     # so reserve the right padding instead of the left. Bottom padding
@@ -1461,7 +1540,6 @@ def render_page(
     watchlist: List[dict],
     underlying_history: List[dict],
     display: dict,
-    kalshi_history: List[dict],
     atm_market: dict | None,
     contract_open_ts: float | None,
     contract_close_ts: float | None,
@@ -1513,7 +1591,6 @@ def render_page(
                       underlying_history=underlying_history,
                       display=display,
                       latest_active=latest_active,
-                      kalshi_history=kalshi_history,
                       atm_market=atm_market,
                       contract_open_ts=contract_open_ts,
                       contract_close_ts=contract_close_ts,
@@ -2664,25 +2741,25 @@ def _render_watchlist_hero(out: List[str],
                             underlying_history: List[dict],
                             display: dict,
                             latest_active: dict | None,
-                            kalshi_history: List[dict] | None = None,
                             atm_market: dict | None = None,
                             contract_open_ts: float | None = None,
                             contract_close_ts: float | None = None,
                             event_title: str | None = None) -> None:
-    """Kalshi-style hero block: current underlying value, % change, total
-    Kalshi volume on the watchlist, time-to-close on the soonest market,
-    and an SVG chart of the underlying. If there's an active position,
-    a horizontal line on the chart marks the strike the user bought.
+    """Kalshi-style hero block: current underlying value, value delta,
+    time-to-close on the soonest market, and an SVG chart of the
+    underlying built from the bot's own recorded snapshots. If there's
+    an active position, a horizontal line on the chart marks the
+    strike the user bought.
     """
-    # Prefer Kalshi-derived underlying data for "current value" and
-    # "% change". It's fresher (updates with every Kalshi tick) and
-    # works even when the bot service isn't running locally. Falls back
-    # to the bot's own model_snapshot only if Kalshi data is missing.
+    # Current + earliest values come from the bot's own recorded
+    # snapshots (model_snapshots.current_gas_price). That's the single
+    # source of truth for the chart now — the strike-ladder
+    # interpolation was retired in favor of plotting the actual values
+    # the bot observed at each tick.
     current: float | None = None
     earliest_value: float | None = None
-    if kalshi_history:
-        # Take latest from Kalshi.
-        for r in reversed(kalshi_history):
+    if underlying_history:
+        for r in reversed(underlying_history):
             v = r.get("value")
             if v is None:
                 continue
@@ -2691,21 +2768,6 @@ def _render_watchlist_hero(out: List[str],
                 break
             except (TypeError, ValueError):
                 continue
-        for r in kalshi_history:
-            v = r.get("value")
-            if v is None:
-                continue
-            try:
-                earliest_value = float(v)
-                break
-            except (TypeError, ValueError):
-                continue
-    if current is None and model is not None and model.get("current_gas_price") is not None:
-        try:
-            current = float(model["current_gas_price"])
-        except (TypeError, ValueError):
-            current = None
-    if earliest_value is None and underlying_history:
         for r in underlying_history:
             v = r.get("value")
             if v is None:
@@ -2715,6 +2777,14 @@ def _render_watchlist_hero(out: List[str],
                 break
             except (TypeError, ValueError):
                 continue
+    # Final fallback for "current": the bot's most-recent model_snapshot
+    # (already on the page in the prediction card). Lets the hero show
+    # *something* even when the snapshots table is empty for older bots.
+    if current is None and model is not None and model.get("current_gas_price") is not None:
+        try:
+            current = float(model["current_gas_price"])
+        except (TypeError, ValueError):
+            current = None
 
     # Raw value delta over the visible chart window (e.g. "▼ 9.05K").
     # Replaces the prior percent-change indicator: the user wants to see
@@ -2810,26 +2880,19 @@ def _render_watchlist_hero(out: List[str],
     strike_side = active_side
     strike_is_active = active_strike is not None
 
-    # Chart: prefer Kalshi-derived underlying (matches Kalshi's market-
-    # page chart axis). Falls back to the bot's own model_snapshots if
-    # Kalshi creds aren't configured or the series has no candle history.
-    if kalshi_history:
-        out.append(svg_kalshi_chart(
-            kalshi_history, display,
-            reference_strike=reference_strike,
-            strike_side=strike_side,
-            strike_is_active_bet=strike_is_active,
-            contract_open_ts=contract_open_ts,
-            contract_close_ts=contract_close_ts,
-            total_volume=total_volume,
-        ))
-    else:
-        out.append(svg_underlying_chart(
-            underlying_history, current, display,
-            reference_strike=reference_strike,
-            strike_side=strike_side,
-            strike_is_active_bet=strike_is_active,
-        ))
+    # Chart: plot the bot's actual recorded snapshots. svg_kalshi_chart
+    # renders an empty frame (axes + gridlines, no polyline) when
+    # there's not enough history yet — matches the user's request to
+    # show the chart shape even when there's no data.
+    out.append(svg_kalshi_chart(
+        underlying_history, display,
+        reference_strike=reference_strike,
+        strike_side=strike_side,
+        strike_is_active_bet=strike_is_active,
+        contract_open_ts=contract_open_ts,
+        contract_close_ts=contract_close_ts,
+        total_volume=total_volume,
+    ))
     out.append("</div>")
 
 
@@ -2838,7 +2901,6 @@ def _render_watchlist(out: List[str], watchlist: List[dict],
                       underlying_history: List[dict] | None = None,
                       display: dict | None = None,
                       latest_active: dict | None = None,
-                      kalshi_history: List[dict] | None = None,
                       atm_market: dict | None = None,
                       contract_open_ts: float | None = None,
                       contract_close_ts: float | None = None,
@@ -2863,7 +2925,6 @@ def _render_watchlist(out: List[str], watchlist: List[dict],
     _render_watchlist_hero(out, watchlist, model,
                            underlying_history or [],
                            display or {}, latest_active,
-                           kalshi_history=kalshi_history,
                            atm_market=atm_market,
                            contract_open_ts=contract_open_ts,
                            contract_close_ts=contract_close_ts,
@@ -3687,41 +3748,38 @@ class Handler(BaseHTTPRequestHandler):
                 # comes up empty (bot service not writing market_views,
                 # or the bot is currently between events). Done after
                 # the Kalshi fetch since both share the cache.
-                # Local model_snapshots fallback for the chart only
-                # when Kalshi creds aren't configured. 7 days covers
-                # any weekly contract.
+                # Underlying chart source: the bot's own recorded
+                # snapshots from model_snapshots. Each row is a real
+                # observation of the underlying value at the time the
+                # bot ran (sourced from whatever feed the bot uses —
+                # AAA gas, EIA, Pyth, etc.). 7 days covers any weekly
+                # contract; max_points is generous enough that
+                # high-cadence bots don't get truncated.
                 underlying_history = fetch_underlying_history(
-                    db_path, hours=7 * 24,
+                    db_path, hours=7 * 24, max_points=5000,
                 )
-                # Kalshi-derived underlying via strike-ladder interpolation
-                # — same data source Kalshi uses for the chart at the top
-                # of every market page. Lookback auto-sized to span the
-                # full life of whichever event is currently open. When
-                # that event resolves and Kalshi opens the next one, the
-                # chart and ATM market roll over automatically.
-                kalshi_history: List[dict] = []
+                # Event metadata only — atm market + contract span +
+                # title. The strike-ladder candle interpolation was
+                # retired: it was an approximation of the underlying,
+                # and the dashboard now plots the real recorded values
+                # from the bot's snapshots instead.
                 atm_market: dict | None = None
                 kalshi_markets: List[dict] = []
                 contract_open_ts: float | None = None
                 contract_close_ts: float | None = None
                 event_title: str | None = None
                 series_ticker = bot.get("series_ticker")
-                chart_period = int(((bot.get("display") or {}).get(
-                    "chart_period_minutes")) or 60)
                 if series_ticker:
                     from . import kalshi_client
                     try:
-                        (kalshi_history, atm_market, kalshi_markets,
+                        (atm_market, kalshi_markets,
                          contract_open_ts, contract_close_ts,
                          event_title) = (
-                            kalshi_client.fetch_underlying_history(
-                                series_ticker,
-                                period_minutes=chart_period,
-                            )
+                            kalshi_client.fetch_event_metadata(series_ticker)
                         )
                     except Exception:  # noqa: BLE001
-                        log.exception("kalshi candlestick fetch failed")
-                        kalshi_history, atm_market = [], None
+                        log.exception("kalshi event metadata fetch failed")
+                        atm_market = None
                         kalshi_markets, contract_open_ts = [], None
                         contract_close_ts = None
                         event_title = None
@@ -3774,7 +3832,6 @@ class Handler(BaseHTTPRequestHandler):
                     watchlist=watchlist,
                     underlying_history=underlying_history,
                     display=bot.get("display") or {},
-                    kalshi_history=kalshi_history,
                     atm_market=atm_market,
                     contract_open_ts=contract_open_ts,
                     contract_close_ts=contract_close_ts,
