@@ -1605,7 +1605,8 @@ def render_page(
     available_bots: List[dict],
     current_bot: str,
     period_key: str = "all",
-    tab_key: str = "watchlist",
+    tab_key: str = "home",
+    bot_models: List[dict] | None = None,
 ) -> str:
     out: List[str] = []
     out.append("<!doctype html><html><head>")
@@ -1619,33 +1620,17 @@ def render_page(
     out.append(f"<div class='meta'>Loaded {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%SZ')}"
                f" · live updates every 5s · DRY-RUN mode (no real orders)</div>")
 
-    # SECTION 1 — Global summary (cards + active bets + history). Identical
-    # regardless of which bot is selected in the filter below.
-    _render_summary(out, global_summary, global_active_bets, global_history,
-                     period_key=period_key, current_bot=current_bot)
-
-    # SECTION 2 — Bot filter (preserves the active period in its links).
-    _render_bot_filter(out, available_bots, current_bot,
-                       period_key=period_key)
-
-    # If the selected bot doesn't have a populated DB, stop here.
-    if (not watchlist and not latest_active
-            and not [b for b in available_bots if b["key"] == current_bot and b.get("available")]):
-        _render_bot_unavailable(out, current_bot)
-        out.append("</body></html>")
-        return "".join(out)
-
-    # ── Tab bar: collapses the per-bot detail sections (Watchlist,
-    # Model, Active bet, Rules) into one viewport. The page now fits
-    # without endless scroll; users switch panes with the tab pills.
+    # ── Top-level page tabs ───────────────────────────────────────────
+    # All four panels live on the same page; clicks swap which one is
+    # visible. URL persists the choice via ?tab=X.
     tabs = [
+        ("home", "Home"),
+        ("performance", "Performance"),
         ("watchlist", "Watchlist"),
-        ("model", "Model"),
-        ("activebet", "Active bet"),
-        ("rules", "Rules"),
+        ("history", "History"),
     ]
     valid_tabs = {k for k, _ in tabs}
-    active_tab = tab_key if tab_key in valid_tabs else "watchlist"
+    active_tab = tab_key if tab_key in valid_tabs else "home"
     out.append("<div class='tab-bar'>")
     for k, label in tabs:
         cls = "tab-pill" + (" tab-pill-active" if k == active_tab else "")
@@ -1659,37 +1644,65 @@ def render_page(
         cls = "tab-panel" + (" tab-panel-active" if name == active_tab else "")
         out.append(f"<div class='{cls}' data-panel='{html.escape(name)}'>")
 
-    # ── Watchlist tab — chart + scrollable strike table. Default. ─────
+    period_label = next(
+        (lbl for k, lbl, _ in PERIOD_OPTIONS if k == period_key),
+        "All-time",
+    )
+
+    # ── HOME tab — summary statistics + currently-open bets ───────────
+    _open_panel("home")
+    _render_summary(out, global_summary, global_active_bets, global_history,
+                     period_key=period_key, current_bot=current_bot)
+    out.append("</div>")  # /home panel
+
+    # ── PERFORMANCE tab — per-bot bets/pnl/win + per-bot model stats ──
+    _open_panel("performance")
+    out.append("<div class='section'><h2>Bot performance</h2>"
+               "<div class='body'>")
+    _render_bot_performance(out, global_summary, period_label)
+    _render_bot_models_table(out, bot_models)
+    out.append("</div></div>")
+    out.append("</div>")  # /performance panel
+
+    # ── WATCHLIST tab — bot filter + chart + active bet detail ────────
     _open_panel("watchlist")
-    _render_watchlist(out, watchlist, model,
-                      underlying_history=underlying_history,
-                      display=display,
-                      latest_active=latest_active,
-                      kalshi_history=kalshi_history,
-                      atm_market=atm_market,
-                      contract_open_ts=contract_open_ts,
-                      contract_close_ts=contract_close_ts,
-                      event_title=event_title,
-                      edge_cfg=edge_cfg,
-                      validator_cfg=validator_cfg,
-                      risk_caps=risk_caps,
-                      hedge_cfg=hedge_cfg)
+    _render_bot_filter(out, available_bots, current_bot,
+                       period_key=period_key)
+    if (not watchlist and not latest_active
+            and not [b for b in available_bots
+                     if b["key"] == current_bot and b.get("available")]):
+        _render_bot_unavailable(out, current_bot)
+    else:
+        # Active bet for this bot sits above the watchlist so the held
+        # strike's context is visible alongside the strike ladder.
+        _render_active_bet(out, latest_active, watchlist, bot_closed_positions)
+        _render_watchlist(out, watchlist, model,
+                          underlying_history=underlying_history,
+                          display=display,
+                          latest_active=latest_active,
+                          kalshi_history=kalshi_history,
+                          atm_market=atm_market,
+                          contract_open_ts=contract_open_ts,
+                          contract_close_ts=contract_close_ts,
+                          event_title=event_title,
+                          edge_cfg=edge_cfg,
+                          validator_cfg=validator_cfg,
+                          risk_caps=risk_caps,
+                          hedge_cfg=hedge_cfg)
+        _render_contract_rules(out, watchlist, current_bot)
     out.append("</div>")  # /watchlist panel
 
-    # ── Model tab ────────────────────────────────────────────────────
-    _open_panel("model")
-    _render_model_section(out, model)
-    out.append("</div>")
-
-    # ── Active bet tab ───────────────────────────────────────────────
-    _open_panel("activebet")
-    _render_active_bet(out, latest_active, watchlist, bot_closed_positions)
-    out.append("</div>")
-
-    # ── Rules tab ────────────────────────────────────────────────────
-    _open_panel("rules")
-    _render_contract_rules(out, watchlist, current_bot)
-    out.append("</div>")
+    # ── HISTORY tab — closed-bet history across all bots ──────────────
+    _open_panel("history")
+    out.append("<div class='section'><h2>Contract history</h2>"
+               "<div class='body'>")
+    _render_bet_history_block(
+        out, global_history,
+        heading=f"Closed bets ({period_label})",
+        shown_initially=20,
+    )
+    out.append("</div></div>")
+    out.append("</div>")  # /history panel
 
     # Live-update JS: polls /api/snapshot every 5s and patches summary
     # cards + watchlist cells in place. Pass the period so the live
@@ -2187,10 +2200,74 @@ def _render_summary(out: List[str], rollup: dict, active_bets: List[dict],
     out.append("<h3 class='subhead'>Active bets — currently open</h3>")
     _render_active_bets_table(out, active_bets, empty_msg="No active bets right now.")
 
-    # Per-bot performance breakdown (period-scoped).
-    _render_bot_performance(out, rollup, period_label)
-
     out.append("</div></div>")
+
+
+def _render_bot_models_table(out: List[str],
+                               bot_models: List[dict] | None) -> None:
+    """Per-bot model strength card-row. One row per registered bot
+    showing the same model-strength metrics as the (retired) per-bot
+    Model section: directional accuracy, precision, recall, F1, ROC AUC,
+    feature count, actual win %.
+    """
+    if not bot_models:
+        return
+    out.append(
+        "<h3 class='subhead' style='margin-top:18px;'>"
+        "Model stats per bot</h3>"
+    )
+    out.append(
+        "<table><thead><tr>"
+        "<th>Bot</th>"
+        "<th class='num' title='Directional accuracy on the training holdout — backtest estimate of \"would the model have called the right side\".'>Accuracy</th>"
+        "<th class='num'>Precision</th>"
+        "<th class='num'>Recall</th>"
+        "<th class='num'>F1</th>"
+        "<th class='num'>ROC AUC</th>"
+        "<th class='num' title='Number of features in the active model.'>Features</th>"
+        "<th class='num' title='Actual win % from this bot’s closed bets — the live counterpart to Accuracy. They should converge as the sample grows.'>Actual win %</th>"
+        "</tr></thead><tbody>"
+    )
+
+    def _pct_cell(v, decimals=0):
+        if v is None:
+            return "<td class='num gray'>—</td>"
+        return f"<td class='num'>{float(v)*100:.{decimals}f}%</td>"
+
+    for entry in bot_models:
+        b = entry.get("bot") or {}
+        m = entry.get("model") or {}
+        name = b.get("name", "—")
+        if not m:
+            out.append(
+                f"<tr><td>{html.escape(name)}</td>"
+                f"<td class='num gray' colspan='7'>"
+                f"no model snapshot yet</td></tr>"
+            )
+            continue
+        feature_count = int(m.get("feature_count") or 0)
+        a_wins = int(m.get("actual_wins") or 0)
+        a_losses = int(m.get("actual_losses") or 0)
+        a_total = a_wins + a_losses
+        if a_total > 0:
+            a_pct = a_wins / a_total
+            a_str = f"{a_pct*100:.0f}%"
+            a_cls = "green" if a_pct > 0.55 else ("red" if a_pct < 0.45 else "")
+        else:
+            a_str = "—"
+            a_cls = "gray"
+        out.append(
+            f"<tr><td>{html.escape(name)}</td>"
+            f"{_pct_cell(m.get('classifier_accuracy'), decimals=1)}"
+            f"{_pct_cell(m.get('training_precision'))}"
+            f"{_pct_cell(m.get('training_recall'))}"
+            f"{_pct_cell(m.get('training_f1'))}"
+            f"{_pct_cell(m.get('training_roc_auc'))}"
+            f"<td class='num'>{feature_count}</td>"
+            f"<td class='num {a_cls}'>{a_str}</td>"
+            f"</tr>"
+        )
+    out.append("</tbody></table>")
 
 
 def _render_bot_performance(out: List[str], rollup: dict,
@@ -4007,9 +4084,9 @@ class Handler(BaseHTTPRequestHandler):
                     period_key = "all"
                 period_days = _period_days(period_key)
                 # Active tab for the per-bot pane: ?tab=watchlist|model|activebet|rules
-                tab_key = qs_top.get("tab", ["watchlist"])[0]
-                if tab_key not in {"watchlist", "model", "activebet", "rules"}:
-                    tab_key = "watchlist"
+                tab_key = qs_top.get("tab", ["home"])[0]
+                if tab_key not in {"home", "performance", "watchlist", "history"}:
+                    tab_key = "home"
 
                 # Whale-watcher uses a different page entirely — JSONL
                 # source, signal-analysis-style render. Dispatch early so
@@ -4107,6 +4184,9 @@ class Handler(BaseHTTPRequestHandler):
                                                        period_days=period_days)
                 global_active_bets: List[dict] = []
                 global_history: List[dict] = []
+                # Per-bot models for the Performance tab — one card-row
+                # per bot showing accuracy / precision / recall / F1.
+                bot_models: List[dict] = []
                 for b in self.bots:
                     if not b.get("available"):
                         continue
@@ -4122,8 +4202,30 @@ class Handler(BaseHTTPRequestHandler):
                     for h in fetch_bet_history(b["db_path"], limit=50):
                         h["_bot_name"] = b["name"]
                         global_history.append(h)
+                    m = fetch_latest_model(b["db_path"])
+                    bot_models.append({"bot": b, "model": m})
                 global_active_bets.sort(key=lambda x: x.get("opened_at", ""), reverse=True)
                 global_history.sort(key=lambda x: x.get("exited_at", ""), reverse=True)
+                # Period-filter the history so the History tab agrees
+                # with the rest of the period-aware UI. None → keep all.
+                if period_days is not None:
+                    cutoff_ts = (datetime.now(timezone.utc).timestamp()
+                                  - period_days * 86400)
+                    def _within(h):
+                        ex = h.get("exited_at") or ""
+                        try:
+                            t = datetime.fromisoformat(
+                                ex.replace("Z", "+00:00")
+                            ).timestamp()
+                        except (TypeError, ValueError):
+                            try:
+                                t = datetime.strptime(
+                                    ex[:19], "%Y-%m-%d %H:%M:%S"
+                                ).replace(tzinfo=timezone.utc).timestamp()
+                            except (TypeError, ValueError):
+                                return False
+                        return t >= cutoff_ts
+                    global_history = [h for h in global_history if _within(h)]
 
                 # Bot-scoped closed positions — used in Section 5 underneath
                 # the active-bet table per request.
@@ -4152,6 +4254,7 @@ class Handler(BaseHTTPRequestHandler):
                     current_bot=bot["key"],
                     period_key=period_key,
                     tab_key=tab_key,
+                    bot_models=bot_models,
                 )
             except Exception:  # noqa: BLE001
                 log.exception("dashboard render failed")
