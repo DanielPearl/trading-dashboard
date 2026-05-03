@@ -1492,20 +1492,6 @@ code { background: #161b22; padding: 1px 6px; border-radius: 3px; color: #c9d1d9
 .bot-select:focus { outline: none; border-color: #1f6feb;
     box-shadow: 0 0 0 3px rgba(31, 111, 235, 0.18); }
 .bot-select option { background: #0d1117; color: #c9d1d9; }
-/* Period dropdown — same dark-themed select as the bot picker. */
-.period-select {
-    background: #0d1117 url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='10' height='10' viewBox='0 0 10 10'><path d='M2 3.5l3 3 3-3' fill='none' stroke='%238b949e' stroke-width='1.5'/></svg>") no-repeat right 10px center;
-    color: #c9d1d9; border: 1px solid #30363d; border-radius: 6px;
-    padding: 5px 28px 5px 12px;
-    font-size: 12px; line-height: 1.4;
-    appearance: none; -webkit-appearance: none; -moz-appearance: none;
-    cursor: pointer; min-width: 130px;
-    transition: border-color 120ms, background-color 120ms;
-}
-.period-select:hover { border-color: #40464d; background-color: #161b22; }
-.period-select:focus { outline: none; border-color: #1f6feb;
-    box-shadow: 0 0 0 3px rgba(31, 111, 235, 0.18); }
-.period-select option { background: #0d1117; color: #c9d1d9; }
 .filter-pill { background: #21262d; color: #c9d1d9; text-decoration: none;
     padding: 6px 14px; border-radius: 999px; font-size: 13px;
     border: 1px solid #30363d; transition: background 120ms, border-color 120ms;
@@ -2224,20 +2210,16 @@ def _render_period_filter(out: List[str], period_key: str,
                             current_bot: str = "",
                             tab_key: str = "home") -> None:
     """Period filter dropdown (Day · Week · Month · Year · All-time).
-    Used on Home and History tabs. Each option's value carries the
-    target URL so the JS onchange handler can navigate without re-
-    rendering the dropdown's contents. Preserves the active bot + tab
-    in the destination URL so switching the period stays in place.
+    Uses the same wrapper + select styling as the Watchlist tab's bot
+    selector so the three filters across the dashboard read as one
+    consistent UI control.
     """
-    # Use a unique-ish id per render so the JS hook can find each
-    # dropdown when there are multiple on the page (Home + History).
     select_id = f"period-select-{html.escape(tab_key)}"
-    out.append("<div class='filter-pills' "
-               "style='margin-bottom:14px;'>")
-    out.append(f"<label for='{select_id}' class='filter-label' "
-               f"style='margin-right:6px;'>Period</label>")
+    out.append("<div class='bot-filter-bar'>")
+    out.append(f"<label for='{select_id}' class='filter-label'>"
+               f"Period</label>")
     out.append(
-        f"<select id='{select_id}' class='period-select' "
+        f"<select id='{select_id}' class='bot-select' "
         f"data-period-select>"
     )
     for key, label, _days in PERIOD_OPTIONS:
