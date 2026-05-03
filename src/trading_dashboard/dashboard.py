@@ -1986,58 +1986,17 @@ def _live_update_script(current_bot: str, period_key: str = "all") -> str:
          + fmtCents3(c.entry_ev) + "</dd>";
     html += "<dt>Break-even probability</dt><dd>"
          + fmtPct(c.break_even) + "</dd>";
+    // Since the bet was placed, every gate the bot checks must have
+    // cleared — surface that as a single "100%" line rather than a
+    // long list of identical green checks.
+    html += "<dt>Validators met</dt>"
+         + "<dd class='green'>100%</dd>";
     html += "</dl></div>";
-
-    // Validators that were met — every gate the bot checks before
-    // placing a bet. Since the bet exists, it cleared all of them.
-    const r = (window.__BUY_CRITERIA__) || {{}};
-    const e = r.edge || {{}};
-    const v = r.validators || {{}};
-    const checks = [];
-    if (e.min_edge_yes != null && c.side === "YES")
-      checks.push(["Edge YES ≥ " + (e.min_edge_yes * 100).toFixed(0) + " pts", true]);
-    if (e.min_edge_no != null && c.side === "NO")
-      checks.push(["Edge NO ≥ " + (e.min_edge_no * 100).toFixed(0) + " pts", true]);
-    if (e.min_ev_per_contract != null)
-      checks.push(["EV / contract ≥ $" + Number(e.min_ev_per_contract).toFixed(2), true]);
-    if (e.min_model_confidence != null)
-      checks.push(["Model confidence ≥ " + (e.min_model_confidence * 100).toFixed(0) + "%", true]);
-    if (e.min_model_accuracy != null)
-      checks.push(["Model accuracy ≥ " + (e.min_model_accuracy * 100).toFixed(0) + "%", true]);
-    if (e.min_prob_edge_over_breakeven != null)
-      checks.push(["Edge over break-even ≥ " + (e.min_prob_edge_over_breakeven * 100).toFixed(0) + " pts", true]);
-    if (v.max_spread_cents != null)
-      checks.push(["Spread ≤ " + v.max_spread_cents + "¢", true]);
-    if (Array.isArray(v.prob_bounds_cents) && v.prob_bounds_cents.length === 2)
-      checks.push(["Probability in [" + v.prob_bounds_cents[0] + "¢, " + v.prob_bounds_cents[1] + "¢]", true]);
-    if (v.min_volume != null)
-      checks.push(["Volume ≥ " + v.min_volume, true]);
-    if (v.min_open_interest != null)
-      checks.push(["Open interest ≥ " + v.min_open_interest, true]);
-    if (v.min_book_depth_contracts != null)
-      checks.push(["Book depth ≥ " + v.min_book_depth_contracts + " contracts", true]);
-    if (v.min_depth_at_best_ask != null)
-      checks.push(["Depth at best ask ≥ " + v.min_depth_at_best_ask, true]);
-    if (v.min_minutes_to_close != null && v.max_minutes_to_close != null)
-      checks.push(["Time to close in [" + fmtMin(v.min_minutes_to_close) + ", " + fmtMin(v.max_minutes_to_close) + "]", true]);
-    if (v.basis_risk_strike_window_dollars != null)
-      checks.push(["Strike within ±$" + Number(v.basis_risk_strike_window_dollars).toFixed(2) + " of model median", true]);
-    if (v.basis_risk_max_hours_to_close != null)
-      checks.push(["Within basis-risk window (" + v.basis_risk_max_hours_to_close + "h)", true]);
-
-    if (checks.length) {{
-      html += "<div class='crit-section'><h4>Validators that were met</h4>";
-      html += "<dl>";
-      checks.forEach(function (row) {{
-        html += "<dt class='green'>✓</dt><dd>" + row[0] + "</dd>";
-      }});
-      html += "</dl></div>";
-    }}
-
     html += "<div class='crit-section' style='font-size:11px;color:#8b949e;'>"
          + "Numbers above are entry-time snapshots — what the bot saw "
-         + "the moment it opened the position. Every validator listed "
-         + "had to pass before this bet was placed.</div>";
+         + "the moment it opened the position. The full validator list "
+         + "is in the rules popup next to the Active bet title."
+         + "</div>";
     return html;
   }}
   function showCriteria(btn) {{
