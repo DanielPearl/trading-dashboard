@@ -33,6 +33,10 @@ bots:
       unit_position: suffix
       # Bot stores raw count (189000); display in thousands → "189K".
       divisor: 1000.0
+      # Sample line at 15-min resolution. The market trades briskly
+      # enough to populate sub-hourly bars; 60-min misses the
+      # intraday wiggles.
+      chart_period_minutes: 15
   - key: natural-gas
     name: Natural Gas Prices
     # Lives at /root/peak-load/ on the droplet — directory keeps its old

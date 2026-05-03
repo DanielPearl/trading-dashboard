@@ -818,12 +818,25 @@ def svg_kalshi_chart(history: List[dict], display: dict,
     # Wrap the SVG in a positioning context for the hover tooltip and
     # expose the chart geometry as data attrs so the JS can map the
     # cursor's x position back to a timestamp without re-deriving it.
+    # Compact JSON of (ts, raw_value) pairs for the hover tooltip's
+    # interpolation. Server-side stores the raw value (pre-divisor /
+    # pre-format); the JS formats it client-side.
+    points_payload = json.dumps([(int(t), v) for t, v in pts_in],
+                                  separators=(",", ":"))
+    fmt_payload = json.dumps({
+        "divisor": float(display.get("divisor", 1.0) or 1.0),
+        "decimals": int(display.get("underlying_decimals", 2)),
+        "unit": display.get("underlying_unit", ""),
+        "unit_position": display.get("unit_position", "prefix"),
+    }, separators=(",", ":"))
     out: List[str] = [
         f"<div class='wl-chart-wrap' "
         f"data-tmin='{t_min:.0f}' data-tmax='{t_max:.0f}' "
         f"data-padl='{pad_l}' data-innerw='{inner_w}' "
         f"data-padt='{pad_t}' data-padb='{pad_b}' data-h='{height}' "
-        f"data-vbw='{width}'>",
+        f"data-vbw='{width}' "
+        f"data-points='{html.escape(points_payload)}' "
+        f"data-fmt='{html.escape(fmt_payload)}'>",
         f"<svg width='100%' height='{height}' viewBox='0 0 {width} {height}' "
         f"preserveAspectRatio='none' style='display:block'>"
     ]
@@ -1380,12 +1393,16 @@ tr.row-bought.bought-no  td.mono { color: #f85149; font-weight: 600; }
    inside the SVG and positions this tooltip via inline `left:`. */
 .wl-chart-wrap { position: relative; }
 .wl-chart-tooltip {
-    position: absolute; top: -2px; transform: translateX(-50%);
+    position: absolute; top: -8px; transform: translateX(-50%);
     background: #161b22; color: #c9d1d9;
     border: 1px solid #30363d; border-radius: 4px;
-    padding: 3px 8px; font-size: 11px; font-weight: 500;
+    padding: 4px 9px; font-size: 11px; font-weight: 500;
     pointer-events: none; white-space: nowrap; z-index: 2;
+    text-align: center; line-height: 1.35;
 }
+.wl-chart-tooltip .wl-chart-tip-time { color: #8b949e; font-size: 10px; }
+.wl-chart-tooltip .wl-chart-tip-value { color: #f0f6fc; font-size: 13px;
+    font-weight: 600; }
 """
 
 
@@ -1686,9 +1703,50 @@ def _live_update_script(current_bot: str) -> str:
       const month = months[d.getUTCMonth()];
       const day = d.getUTCDate();
       let hour = d.getUTCHours();
+      const minute = d.getUTCMinutes();
       const ampm = hour >= 12 ? "PM" : "AM";
       hour = hour % 12 || 12;
-      return month + " " + day + " at " + hour + " " + ampm;
+      const minStr = minute === 0 ? "" : ":" + (minute < 10 ? "0" : "") + minute;
+      return month + " " + day + " at " + hour + minStr + " " + ampm;
+    }}
+
+    // (ts, value) pairs + the bot's display formatting for the hover
+    // tooltip. Linear-interpolate between adjacent points so the
+    // tooltip value is continuous as the cursor moves between data
+    // points (matches Kalshi's behaviour).
+    let points = [];
+    let fmt = {{ divisor: 1.0, decimals: 2, unit: "", unit_position: "prefix" }};
+    try {{ points = JSON.parse(wrap.dataset.points || "[]"); }} catch (e) {{}}
+    try {{ fmt = Object.assign(fmt, JSON.parse(wrap.dataset.fmt || "{{}}")); }}
+    catch (e) {{}}
+
+    function fmtValue(raw) {{
+      if (raw === null || raw === undefined || !isFinite(raw)) return "—";
+      const v = raw / (fmt.divisor || 1);
+      const n = v.toLocaleString("en-US", {{
+        minimumFractionDigits: fmt.decimals,
+        maximumFractionDigits: fmt.decimals,
+      }});
+      if (fmt.unit_position === "prefix") return (fmt.unit || "") + n;
+      if (fmt.unit_position === "suffix") return n + (fmt.unit || "");
+      return n;
+    }}
+
+    function valueAt(ts) {{
+      if (!points.length) return null;
+      // Binary search for the bracket [points[lo], points[hi]] around ts.
+      let lo = 0, hi = points.length - 1;
+      if (ts <= points[lo][0]) return points[lo][1];
+      if (ts >= points[hi][0]) return points[hi][1];
+      while (hi - lo > 1) {{
+        const mid = (lo + hi) >> 1;
+        if (points[mid][0] <= ts) lo = mid; else hi = mid;
+      }}
+      const t0 = points[lo][0], v0 = points[lo][1];
+      const t1 = points[hi][0], v1 = points[hi][1];
+      if (t1 === t0) return v0;
+      const a = (ts - t0) / (t1 - t0);
+      return v0 + a * (v1 - v0);
     }}
 
     svg.addEventListener("mousemove", function (e) {{
@@ -1713,7 +1771,10 @@ def _live_update_script(current_bot: str) -> str:
 
       const frac = (x - padL) / innerW;
       const ts = tmin + frac * (tmax - tmin);
-      tip.textContent = fmtTs(ts);
+      const val = valueAt(ts);
+      tip.innerHTML =
+        "<div class='wl-chart-tip-time'>" + fmtTs(ts) + "</div>"
+        + "<div class='wl-chart-tip-value'>" + fmtValue(val) + "</div>";
       tip.hidden = false;
       // Anchor the tooltip in pixel space relative to the wrap so it
       // tracks the cursor regardless of how the SVG is scaled.
@@ -3545,6 +3606,8 @@ class Handler(BaseHTTPRequestHandler):
                 contract_close_ts: float | None = None
                 event_title: str | None = None
                 series_ticker = bot.get("series_ticker")
+                chart_period = int(((bot.get("display") or {}).get(
+                    "chart_period_minutes")) or 60)
                 if series_ticker:
                     from . import kalshi_client
                     try:
@@ -3553,7 +3616,7 @@ class Handler(BaseHTTPRequestHandler):
                          event_title) = (
                             kalshi_client.fetch_underlying_history(
                                 series_ticker,
-                                period_minutes=60,  # 1D view
+                                period_minutes=chart_period,
                             )
                         )
                     except Exception:  # noqa: BLE001
@@ -3771,6 +3834,7 @@ def main(argv: list[str] | None = None) -> int:
                 "underlying_decimals": b.display.underlying_decimals,
                 "unit_position": b.display.unit_position,
                 "divisor": b.display.divisor,
+                "chart_period_minutes": b.display.chart_period_minutes,
             },
             "available": Path(b.db_path).exists(),
         })

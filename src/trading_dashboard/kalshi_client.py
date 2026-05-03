@@ -411,24 +411,57 @@ def _interpolate_event_history(client: "KalshiClient",
     if len(picked) < 2:
         return []
 
+    # Kalshi's candlesticks API only supports period_interval ∈ {1,60,
+    # 1440}. For a target period that's sub-hourly (e.g. 15-min), fetch
+    # 1-min candles and bucket them down to the target. >=60 maps 1:1
+    # to Kalshi's hourly bars.
+    if period_minutes >= 60:
+        api_period = 60
+    else:
+        api_period = 1
+    bucket_seconds = max(1, period_minutes) * 60
+
     market_data: List[Tuple[float, Dict[float, float]]] = []
     for m in picked:
         strike = float(m["floor_strike"])
-        cache_key = f"candles:{m['ticker']}:{period_minutes}:{lookback_hours}"
+        cache_key = f"candles:{m['ticker']}:{api_period}:{lookback_hours}"
         was_cached = _CACHE.get(cache_key) is not None
         candles = client.candlesticks(
             series_ticker, m["ticker"],
-            period_minutes=period_minutes, lookback_hours=lookback_hours,
+            period_minutes=api_period, lookback_hours=lookback_hours,
         )
         if not was_cached:
             time.sleep(0.1)
         ts_to_yes: Dict[float, float] = {}
-        for cdl in candles:
-            ts = cdl.get("end_period_ts")
-            yp = _candle_yes_prob(cdl)
-            if ts is None or yp is None:
-                continue
-            ts_to_yes[float(ts)] = yp
+        if api_period == 60 or period_minutes <= 1:
+            # 1:1 mapping — every candle is one data point.
+            for cdl in candles:
+                ts = cdl.get("end_period_ts")
+                yp = _candle_yes_prob(cdl)
+                if ts is None or yp is None:
+                    continue
+                ts_to_yes[float(ts)] = yp
+        else:
+            # Bucket 1-min candles into N-min windows. Take the LAST
+            # candle in each bucket as the bucket's representative
+            # value (matches how Kalshi displays close-of-period).
+            buckets: Dict[int, Tuple[float, float]] = {}
+            for cdl in candles:
+                ts = cdl.get("end_period_ts")
+                yp = _candle_yes_prob(cdl)
+                if ts is None or yp is None:
+                    continue
+                ts_f = float(ts)
+                bucket = int(ts_f // bucket_seconds)
+                cur = buckets.get(bucket)
+                if cur is None or ts_f > cur[0]:
+                    buckets[bucket] = (ts_f, float(yp))
+            for bucket, (ts_f, yp) in buckets.items():
+                # Snap to bucket boundary so different markets'
+                # bucketed timestamps line up exactly during
+                # cross-strike interpolation.
+                snapped = bucket * bucket_seconds + bucket_seconds
+                ts_to_yes[float(snapped)] = yp
         market_data.append((strike, ts_to_yes))
 
     if not market_data:

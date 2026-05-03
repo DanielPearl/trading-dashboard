@@ -37,6 +37,11 @@ class DisplayCfg:
     # formatting. Lets unemployment-claims (which stores 189000) render
     # as "189K" without changing the bot's writing schema.
     divisor: float = 1.0
+    # Chart sample period in minutes. 60 = hourly Kalshi candles. Set
+    # lower (e.g., 15) and the dashboard fetches Kalshi's minute-level
+    # candles and downsamples server-side. Use only for series where
+    # intraday market activity is dense enough to populate finer bars.
+    chart_period_minutes: int = 60
 
 
 @dataclass
