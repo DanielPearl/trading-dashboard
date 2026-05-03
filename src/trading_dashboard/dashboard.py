@@ -3089,8 +3089,8 @@ def _render_current_prediction(out: List[str], model: dict | None,
     if not model:
         return
     display = display or {}
-    out.append("<div class='subsec'>"
-               "<h3 class='subhead' style='margin-left:0;'>Current prediction</h3>")
+    # Subhead removed per user request — the cards label themselves.
+    out.append("<div class='subsec'>")
     prob_up = float(model.get("prob_up") or 0)
     change = float(model.get("median_change") or 0)
     q05 = model.get("quantile_05")
@@ -3567,7 +3567,8 @@ def _render_watchlist(out: List[str], watchlist: List[dict],
     if available_bots:
         _render_bot_filter(out, available_bots, current_bot,
                             period_key=period_key)
-    # Current prediction (moved here from the Model section per request).
+    # Current-prediction card row (no subtitle — the cards label
+    # themselves).
     _render_current_prediction(out, model, display=display)
 
     # ── Hero header + chart (Kalshi-style) ────────────────────────────────
