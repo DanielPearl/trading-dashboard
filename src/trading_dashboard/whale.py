@@ -291,6 +291,15 @@ VALIDATOR_MIN_COHORT_WIN     = 0.50    # need ≥ 50% historical win rate
 VALIDATOR_MIN_COHORT_N       = 5       # … on at least 5 prior signals
 VALIDATOR_INSIDER_THRESHOLD  = 0.65    # score ≥ this → eligible to "buy"
 
+# Live-big-bets pull thresholds. Kalshi exposes /markets/trades; we
+# fetch recent trades across the bots' configured series and surface
+# every trade above this notional as a candidate. Smaller than the
+# whale_detector min_notional_cents (5000c = $50) used by the bot —
+# the dashboard wants to *show* every big bet, not just the
+# z-score-anomalous ones.
+LIVE_MIN_NOTIONAL_CENTS = 2_000          # $20+ trades surface
+LIVE_LOOKBACK_HOURS     = 6              # recent activity window
+
 
 def validate_whale(event: dict,
                      cohort_winrates: Dict[Tuple[str, str, str], dict],
@@ -387,8 +396,162 @@ def validate_whale(event: dict,
 
 
 # --------------------------------------------------------------------------- #
+# Live big-bet ingestion                                                      #
+# --------------------------------------------------------------------------- #
+
+def fetch_live_big_bets(series_tickers: List[str],
+                          min_notional_cents: int = LIVE_MIN_NOTIONAL_CENTS,
+                          lookback_hours: int = LIVE_LOOKBACK_HOURS,
+                          ) -> List[dict]:
+    """Pull recent trades from Kalshi for each series, filter to big
+    bets, and return event-shaped dicts ready for the existing
+    scorer + validator pipeline.
+
+    No checkpoint data (these are live trades, not yet aged out), so
+    `last_favorable_cents` will be None on every row. The "Outcome"
+    column on the History tab simply won't include them until the
+    bot's signal_tracker has a chance to capture +30m checkpoints.
+
+    Each event-shaped dict has keys matching what compute_candidates /
+    insider_score / validate_whale already consume:
+        ticker, signal_ts, zscore (None — no per-market history yet),
+        direction, direction_confidence, whale_count,
+        whale_notional_cents, taker_side, entry_mid_cents,
+        entry_spread_cents (None — no orderbook fetched per trade),
+        entry_depth_within_3c (0), entered (False), checkpoints ([]).
+    """
+    from . import kalshi_client
+    client = kalshi_client.default_client()
+    if not client.available:
+        return []
+
+    seen_trade_ids: set = set()
+    out: List[dict] = []
+    for series in series_tickers:
+        try:
+            markets = client.list_markets(series)
+        except Exception:  # noqa: BLE001
+            log.exception("whale: list_markets failed for %s", series)
+            continue
+        for m in markets:
+            ticker = m.get("ticker")
+            if not ticker:
+                continue
+            try:
+                trades = client.fetch_trades(
+                    market_ticker=ticker,
+                    lookback_hours=lookback_hours,
+                    limit=200,
+                )
+            except Exception:  # noqa: BLE001
+                log.exception("whale: fetch_trades failed for %s", ticker)
+                continue
+            # Per-ticker z-score: how unusual is each trade's count
+            # relative to the other trades we're seeing on the same
+            # market in the lookback window? Cheap stand-in for the
+            # rolling-stats approach the bot uses on its live tape.
+            counts = [int(t.get("count") or 0) for t in trades]
+            if len(counts) >= 5:
+                mean_c = sum(counts) / len(counts)
+                var = sum((c - mean_c) ** 2 for c in counts) / len(counts)
+                std_c = math.sqrt(var) if var > 0 else 0.0
+            else:
+                mean_c = std_c = 0.0
+            for t in trades:
+                trade_id = t.get("trade_id") or (
+                    f"{ticker}:{t.get('created_time')}:{t.get('count')}"
+                )
+                if trade_id in seen_trade_ids:
+                    continue
+                seen_trade_ids.add(trade_id)
+                count = int(t.get("count") or 0)
+                yes_price = int(t.get("yes_price") or 0)
+                no_price = int(t.get("no_price") or 0)
+                # Notional = whichever side was actually paid.
+                price = yes_price if yes_price > 0 else no_price
+                notional = count * price
+                if notional < min_notional_cents:
+                    continue
+                taker_side = (t.get("taker_side") or "").lower()
+                # Direction inference — same heuristic as the bot's
+                # whale_detector when taker_side isn't reliable.
+                if taker_side in {"yes", "no"}:
+                    direction = taker_side
+                    dir_conf = 0.8
+                else:
+                    direction = "yes" if yes_price >= no_price else "no"
+                    dir_conf = 0.4
+                ts_str = t.get("created_time") or ""
+                try:
+                    signal_ts = datetime.fromisoformat(
+                        ts_str.replace("Z", "+00:00")
+                    ).timestamp()
+                except (TypeError, ValueError):
+                    signal_ts = time.time()
+                # Mid for probability bounds — use the trade's own
+                # yes_price as the implied mid since we don't have
+                # the orderbook at trade time.
+                mid = yes_price if yes_price > 0 else (100 - no_price)
+                # Per-ticker z-score (computed above off the trades
+                # batch). Falls back to 0 when the sample is too
+                # thin — the validator will then fail z-score.
+                zscore = (
+                    (count - mean_c) / std_c
+                    if std_c > 0 else 0.0
+                )
+                out.append({
+                    "ticker": ticker,
+                    "signal_ts": signal_ts,
+                    "zscore": zscore,
+                    "direction": direction,
+                    "direction_confidence": dir_conf,
+                    "whale_count": count,
+                    "whale_notional_cents": notional,
+                    "taker_side": taker_side,
+                    "entry_mid_cents": mid,
+                    "entry_spread_cents": None,
+                    "entry_depth_within_3c": 0,
+                    "entered": False,
+                    "rejection_reason": None,
+                    "checkpoints": [],
+                    "_source": "live",
+                })
+    return out
+
+
+# --------------------------------------------------------------------------- #
 # Candidate construction                                                      #
 # --------------------------------------------------------------------------- #
+
+def compute_action(insider_score_v: float,
+                     all_pass: bool,
+                     n_failed: int,
+                     ) -> Tuple[str, str]:
+    """Recommend what the bot should *do* with a candidate signal.
+
+    Three states, mirroring the regular bots' verdict idiom:
+      • BUY    — every validator passed AND insider P clears the
+                 threshold. The bot would simulate an entry on this.
+      • WATCH  — high insider P (≥ 0.5) but at least one validator
+                 failed. Worth keeping an eye on; don't enter yet.
+      • SKIP   — low insider P or many validator failures. Noise.
+
+    Returns (verdict, reason) where reason is a short explanation
+    suitable for a tooltip / row label.
+    """
+    if all_pass and insider_score_v >= VALIDATOR_INSIDER_THRESHOLD:
+        return ("BUY", f"All gates passed; insider P "
+                       f"{insider_score_v*100:.0f}% ≥ "
+                       f"{VALIDATOR_INSIDER_THRESHOLD*100:.0f}%")
+    if insider_score_v >= 0.50:
+        if n_failed == 1:
+            return ("WATCH", "1 validator failed — close to actionable")
+        return ("WATCH",
+                f"Promising (P {insider_score_v*100:.0f}%) but "
+                f"{n_failed} validators failed")
+    return ("SKIP",
+            f"Insider P {insider_score_v*100:.0f}% — below threshold")
+
 
 def compute_candidates(events: List[dict],
                          cohort_winrates: Dict[Tuple[str, str, str], dict],
@@ -407,8 +570,10 @@ def compute_candidates(events: List[dict],
     for e in events:
         validators = validate_whale(e, cohort_winrates)
         all_pass = all(ok for _name, ok, _detail in validators)
+        n_failed = sum(1 for _name, ok, _detail in validators if not ok)
         score = insider_score(e, cohort_winrates)
         sim_buy = all_pass and score >= VALIDATOR_INSIDER_THRESHOLD
+        action, action_reason = compute_action(score, all_pass, n_failed)
         last_fav = _last_favorable(e)
         coh = cohort_winrate_for(e, cohort_winrates)
         out.append({
@@ -416,7 +581,8 @@ def compute_candidates(events: List[dict],
             "signal_ts": e.get("signal_ts"),
             "direction": e.get("direction") or "?",
             "notional_cents": int(e.get("whale_notional_cents") or 0),
-            "zscore": float(e.get("zscore") or 0.0),
+            "zscore": (None if e.get("zscore") is None
+                        else float(e.get("zscore") or 0.0)),
             "whale_count": int(e.get("whale_count") or 0),
             "entry_mid_cents": e.get("entry_mid_cents"),
             "entry_spread_cents": e.get("entry_spread_cents"),
@@ -428,9 +594,12 @@ def compute_candidates(events: List[dict],
             "validators": validators,
             "all_pass": all_pass,
             "simulated_buy": sim_buy,
+            "action": action,
+            "action_reason": action_reason,
             "last_favorable_cents": last_fav,
             "rejection_reason": e.get("rejection_reason"),
             "entered": bool(e.get("entered")),
+            "source": e.get("_source", "tracked"),
         })
     return out
 
@@ -582,8 +751,24 @@ def render_page(
     from .dashboard import CSS, _favicon_link, _render_bot_filter
 
     cohorts = compute_cohort_winrates(events)
-    candidates = compute_candidates(events, cohorts)
-    summary = summarize(events, candidates)
+
+    # Pull live big bets across the configured bots' series so the
+    # whale page surfaces real Kalshi activity even when the
+    # whale-watcher bot's signal_tracking.jsonl is sparse / empty.
+    series_to_scan: List[str] = []
+    for b in available_bots:
+        s = b.get("series_ticker")
+        if s and s not in series_to_scan:
+            series_to_scan.append(s)
+    live_events = fetch_live_big_bets(series_to_scan) if series_to_scan else []
+
+    # Combine: tracked signals (from JSONL, with checkpoints) + live
+    # big bets (from Kalshi API, no checkpoints yet). The scorer
+    # handles both shapes — live trades just lack a z-score so the
+    # corresponding insider feature defaults to 0 for them.
+    combined_events = list(events) + live_events
+    candidates = compute_candidates(combined_events, cohorts)
+    summary = summarize(combined_events, candidates)
 
     out: List[str] = []
     out.append("<!doctype html><html><head>")
@@ -792,7 +977,9 @@ def _render_unusual_whales(out: List[str], candidates: List[dict]) -> None:
                "<th class='num'>Cohort win %</th>"
                "<th class='num'>Insider P</th>"
                "<th>Validators</th>"
-               "<th>Simulate buy?</th>"
+               "<th title='Recommended action: BUY (simulate entry), "
+               "WATCH (promising but not actionable), or SKIP.'>"
+               "Action</th>"
                "</tr></thead><tbody>")
     for c in pool[:200]:
         side_cls = "side-yes" if c["direction"] == "yes" else "side-no"
@@ -805,22 +992,30 @@ def _render_unusual_whales(out: List[str], candidates: List[dict]) -> None:
             cls = "valid-pill " + ("pass" if ok else "fail")
             short = name.split(" ")[0][:8]  # compact
             pills.append(f"<span class='{cls}' title='{html.escape(_validator_tooltip(name, ok, _detail))}'>{html.escape(short)}</span>")
-        sim_badge = (
-            "<span class='badge badge-yes'>YES</span>"
-            if c["simulated_buy"]
-            else "<span class='badge badge-skip'>—</span>"
+        action = c["action"]
+        action_cls = {
+            "BUY":   "badge-yes",
+            "WATCH": "badge-hedge",
+            "SKIP":  "badge-skip",
+        }.get(action, "badge-skip")
+        action_badge = (
+            f"<span class='badge {action_cls}' "
+            f"title='{html.escape(c.get('action_reason', ''))}'>"
+            f"{action}</span>"
         )
+        z_str = (f"{c['zscore']:.2f}" if c.get('zscore') is not None
+                  else "—")
         out.append(
             f"<tr><td>{html.escape(_fmt_age(c['signal_ts']))}</td>"
             f"<td class='mono'>{html.escape(c['ticker'])}</td>"
             f"<td><span class='{side_cls}'>{c['direction'].upper()}</span></td>"
             f"<td class='num'>{_fmt_dollars(c['notional_cents'])}</td>"
-            f"<td class='num'>{c['zscore']:.2f}</td>"
+            f"<td class='num'>{z_str}</td>"
             f"<td class='num'>{coh_str}</td>"
             f"<td class='num'><span class='whale-score {score_cls}'>"
             f"{c['insider_score']*100:.0f}%</span></td>"
             f"<td>{''.join(pills)}</td>"
-            f"<td>{sim_badge}</td>"
+            f"<td>{action_badge}</td>"
             f"</tr>"
         )
     out.append("</tbody></table>")

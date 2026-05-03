@@ -288,6 +288,38 @@ class KalshiClient:
         _CACHE.put(cache_key, candles)
         return candles
 
+    def fetch_trades(self, market_ticker: Optional[str] = None,
+                      lookback_hours: int = 24,
+                      limit: int = 200) -> List[dict]:
+        """Recent trades for one market, or all trades if ``market_ticker``
+        is None (Kalshi returns the most-recent N globally in that case).
+
+        Cached 60s — trades update in real-time so we don't want to
+        cache too long, but also don't want to hammer the API on every
+        page load (whale page polls every 30s).
+
+        Each trade dict carries (canonical Kalshi fields):
+            ticker, count, yes_price, no_price, taker_side, created_time.
+        """
+        cache_key = f"trades:{market_ticker or '*'}:{lookback_hours}:{limit}"
+        cached = _CACHE.get(cache_key)
+        if cached is not None:
+            return cached
+        end_ts = int(time.time())
+        start_ts = end_ts - lookback_hours * 3600
+        params: Dict[str, Any] = {
+            "min_ts": start_ts,
+            "limit": limit,
+        }
+        if market_ticker:
+            params["ticker"] = market_ticker
+        resp = self._get("/markets/trades", params=params)
+        if not resp:
+            return []
+        trades = resp.get("trades") or []
+        _CACHE.put(cache_key, trades)
+        return trades
+
 
 _DEFAULT_CLIENT: Optional[KalshiClient] = None
 _CLIENT_LOCK = threading.Lock()
