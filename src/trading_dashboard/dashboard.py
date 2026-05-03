@@ -3305,6 +3305,11 @@ def _render_watchlist(out: List[str], watchlist: List[dict],
         _render_bot_filter(out, available_bots, current_bot,
                             period_key=period_key)
 
+    # Current-prediction card row (Current price, Predicted next week,
+    # etc.) sits between the bot dropdown and the Active bet so the
+    # model's view comes right after the bot selector.
+    _render_current_prediction(out, model, display=display)
+
     # Buy-criteria reference button — rendered as a small circle-i info
     # icon inline with the Active-bet h3 so it sits next to the
     # section title (compact, doesn't take a row of its own). Click
@@ -3325,9 +3330,7 @@ def _render_watchlist(out: List[str], watchlist: List[dict],
     # ── This bot's active bet ────────────────────────────────────────
     # Active bet h3 → rules button → bet table (or empty state). The
     # rules button always renders so the rule-set context is one click
-    # away even when the bot has no open position right now. Sits
-    # directly under the bot dropdown so it's the first table on the
-    # tab — same prominence as "Active bets" on the Home tab.
+    # away even when the bot has no open position right now.
     out.append(
         "<h3 class='subhead' "
         "style='display:flex;align-items:center;gap:8px;'>"
@@ -3355,11 +3358,6 @@ def _render_watchlist(out: List[str], watchlist: List[dict],
         enriched["_display"] = display or {}
         _render_active_bets_table(out, [enriched],
                                     show_bot=False)
-
-    # Current-prediction card row sits below the active bet now (so
-    # the user sees their open position first, then the model's view
-    # of where the underlying might land).
-    _render_current_prediction(out, model, display=display)
 
     # ── Hero header + chart (Kalshi-style) ────────────────────────────────
     # Top-line metrics for the underlying the bot tracks: current value,
