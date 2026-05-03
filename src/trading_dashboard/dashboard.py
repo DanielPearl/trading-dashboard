@@ -1402,6 +1402,54 @@ code { background: #161b22; padding: 1px 6px; border-radius: 3px; color: #c9d1d9
     margin-bottom: -1px; font-weight: 600; }
 .tab-panel { display: none; }
 .tab-panel-active { display: block; }
+/* "Why?" button on each active-bets row + the criteria modal it
+   opens. Single shared modal at page bottom; JS populates the body
+   from data-criteria on the clicked button. */
+.criteria-btn {
+    background: #21262d; color: #c9d1d9; border: 1px solid #30363d;
+    border-radius: 6px; padding: 4px 10px; font-size: 11px;
+    font-weight: 500; cursor: pointer; line-height: 1.4;
+    transition: background 120ms, border-color 120ms; }
+.criteria-btn:hover { background: #2d333b; border-color: #1f6feb;
+    color: #f0f6fc; }
+.criteria-overlay {
+    position: fixed; inset: 0; background: rgba(0,0,0,0.55);
+    z-index: 100; }
+.criteria-modal {
+    position: fixed; top: 50%; left: 50%;
+    transform: translate(-50%, -50%);
+    background: #0d1117; border: 1px solid #30363d; border-radius: 8px;
+    width: min(560px, 92vw); max-height: 80vh;
+    display: flex; flex-direction: column;
+    z-index: 101; box-shadow: 0 12px 48px rgba(0,0,0,0.6); }
+.criteria-modal-head {
+    display: flex; align-items: baseline;
+    justify-content: space-between;
+    padding: 14px 18px; border-bottom: 1px solid #21262d; }
+.criteria-modal-head h3 { margin: 0; font-size: 15px; font-weight: 700;
+    color: #f0f6fc; }
+.criteria-modal-head .ticker { font-family: ui-monospace, SFMono-Regular,
+    Consolas, monospace; font-size: 11px; color: #8b949e; }
+.criteria-modal-close {
+    background: transparent; border: none; color: #8b949e;
+    font-size: 20px; cursor: pointer; padding: 0 4px; line-height: 1;
+    margin-left: 8px; }
+.criteria-modal-close:hover { color: #f0f6fc; }
+.criteria-modal-body {
+    padding: 14px 18px; overflow-y: auto; font-size: 13px;
+    color: #c9d1d9; line-height: 1.55; }
+.criteria-modal-body dl { margin: 0; display: grid;
+    grid-template-columns: max-content 1fr; gap: 6px 16px; }
+.criteria-modal-body dt { color: #8b949e; }
+.criteria-modal-body dd { margin: 0; color: #c9d1d9;
+    font-variant-numeric: tabular-nums; }
+.criteria-modal-body dd.green { color: #3fb950; }
+.criteria-modal-body dd.red   { color: #f85149; }
+.criteria-modal-body dd.gray  { color: #6e7681; }
+.criteria-modal-body .crit-section { margin-top: 14px; }
+.criteria-modal-body .crit-section h4 {
+    font-size: 11px; text-transform: uppercase; letter-spacing: 0.06em;
+    color: #8b949e; font-weight: 600; margin: 0 0 8px 0; }
 /* Per-bot performance cards on the Performance tab. Cards align in a
    grid (auto-fit so they reflow at narrow widths) and are clickable —
    the whole card is an anchor to that bot's Watchlist tab. */
@@ -1657,6 +1705,22 @@ def render_page(
     # Live-update JS: polls /api/snapshot every 5s and patches summary
     # cards + watchlist cells in place. Pass the period so the live
     # cards keep matching the user's filter selection between polls.
+    # Shared "Why?" modal — single instance, populated dynamically by
+    # the JS hook when any .criteria-btn is clicked.
+    out.append(
+        "<div id='criteria-overlay' class='criteria-overlay' hidden></div>"
+        "<div id='criteria-modal' class='criteria-modal' hidden>"
+        "  <div class='criteria-modal-head'>"
+        "    <div>"
+        "      <h3>Why was this bet chosen?</h3>"
+        "      <div class='ticker' id='criteria-modal-ticker'></div>"
+        "    </div>"
+        "    <button type='button' id='criteria-close' "
+        "      class='criteria-modal-close' aria-label='Close'>×</button>"
+        "  </div>"
+        "  <div class='criteria-modal-body' id='criteria-modal-body'></div>"
+        "</div>"
+    )
     out.append(_live_update_script(current_bot, period_key=period_key))
     out.append("</body></html>")
     return "".join(out)
@@ -1841,6 +1905,88 @@ def _live_update_script(current_bot: str, period_key: str = "all") -> str:
       const url = sel.value;
       if (url) window.location.href = url;
     }});
+  }});
+
+  // ── "Why?" modal — bet criteria popup ────────────────────────
+  // Each .criteria-btn carries data-criteria with the entry-time
+  // snapshot. On click we populate one shared modal at the bottom
+  // of the page and reveal it; click overlay or × to dismiss.
+  const critOverlay = document.getElementById("criteria-overlay");
+  const critModal   = document.getElementById("criteria-modal");
+  const critBody    = document.getElementById("criteria-modal-body");
+  const critTicker  = document.getElementById("criteria-modal-ticker");
+  const critClose   = document.getElementById("criteria-close");
+  function fmtPct(v) {{
+    if (v === null || v === undefined || !isFinite(v)) return "—";
+    return (v * 100).toFixed(0) + "%";
+  }}
+  function fmtCents3(v) {{
+    if (v === null || v === undefined || !isFinite(v)) return "—";
+    const sign = v >= 0 ? "+" : "−";
+    return sign + "$" + Math.abs(v).toFixed(3);
+  }}
+  function buildCriteriaHTML(c) {{
+    const sideBadge = "<span class='badge badge-" +
+      (c.side === "YES" ? "yes" : "no") + "'>" + c.side + "</span>";
+    let html = "<div class='crit-section'><h4>The trade</h4><dl>";
+    html += "<dt>Bot</dt><dd>" + (c.bot || "—") + "</dd>";
+    html += "<dt>Question</dt><dd>" + (c.question || "—") + "</dd>";
+    html += "<dt>Side</dt><dd>" + sideBadge + "</dd>";
+    html += "<dt>Entry price</dt><dd>" + (c.entry || 0) + "c</dd>";
+    html += "<dt>Contracts</dt><dd>" + (c.contracts || 0) + "</dd>";
+    html += "<dt>Opened</dt><dd>" + (c.opened || "—") + "</dd>";
+    html += "</dl></div>";
+    html += "<div class='crit-section'><h4>Why we took it</h4><dl>";
+    html += "<dt>Model probability</dt><dd>" + fmtPct(c.model_p) + "</dd>";
+    html += "<dt>Market probability</dt><dd>" + fmtPct(c.kalshi_p) + "</dd>";
+    let edgeCls = "gray";
+    if (c.edge_pts !== null && isFinite(c.edge_pts)) {{
+      edgeCls = c.edge_pts > 0 ? "green" : (c.edge_pts < 0 ? "red" : "gray");
+    }}
+    const edgeStr = (c.edge_pts === null || !isFinite(c.edge_pts))
+      ? "—"
+      : (c.edge_pts >= 0 ? "+" : "−")
+        + Math.abs(c.edge_pts).toFixed(0) + " pts";
+    html += "<dt>Edge</dt><dd class='" + edgeCls + "'>" + edgeStr + "</dd>";
+    let evCls = "gray";
+    if (c.entry_ev !== null && isFinite(c.entry_ev)) {{
+      evCls = c.entry_ev > 0 ? "green"
+            : (c.entry_ev < 0 ? "red" : "gray");
+    }}
+    html += "<dt>Entry EV / contract</dt><dd class='" + evCls + "'>"
+         + fmtCents3(c.entry_ev) + "</dd>";
+    html += "<dt>Break-even probability</dt><dd>"
+         + fmtPct(c.break_even) + "</dd>";
+    html += "</dl></div>";
+    html += "<div class='crit-section' style='font-size:11px;color:#8b949e;'>"
+         + "Numbers are entry-time snapshots — what the bot saw the moment "
+         + "it opened the position.</div>";
+    return html;
+  }}
+  function showCriteria(btn) {{
+    if (!critOverlay || !critModal) return;
+    let data = {{}};
+    try {{ data = JSON.parse(btn.dataset.criteria || "{{}}"); }} catch (e) {{}}
+    if (critTicker) critTicker.textContent = data.ticker || "";
+    if (critBody)   critBody.innerHTML     = buildCriteriaHTML(data);
+    critOverlay.hidden = false;
+    critModal.hidden   = false;
+  }}
+  function hideCriteria() {{
+    if (critOverlay) critOverlay.hidden = true;
+    if (critModal)   critModal.hidden   = true;
+  }}
+  document.addEventListener("click", function (e) {{
+    const btn = e.target.closest(".criteria-btn");
+    if (btn) {{
+      e.preventDefault();
+      showCriteria(btn);
+    }}
+  }});
+  if (critOverlay) critOverlay.addEventListener("click", hideCriteria);
+  if (critClose)   critClose.addEventListener("click", hideCriteria);
+  document.addEventListener("keydown", function (e) {{
+    if (e.key === "Escape") hideCriteria();
   }});
 
   // ── Tab switcher ────────────────────────────────────────────────
@@ -2332,6 +2478,7 @@ def _render_active_bets_table(out: List[str], bets: List[dict],
                "<th class='num' title='Current ask × contracts — what the position is worth right now'>Current</th>"
                "<th class='num' title='(100 − entry) × contracts — gross profit if our side wins'>Potential gain</th>"
                "<th class='num' title='Time until the contract resolves'>Closes in</th>"
+               "<th title='Why this bet was chosen — model probability, market price, edge, EV.'>Why?</th>"
                "</tr></thead><tbody>")
     for b in bets:
         opened = (b.get("opened_at") or "")[:19].replace("T", " ")
@@ -2366,6 +2513,49 @@ def _render_active_bets_table(out: List[str], bets: List[dict],
                          else "—")
         mtc = b.get("minutes_to_close")
         bot_td = (f"<td>{html.escape(bot_name)}</td>" if show_bot else "")
+        # Build the "why was this bet chosen" payload from entry-time
+        # snapshot fields recorded on the position. JS reads this from
+        # data-criteria on click and populates the shared modal.
+        m_yes = b.get("model_yes_prob_at_entry")
+        k_yes = b.get("kalshi_yes_prob_at_entry")
+        # Selected-side probabilities — YES bet uses model_yes / kalshi_yes
+        # directly; NO bet uses 1 - model_yes / 1 - kalshi_yes.
+        if m_yes is not None:
+            try:
+                m_yes_f = float(m_yes)
+                model_p = m_yes_f if side == "YES" else (1.0 - m_yes_f)
+            except (TypeError, ValueError):
+                model_p = None
+        else:
+            model_p = None
+        if k_yes is not None:
+            try:
+                k_yes_f = float(k_yes)
+                kalshi_p = k_yes_f if side == "YES" else (1.0 - k_yes_f)
+            except (TypeError, ValueError):
+                kalshi_p = None
+        else:
+            kalshi_p = None
+        edge_pts = (
+            (model_p - kalshi_p) * 100.0
+            if (model_p is not None and kalshi_p is not None) else None
+        )
+        criteria = {
+            "ticker": b.get("ticker"),
+            "side": side,
+            "entry": entry,
+            "contracts": contracts,
+            "question": question,
+            "bot": bot_name if show_bot else b.get("_bot_name", ""),
+            "model_p": model_p,
+            "kalshi_p": kalshi_p,
+            "edge_pts": edge_pts,
+            "entry_ev": b.get("expected_ev_at_entry"),
+            "break_even": b.get("break_even_probability"),
+            "opened": opened,
+        }
+        criteria_json = html.escape(json.dumps(
+            criteria, separators=(",", ":"), default=str))
         out.append(
             f"<tr><td>{html.escape(opened)}</td>"
             f"{bot_td}"
@@ -2376,7 +2566,10 @@ def _render_active_bets_table(out: List[str], bets: List[dict],
             f"<td class='num red'>−${entry_cost:.2f}</td>"
             f"<td class='num'>{current_cell}</td>"
             f"<td class='num green'>+${potential_gain:.2f}</td>"
-            f"<td class='num'>{time_to_close_str(mtc)}</td></tr>"
+            f"<td class='num'>{time_to_close_str(mtc)}</td>"
+            f"<td><button type='button' class='criteria-btn' "
+            f"data-criteria='{criteria_json}'>Why?</button></td>"
+            f"</tr>"
         )
     out.append("</tbody></table>")
 
