@@ -1412,6 +1412,21 @@ code { background: #161b22; padding: 1px 6px; border-radius: 3px; color: #c9d1d9
     transition: background 120ms, border-color 120ms; }
 .criteria-btn:hover { background: #2d333b; border-color: #1f6feb;
     color: #f0f6fc; }
+/* Bigger sibling — used for the Watchlist "what does the bot need
+   before it'll buy" reference popup. Same modal target. */
+.criteria-rules-btn {
+    background: #161b22; color: #c9d1d9; border: 1px solid #30363d;
+    border-radius: 6px; padding: 6px 14px; font-size: 12px;
+    font-weight: 500; cursor: pointer; line-height: 1.4;
+    transition: background 120ms, border-color 120ms; }
+.criteria-rules-btn:hover { background: #21262d; border-color: #1f6feb;
+    color: #f0f6fc; }
+.criteria-rules-btn::before {
+    content: ""; display: inline-block;
+    width: 14px; height: 14px; margin-right: 6px;
+    vertical-align: -2px;
+    background: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='14' height='14' viewBox='0 0 14 14'><circle cx='7' cy='7' r='6' fill='none' stroke='%238b949e' stroke-width='1.2'/><circle cx='7' cy='4' r='0.9' fill='%238b949e'/><rect x='6.3' y='6' width='1.4' height='5' fill='%238b949e' rx='0.3'/></svg>") no-repeat center;
+}
 .criteria-overlay {
     position: fixed; inset: 0; background: rgba(0,0,0,0.55);
     z-index: 100; }
@@ -1976,10 +1991,99 @@ def _live_update_script(current_bot: str, period_key: str = "all") -> str:
     if (critOverlay) critOverlay.hidden = true;
     if (critModal)   critModal.hidden   = true;
   }}
+  // Build the "buy criteria + validators" reference popup body from
+  // the bot's edge/validator/risk/hedge configs serialised on the
+  // button as data-rules.
+  function fmtCents(c) {{
+    if (c === null || c === undefined || !isFinite(c)) return "—";
+    return "$" + (c / 100).toFixed(2);
+  }}
+  function fmtMin(m) {{
+    if (m === null || m === undefined || !isFinite(m)) return "—";
+    if (m >= 1440) return (m / 1440).toFixed(0) + "d";
+    if (m >= 60)   return (m / 60).toFixed(0) + "h";
+    return m + "min";
+  }}
+  function buildRulesHTML(r) {{
+    const e = r.edge || {{}};
+    const v = r.validators || {{}};
+    const k = r.risk || {{}};
+    const h = r.hedge || {{}};
+    let html = "";
+    html += "<div class='crit-section'><h4>Edge / EV thresholds</h4><dl>";
+    html += "<dt>Min model edge (YES)</dt><dd>" + (e.min_edge_yes != null ? (e.min_edge_yes * 100).toFixed(0) + " pts" : "—") + "</dd>";
+    html += "<dt>Min model edge (NO)</dt><dd>"  + (e.min_edge_no  != null ? (e.min_edge_no  * 100).toFixed(0) + " pts" : "—") + "</dd>";
+    html += "<dt>Min model confidence</dt><dd>" + fmtPct(e.min_model_confidence) + "</dd>";
+    html += "<dt>Min model accuracy</dt><dd>"   + fmtPct(e.min_model_accuracy) + "</dd>";
+    html += "<dt>Min EV per contract</dt><dd>"  + (e.min_ev_per_contract != null ? "$" + Number(e.min_ev_per_contract).toFixed(2) : "—") + "</dd>";
+    html += "<dt>Min edge over BE</dt><dd>"     + (e.min_prob_edge_over_breakeven != null ? (e.min_prob_edge_over_breakeven * 100).toFixed(0) + " pts" : "—") + "</dd>";
+    html += "</dl></div>";
+
+    html += "<div class='crit-section'><h4>Validators (must all pass)</h4><dl>";
+    html += "<dt>Min book depth</dt><dd>"       + (v.min_book_depth_contracts != null ? v.min_book_depth_contracts + " contracts" : "—") + "</dd>";
+    html += "<dt>Max spread</dt><dd>"           + (v.max_spread_cents != null ? v.max_spread_cents + "¢" : "—") + "</dd>";
+    let ttc = "—";
+    if (v.min_minutes_to_close != null && v.max_minutes_to_close != null)
+      ttc = fmtMin(v.min_minutes_to_close) + " – " + fmtMin(v.max_minutes_to_close);
+    html += "<dt>Time to close</dt><dd>" + ttc + "</dd>";
+    let pb = "—";
+    if (Array.isArray(v.prob_bounds_cents) && v.prob_bounds_cents.length === 2)
+      pb = v.prob_bounds_cents[0] + "¢ – " + v.prob_bounds_cents[1] + "¢";
+    html += "<dt>Probability bounds</dt><dd>" + pb + "</dd>";
+    html += "<dt>Min volume</dt><dd>"           + (v.min_volume != null ? v.min_volume : "—") + "</dd>";
+    html += "<dt>Min open interest</dt><dd>"    + (v.min_open_interest != null ? v.min_open_interest : "—") + "</dd>";
+    html += "<dt>Min ask depth</dt><dd>"        + (v.min_depth_at_best_ask != null ? v.min_depth_at_best_ask : "—") + "</dd>";
+    html += "<dt>Basis-risk strike window</dt><dd>" + (v.basis_risk_strike_window_dollars != null ? "±$" + Number(v.basis_risk_strike_window_dollars).toFixed(2) : "—") + "</dd>";
+    html += "<dt>Basis-risk max hours</dt><dd>" + (v.basis_risk_max_hours_to_close != null ? v.basis_risk_max_hours_to_close + "h" : "—") + "</dd>";
+    html += "</dl></div>";
+
+    html += "<div class='crit-section'><h4>Risk caps</h4><dl>";
+    html += "<dt>Bet size</dt><dd>"             + fmtCents(k.bet_size_cents) + "</dd>";
+    html += "<dt>Max open positions</dt><dd>"   + (k.max_open_positions ?? "—") + "</dd>";
+    html += "<dt>Max total exposure</dt><dd>"   + fmtCents(k.max_total_exposure_cents) + "</dd>";
+    html += "<dt>Max bets per day</dt><dd>"     + (k.max_bets_per_day ?? "—") + "</dd>";
+    html += "<dt>Cooldown (same market)</dt><dd>" + (k.cooldown_seconds_same_market != null ? Math.round(k.cooldown_seconds_same_market / 60) + " min" : "—") + "</dd>";
+    html += "</dl></div>";
+
+    html += "<div class='crit-section'><h4>Hedging</h4><dl>";
+    html += "<dt>Enabled</dt><dd>"              + (h.enabled ? "Yes" : "No") + "</dd>";
+    html += "<dt>Profit-lock</dt><dd>"          + (h.profit_lock_cents != null ? h.profit_lock_cents + "¢" : "—") + "</dd>";
+    html += "<dt>Stop-loss</dt><dd>"            + (h.stop_loss_cents != null ? h.stop_loss_cents + "¢" : "—") + "</dd>";
+    html += "<dt>Hedge size fraction</dt><dd>"  + (h.hedge_size_fraction != null ? Number(h.hedge_size_fraction).toFixed(2) : "—") + "</dd>";
+    html += "</dl></div>";
+
+    html += "<div class='crit-section' style='font-size:11px;color:#8b949e;'>"
+         + "Every contract the bot considers must clear all of these gates "
+         + "before a bet is placed. The Why? button on each open position "
+         + "shows what the bot saw at entry-time for that specific bet."
+         + "</div>";
+    return html;
+  }}
+  function showRules(btn) {{
+    if (!critOverlay || !critModal) return;
+    let data = {{}};
+    try {{ data = JSON.parse(btn.dataset.rules || "{{}}"); }} catch (e) {{}}
+    const h3 = critModal.querySelector("h3");
+    if (h3) h3.textContent = "Buy criteria & validators";
+    if (critTicker) critTicker.textContent = "";
+    if (critBody)   critBody.innerHTML = buildRulesHTML(data);
+    critOverlay.hidden = false;
+    critModal.hidden   = false;
+  }}
+
   document.addEventListener("click", function (e) {{
+    const ruleBtn = e.target.closest(".criteria-rules-btn");
+    if (ruleBtn) {{
+      e.preventDefault();
+      showRules(ruleBtn);
+      return;
+    }}
     const btn = e.target.closest(".criteria-btn");
     if (btn) {{
       e.preventDefault();
+      // Restore the per-bet header — the rules popup may have changed it.
+      const h3 = critModal && critModal.querySelector("h3");
+      if (h3) h3.textContent = "Why was this bet chosen?";
       showCriteria(btn);
     }}
   }});
@@ -3005,6 +3109,23 @@ def _render_watchlist(out: List[str], watchlist: List[dict],
     if available_bots:
         _render_bot_filter(out, available_bots, current_bot,
                             period_key=period_key)
+    # Buy criteria + validators reference button — opens the shared
+    # modal with the full set of thresholds the bot checks before
+    # placing a bet. Sits inline with the bot dropdown so it reads
+    # as part of the section's "what scopes this view" controls.
+    rules_payload = json.dumps({
+        "edge": edge_cfg or {},
+        "validators": validator_cfg or {},
+        "risk": risk_caps or {},
+        "hedge": hedge_cfg or {},
+    }, separators=(",", ":"), default=str)
+    out.append(
+        "<div style='margin: -8px 0 12px 0;'>"
+        "<button type='button' class='criteria-rules-btn' "
+        f"data-rules='{html.escape(rules_payload)}'>"
+        "What does this bot need before it'll buy?"
+        "</button></div>"
+    )
     # Current-prediction card row (no subtitle — the cards label
     # themselves).
     _render_current_prediction(out, model, display=display)
