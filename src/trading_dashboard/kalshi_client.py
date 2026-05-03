@@ -364,6 +364,110 @@ def _candle_yes_prob(cdl: dict) -> Optional[float]:
     return ya_c if ya_c is not None else yb_c
 
 
+def _interpolate_event_history(client: "KalshiClient",
+                                series_ticker: str,
+                                event_markets: List[dict],
+                                anchor_value: Optional[float],
+                                period_minutes: int,
+                                lookback_hours: int,
+                                max_strikes: int = 6,
+                                ) -> List[dict]:
+    """Strike-ladder interpolation for one event, producing one (ts,
+    value) point per candle timestamp where at least 2 markets reported
+    a YES probability.
+
+    `anchor_value`: for OPEN events pass None — markets are picked by
+    current YES≈50% (the ATM heuristic). For SETTLED events pass the
+    expiration_value so we pick markets whose strikes bracketed the
+    eventual settlement (those carry the most informative intraday
+    price action — they're where the market thought 50% was).
+    """
+    scored: List[Tuple[float, dict]] = []
+    for m in event_markets:
+        if m.get("floor_strike") is None:
+            continue
+        try:
+            strike = float(m["floor_strike"])
+        except (TypeError, ValueError):
+            continue
+        if anchor_value is not None:
+            # Settled event — score by distance from settlement value.
+            scored.append((abs(strike - anchor_value), m))
+            continue
+        ya = _to_float(m.get("yes_ask_dollars"))
+        yb = _to_float(m.get("yes_bid_dollars"))
+        mid = None
+        if ya is not None and yb is not None:
+            mid = (ya + yb) / 2.0
+        elif ya is not None:
+            mid = ya
+        elif yb is not None:
+            mid = yb
+        if mid is None:
+            continue
+        scored.append((abs(mid - 0.5), m))
+    scored.sort(key=lambda x: x[0])
+    picked = [m for _, m in scored[:max_strikes]]
+    if len(picked) < 2:
+        return []
+
+    market_data: List[Tuple[float, Dict[float, float]]] = []
+    for m in picked:
+        strike = float(m["floor_strike"])
+        cache_key = f"candles:{m['ticker']}:{period_minutes}:{lookback_hours}"
+        was_cached = _CACHE.get(cache_key) is not None
+        candles = client.candlesticks(
+            series_ticker, m["ticker"],
+            period_minutes=period_minutes, lookback_hours=lookback_hours,
+        )
+        if not was_cached:
+            time.sleep(0.1)
+        ts_to_yes: Dict[float, float] = {}
+        for cdl in candles:
+            ts = cdl.get("end_period_ts")
+            yp = _candle_yes_prob(cdl)
+            if ts is None or yp is None:
+                continue
+            ts_to_yes[float(ts)] = yp
+        market_data.append((strike, ts_to_yes))
+
+    if not market_data:
+        return []
+
+    all_ts = sorted({t for _, ts_map in market_data for t in ts_map.keys()})
+    history: List[dict] = []
+    for ts in all_ts:
+        pairs: List[Tuple[float, float]] = []
+        for strike, ts_map in market_data:
+            yp = ts_map.get(ts)
+            if yp is None:
+                continue
+            pairs.append((strike, yp))
+        if len(pairs) < 2:
+            continue
+        pairs.sort(key=lambda x: x[0])
+        implied: Optional[float] = None
+        for i in range(len(pairs) - 1):
+            s1, p1 = pairs[i]
+            s2, p2 = pairs[i + 1]
+            if (p1 >= 0.5 >= p2) or (p2 >= 0.5 >= p1):
+                if p1 == p2:
+                    implied = (s1 + s2) / 2
+                else:
+                    t = (p1 - 0.5) / (p1 - p2)
+                    implied = s1 + t * (s2 - s1)
+                break
+        if implied is None:
+            # Tail of the distribution — clamp to nearest strike.
+            if pairs[-1][1] >= 0.5:
+                implied = pairs[-1][0]
+            elif pairs[0][1] < 0.5:
+                implied = pairs[0][0]
+        if implied is not None:
+            history.append({"ts": float(ts), "value": float(implied)})
+    return history
+
+
 def fetch_settlement_anchors(series_ticker: str,
                               lookback_days: int = 5,
                               client: Optional["KalshiClient"] = None,
@@ -469,121 +573,57 @@ def fetch_underlying_history(series_ticker: str,
         event = c.get_event(atm["event_ticker"])
         if event:
             event_title = event.get("title")
-    # Auto-size lookback to cover the contract's full life so far. Cap
-    # at 7 days; Kalshi rejects very long ranges with very fine periods.
-    if lookback_hours is None:
-        if contract_open_ts is not None:
-            elapsed_h = max(1, int((time.time() - contract_open_ts) / 3600) + 1)
-            lookback_hours = min(elapsed_h, 7 * 24)
-        else:
-            lookback_hours = 24
-    # Pick the top-N markets nearest the ATM by current YES probability.
-    # Anything far from 50% has no useful information for interpolation
-    # — the strike where YES≈50% is what determines the implied price.
-    scored: List[Tuple[float, dict]] = []
-    for m in markets:
-        ya = _to_float(m.get("yes_ask_dollars"))
-        yb = _to_float(m.get("yes_bid_dollars"))
-        mid = None
-        if ya is not None and yb is not None:
-            mid = (ya + yb) / 2.0
-        elif ya is not None:
-            mid = ya
-        elif yb is not None:
-            mid = yb
-        if mid is None:
-            continue
-        if m.get("floor_strike") is None:
-            continue
-        scored.append((abs(mid - 0.5), m))
-    scored.sort(key=lambda x: x[0])
-    picked = [m for _, m in scored[:max_strikes]]
-    if len(picked) < 2:
-        return [], atm, markets, contract_open_ts, contract_close_ts, event_title
+    # Multi-event 5-day window: every event in the series with markets
+    # that have candle data in the past 5 days contributes to history.
+    # OPEN events get strike-ladder interpolation by current YES≈50%.
+    # SETTLED events get strike-ladder interpolation by proximity to
+    # expiration_value (the strikes that bracketed the actual outcome —
+    # those carry the most informative intraday price action).
+    LOOKBACK_DAYS = 5
+    cutoff_ts = time.time() - LOOKBACK_DAYS * 86400
+    candle_lookback_h = LOOKBACK_DAYS * 24
 
-    # Pull candles for each picked market. Cached 5 minutes per market
-    # so the same lookup costs ~0 on subsequent renders. Cache misses
-    # space the API calls 100ms apart to stay under Kalshi's per-IP
-    # rate limit (we've seen 429s when bursting 30+ calls in a second).
-    market_data: List[Tuple[float, Dict[float, float]]] = []
-    for m in picked:
-        try:
-            strike = float(m["floor_strike"])
-        except (TypeError, ValueError):
-            continue
-        cache_key = (f"candles:{m['ticker']}:{period_minutes}:{lookback_hours}")
-        was_cached = _CACHE.get(cache_key) is not None
-        candles = c.candlesticks(
-            series_ticker, m["ticker"],
-            period_minutes=period_minutes, lookback_hours=lookback_hours,
-        )
-        if not was_cached:
-            time.sleep(0.1)
-        ts_to_yes: Dict[float, float] = {}
-        for cdl in candles:
-            ts = cdl.get("end_period_ts")
-            yp = _candle_yes_prob(cdl)
-            if ts is None or yp is None:
-                continue
-            ts_to_yes[float(ts)] = yp
-        market_data.append((strike, ts_to_yes))
-
-    if not market_data:
-        return [], atm, markets, contract_open_ts, contract_close_ts, event_title
-
-    # Union of timestamps observed across all markets.
-    all_ts = sorted({t for _, ts_map in market_data for t in ts_map.keys()})
     history: List[dict] = []
-    for ts in all_ts:
-        # Build (strike, yes_prob) pairs at this ts, sorted by strike asc.
-        pairs: List[Tuple[float, float]] = []
-        for strike, ts_map in market_data:
-            yp = ts_map.get(ts)
-            if yp is None:
-                continue
-            pairs.append((strike, yp))
-        if len(pairs) < 2:
+
+    # 1. Current open event.
+    open_history = _interpolate_event_history(
+        c, series_ticker, markets, anchor_value=None,
+        period_minutes=period_minutes, lookback_hours=candle_lookback_h,
+        max_strikes=max_strikes,
+    )
+    history.extend(open_history)
+
+    # 2. Settled events in the past 5 days.
+    settled_events = c.list_events(series_ticker, statuses=("settled",),
+                                    limit=LOOKBACK_DAYS * 5)
+    seen_events: set = set()
+    for event in settled_events:
+        evt_ticker = event.get("event_ticker")
+        if not evt_ticker or evt_ticker in seen_events:
             continue
-        pairs.sort(key=lambda x: x[0])
-        # Higher strike → lower YES probability. Walk pairs and find the
-        # bracket where probability crosses 0.5.
-        implied: Optional[float] = None
-        for i in range(len(pairs) - 1):
-            s1, p1 = pairs[i]
-            s2, p2 = pairs[i + 1]
-            if (p1 >= 0.5 >= p2) or (p2 >= 0.5 >= p1):
-                if p1 == p2:
-                    implied = (s1 + s2) / 2
-                else:
-                    t = (p1 - 0.5) / (p1 - p2)
-                    implied = s1 + t * (s2 - s1)
+        seen_events.add(evt_ticker)
+        last_updated = _parse_iso(event.get("last_updated_ts"))
+        if last_updated and last_updated < cutoff_ts:
+            continue
+        evt_markets = c.list_markets(event_ticker=evt_ticker, limit=200)
+        if not evt_markets:
+            continue
+        # Read the event's settlement value from any of its markets.
+        anchor_value: Optional[float] = None
+        for m in evt_markets:
+            v = _to_float(m.get("expiration_value"))
+            if v is not None:
+                anchor_value = v
                 break
-        if implied is None:
-            # All probs > 0.5 → underlying is above the highest sampled
-            # strike. All probs < 0.5 → below the lowest. Clamp so the
-            # chart still has data instead of going blank in extreme
-            # tail-of-distribution moments.
-            if pairs[-1][1] >= 0.5:
-                implied = pairs[-1][0]
-            elif pairs[0][1] < 0.5:
-                implied = pairs[0][0]
-        if implied is not None:
-            history.append({"ts": float(ts), "value": float(implied)})
+        evt_history = _interpolate_event_history(
+            c, series_ticker, evt_markets, anchor_value=anchor_value,
+            period_minutes=period_minutes, lookback_hours=candle_lookback_h,
+            max_strikes=max_strikes,
+        )
+        # Trim to the 5-day window so a stale event that ran for a week
+        # doesn't pull in old data.
+        evt_history = [r for r in evt_history if r["ts"] >= cutoff_ts]
+        history.extend(evt_history)
 
-    # Stitch in settlement anchors from the past 5 days. For short-cycle
-    # series (KXNATGASD daily) this gives prior-day anchor points so the
-    # 5-day chart isn't empty on the left. For weekly series the current
-    # event already covers most of the window; anchors fill the rest.
-    anchors = fetch_settlement_anchors(series_ticker, lookback_days=5,
-                                        client=c)
-    if anchors:
-        # Drop any anchor that overlaps the current event's intraday
-        # window — the live data is more accurate than the settlement
-        # snapshot for that period.
-        if history:
-            min_intraday_ts = min(r["ts"] for r in history)
-            anchors = [a for a in anchors if a["ts"] < min_intraday_ts]
-        history = anchors + history
-        history.sort(key=lambda r: r["ts"])
-
+    history.sort(key=lambda r: r["ts"])
     return history, atm, markets, contract_open_ts, contract_close_ts, event_title
