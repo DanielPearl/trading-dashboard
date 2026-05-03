@@ -1469,13 +1469,29 @@ code { background: #161b22; padding: 1px 6px; border-radius: 3px; color: #c9d1d9
 .subsec h3 { margin-top: 12px; }
 /* Bot filter bar — slim, sits between sections like a real filter, not
    like another content section. Pill-style links per bot. */
-.bot-filter-bar { display: flex; align-items: center; gap: 8px;
+.bot-filter-bar { display: flex; align-items: center; gap: 10px;
     padding: 4px 0 18px 0; margin-bottom: 8px; flex-wrap: wrap;
     border-bottom: 1px solid #21262d; margin-top: -8px; }
 .bot-filter-bar .filter-label {
     color: #8b949e; font-size: 11px; text-transform: uppercase;
     letter-spacing: 0.06em; font-weight: 600; margin-right: 4px;
 }
+/* Bot dropdown — native <select> styled to match the rest of the
+   dashboard. The chevron is drawn via background-image so the look
+   stays consistent across browsers. */
+.bot-select {
+    background: #0d1117 url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='10' height='10' viewBox='0 0 10 10'><path d='M2 3.5l3 3 3-3' fill='none' stroke='%238b949e' stroke-width='1.5'/></svg>") no-repeat right 10px center;
+    color: #c9d1d9; border: 1px solid #30363d; border-radius: 6px;
+    padding: 6px 30px 6px 12px;
+    font-size: 13px; line-height: 1.4;
+    appearance: none; -webkit-appearance: none; -moz-appearance: none;
+    cursor: pointer; min-width: 200px;
+    transition: border-color 120ms, background-color 120ms;
+}
+.bot-select:hover { border-color: #40464d; background-color: #161b22; }
+.bot-select:focus { outline: none; border-color: #1f6feb;
+    box-shadow: 0 0 0 3px rgba(31, 111, 235, 0.18); }
+.bot-select option { background: #0d1117; color: #c9d1d9; }
 .filter-pill { background: #21262d; color: #c9d1d9; text-decoration: none;
     padding: 6px 14px; border-radius: 999px; font-size: 13px;
     border: 1px solid #30363d; transition: background 120ms, border-color 120ms;
@@ -1912,6 +1928,18 @@ def _live_update_script(current_bot: str, period_key: str = "all") -> str:
   // Initial fetch on load + recurring poll.
   poll();
   setInterval(poll, POLL_MS);
+
+  // ── Bot dropdown (Watchlist tab) ────────────────────────────────
+  // Each <option>'s value carries the target URL; on change we
+  // navigate there. Same destination as the old pill links — the
+  // dropdown is just a quieter UI for the same action.
+  const botSelect = document.getElementById("bot-select");
+  if (botSelect) {{
+    botSelect.addEventListener("change", function () {{
+      const url = botSelect.value;
+      if (url) window.location.href = url;
+    }});
+  }}
 
   // ── Tab switcher ────────────────────────────────────────────────
   // Clicks on a tab pill toggle the .tab-pill-active class on the bar
@@ -2648,28 +2676,29 @@ def _render_bet_history_block(out: List[str], history: List[dict],
 def _render_bot_filter(out: List[str], available_bots: List[dict],
                        current_bot: str,
                        period_key: str = "all") -> None:
-    """Slim filter bar: pill buttons, one per bot. Selected pill is
-    highlighted; others are clickable links that switch via the
-    ?bot= query param. The ?period= filter from the summary is
-    preserved across switches so users don't lose their period choice
-    when changing bots."""
+    """Bot selector dropdown for the Watchlist tab. Native <select>
+    so it's keyboard-friendly and feels like part of the dashboard
+    rather than another row of pills. Switching navigates to
+    ?bot=<key>&tab=watchlist; the active period is preserved.
+    """
     period_qs = (f"&period={html.escape(period_key)}"
                  if period_key and period_key != "all" else "")
     out.append("<div class='bot-filter-bar'>")
-    out.append("<span class='filter-label'>Bot</span>")
+    out.append("<label for='bot-select' class='filter-label'>Bot</label>")
+    out.append("<select id='bot-select' class='bot-select'>")
     for b in available_bots:
-        classes = ["filter-pill"]
-        if b["key"] == current_bot:
-            classes.append("filter-pill-active")
-        if not b.get("available", True):
-            classes.append("filter-pill-disabled")
-        cls = " ".join(classes)
-        avail_marker = "" if b.get("available", True) else " <span class='small gray'>(no data)</span>"
+        avail = b.get("available", True)
+        suffix = "" if avail else " (no data)"
+        sel = " selected" if b["key"] == current_bot else ""
+        # data-href carries the target URL; the JS at the bottom of
+        # the page wires the <select>'s onchange event to navigate
+        # there (same pattern as the prior pill links).
+        href = (f"?bot={html.escape(b['key'])}&tab=watchlist{period_qs}")
         out.append(
-            f"<a href='?bot={html.escape(b['key'])}{period_qs}' "
-            f"class='{cls}'>"
-            f"{html.escape(b['name'])}{avail_marker}</a>"
+            f"<option value='{html.escape(href)}'{sel}>"
+            f"{html.escape(b['name'])}{html.escape(suffix)}</option>"
         )
+    out.append("</select>")
     out.append("</div>")
 
 
