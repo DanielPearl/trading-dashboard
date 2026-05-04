@@ -1631,20 +1631,23 @@ tr.row-suspect td:nth-last-child(2) { opacity: 0.85; }  /* keep gap legible */
    never dimmed. */
 tr.row-bought td { opacity: 1 !important; }
 /* Side-colored treatment: green for YES, red for NO. A 3px colored
-   left bar flags the row at a glance, and a faint tint runs across
-   every cell so the held strike pops without overpowering the table.
-   The first cell carries a slightly stronger tint near the bar so the
-   bar reads as anchored, not floating. */
-tr.row-bought.bought-yes td { background: rgba(63, 185, 80, 0.06); }
-tr.row-bought.bought-no  td { background: rgba(248, 81, 73, 0.06); }
-/* First cell keeps the colored left bar but uses the same tint as the
-   rest of the row, so the row reads as one even band of color. */
+   left bar plus a clearly-visible tint runs across every cell so the
+   held strike pops at a glance — the prior 6% alpha was too faint to
+   register as "this is the row I bought" against a busy table. */
+tr.row-bought.bought-yes td { background: rgba(63, 185, 80, 0.18); }
+tr.row-bought.bought-no  td { background: rgba(248, 81, 73, 0.18); }
+/* First cell keeps the colored left bar; the row's tinted background
+   anchors it visually so the bar reads as part of the row. */
 tr.row-bought.bought-yes td:first-child { border-left: 3px solid #3fb950; }
 tr.row-bought.bought-no  td:first-child { border-left: 3px solid #f85149; }
 tr.row-bought.bought-yes td.mono a.ticker-link,
 tr.row-bought.bought-yes td.mono { color: #3fb950; font-weight: 600; }
 tr.row-bought.bought-no  td.mono a.ticker-link,
 tr.row-bought.bought-no  td.mono { color: #f85149; font-weight: 600; }
+/* Hover state: bump the tint a touch more so the row still highlights
+   on mouseover (default table tr:hover would otherwise darken it). */
+tr.row-bought.bought-yes:hover td { background: rgba(63, 185, 80, 0.26); }
+tr.row-bought.bought-no:hover  td { background: rgba(248, 81, 73, 0.26); }
 /* Watchlist table: fixed scrolling viewport so the strike list never
    pushes the rest of the page off-screen. Sticky header keeps the
    column labels in view as the user scrolls. */
