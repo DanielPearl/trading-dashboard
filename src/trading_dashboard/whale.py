@@ -1186,7 +1186,18 @@ def render_page(
     # big bets (from Kalshi API, no checkpoints yet). The scorer
     # handles both shapes — live trades just lack a z-score so the
     # corresponding insider feature defaults to 0 for them.
-    combined_events = list(events) + live_events
+    #
+    # Enforce the same floor on the JSONL side too — the bot's own
+    # whale_detector ingests at $50, but the dashboard's "whale"
+    # bar is $1000+ so smaller bets shouldn't leak into the cards
+    # or the unusual-whales table just because the bot tracked them.
+    def _clears_floor(e: dict) -> bool:
+        try:
+            return int(e.get("whale_notional_cents") or 0) >= effective_min_cents
+        except (TypeError, ValueError):
+            return False
+    filtered_events = [e for e in events if _clears_floor(e)]
+    combined_events = filtered_events + live_events
     candidates = compute_candidates(combined_events, cohorts)
     summary = summarize(combined_events, candidates)
 
