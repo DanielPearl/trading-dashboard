@@ -297,11 +297,11 @@ VALIDATOR_INSIDER_THRESHOLD  = 0.65    # score ≥ this → eligible to "buy"
 # whale_detector min_notional_cents (5000c = $50) used by the bot —
 # the dashboard wants to *show* every big bet, not just the
 # z-score-anomalous ones.
-LIVE_MIN_NOTIONAL_CENTS = 500            # $5+ trades surface (these
-                                         # markets are thin so the bar
-                                         # is set low to populate the
-                                         # page; bump for sportsbook-
-                                         # scale series)
+LIVE_MIN_NOTIONAL_CENTS = 100_000        # $1000+ trades surface — only
+                                         # genuinely big bets make the
+                                         # whale page; smaller noise
+                                         # is filtered out at the
+                                         # ingestion layer.
 LIVE_LOOKBACK_HOURS     = 24             # recent activity window
 
 
