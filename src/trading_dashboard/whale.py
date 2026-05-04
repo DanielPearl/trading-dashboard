@@ -542,41 +542,53 @@ def validate_whale(event: dict,
 # Live big-bet ingestion                                                      #
 # --------------------------------------------------------------------------- #
 
-def _market_question(market: Optional[dict]) -> str:
-    """Compact human-readable label for a Kalshi market. Used in the
-    whale-watcher table's Question column.
+def _market_question(market: Optional[dict],
+                      event_title: Optional[str] = None) -> str:
+    """Compact human-readable label for a Kalshi market.
 
-    Strategy:
-      1. Prefer the market's `title` ("Will the natural gas close
-         price be above 2.750 USD/MMBtu on …?") — it's verbose but
-         it's the real question Kalshi shows on the market page.
-      2. Fall back to the rules_primary text trimmed to the first
-         sentence — for markets without a title.
-      3. Fall back to a short subtitle if neither is present.
-      4. Reject yes_sub_title when it's a long comma-list — that
-         happens on Kalshi's multi-option markets where the field
-         enumerates every option ("yes Detroit, yes Toronto, …")
-         instead of acting as a question. A useful subtitle is
-         short ("$79,700 or above"); discard if it has > 4 commas.
+    Tries each candidate string in order and returns the first one
+    that *looks like a question* — i.e. it isn't the comma-dump that
+    Kalshi's multi-option markets put in the title field
+    ("yes Over 2.5 runs, yes Over 3.5 runs, …"). A real question
+    has at most ~4 commas and at most one "yes "/"no " prefix.
     """
-    if not market:
+    if not market and not event_title:
         return "—"
-    # 1. Market title — the actual question.
-    title = (market.get("title") or "").strip()
-    if title:
-        return title
-    # 2. Rules text first sentence. Split on ". " (period + space)
-    #    so decimal numbers like "2.75" don't truncate the line.
+
+    def _looks_like_question(s: str) -> bool:
+        s = (s or "").strip()
+        if not s:
+            return False
+        # Comma-dump: too many commas suggests a list of sub-options.
+        if s.count(",") > 4:
+            return False
+        # Multi "yes …" / "no …" prefixes also indicate an option dump.
+        if s.lower().count("yes ") + s.lower().count("no ") > 2:
+            return False
+        return True
+
+    market = market or {}
+    candidates: List[str] = []
+    # 1. Market title — the actual question Kalshi shows on the page.
+    candidates.append(market.get("title") or "")
+    # 2. Event title — passed in by caller when available; useful when
+    #    the market title is a multi-option dump but the event has a
+    #    sensible parent question.
+    if event_title:
+        candidates.append(event_title)
+    # 3. First sentence of rules_primary. Split on ". " (period +
+    #    space) so decimal numbers like "2.75" don't truncate.
     rules = (market.get("rules_primary") or "").strip()
     if rules:
-        first = rules.split(". ", 1)[0].rstrip(".").strip()
-        if first:
-            return first
-    # 3. Subtitle — but only when it isn't a multi-option dump.
-    sub = ((market.get("yes_sub_title")
-              or market.get("subtitle") or "").strip())
-    if sub and sub.count(",") <= 4:
-        return sub
+        candidates.append(rules.split(". ", 1)[0].rstrip("."))
+    # 4. Subtitle as a last resort — only useful when it's short.
+    candidates.append(market.get("yes_sub_title") or
+                       market.get("subtitle") or "")
+
+    for c in candidates:
+        c = (c or "").strip()
+        if _looks_like_question(c):
+            return c
     return "—"
 
 
@@ -693,7 +705,20 @@ def fetch_live_big_bets(series_tickers: List[str],
                     mtc = max(0.0, (ct - time.time()) / 60.0)
                 except (TypeError, ValueError):
                     mtc = None
-            question = _market_question(market)
+            # Some Kalshi markets put a comma-dump of every option in
+            # the `title` field; the parent event's title is then the
+            # only place to find the real question. Fetch lazily —
+            # only when the market itself doesn't yield a clean
+            # question. get_event is cached so repeats are cheap.
+            event_title: Optional[str] = None
+            preview = _market_question(market)
+            if preview == "—" and market and market.get("event_ticker"):
+                try:
+                    event = client.get_event(market["event_ticker"])
+                    event_title = (event or {}).get("title") or None
+                except Exception:  # noqa: BLE001
+                    event_title = None
+            question = _market_question(market, event_title=event_title)
             # Compute per-ticker stats off this ticker's trades.
             counts = [_trade_count(t) for t in ticker_trades]
             if len(counts) >= 5:
