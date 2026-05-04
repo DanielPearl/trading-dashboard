@@ -3270,14 +3270,18 @@ def _render_watchlist_hero(out: List[str],
 
     # Per-bot display formatting + active-strike overlay (if any).
     label = display.get("underlying_label", "Underlying") if display else "Underlying"
-    # Once the contract has closed, the "current forecast" is no longer
+    # No live contract — dash out the forecast + change indicator. Two
+    # cases collapse to the same display: (a) the current event has
+    # already settled (close_ts is in the past), or (b) Kalshi returned
+    # no active markets in this series at all (between events, or the
+    # fetch errored). In either case the "current forecast" isn't
     # forecasting anything — Kalshi's last printed price is just the
-    # settlement value of an expired market. Dash the forecast and the
-    # change indicator so the hero reads "no live forecast" instead of
-    # advertising a stale number alongside a "Closes in —" label.
+    # settlement value of an expired market, and a fresh series might
+    # not have started yet.
+    now_ts = datetime.now(timezone.utc).timestamp()
     contract_is_closed = (
-        contract_close_ts is not None
-        and contract_close_ts <= datetime.now(timezone.utc).timestamp()
+        contract_close_ts is None
+        or contract_close_ts <= now_ts
     )
     if contract_is_closed:
         current_str = "—"
@@ -3416,11 +3420,13 @@ def _render_watchlist(out: List[str], watchlist: List[dict],
     # Current-prediction card row (Current price, Predicted next week,
     # etc.) sits between the bot dropdown and the Active bet so the
     # model's view comes right after the bot selector. Dash every
-    # value once the contract has closed — the model snapshot is for
-    # an event that no longer exists.
+    # value when there's no live contract — either the event has
+    # closed (close_ts in the past) or no Kalshi markets were
+    # returned at all (between events). The model snapshot is for
+    # an event that no longer exists in either case.
     contract_is_closed = (
-        contract_close_ts is not None
-        and contract_close_ts <= datetime.now(timezone.utc).timestamp()
+        contract_close_ts is None
+        or contract_close_ts <= datetime.now(timezone.utc).timestamp()
     )
     _render_current_prediction(out, model, display=display,
                                  contract_is_closed=contract_is_closed)
@@ -3775,9 +3781,13 @@ def _render_contract_rules(out: List[str], watchlist: List[dict],
             break
 
     if not primary:
+        # "No live contract" covers both cases: the current event has
+        # already settled, OR Kalshi returned no active markets at all
+        # (between events). The "next bot tick will populate it"
+        # promise only makes sense while a contract exists.
         contract_is_closed = (
-            contract_close_ts is not None
-            and contract_close_ts <= datetime.now(timezone.utc).timestamp()
+            contract_close_ts is None
+            or contract_close_ts <= datetime.now(timezone.utc).timestamp()
         )
         if contract_is_closed:
             out.append("<div class='empty'>There are no rules.</div>")
