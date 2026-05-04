@@ -221,11 +221,17 @@ def cohort_winrate_for(event: dict,
 # Weighted sum, then clipped to [0, 1].
 # Weights chosen so each signal contributes ~equally; tunable.
 
-_W_Z       = 0.25
-_W_SIZE    = 0.20
-_W_DIRCONF = 0.15
-_W_COHORT  = 0.30
-_W_TIGHT   = 0.10
+# Feature weights — sum to 1.0 so the linear combination stays in
+# [0, 1]. Tuned to give cohort + contrarian price the biggest say
+# (those are the strongest "this trader knows something" tells) and
+# size + book-quality less (those just say "the trade is real").
+_W_Z          = 0.18   # size unusualness vs market history
+_W_SIZE       = 0.12   # absolute notional (log-scaled)
+_W_DIRCONF    = 0.10   # taker_side reliability
+_W_COHORT     = 0.25   # historical win rate of similar past signals
+_W_TIGHT      = 0.05   # book quality at trade time (spread + depth)
+_W_TTC        = 0.15   # time-to-close — insiders cluster near resolution
+_W_CONTRARIAN = 0.15   # taking the otherwise-unlikely side
 
 
 def insider_score(event: dict,
@@ -233,7 +239,12 @@ def insider_score(event: dict,
                     ) -> float:
     """Return [0, 1] probability that this whale signal looks like
     "someone who knows something". Transparent linear combination of
-    the features above — easy to override / tune.
+    seven features — easy to override / tune.
+
+    See module-level _W_* constants for weights. Cohort contribution
+    is scaled by sample-size confidence so a 100%-WR cohort built on
+    n=2 doesn't look as strong as one built on n=30. Contrarian
+    price + time-to-close are the new "informed flow" features.
     """
     z_raw = float(event.get("zscore") or 0.0)
     z_norm = max(0.0, min(1.0, z_raw / 10.0))
@@ -248,29 +259,93 @@ def insider_score(event: dict,
 
     dir_conf = float(event.get("direction_confidence") or 0.0)
 
-    coh = cohort_winrate_for(event, cohort_winrates)
-    cohort = 0.5 if coh is None else float(coh)
+    # Cohort contribution: shrunk toward 0.5 prior when n is small.
+    # confidence = sqrt(n / 20) capped at 1, so n=20 reads at full
+    # weight, n=5 at ~50%, n=1 at ~22%.
+    coh_row = _cohort_row_for(event, cohort_winrates)
+    if coh_row is None:
+        cohort = 0.5
+    else:
+        n = max(1, int(coh_row.get("n") or 1))
+        wr = float(coh_row.get("win_rate") or 0.5)
+        confidence = min(1.0, math.sqrt(n / 20.0))
+        cohort = 0.5 + (wr - 0.5) * confidence
 
     spread = event.get("entry_spread_cents")
     depth = event.get("entry_depth_within_3c") or 0
     if spread is None:
         tight = 0.5
     else:
-        # Tight = 0¢ spread; loose = 8¢+. Linear in between.
         sp = max(0, min(8, int(spread)))
         s_norm = 1.0 - (sp / 8.0)
-        # Depth: 0..200+ contracts within 3¢ of best.
         d_norm = max(0.0, min(1.0, depth / 200.0))
         tight = 0.5 * s_norm + 0.5 * d_norm
 
+    # Time-to-close: highest informational value when the bet is
+    # 1h–24h before resolution (insider edge has limited shelf-life
+    # and resolution-source data tends to be pinned down by then).
+    # Outside that window we shrink toward 0.5 (no info).
+    minutes_to_close = event.get("minutes_to_close")
+    if minutes_to_close is None:
+        ttc = 0.5
+    else:
+        m = float(minutes_to_close)
+        if 60 <= m <= 60 * 24:
+            ttc = 1.0
+        elif m < 60:
+            # Last-hour bets are still informational but resolution
+            # may already be priced in. Linear ramp 30m→1h: 0.6→1.0.
+            ttc = max(0.0, 0.6 + (m - 30) / 30 * 0.4) if m >= 30 else 0.4
+        else:
+            # 1d+: decay slowly. 24h→0.7, 7d→0.3.
+            d = m / 1440.0
+            ttc = max(0.3, 1.0 - 0.4 * (d - 1) / 6)
+
+    # Contrarian-price: taking the side the market thinks is unlikely.
+    # entry_mid_cents is the YES side mid (0..100). Implied prob of
+    # the side bet on = mid for YES, 100-mid for NO.
+    mid = event.get("entry_mid_cents")
+    direction = (event.get("direction") or "").lower()
+    if mid is None or direction not in {"yes", "no"}:
+        contrarian = 0.5
+    else:
+        implied = float(mid) if direction == "yes" else (100.0 - float(mid))
+        # Contrarian zone is implied < 25c — paying for a side the
+        # market thinks is a long-shot. The further from 50c (in the
+        # underdog direction) the more contrarian. Symmetrically the
+        # market-favourite zone (>75c) is "agreement" — not insider.
+        if implied < 25:
+            contrarian = 1.0 - (implied / 25.0) * 0.4   # 25c → 0.6, 0c → 1.0
+        elif implied > 75:
+            contrarian = 0.3   # paying through to lock in a sure thing
+        else:
+            contrarian = 0.5
+
     raw = (
-        _W_Z       * z_norm   +
-        _W_SIZE    * size     +
-        _W_DIRCONF * dir_conf +
-        _W_COHORT  * cohort   +
-        _W_TIGHT   * tight
+        _W_Z          * z_norm     +
+        _W_SIZE       * size       +
+        _W_DIRCONF    * dir_conf   +
+        _W_COHORT     * cohort     +
+        _W_TIGHT      * tight      +
+        _W_TTC        * ttc        +
+        _W_CONTRARIAN * contrarian
     )
     return max(0.0, min(1.0, raw))
+
+
+def _cohort_row_for(event: dict,
+                      cohort_winrates: Dict[Tuple[str, str, str], dict],
+                      ) -> Optional[dict]:
+    """Internal: return the full cohort dict (win_rate + n) for
+    confidence-weighted scoring. The public cohort_winrate_for()
+    keeps returning a bare float for callers that just need the
+    headline number.
+    """
+    ticker = event.get("ticker") or ""
+    notional = event.get("whale_notional_cents") or 0
+    direction = event.get("direction") or "?"
+    key = (_ticker_prefix(ticker), _size_bucket(int(notional)), direction)
+    return cohort_winrates.get(key)
 
 
 # --------------------------------------------------------------------------- #
@@ -441,6 +516,17 @@ def fetch_live_big_bets(series_tickers: List[str],
             ticker = m.get("ticker")
             if not ticker:
                 continue
+            # Minutes-to-close for the ttc feature in insider_score.
+            close_time = m.get("close_time")
+            mtc: Optional[float] = None
+            if close_time:
+                try:
+                    ct = datetime.fromisoformat(
+                        close_time.replace("Z", "+00:00")
+                    ).timestamp()
+                    mtc = max(0.0, (ct - time.time()) / 60.0)
+                except (TypeError, ValueError):
+                    mtc = None
             try:
                 trades = client.fetch_trades(
                     market_ticker=ticker,
@@ -540,6 +626,7 @@ def fetch_live_big_bets(series_tickers: List[str],
                     "ticker": ticker,
                     "signal_ts": signal_ts,
                     "zscore": zscore,
+                    "minutes_to_close": mtc,
                     "direction": direction,
                     "direction_confidence": dir_conf,
                     "whale_count": count,
@@ -1008,27 +1095,24 @@ def _render_unusual_whales(out: List[str], candidates: List[dict]) -> None:
                "green = the bot simulates a buy (shown in Current bets above).</div>")
     pool = sorted(candidates, key=lambda c: c["insider_score"], reverse=True)
     out.append("<table><thead><tr>"
-               "<th>Age</th><th>Ticker</th><th>Side</th>"
-               "<th class='num'>Bet size</th>"
+               "<th>Age</th><th>Ticker</th>"
+               "<th class='num'>Bet size</th><th>Side</th>"
                "<th class='num'>Z-score</th>"
                "<th class='num'>Cohort win %</th>"
                "<th class='num'>Insider P</th>"
-               "<th>Validators</th>"
                "<th title='Recommended action: BUY (simulate entry), "
                "WATCH (promising but not actionable), or SKIP.'>"
-               "Action</th>"
+               "Verdict</th>"
                "</tr></thead><tbody>")
     for c in pool[:200]:
-        side_cls = "side-yes" if c["direction"] == "yes" else "side-no"
+        # Side rendered as the same badge-yes/badge-no idiom the
+        # regular dashboard's active-bets / watchlist tables use, so
+        # the visual idiom is consistent across every page.
+        side = (c["direction"] or "?").upper()
+        side_badge_cls = "badge-yes" if c["direction"] == "yes" else "badge-no"
         score_cls = _score_class(c["insider_score"])
         coh = c["cohort_winrate"]
         coh_str = _fmt_pct(coh) if coh is not None else "—"
-        # Validators summary as inline pills.
-        pills = []
-        for name, ok, _detail in c["validators"]:
-            cls = "valid-pill " + ("pass" if ok else "fail")
-            short = name.split(" ")[0][:8]  # compact
-            pills.append(f"<span class='{cls}' title='{html.escape(_validator_tooltip(name, ok, _detail))}'>{html.escape(short)}</span>")
         action = c["action"]
         action_cls = {
             "BUY":   "badge-yes",
@@ -1042,16 +1126,28 @@ def _render_unusual_whales(out: List[str], candidates: List[dict]) -> None:
         )
         z_str = (f"{c['zscore']:.2f}" if c.get('zscore') is not None
                   else "—")
+        # Ticker → clickable link to the Kalshi market page (same
+        # convention as the regular watchlist table). Series prefix is
+        # everything before the first "-" lowercased.
+        tt = c["ticker"]
+        series_lower = (tt.split("-", 1)[0] if tt else "").lower()
+        ticker_url = (f"https://kalshi.com/markets/{series_lower}"
+                      if series_lower else "")
+        ticker_cell = (
+            f"<a href='{html.escape(ticker_url)}' target='_blank' "
+            f"rel='noopener noreferrer' class='ticker-link'>"
+            f"{html.escape(tt)}</a>"
+            if ticker_url else html.escape(tt)
+        )
         out.append(
             f"<tr><td>{html.escape(_fmt_age(c['signal_ts']))}</td>"
-            f"<td class='mono'>{html.escape(c['ticker'])}</td>"
-            f"<td><span class='{side_cls}'>{c['direction'].upper()}</span></td>"
+            f"<td class='mono'>{ticker_cell}</td>"
             f"<td class='num'>{_fmt_dollars(c['notional_cents'])}</td>"
+            f"<td><span class='badge {side_badge_cls}'>{side}</span></td>"
             f"<td class='num'>{z_str}</td>"
             f"<td class='num'>{coh_str}</td>"
             f"<td class='num'><span class='whale-score {score_cls}'>"
             f"{c['insider_score']*100:.0f}%</span></td>"
-            f"<td>{''.join(pills)}</td>"
             f"<td>{action_badge}</td>"
             f"</tr>"
         )
