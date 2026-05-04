@@ -3630,26 +3630,19 @@ def _render_watchlist(out: List[str], watchlist: List[dict],
 
         # ── Verdict — driven by EV first, gates second ─────────────────
         # Rules:
-        #   TRADE  — best EV positive AND bot_verdict is BUY_*
-        #            (both EV and all gates passed)
-        #   WATCH  — best EV positive but bot_verdict is WATCH/SKIP
-        #            (model likes it, but a gate is blocking — e.g.
-        #             thin volume, low confidence, basis-risk zone)
-        #   SKIP   — best EV is non-positive (don't trade against EV)
-        bot_verdict = v.get("bot_verdict", "SKIP")
-        reason = v.get("rejection_reason") or ""
-        best_ev_v = v.get("_best_ev")
-        best_side_v = v.get("_best_side")
-        tt = f" title='{html.escape(reason)}'" if reason else ""
-        if best_ev_v is None or best_ev_v <= 0:
-            badge = f"<span class='badge badge-skip'{tt}>SKIP</span>"
-        elif bot_verdict in ("BUY_YES", "BUY_NO"):
-            cls = "badge-yes" if best_side_v == "YES" else "badge-no"
-            badge = (f"<span class='badge {cls}'{tt}>"
-                     f"BUY {best_side_v}</span>")
-        else:
-            badge = f"<span class='badge badge-hedge'{tt}>WATCH</span>"
-
+        #   HOLDING — bot has an open position on this strike. Wins
+        #             over the model's current view so the row reflects
+        #             what was actually done, not a contradictory fresh
+        #             recommendation. Critical for consistency with the
+        #             "Active bet" table above — without this, a row
+        #             we bought YES on can show "BUY NO" in the verdict
+        #             cell once the market moves.
+        #   TRADE   — best EV positive AND bot_verdict is BUY_*
+        #             (both EV and all gates passed)
+        #   WATCH   — best EV positive but bot_verdict is WATCH/SKIP
+        #             (model likes it, but a gate is blocking — e.g.
+        #              thin volume, low confidence, basis-risk zone)
+        #   SKIP    — best EV is non-positive (don't trade against EV)
         # Bought rows (the strike the bot currently holds) win over
         # suspect-row dimming — we always want the held position to
         # pop visually, even if its book is currently thin/one-sided.
@@ -3657,6 +3650,38 @@ def _render_watchlist(out: List[str], watchlist: List[dict],
                          latest_active.get("ticker") == ticker)
         bought_side = ((latest_active.get("side") or "").upper()
                        if is_bought else "")
+        bot_verdict = v.get("bot_verdict", "SKIP")
+        reason = v.get("rejection_reason") or ""
+        best_ev_v = v.get("_best_ev")
+        best_side_v = v.get("_best_side")
+        tt = f" title='{html.escape(reason)}'" if reason else ""
+        if is_bought and bought_side in ("YES", "NO"):
+            # Show what we hold. The model's current view is interesting
+            # context but goes in the tooltip — the column header is
+            # "Verdict", and the verdict for a row we already acted on
+            # is "we already bought, here's what". Includes the entry
+            # price + the model's fresh take as tooltip text so the user
+            # can audit "is the model still on board with this position?"
+            held_cls = "badge-yes" if bought_side == "YES" else "badge-no"
+            entry_c = latest_active.get("entry_price_cents")
+            entry_part = f" @ {entry_c}c" if entry_c is not None else ""
+            model_part = ""
+            if best_ev_v is not None and best_side_v in ("YES", "NO"):
+                model_part = (f" · model now: BUY {best_side_v} "
+                              f"(EV ${best_ev_v:+.3f})")
+            held_tt = (f"You are holding {bought_side}{entry_part}"
+                       f"{model_part}")
+            badge = (f"<span class='badge {held_cls}' "
+                     f"title='{html.escape(held_tt)}'>"
+                     f"HOLDING {bought_side}</span>")
+        elif best_ev_v is None or best_ev_v <= 0:
+            badge = f"<span class='badge badge-skip'{tt}>SKIP</span>"
+        elif bot_verdict in ("BUY_YES", "BUY_NO"):
+            cls = "badge-yes" if best_side_v == "YES" else "badge-no"
+            badge = (f"<span class='badge {cls}'{tt}>"
+                     f"BUY {best_side_v}</span>")
+        else:
+            badge = f"<span class='badge badge-hedge'{tt}>WATCH</span>"
         # A row is a "good buy opportunity" when the bot would actually
         # take a position on it: BUY_YES/BUY_NO verdict + positive EV
         # + no validator flags. Rows that don't clear all three get
