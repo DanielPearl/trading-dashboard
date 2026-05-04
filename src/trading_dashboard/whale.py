@@ -397,13 +397,14 @@ VALIDATOR_MAX_PRICE_DRIFT    = 10         # cents
 # whale_detector min_notional_cents (5000c = $50) used by the bot —
 # the dashboard wants to *show* every big bet, not just the
 # z-score-anomalous ones.
-# Default minimum notional for a trade to surface as a "big bet". Set
-# at $100 so the table reliably has rows during quiet stretches —
-# Kalshi flow on this dashboard's series often goes a full 24h
-# without any single trade above $300, so a $1000 floor used to leave
-# the page empty. Users who want a higher bar can override via the
-# ?min=<dollars> query parameter (see render_page).
-LIVE_MIN_NOTIONAL_CENTS = 10_000         # $100+ trades surface by default
+# Default minimum notional for a trade to surface as a "big bet". The
+# whale page is for genuinely large flow only — anything below $1000
+# is retail noise on this dashboard's series. When Kalshi is quiet
+# the table will be empty; that's the honest signal that no whales
+# are active right now. Users can dial the floor down via the
+# ?min=<dollars> query parameter (see render_page) if they want to
+# inspect smaller flow.
+LIVE_MIN_NOTIONAL_CENTS = 100_000        # $1000+ trades surface by default
 LIVE_LOOKBACK_HOURS     = 24             # recent activity window
 
 
