@@ -3877,6 +3877,18 @@ class Handler(BaseHTTPRequestHandler):
                     whale_tab = qs.get("tab", ["home"])[0]
                     if whale_tab not in {k for k, _ in whale.WHALE_TABS}:
                         whale_tab = "home"
+                    # ?min=<dollars> overrides the default $100 floor for
+                    # which trades count as "big bets". Lets the user
+                    # crank it up to $1000+ when flow is heavy without a
+                    # redeploy. Anything non-numeric falls through to
+                    # the default.
+                    min_dollars: int | None = None
+                    raw_min = qs.get("min", [""])[0]
+                    if raw_min:
+                        try:
+                            min_dollars = max(0, int(float(raw_min)))
+                        except (TypeError, ValueError):
+                            min_dollars = None
                     events = whale.load_events(bot.get("signals_path"))
                     orders = whale.load_orders(bot.get("orders_path"))
                     body = whale.render_page(
@@ -3886,6 +3898,7 @@ class Handler(BaseHTTPRequestHandler):
                         current_bot_key=bot["key"],
                         sort_by=sort_by,
                         tab_key=whale_tab,
+                        min_notional_dollars=min_dollars,
                     )
                     payload = body.encode("utf-8")
                     self.send_response(200)

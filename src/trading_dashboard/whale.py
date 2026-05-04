@@ -397,11 +397,13 @@ VALIDATOR_MAX_PRICE_DRIFT    = 10         # cents
 # whale_detector min_notional_cents (5000c = $50) used by the bot —
 # the dashboard wants to *show* every big bet, not just the
 # z-score-anomalous ones.
-LIVE_MIN_NOTIONAL_CENTS = 100_000        # $1000+ trades surface — only
-                                         # genuinely big bets make the
-                                         # whale page; smaller noise
-                                         # is filtered out at the
-                                         # ingestion layer.
+# Default minimum notional for a trade to surface as a "big bet". Set
+# at $100 so the table reliably has rows during quiet stretches —
+# Kalshi flow on this dashboard's series often goes a full 24h
+# without any single trade above $300, so a $1000 floor used to leave
+# the page empty. Users who want a higher bar can override via the
+# ?min=<dollars> query parameter (see render_page).
+LIVE_MIN_NOTIONAL_CENTS = 10_000         # $100+ trades surface by default
 LIVE_LOOKBACK_HOURS     = 24             # recent activity window
 
 
@@ -953,6 +955,7 @@ def render_page(
     current_bot_key: str,
     sort_by: str = "recent",
     tab_key: str = "watchlist",  # ignored, kept for backwards-compat
+    min_notional_dollars: int | None = None,
 ) -> str:
     """Whole HTML page for the whale-watcher view.
 
@@ -983,7 +986,16 @@ def render_page(
         s = b.get("series_ticker")
         if s and s not in series_to_scan:
             series_to_scan.append(s)
-    live_events = fetch_live_big_bets(series_to_scan) if series_to_scan else []
+    # ?min=<dollars> from the URL overrides the default $100 floor.
+    # Useful when Kalshi is busy and the user wants to dial the bar
+    # up to $1000+ to filter out the smaller flow.
+    if min_notional_dollars is not None and min_notional_dollars >= 0:
+        effective_min_cents = min_notional_dollars * 100
+    else:
+        effective_min_cents = LIVE_MIN_NOTIONAL_CENTS
+    live_events = (fetch_live_big_bets(series_to_scan,
+                                         min_notional_cents=effective_min_cents)
+                    if series_to_scan else [])
 
     # Combine: tracked signals (from JSONL, with checkpoints) + live
     # big bets (from Kalshi API, no checkpoints yet). The scorer
@@ -1052,7 +1064,11 @@ def render_page(
     _render_bot_filter(out, available_bots, current_bot_key)
 
     if summary["n_signals"] == 0:
-        _render_empty_state(out)
+        _render_empty_state(
+            out,
+            min_dollars=effective_min_cents // 100,
+            lookback_hours=LIVE_LOOKBACK_HOURS,
+        )
         out.append("</div></div>")
         out.append(_BOT_SELECT_NAVIGATE_JS)
         out.append("</body></html>")
@@ -1364,8 +1380,27 @@ def _render_signal_history(out: List[str], candidates: List[dict],
         out.append("</tbody></table>")
 
 
-def _render_empty_state(out: List[str]) -> None:
-    out.append("<div class='empty'>No whale signals captured yet.</div>")
+def _render_empty_state(out: List[str], min_dollars: int = 0,
+                          lookback_hours: int = 0) -> None:
+    """Empty-state copy for the whale page.
+
+    Tells the user *why* the table is empty — usually because no
+    trades cleared the dollar floor in the lookback window. Without
+    this hint the page reads "broken" when in fact Kalshi flow is
+    just quiet.
+    """
+    if min_dollars > 0 and lookback_hours > 0:
+        msg = (
+            f"No bets ≥ ${min_dollars:,} in the last "
+            f"{lookback_hours}h. Try "
+            f"<a href='?bot=whale-watcher&min=10'>$10</a> · "
+            f"<a href='?bot=whale-watcher&min=50'>$50</a> · "
+            f"<a href='?bot=whale-watcher&min=100'>$100</a> · "
+            f"<a href='?bot=whale-watcher&min=1000'>$1000</a>."
+        )
+    else:
+        msg = "No whale signals captured yet."
+    out.append(f"<div class='empty'>{msg}</div>")
 
 
 # --------------------------------------------------------------------------- #
