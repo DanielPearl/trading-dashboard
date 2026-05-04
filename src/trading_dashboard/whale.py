@@ -546,27 +546,38 @@ def _market_question(market: Optional[dict]) -> str:
     """Compact human-readable label for a Kalshi market. Used in the
     whale-watcher table's Question column.
 
-    Prefers event title + subtitle ("Natural gas price · above $2.75")
-    over the verbose market title ("Will the natural gas close price
-    be above 2.750 USD/MMBtu on …?") since the global whale scan
-    spans many series and a column wrapping at 80 chars per row
-    becomes unreadable. Falls back to subtitle alone, then yes_sub_title,
-    then "—".
+    Strategy:
+      1. Prefer the market's `title` ("Will the natural gas close
+         price be above 2.750 USD/MMBtu on …?") — it's verbose but
+         it's the real question Kalshi shows on the market page.
+      2. Fall back to the rules_primary text trimmed to the first
+         sentence — for markets without a title.
+      3. Fall back to a short subtitle if neither is present.
+      4. Reject yes_sub_title when it's a long comma-list — that
+         happens on Kalshi's multi-option markets where the field
+         enumerates every option ("yes Detroit, yes Toronto, …")
+         instead of acting as a question. A useful subtitle is
+         short ("$79,700 or above"); discard if it has > 4 commas.
     """
     if not market:
         return "—"
-    sub = ((market.get("yes_sub_title")
-              or market.get("subtitle") or "").strip())
-    title = (market.get("event_title") or "").strip()
-    if title and sub:
-        return f"{title} · {sub}"
-    if sub:
-        return sub
+    # 1. Market title — the actual question.
+    title = (market.get("title") or "").strip()
     if title:
         return title
-    # Last-resort: trim the verbose market title.
-    mt = (market.get("title") or "").strip()
-    return mt or "—"
+    # 2. Rules text first sentence. Split on ". " (period + space)
+    #    so decimal numbers like "2.75" don't truncate the line.
+    rules = (market.get("rules_primary") or "").strip()
+    if rules:
+        first = rules.split(". ", 1)[0].rstrip(".").strip()
+        if first:
+            return first
+    # 3. Subtitle — but only when it isn't a multi-option dump.
+    sub = ((market.get("yes_sub_title")
+              or market.get("subtitle") or "").strip())
+    if sub and sub.count(",") <= 4:
+        return sub
+    return "—"
 
 
 def fetch_live_big_bets(series_tickers: List[str],
