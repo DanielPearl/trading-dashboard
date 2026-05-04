@@ -3121,7 +3121,8 @@ def _fmt_signed_underlying(value: float | None, display: dict) -> str:
 
 
 def _render_current_prediction(out: List[str], model: dict | None,
-                                 display: dict | None = None) -> None:
+                                 display: dict | None = None,
+                                 contract_is_closed: bool = False) -> None:
     """Renders the 'Current prediction' card row.
 
     Lives at the top of the Watchlist section now (per user request) — it
@@ -3130,6 +3131,11 @@ def _render_current_prediction(out: List[str], model: dict | None,
 
     Number formatting follows the bot's display config so unemployment
     shows "189K" / "+1K" instead of "$189000.00" / "+1000.00".
+
+    When `contract_is_closed` is True (the current event has already
+    settled and there's no live market to forecast for), every value
+    cell is dashed out — a stale model snapshot from the previous
+    contract isn't a forecast for the next one.
     """
     if not model:
         return
@@ -3142,25 +3148,28 @@ def _render_current_prediction(out: List[str], model: dict | None,
     change = float(model.get("median_change") or 0)
     q05 = model.get("quantile_05")
     q95 = model.get("quantile_95")
+    if contract_is_closed:
+        cur_str = pred_str = chg_str = prob_str = q05_str = q95_str = "—"
+    else:
+        cur_str = html.escape(
+            fmt_underlying(model.get("current_gas_price"), display))
+        pred_str = html.escape(
+            fmt_underlying(model.get("median_price"), display))
+        chg_str = html.escape(_fmt_signed_underlying(change, display))
+        prob_str = f"{prob_up:.0%}"
+        q05_str = (html.escape(fmt_underlying(q05, display))
+                   if q05 is not None else "—")
+        q95_str = (html.escape(fmt_underlying(q95, display))
+                   if q95 is not None else "—")
     out.append("<div class='row compact'>")
     out.append(f"<div class='card'><div class='label'>Current price</div>"
-               f"<div class='value'>"
-               f"{html.escape(fmt_underlying(model.get('current_gas_price'), display))}"
-               f"</div></div>")
+               f"<div class='value'>{cur_str}</div></div>")
     out.append(f"<div class='card'><div class='label'>Predicted next week</div>"
-               f"<div class='value'>"
-               f"{html.escape(fmt_underlying(model.get('median_price'), display))}"
-               f"</div></div>")
+               f"<div class='value'>{pred_str}</div></div>")
     out.append(f"<div class='card'><div class='label'>Median change</div>"
-               f"<div class='value'>"
-               f"{html.escape(_fmt_signed_underlying(change, display))}"
-               f"</div></div>")
+               f"<div class='value'>{chg_str}</div></div>")
     out.append(f"<div class='card'><div class='label'>P(price goes up)</div>"
-               f"<div class='value'>{prob_up:.0%}</div></div>")
-    q05_str = (html.escape(fmt_underlying(q05, display))
-               if q05 is not None else "—")
-    q95_str = (html.escape(fmt_underlying(q95, display))
-               if q95 is not None else "—")
+               f"<div class='value'>{prob_str}</div></div>")
     out.append(f"<div class='card'><div class='label'>Lower 5%</div>"
                f"<div class='value'>{q05_str}</div></div>")
     out.append(f"<div class='card'><div class='label'>Upper 95%</div>"
@@ -3258,17 +3267,32 @@ def _render_watchlist_hero(out: List[str],
 
     # Per-bot display formatting + active-strike overlay (if any).
     label = display.get("underlying_label", "Underlying") if display else "Underlying"
-    current_str = fmt_underlying(current, display)
-    # Format the raw delta in the bot's native units, then strip the
-    # leading sign (the arrow already conveys direction).
-    if value_change is None:
+    # Once the contract has closed, the "current forecast" is no longer
+    # forecasting anything — Kalshi's last printed price is just the
+    # settlement value of an expired market. Dash the forecast and the
+    # change indicator so the hero reads "no live forecast" instead of
+    # advertising a stale number alongside a "Closes in —" label.
+    contract_is_closed = (
+        contract_close_ts is not None
+        and contract_close_ts <= datetime.now(timezone.utc).timestamp()
+    )
+    if contract_is_closed:
+        current_str = "—"
         change_body = "—"
         change_cls = ""
+        value_change = None
     else:
-        signed = _fmt_signed_underlying(value_change, display)
-        # _fmt_signed_underlying emits "+" or "−" as the first char.
-        change_body = signed.lstrip("+−-")
-        change_cls = "pos" if value_change >= 0 else "neg"
+        current_str = fmt_underlying(current, display)
+        # Format the raw delta in the bot's native units, then strip the
+        # leading sign (the arrow already conveys direction).
+        if value_change is None:
+            change_body = "—"
+            change_cls = ""
+        else:
+            signed = _fmt_signed_underlying(value_change, display)
+            # _fmt_signed_underlying emits "+" or "−" as the first char.
+            change_body = signed.lstrip("+−-")
+            change_cls = "pos" if value_change >= 0 else "neg"
 
     active_strike = None
     active_side = None
@@ -3388,8 +3412,15 @@ def _render_watchlist(out: List[str], watchlist: List[dict],
 
     # Current-prediction card row (Current price, Predicted next week,
     # etc.) sits between the bot dropdown and the Active bet so the
-    # model's view comes right after the bot selector.
-    _render_current_prediction(out, model, display=display)
+    # model's view comes right after the bot selector. Dash every
+    # value once the contract has closed — the model snapshot is for
+    # an event that no longer exists.
+    contract_is_closed = (
+        contract_close_ts is not None
+        and contract_close_ts <= datetime.now(timezone.utc).timestamp()
+    )
+    _render_current_prediction(out, model, display=display,
+                                 contract_is_closed=contract_is_closed)
 
     # Buy-criteria reference button — rendered as a small circle-i info
     # icon inline with the Active-bet h3 so it sits next to the
