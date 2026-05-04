@@ -1800,7 +1800,10 @@ def render_page(
                           available_bots=available_bots,
                           current_bot=current_bot,
                           period_key=period_key)
-        _render_contract_rules(out, watchlist, current_bot)
+        _render_contract_rules(
+            out, watchlist, current_bot,
+            contract_close_ts=contract_close_ts,
+        )
     out.append("</div>")  # /watchlist panel
 
     # ── HISTORY tab — closed-bet history across all bots ──────────────
@@ -3739,7 +3742,8 @@ def _render_watchlist(out: List[str], watchlist: List[dict],
 
 
 def _render_contract_rules(out: List[str], watchlist: List[dict],
-                           current_bot: str) -> None:
+                           current_bot: str,
+                           contract_close_ts: float | None = None) -> None:
     """Section 7 — actual Kalshi resolution rule, one paragraph.
 
     All KXAAAGASW contracts share the same template (only the strike
@@ -3752,6 +3756,11 @@ def _render_contract_rules(out: List[str], watchlist: List[dict],
     rules_primary, which is what's shown verbatim below). Scraping
     the Kalshi UI would be fragile + against their TOS, so we just
     show the rules_primary and accept that it's the short summary.
+
+    When the current event has already closed, the empty-state copy
+    swaps from "rules not cached yet" to "There are no rules" — once
+    the contract has settled there's no upcoming bot tick that will
+    fill the gap, so promising one would be misleading.
     """
     out.append("<div class='section'><h2>6 · Kalshi rules — "
                "how the market resolves</h2>"
@@ -3766,8 +3775,15 @@ def _render_contract_rules(out: List[str], watchlist: List[dict],
             break
 
     if not primary:
-        out.append("<div class='empty'>Rules text not cached yet — "
-                   "the next bot tick will populate it from Kalshi.</div>")
+        contract_is_closed = (
+            contract_close_ts is not None
+            and contract_close_ts <= datetime.now(timezone.utc).timestamp()
+        )
+        if contract_is_closed:
+            out.append("<div class='empty'>There are no rules.</div>")
+        else:
+            out.append("<div class='empty'>Rules text not cached yet — "
+                       "the next bot tick will populate it from Kalshi.</div>")
         out.append("</div></div>")
         return
 
