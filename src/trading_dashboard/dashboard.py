@@ -828,15 +828,21 @@ def _favicon_link() -> str:
     """
     # `#` MUST be %23-escaped in data URIs (otherwise it's parsed as a
     # fragment marker). Spaces + < > render fine in modern browsers.
+    # Keep this in sync with static/favicon.svg.
     svg = (
         "<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'>"
-        "<path d='M 32 4 C 50 4 60 14 60 32 C 60 44 52 50 40 50 "
-        "L 28 50 C 18 50 14 56 14 62 L 14 32 C 14 14 22 4 32 4 Z' "
-        "fill='%23F5A623'/>"
-        "<path d='M 40 40 C 56 40 56 56 44 58 C 36 58 32 52 36 46 "
-        "C 38 44 42 44 44 46' fill='none' stroke='%231F8B8B' "
-        "stroke-width='8' stroke-linecap='round'/>"
-        "<circle cx='44' cy='20' r='4' fill='%231F8B8B'/>"
+        # Orange teardrop body with a small horn at the top.
+        "<path d='M 28 4 L 25 1 L 23 6 C 12 9 4 20 4 32 C 4 46 "
+        "14 56 30 56 C 42 56 50 50 52 42 C 56 28 50 12 36 6 "
+        "C 33 5 30 4 28 4 Z' fill='%23F5A623'/>"
+        # Teal eye dot.
+        "<circle cx='46' cy='22' r='5' fill='%231F8B8B'/>"
+        # Teal stroked spiral tail (curls back into itself, with
+        # the round-cap thickness reading as a solid fill at
+        # favicon resolution).
+        "<path d='M 30 32 C 14 36 12 56 32 60 C 52 62 60 46 54 34 "
+        "C 48 24 34 28 34 42 C 34 50 44 52 46 44' fill='none' "
+        "stroke='%231F8B8B' stroke-width='8' stroke-linecap='round'/>"
         "</svg>"
     )
     return (f'<link rel="icon" type="image/svg+xml" '

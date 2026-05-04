@@ -1,17 +1,20 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
   <!--
-    Chameleon-inspired favicon for the Kalshi trading dashboard.
-    Two-tone: warm orange head/body + teal lower spiral with eye dot.
-    Easy to swap for a real PNG later — the dashboard reads this same
-    SVG as a data URI, so editing this file + redeploying updates the
-    favicon everywhere.
+    Chameleon mark for the Kalshi trading dashboard.
+    Two-tone: orange teardrop body with a small horn detail on top,
+    teal eye dot in the upper-right of the head, and a thick teal
+    spiral tail that curls back into itself in the lower-right.
+    The dashboard also inlines this same shape as a data URI in
+    `_favicon_link()`; keep the two in sync when editing.
   -->
-  <!-- Orange head / upper body — a comma-shaped curve that fills the
-       upper-left bulk of the viewBox. -->
-  <path d="M 32 4 C 50 4 60 14 60 32 C 60 44 52 50 40 50 L 28 50 C 18 50 14 56 14 62 L 14 32 C 14 14 22 4 32 4 Z" fill="#F5A623"/>
-  <!-- Teal tail spiral — a stroked curl that loops back into itself,
-       mimicking the lower-right tail of the chameleon image. -->
-  <path d="M 40 40 C 56 40 56 56 44 58 C 36 58 32 52 36 46 C 38 44 42 44 44 46" fill="none" stroke="#1F8B8B" stroke-width="8" stroke-linecap="round"/>
-  <!-- Eye dot, sits in the upper-right of the orange head. -->
-  <circle cx="44" cy="20" r="4" fill="#1F8B8B"/>
+  <!-- Orange head + body. Teardrop silhouette with a tiny horn
+       at the top-left where the head peaks. -->
+  <path d="M 28 4 L 25 1 L 23 6 C 12 9 4 20 4 32 C 4 46 14 56 30 56 C 42 56 50 50 52 42 C 56 28 50 12 36 6 C 33 5 30 4 28 4 Z" fill="#F5A623"/>
+  <!-- Teal eye dot in the upper-right of the head. -->
+  <circle cx="46" cy="22" r="5" fill="#1F8B8B"/>
+  <!-- Teal spiral tail. Stroked thick path that loops outward
+       and curls back inward, leaving a visible "eye of the
+       spiral" hole. round linecaps make the strokes read as
+       solid fills at favicon size. -->
+  <path d="M 30 32 C 14 36 12 56 32 60 C 52 62 60 46 54 34 C 48 24 34 28 34 42 C 34 50 44 52 46 44" fill="none" stroke="#1F8B8B" stroke-width="8" stroke-linecap="round"/>
 </svg>
