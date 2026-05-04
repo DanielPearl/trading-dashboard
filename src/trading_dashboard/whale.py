@@ -1410,7 +1410,23 @@ def _render_unusual_whales(out: List[str], candidates: List[dict]) -> None:
                "Insider P ≥ "
                f"{VALIDATOR_INSIDER_THRESHOLD*100:.0f}% AND every validator "
                "green = the bot simulates a buy (shown in Current bets above).</div>")
-    pool = sorted(candidates, key=lambda c: c["insider_score"], reverse=True)
+    # Drop candidates with no usable bet probability (None or 0%).
+    # A row with no entry-mid has nothing meaningful to compare against
+    # the current prob, so the side+probability columns just render
+    # as dashes — that's signal noise, not a candidate. The price-cents
+    # parser uses 0 as its "missing" sentinel, so 0% bet_prob also
+    # means the trade lacked a usable price field.
+    def _has_usable_prob(c: dict) -> bool:
+        bp = c.get("bet_prob_pct")
+        cp = c.get("current_prob_pct")
+        if bp is None or cp is None:
+            return False
+        try:
+            return float(bp) > 0 and float(cp) > 0
+        except (TypeError, ValueError):
+            return False
+    pool = [c for c in candidates if _has_usable_prob(c)]
+    pool.sort(key=lambda c: c["insider_score"], reverse=True)
     out.append("<table><thead><tr>"
                "<th>Time</th><th>Ticker</th>"
                "<th title='Human-readable market question — what "
