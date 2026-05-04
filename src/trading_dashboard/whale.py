@@ -366,6 +366,31 @@ VALIDATOR_MIN_COHORT_WIN     = 0.50    # need ≥ 50% historical win rate
 VALIDATOR_MIN_COHORT_N       = 5       # … on at least 5 prior signals
 VALIDATOR_INSIDER_THRESHOLD  = 0.65    # score ≥ this → eligible to "buy"
 
+# "Looks like manipulation, not informed flow" filters. Hidden from
+# the visible table (the user wanted a leaner row) but contribute to
+# all_pass / Verdict so coordinated-bet patterns vs lone-pump
+# patterns are differentiated.
+#
+# Cluster-size validator   — informed traders rarely act alone; one
+#                             big bet with zero supporting flow on the
+#                             same ticker in the lookback window is
+#                             more likely manipulation than insider
+#                             knowledge.
+VALIDATOR_MIN_CLUSTER_SIZE   = 2          # this trade + at least 1 other big
+VALIDATOR_CLUSTER_MIN_NOTIONAL = 25_000   # $250+ each to count as "supporting"
+# Round-number validator   — retail traders bet in 100/250/500/1000-
+#                             contract round lots. Insiders sized to
+#                             specific dollar amounts rarely land on
+#                             a round count exactly. Fail if the
+#                             count is at one of these neat values.
+VALIDATOR_ROUND_NUMBERS      = (100, 200, 250, 500, 1000, 2500, 5000)
+# Price-stability validator — if the post-trade mid has drifted far
+#                             from the bet price, the trade either
+#                             pushed the market itself (manipulation
+#                             attempt) OR a real news event hit. Both
+#                             are reasons to be cautious.
+VALIDATOR_MAX_PRICE_DRIFT    = 10         # cents
+
 # Live-big-bets pull thresholds. Kalshi exposes /markets/trades; we
 # fetch recent trades across the bots' configured series and surface
 # every trade above this notional as a candidate. Smaller than the
@@ -469,6 +494,42 @@ def validate_whale(event: dict,
             "Cohort track record",
             ok,
             f"{row['win_rate']*100:.0f}% win rate over {row['n']} prior signals",
+        ))
+
+    # 8. Cluster size — informed flow tends to come in waves, not as
+    #    a single isolated bet. Lone outliers are more likely manipulation.
+    cluster = int(event.get("cluster_size") or 0)
+    out.append((
+        "Cluster of large trades",
+        cluster >= VALIDATOR_MIN_CLUSTER_SIZE,
+        f"{cluster} large trades on this ticker in the lookback "
+        f"(≥ {VALIDATOR_MIN_CLUSTER_SIZE} required)",
+    ))
+
+    # 9. Not a round-lot count — retail / wash trades cluster on
+    #    100 / 250 / 500 / 1000-contract round numbers; insider
+    #    sizing is dollar-budgeted and rarely lands exactly there.
+    count = int(event.get("whale_count") or 0)
+    is_round = count in VALIDATOR_ROUND_NUMBERS
+    out.append((
+        "Non-round-lot size",
+        not is_round,
+        f"{count} contracts" + (" (looks retail-round)" if is_round else ""),
+    ))
+
+    # 10. Price stability — if the post-trade mid has drifted far
+    #     from the bet price, this trade pushed the market itself
+    #     (manipulation tell) OR a news event hit alongside.
+    bet_mid = event.get("entry_mid_cents")
+    cur_mid = event.get("current_mid_cents")
+    if bet_mid is None or cur_mid is None:
+        out.append(("Price stable since trade", True, "no current mid"))
+    else:
+        drift = abs(int(cur_mid) - int(bet_mid))
+        out.append((
+            "Price stable since trade",
+            drift <= VALIDATOR_MAX_PRICE_DRIFT,
+            f"{drift}¢ drift from {int(bet_mid)}¢ → {int(cur_mid)}¢",
         ))
 
     return out
@@ -580,6 +641,29 @@ def fetch_live_big_bets(series_tickers: List[str],
                 std_c = math.sqrt(var) if var > 0 else 0.0
             else:
                 mean_c = std_c = 0.0
+
+            # Cluster size = how many other ≥$250 trades on this same
+            # ticker in the lookback. Informed flow tends to cluster;
+            # lone-outlier trades are more likely manipulation.
+            cluster_size = 0
+            for t in trades:
+                tc = _trade_count(t)
+                tp = _trade_price_cents(t, "yes")
+                if tp == 0:
+                    tp = _trade_price_cents(t, "no")
+                if tc * tp >= VALIDATOR_CLUSTER_MIN_NOTIONAL:
+                    cluster_size += 1
+
+            # Current mid for this ticker — use the most-recent trade's
+            # yes_price as a free proxy for "where the market is now".
+            # Trades come back oldest-first; take the last entry.
+            current_mid_cents: Optional[int] = None
+            if trades:
+                latest = trades[-1]
+                lp = _trade_price_cents(latest, "yes")
+                if lp == 0:
+                    lp = 100 - _trade_price_cents(latest, "no")
+                current_mid_cents = lp if lp > 0 else None
             for t in trades:
                 trade_id = t.get("trade_id") or (
                     f"{ticker}:{t.get('created_time')}:{_trade_count(t)}"
@@ -627,6 +711,8 @@ def fetch_live_big_bets(series_tickers: List[str],
                     "signal_ts": signal_ts,
                     "zscore": zscore,
                     "minutes_to_close": mtc,
+                    "cluster_size": cluster_size,
+                    "current_mid_cents": current_mid_cents,
                     "direction": direction,
                     "direction_confidence": dir_conf,
                     "whale_count": count,
@@ -700,10 +786,23 @@ def compute_candidates(events: List[dict],
         action, action_reason = compute_action(score, all_pass, n_failed)
         last_fav = _last_favorable(e)
         coh = cohort_winrate_for(e, cohort_winrates)
+        # Bet vs current probability for the side this trader took.
+        # entry_mid_cents is the YES side mid; flip for NO bets.
+        direction = (e.get("direction") or "?").lower()
+        bet_mid = e.get("entry_mid_cents")
+        cur_mid = e.get("current_mid_cents")
+        bet_prob = (None if bet_mid is None
+                     else (float(bet_mid) if direction == "yes"
+                            else 100.0 - float(bet_mid)))
+        cur_prob = (None if cur_mid is None
+                     else (float(cur_mid) if direction == "yes"
+                            else 100.0 - float(cur_mid)))
         out.append({
             "ticker": e.get("ticker") or "",
             "signal_ts": e.get("signal_ts"),
             "direction": e.get("direction") or "?",
+            "bet_prob_pct": bet_prob,
+            "current_prob_pct": cur_prob,
             "notional_cents": int(e.get("whale_notional_cents") or 0),
             "zscore": (None if e.get("zscore") is None
                         else float(e.get("zscore") or 0.0)),
@@ -1095,14 +1194,21 @@ def _render_unusual_whales(out: List[str], candidates: List[dict]) -> None:
                "green = the bot simulates a buy (shown in Current bets above).</div>")
     pool = sorted(candidates, key=lambda c: c["insider_score"], reverse=True)
     out.append("<table><thead><tr>"
-               "<th>Age</th><th>Ticker</th>"
+               "<th>Time</th><th>Ticker</th>"
                "<th class='num'>Bet size</th><th>Side</th>"
+               "<th class='num' title='Implied probability of the bet "
+               "side at the moment the trade hit.'>Bet prob</th>"
+               "<th class='num' title='Current implied probability for "
+               "the same side — compare to Bet prob to see how the "
+               "market has moved since.'>Current prob</th>"
                "<th class='num'>Z-score</th>"
                "<th class='num'>Cohort win %</th>"
                "<th class='num'>Insider P</th>"
                "<th title='Recommended action: BUY (simulate entry), "
-               "WATCH (promising but not actionable), or SKIP.'>"
-               "Verdict</th>"
+               "WATCH (promising but not actionable), or SKIP. "
+               "Hover for the reason — includes hidden manipulation-"
+               "pattern checks (cluster size, round-lot test, price "
+               "stability).'>Verdict</th>"
                "</tr></thead><tbody>")
     for c in pool[:200]:
         # Side rendered as the same badge-yes/badge-no idiom the
@@ -1119,9 +1225,18 @@ def _render_unusual_whales(out: List[str], candidates: List[dict]) -> None:
             "WATCH": "badge-hedge",
             "SKIP":  "badge-skip",
         }.get(action, "badge-skip")
+        # Verdict tooltip lists every failed validator inline so the
+        # user can hover to see why something was downgraded — the
+        # manipulation-pattern checks (cluster size, round-lot,
+        # price stability) live here even though they don't have
+        # their own visible columns.
+        failed = [f"{n}: {d}" for n, ok, d in c["validators"] if not ok]
+        verdict_tt = c.get("action_reason", "")
+        if failed:
+            verdict_tt += " · Failed checks — " + "; ".join(failed)
         action_badge = (
             f"<span class='badge {action_cls}' "
-            f"title='{html.escape(c.get('action_reason', ''))}'>"
+            f"title='{html.escape(verdict_tt)}'>"
             f"{action}</span>"
         )
         z_str = (f"{c['zscore']:.2f}" if c.get('zscore') is not None
@@ -1139,11 +1254,27 @@ def _render_unusual_whales(out: List[str], candidates: List[dict]) -> None:
             f"{html.escape(tt)}</a>"
             if ticker_url else html.escape(tt)
         )
+        bet_prob_str = (f"{c['bet_prob_pct']:.0f}%"
+                         if c.get("bet_prob_pct") is not None else "—")
+        cur_prob_str = (f"{c['current_prob_pct']:.0f}%"
+                         if c.get("current_prob_pct") is not None else "—")
+        # Color the current-prob cell green when it has moved in our
+        # favor (current > bet), red when against. Same convention as
+        # the active-bets table on the regular dashboard.
+        if (c.get("bet_prob_pct") is not None
+                and c.get("current_prob_pct") is not None):
+            delta = c["current_prob_pct"] - c["bet_prob_pct"]
+            cur_cls = ("green" if delta > 0.5
+                        else ("red" if delta < -0.5 else ""))
+        else:
+            cur_cls = ""
         out.append(
-            f"<tr><td>{html.escape(_fmt_age(c['signal_ts']))}</td>"
+            f"<tr><td>{html.escape(_fmt_ts(c['signal_ts']))}</td>"
             f"<td class='mono'>{ticker_cell}</td>"
             f"<td class='num'>{_fmt_dollars(c['notional_cents'])}</td>"
             f"<td><span class='badge {side_badge_cls}'>{side}</span></td>"
+            f"<td class='num'>{bet_prob_str}</td>"
+            f"<td class='num {cur_cls}'>{cur_prob_str}</td>"
             f"<td class='num'>{z_str}</td>"
             f"<td class='num'>{coh_str}</td>"
             f"<td class='num'><span class='whale-score {score_cls}'>"
