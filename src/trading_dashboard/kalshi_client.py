@@ -210,6 +210,25 @@ class KalshiClient:
         _CACHE.put(cache_key, out)
         return out
 
+    def get_market(self, ticker: str) -> Optional[dict]:
+        """Fetch a single market by ticker. Cached.
+
+        Used by the whale page to look up the human-readable
+        question + strike for each ticker that surfaced a big
+        trade — the trades endpoint only returns ticker IDs,
+        not titles.
+        """
+        cache_key = f"market:{ticker}"
+        cached = _CACHE.get(cache_key)
+        if cached is not None:
+            return cached
+        resp = self._get(f"/markets/{ticker}")
+        if not resp:
+            return None
+        market = resp.get("market") or resp
+        _CACHE.put(cache_key, market)
+        return market
+
     def get_event(self, event_ticker: str) -> Optional[dict]:
         """Fetch a single event's metadata. Cached.
 

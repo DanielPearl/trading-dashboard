@@ -542,26 +542,56 @@ def validate_whale(event: dict,
 # Live big-bet ingestion                                                      #
 # --------------------------------------------------------------------------- #
 
+def _market_question(market: Optional[dict]) -> str:
+    """Compact human-readable label for a Kalshi market. Used in the
+    whale-watcher table's Question column.
+
+    Prefers event title + subtitle ("Natural gas price · above $2.75")
+    over the verbose market title ("Will the natural gas close price
+    be above 2.750 USD/MMBtu on …?") since the global whale scan
+    spans many series and a column wrapping at 80 chars per row
+    becomes unreadable. Falls back to subtitle alone, then yes_sub_title,
+    then "—".
+    """
+    if not market:
+        return "—"
+    sub = ((market.get("yes_sub_title")
+              or market.get("subtitle") or "").strip())
+    title = (market.get("event_title") or "").strip()
+    if title and sub:
+        return f"{title} · {sub}"
+    if sub:
+        return sub
+    if title:
+        return title
+    # Last-resort: trim the verbose market title.
+    mt = (market.get("title") or "").strip()
+    return mt or "—"
+
+
 def fetch_live_big_bets(series_tickers: List[str],
                           min_notional_cents: int = LIVE_MIN_NOTIONAL_CENTS,
                           lookback_hours: int = LIVE_LOOKBACK_HOURS,
+                          *,
+                          scan_all_markets: bool = False,
                           ) -> List[dict]:
-    """Pull recent trades from Kalshi for each series, filter to big
-    bets, and return event-shaped dicts ready for the existing
-    scorer + validator pipeline.
+    """Pull recent trades from Kalshi, filter to big bets, and return
+    event-shaped dicts ready for the existing scorer + validator
+    pipeline.
+
+    Two modes:
+      * Per-series (default): walk each series in ``series_tickers``,
+        list its open markets, fetch trades for each market.
+      * Global (``scan_all_markets=True``): pull the global trades
+        feed once. Surfaces big bets across the whole exchange — not
+        just the series this dashboard's bots care about. Looks up
+        market metadata lazily for each ticker that produced a
+        qualifying trade.
 
     No checkpoint data (these are live trades, not yet aged out), so
     `last_favorable_cents` will be None on every row. The "Outcome"
     column on the History tab simply won't include them until the
     bot's signal_tracker has a chance to capture +30m checkpoints.
-
-    Each event-shaped dict has keys matching what compute_candidates /
-    insider_score / validate_whale already consume:
-        ticker, signal_ts, zscore (None — no per-market history yet),
-        direction, direction_confidence, whale_count,
-        whale_notional_cents, taker_side, entry_mid_cents,
-        entry_spread_cents (None — no orderbook fetched per trade),
-        entry_depth_within_3c (0), entered (False), checkpoints ([]).
     """
     from . import kalshi_client
     client = kalshi_client.default_client()
@@ -570,6 +600,127 @@ def fetch_live_big_bets(series_tickers: List[str],
 
     seen_trade_ids: set = set()
     out: List[dict] = []
+    # Inline parsers shared across both modes.
+    def _trade_count(t):
+        c = t.get("count_fp")
+        if c is None:
+            c = t.get("count")
+        try:
+            return int(round(float(c))) if c is not None else 0
+        except (TypeError, ValueError):
+            return 0
+
+    def _trade_price_cents(t, side: str):
+        key = f"{side}_price_dollars"
+        v = t.get(key)
+        if v is None:
+            v = t.get(f"{side}_price")  # legacy field name
+        if v is None:
+            return 0
+        try:
+            f = float(v)
+        except (TypeError, ValueError):
+            return 0
+        return int(round(f * 100)) if f < 5 else int(f)
+
+    if scan_all_markets:
+        # Global path — one trades call, then per-ticker market lookup
+        # for the survivors. Pulls the most-recent N trades across all
+        # markets; the limit caps how far back into history we see.
+        try:
+            trades = client.fetch_trades(
+                market_ticker=None,
+                lookback_hours=lookback_hours,
+                limit=1000,
+            )
+        except Exception:  # noqa: BLE001
+            log.exception("whale: global fetch_trades failed")
+            return []
+
+        # Pre-filter trades by notional so we only do per-ticker
+        # market lookups on tickers that actually have big bets.
+        big_trades: List[dict] = []
+        for t in trades:
+            count = _trade_count(t)
+            yes_p = _trade_price_cents(t, "yes")
+            no_p = _trade_price_cents(t, "no")
+            price = yes_p if yes_p > 0 else no_p
+            if count * price >= min_notional_cents:
+                big_trades.append(t)
+
+        # Group by ticker so we can compute per-ticker stats (cluster
+        # size, current mid, z-score) over each ticker's trade batch.
+        from collections import defaultdict
+        by_ticker: Dict[str, List[dict]] = defaultdict(list)
+        for t in big_trades:
+            tk = t.get("ticker")
+            if tk:
+                by_ticker[tk].append(t)
+        # We also want non-big trades on these same tickers for the
+        # cluster + z-score calculations. Pull those out of the
+        # original trades list.
+        per_ticker_all: Dict[str, List[dict]] = defaultdict(list)
+        for t in trades:
+            tk = t.get("ticker")
+            if tk in by_ticker:
+                per_ticker_all[tk].append(t)
+
+        for ticker, ticker_trades in per_ticker_all.items():
+            # Look up market metadata once per ticker (cached).
+            try:
+                market = client.get_market(ticker)
+            except Exception:  # noqa: BLE001
+                log.warning("whale: get_market failed for %s", ticker)
+                market = None
+            close_time = (market or {}).get("close_time")
+            mtc: Optional[float] = None
+            if close_time:
+                try:
+                    ct = datetime.fromisoformat(
+                        close_time.replace("Z", "+00:00")
+                    ).timestamp()
+                    mtc = max(0.0, (ct - time.time()) / 60.0)
+                except (TypeError, ValueError):
+                    mtc = None
+            question = _market_question(market)
+            # Compute per-ticker stats off this ticker's trades.
+            counts = [_trade_count(t) for t in ticker_trades]
+            if len(counts) >= 5:
+                mean_c = sum(counts) / len(counts)
+                var = sum((c - mean_c) ** 2 for c in counts) / len(counts)
+                std_c = math.sqrt(var) if var > 0 else 0.0
+            else:
+                mean_c = std_c = 0.0
+            cluster_size = 0
+            for t in ticker_trades:
+                tc = _trade_count(t)
+                tp = _trade_price_cents(t, "yes")
+                if tp == 0:
+                    tp = _trade_price_cents(t, "no")
+                if tc * tp >= VALIDATOR_CLUSTER_MIN_NOTIONAL:
+                    cluster_size += 1
+            current_mid_cents: Optional[int] = None
+            if ticker_trades:
+                latest = ticker_trades[-1]
+                lp = _trade_price_cents(latest, "yes")
+                if lp == 0:
+                    lp = 100 - _trade_price_cents(latest, "no")
+                current_mid_cents = lp if lp > 0 else None
+
+            # Build event dicts for the qualifying (big) trades only.
+            for t in by_ticker[ticker]:
+                _emit_event(
+                    out, seen_trade_ids, t, ticker,
+                    _trade_count, _trade_price_cents,
+                    mean_c=mean_c, std_c=std_c,
+                    cluster_size=cluster_size,
+                    current_mid_cents=current_mid_cents,
+                    mtc=mtc, question=question,
+                    min_notional_cents=min_notional_cents,
+                )
+        return out
+
+    # Per-series path (legacy).
     for series in series_tickers:
         try:
             markets = client.list_markets(series)
@@ -580,9 +731,8 @@ def fetch_live_big_bets(series_tickers: List[str],
             ticker = m.get("ticker")
             if not ticker:
                 continue
-            # Minutes-to-close for the ttc feature in insider_score.
             close_time = m.get("close_time")
-            mtc: Optional[float] = None
+            mtc = None
             if close_time:
                 try:
                     ct = datetime.fromisoformat(
@@ -591,6 +741,7 @@ def fetch_live_big_bets(series_tickers: List[str],
                     mtc = max(0.0, (ct - time.time()) / 60.0)
                 except (TypeError, ValueError):
                     mtc = None
+            question = _market_question(m)
             try:
                 trades = client.fetch_trades(
                     market_ticker=ticker,
@@ -600,136 +751,116 @@ def fetch_live_big_bets(series_tickers: List[str],
             except Exception:  # noqa: BLE001
                 log.exception("whale: fetch_trades failed for %s", ticker)
                 continue
-            # Kalshi /markets/trades returns count as `count_fp` (a
-            # fixed-point integer count) and prices as
-            # `yes_price_dollars` / `no_price_dollars` (dollar
-            # strings like "0.6500"). Normalise once.
-            def _trade_count(t):
-                # Kalshi sends count_fp as a float (e.g. 46.85). Round
-                # to whole contracts — Kalshi's UI displays the
-                # rounded integer too.
-                c = t.get("count_fp")
-                if c is None:
-                    c = t.get("count")
-                try:
-                    return int(round(float(c))) if c is not None else 0
-                except (TypeError, ValueError):
-                    return 0
-
-            def _trade_price_cents(t, side: str):
-                # side = "yes" or "no"
-                key = f"{side}_price_dollars"
-                v = t.get(key)
-                if v is None:
-                    v = t.get(f"{side}_price")  # legacy field name
-                if v is None:
-                    return 0
-                try:
-                    f = float(v)
-                except (TypeError, ValueError):
-                    return 0
-                # Heuristic: if value is < 5 it's dollars; otherwise
-                # already cents. Kalshi's _dollars suffix is reliable
-                # so we expect dollars in the range [0, 1].
-                return int(round(f * 100)) if f < 5 else int(f)
-
-            # Per-ticker z-score: how unusual is each trade's count
-            # relative to the other trades we're seeing on the same
-            # market in the lookback window? Cheap stand-in for the
-            # rolling-stats approach the bot uses on its live tape.
-            counts = [_trade_count(t) for t in trades]
-            if len(counts) >= 5:
-                mean_c = sum(counts) / len(counts)
-                var = sum((c - mean_c) ** 2 for c in counts) / len(counts)
-                std_c = math.sqrt(var) if var > 0 else 0.0
-            else:
-                mean_c = std_c = 0.0
-
-            # Cluster size = how many other ≥$250 trades on this same
-            # ticker in the lookback. Informed flow tends to cluster;
-            # lone-outlier trades are more likely manipulation.
-            cluster_size = 0
+            # Per-ticker stats (z-score baseline, cluster size,
+            # current mid). Same logic the global-scan path uses,
+            # factored into _per_ticker_stats below.
+            mean_c, std_c, cluster_size, current_mid_cents = (
+                _per_ticker_stats(trades, _trade_count, _trade_price_cents)
+            )
             for t in trades:
-                tc = _trade_count(t)
-                tp = _trade_price_cents(t, "yes")
-                if tp == 0:
-                    tp = _trade_price_cents(t, "no")
-                if tc * tp >= VALIDATOR_CLUSTER_MIN_NOTIONAL:
-                    cluster_size += 1
-
-            # Current mid for this ticker — use the most-recent trade's
-            # yes_price as a free proxy for "where the market is now".
-            # Trades come back oldest-first; take the last entry.
-            current_mid_cents: Optional[int] = None
-            if trades:
-                latest = trades[-1]
-                lp = _trade_price_cents(latest, "yes")
-                if lp == 0:
-                    lp = 100 - _trade_price_cents(latest, "no")
-                current_mid_cents = lp if lp > 0 else None
-            for t in trades:
-                trade_id = t.get("trade_id") or (
-                    f"{ticker}:{t.get('created_time')}:{_trade_count(t)}"
+                _emit_event(
+                    out, seen_trade_ids, t, ticker,
+                    _trade_count, _trade_price_cents,
+                    mean_c=mean_c, std_c=std_c,
+                    cluster_size=cluster_size,
+                    current_mid_cents=current_mid_cents,
+                    mtc=mtc, question=question,
+                    min_notional_cents=min_notional_cents,
                 )
-                if trade_id in seen_trade_ids:
-                    continue
-                seen_trade_ids.add(trade_id)
-                count = _trade_count(t)
-                yes_price = _trade_price_cents(t, "yes")
-                no_price = _trade_price_cents(t, "no")
-                # Notional = whichever side was actually paid.
-                price = yes_price if yes_price > 0 else no_price
-                notional = count * price
-                if notional < min_notional_cents:
-                    continue
-                taker_side = (t.get("taker_side") or "").lower()
-                # Direction inference — same heuristic as the bot's
-                # whale_detector when taker_side isn't reliable.
-                if taker_side in {"yes", "no"}:
-                    direction = taker_side
-                    dir_conf = 0.8
-                else:
-                    direction = "yes" if yes_price >= no_price else "no"
-                    dir_conf = 0.4
-                ts_str = t.get("created_time") or ""
-                try:
-                    signal_ts = datetime.fromisoformat(
-                        ts_str.replace("Z", "+00:00")
-                    ).timestamp()
-                except (TypeError, ValueError):
-                    signal_ts = time.time()
-                # Mid for probability bounds — use the trade's own
-                # yes_price as the implied mid since we don't have
-                # the orderbook at trade time.
-                mid = yes_price if yes_price > 0 else (100 - no_price)
-                # Per-ticker z-score (computed above off the trades
-                # batch). Falls back to 0 when the sample is too
-                # thin — the validator will then fail z-score.
-                zscore = (
-                    (count - mean_c) / std_c
-                    if std_c > 0 else 0.0
-                )
-                out.append({
-                    "ticker": ticker,
-                    "signal_ts": signal_ts,
-                    "zscore": zscore,
-                    "minutes_to_close": mtc,
-                    "cluster_size": cluster_size,
-                    "current_mid_cents": current_mid_cents,
-                    "direction": direction,
-                    "direction_confidence": dir_conf,
-                    "whale_count": count,
-                    "whale_notional_cents": notional,
-                    "taker_side": taker_side,
-                    "entry_mid_cents": mid,
-                    "entry_spread_cents": None,
-                    "entry_depth_within_3c": 0,
-                    "entered": False,
-                    "rejection_reason": None,
-                    "checkpoints": [],
-                    "_source": "live",
-                })
     return out
+
+
+def _per_ticker_stats(trades: List[dict], _trade_count, _trade_price_cents,
+                       ) -> Tuple[float, float, int, Optional[int]]:
+    """Per-ticker z-score baseline, cluster size, current mid. Shared
+    by the per-series and global-scan paths so the two trees compute
+    identical signal context for each event.
+    """
+    counts = [_trade_count(t) for t in trades]
+    if len(counts) >= 5:
+        mean_c = sum(counts) / len(counts)
+        var = sum((c - mean_c) ** 2 for c in counts) / len(counts)
+        std_c = math.sqrt(var) if var > 0 else 0.0
+    else:
+        mean_c = std_c = 0.0
+    cluster_size = 0
+    for t in trades:
+        tc = _trade_count(t)
+        tp = _trade_price_cents(t, "yes")
+        if tp == 0:
+            tp = _trade_price_cents(t, "no")
+        if tc * tp >= VALIDATOR_CLUSTER_MIN_NOTIONAL:
+            cluster_size += 1
+    current_mid_cents: Optional[int] = None
+    if trades:
+        latest = trades[-1]
+        lp = _trade_price_cents(latest, "yes")
+        if lp == 0:
+            lp = 100 - _trade_price_cents(latest, "no")
+        current_mid_cents = lp if lp > 0 else None
+    return mean_c, std_c, cluster_size, current_mid_cents
+
+
+def _emit_event(out: List[dict], seen_trade_ids: set, t: dict, ticker: str,
+                  _trade_count, _trade_price_cents, *,
+                  mean_c: float, std_c: float, cluster_size: int,
+                  current_mid_cents: Optional[int],
+                  mtc: Optional[float], question: str,
+                  min_notional_cents: int) -> None:
+    """Build one event dict from a raw Kalshi trade and append to ``out``
+    if it clears the notional floor. Shared by both ingestion paths so
+    the event shape stays uniform.
+    """
+    trade_id = t.get("trade_id") or (
+        f"{ticker}:{t.get('created_time')}:{_trade_count(t)}"
+    )
+    if trade_id in seen_trade_ids:
+        return
+    seen_trade_ids.add(trade_id)
+    count = _trade_count(t)
+    yes_price = _trade_price_cents(t, "yes")
+    no_price = _trade_price_cents(t, "no")
+    price = yes_price if yes_price > 0 else no_price
+    notional = count * price
+    if notional < min_notional_cents:
+        return
+    taker_side = (t.get("taker_side") or "").lower()
+    if taker_side in {"yes", "no"}:
+        direction = taker_side
+        dir_conf = 0.8
+    else:
+        direction = "yes" if yes_price >= no_price else "no"
+        dir_conf = 0.4
+    ts_str = t.get("created_time") or ""
+    try:
+        signal_ts = datetime.fromisoformat(
+            ts_str.replace("Z", "+00:00")
+        ).timestamp()
+    except (TypeError, ValueError):
+        signal_ts = time.time()
+    mid = yes_price if yes_price > 0 else (100 - no_price)
+    zscore = (count - mean_c) / std_c if std_c > 0 else 0.0
+    out.append({
+        "ticker": ticker,
+        "question": question,
+        "signal_ts": signal_ts,
+        "zscore": zscore,
+        "minutes_to_close": mtc,
+        "cluster_size": cluster_size,
+        "current_mid_cents": current_mid_cents,
+        "direction": direction,
+        "direction_confidence": dir_conf,
+        "whale_count": count,
+        "whale_notional_cents": notional,
+        "taker_side": taker_side,
+        "entry_mid_cents": mid,
+        "entry_spread_cents": None,
+        "entry_depth_within_3c": 0,
+        "entered": False,
+        "rejection_reason": None,
+        "checkpoints": [],
+        "_source": "live",
+    })
 
 
 # --------------------------------------------------------------------------- #
@@ -802,6 +933,7 @@ def compute_candidates(events: List[dict],
                             else 100.0 - float(cur_mid)))
         out.append({
             "ticker": e.get("ticker") or "",
+            "question": e.get("question") or "",
             "signal_ts": e.get("signal_ts"),
             "direction": e.get("direction") or "?",
             "bet_prob_pct": bet_prob,
@@ -982,21 +1114,37 @@ def render_page(
     # Pull live big bets across the configured bots' series so the
     # whale page surfaces real Kalshi activity even when the
     # whale-watcher bot's signal_tracking.jsonl is sparse / empty.
-    series_to_scan: List[str] = []
-    for b in available_bots:
-        s = b.get("series_ticker")
-        if s and s not in series_to_scan:
-            series_to_scan.append(s)
-    # ?min=<dollars> from the URL overrides the default $100 floor.
-    # Useful when Kalshi is busy and the user wants to dial the bar
-    # up to $1000+ to filter out the smaller flow.
+    # ?min=<dollars> from the URL overrides the default $1000 floor.
     if min_notional_dollars is not None and min_notional_dollars >= 0:
         effective_min_cents = min_notional_dollars * 100
+        floor_was_explicit = True
     else:
         effective_min_cents = LIVE_MIN_NOTIONAL_CENTS
-    live_events = (fetch_live_big_bets(series_to_scan,
-                                         min_notional_cents=effective_min_cents)
-                    if series_to_scan else [])
+        floor_was_explicit = False
+    # Whale watcher scans the WHOLE Kalshi exchange for big bets, not
+    # just the series this dashboard's bots track. Reads global trades
+    # once, then looks up market metadata only for tickers that
+    # produced a qualifying trade.
+    live_events = fetch_live_big_bets(
+        [],  # ignored in scan_all_markets mode
+        min_notional_cents=effective_min_cents,
+        scan_all_markets=True,
+    )
+    # Auto-bump: if too many bets cleared the default floor, widen
+    # the bar so the user sees only the truly notable ones. Skipped
+    # when the user explicitly set ?min= — they asked for that bar.
+    AUTO_BUMP_THRESHOLD = 30
+    AUTO_BUMP_FLOOR_CENTS = 500_000  # $5000
+    auto_bumped = False
+    if (not floor_was_explicit
+            and effective_min_cents < AUTO_BUMP_FLOOR_CENTS
+            and len(live_events) > AUTO_BUMP_THRESHOLD):
+        live_events = fetch_live_big_bets(
+            [], min_notional_cents=AUTO_BUMP_FLOOR_CENTS,
+            scan_all_markets=True,
+        )
+        effective_min_cents = AUTO_BUMP_FLOOR_CENTS
+        auto_bumped = True
 
     # Combine: tracked signals (from JSONL, with checkpoints) + live
     # big bets (from Kalshi API, no checkpoints yet). The scorer
@@ -1035,6 +1183,12 @@ def render_page(
                   "color:#3fb950; border:1px solid rgba(63,185,80,0.30); }"
                ".valid-pill.fail { background:rgba(248,81,73,0.15); "
                   "color:#f85149; border:1px solid rgba(248,81,73,0.30); }"
+               # Question cell — clip long titles so the column
+               # doesn't push the rest of the table off-screen. Full
+               # text stays accessible via the tooltip on hover.
+               ".whale-question { max-width: 320px; overflow: hidden; "
+                  "text-overflow: ellipsis; white-space: nowrap; "
+                  "color: #c9d1d9; }"
                "</style>")
     out.append("</head><body>")
     out.append("<h1>Kalshi simulation dashboard</h1>")
@@ -1212,6 +1366,8 @@ def _render_unusual_whales(out: List[str], candidates: List[dict]) -> None:
     pool = sorted(candidates, key=lambda c: c["insider_score"], reverse=True)
     out.append("<table><thead><tr>"
                "<th>Time</th><th>Ticker</th>"
+               "<th title='Human-readable market question — what "
+               "the bet pays out on. Pulled from Kalshi.'>Question</th>"
                "<th class='num'>Bet size</th><th>Side</th>"
                "<th class='num' title='Implied probability of the bet "
                "side at the moment the trade hit.'>Bet prob</th>"
@@ -1285,9 +1441,19 @@ def _render_unusual_whales(out: List[str], candidates: List[dict]) -> None:
                         else ("red" if delta < -0.5 else ""))
         else:
             cur_cls = ""
+        # Question cell — the market's human-readable label. Long
+        # values are clipped via CSS but the full text stays in a
+        # title tooltip so the user can hover for the rest.
+        question = (c.get("question") or "—").strip() or "—"
+        question_cell = (
+            f"<td class='whale-question' "
+            f"title='{html.escape(question)}'>"
+            f"{html.escape(question)}</td>"
+        )
         out.append(
             f"<tr><td>{html.escape(_fmt_ts(c['signal_ts']))}</td>"
             f"<td class='mono'>{ticker_cell}</td>"
+            f"{question_cell}"
             f"<td class='num'>{_fmt_dollars(c['notional_cents'])}</td>"
             f"<td><span class='badge {side_badge_cls}'>{side}</span></td>"
             f"<td class='num'>{bet_prob_str}</td>"
