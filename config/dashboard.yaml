@@ -39,6 +39,26 @@ bots:
       divisor: 1000.0
       # 1-min raw candles — capture every recorded change.
       chart_period_minutes: 1
+  - key: cpi
+    name: Consumer Price Index
+    db_path: /root/cpi/data/sim.db
+    decisions_path: /root/cpi/data/decisions.jsonl
+    # Both Core-CPI and headline CPI markets render under this bot.
+    # KXECONSTATCPICORE is what the model is calibrated against, but
+    # the dashboard's series_ticker filter shows whichever family
+    # the user clicks into; we default to the primary core series.
+    series_ticker: KXECONSTATCPICORE
+    display:
+      underlying_label: Last realized Core CPI MoM
+      underlying_unit: "pp"
+      underlying_decimals: 2
+      unit_position: suffix
+      # MoM percent points are already small numbers — no divisor.
+      # Monthly print → daily candle resolution is plenty.
+      chart_period_minutes: 1440
+      # Override the default "next week" so the watchlist's
+      # "Predicted ___" card reads correctly for a monthly print.
+      prediction_period_label: next month
   - key: natural-gas
     name: Natural Gas Prices
     # Lives at /root/peak-load/ on the droplet — directory keeps its old

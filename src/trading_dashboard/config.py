@@ -42,6 +42,10 @@ class DisplayCfg:
     # candles and downsamples server-side. Use only for series where
     # intraday market activity is dense enough to populate finer bars.
     chart_period_minutes: int = 60
+    # Forecast cadence label used in "Predicted ___" cards on the
+    # watchlist page. Weekly bots (gas, claims) keep the default; the
+    # monthly CPI bot overrides this to "next month".
+    prediction_period_label: str = "next week"
 
 
 @dataclass

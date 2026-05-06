@@ -3167,10 +3167,19 @@ def _render_current_prediction(out: List[str], model: dict | None,
                    if q05 is not None else "—")
         q95_str = (html.escape(fmt_underlying(q95, display))
                    if q95 is not None else "—")
+    # Cadence-aware labels driven by the bot's display config:
+    #   • underlying_label gives the "Current X" card a bot-specific name
+    #     ("Retail gas price" vs "Initial jobless claims" vs "Last
+    #     realized Core CPI MoM").
+    #   • prediction_period_label fills "Predicted ___" with the right
+    #     cadence ("next week" / "next month") so monthly bots don't read
+    #     as if they were weekly. Defaults preserve existing weekly bots.
+    cur_label = (display.get("underlying_label") or "Current price") if display else "Current price"
+    period_label = (display.get("prediction_period_label") or "next week") if display else "next week"
     out.append("<div class='row compact'>")
-    out.append(f"<div class='card'><div class='label'>Current price</div>"
+    out.append(f"<div class='card'><div class='label'>{html.escape(cur_label)}</div>"
                f"<div class='value'>{cur_str}</div></div>")
-    out.append(f"<div class='card'><div class='label'>Predicted next week</div>"
+    out.append(f"<div class='card'><div class='label'>Predicted {html.escape(period_label)}</div>"
                f"<div class='value'>{pred_str}</div></div>")
     out.append(f"<div class='card'><div class='label'>Median change</div>"
                f"<div class='value'>{chg_str}</div></div>")
@@ -4010,10 +4019,13 @@ class Handler(BaseHTTPRequestHandler):
                 global_history: List[dict] = []
                 # Per-bot models for the Performance tab — one card-row
                 # per bot showing accuracy / precision / recall / F1.
+                # Include bots whose sim.db doesn't exist yet (e.g. a
+                # newly-registered bot before its first run) so they
+                # show up in the grid with a "no snapshot yet"
+                # placeholder rather than vanishing entirely. The
+                # fetch_* helpers below all tolerate a missing DB.
                 bot_models: List[dict] = []
                 for b in self.bots:
-                    if not b.get("available"):
-                        continue
                     if b.get("dashboard_type") and b["dashboard_type"] != "standard":
                         continue
                     for ab in fetch_active_bets_with_marks(b["db_path"]):
@@ -4271,6 +4283,7 @@ def main(argv: list[str] | None = None) -> int:
                 "unit_position": b.display.unit_position,
                 "divisor": b.display.divisor,
                 "chart_period_minutes": b.display.chart_period_minutes,
+                "prediction_period_label": b.display.prediction_period_label,
             },
             "available": available,
         })
