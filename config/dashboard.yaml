@@ -43,11 +43,13 @@ bots:
     name: Consumer Price Index
     db_path: /root/cpi/data/sim.db
     decisions_path: /root/cpi/data/decisions.jsonl
-    # Both Core-CPI and headline CPI markets render under this bot.
-    # KXECONSTATCPICORE is what the model is calibrated against, but
-    # the dashboard's series_ticker filter shows whichever family
-    # the user clicks into; we default to the primary core series.
-    series_ticker: KXECONSTATCPICORE
+    # KXCPICORE is the **above-style** Core CPI MoM series ("Above
+    # X.X%"). The bot trades these because they have wider winning
+    # ranges and are a clean fit for the per-threshold classifiers.
+    # The exact-bucket KXECONSTATCPICORE series is intentionally NOT
+    # the watchlist anchor — see Consumer Price Index/config/config.yaml
+    # for why we excluded it.
+    series_ticker: KXCPICORE
     display:
       underlying_label: Last realized Core CPI MoM
       underlying_unit: "pp"
