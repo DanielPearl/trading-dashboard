@@ -528,10 +528,27 @@ def _watchlist_from_kalshi(markets: List[dict]) -> List[dict]:
             strike_high = float(cap) if cap is not None else None
         except (TypeError, ValueError):
             strike_high = None
-        # Direction inference from strike_type when present.
-        direction = "above"
-        if strike_low is not None and strike_high is not None:
+        # Direction: prefer Kalshi's strike_type field — it's
+        # authoritative ("greater" → above, "less" → below, "between"
+        # → between). For above-style markets Kalshi sets BOTH
+        # floor_strike and cap_strike to the same value (a convention,
+        # not a range), so the old "both set ⇒ between" heuristic
+        # mis-renders them as a zero-width band like "0.90pp – 0.90pp".
+        # Fall back to that heuristic only when strike_type is absent.
+        strike_type = (m.get("strike_type") or "").lower()
+        if strike_type in ("greater", "above"):
+            direction = "above"
+            strike_high = None
+        elif strike_type in ("less", "below"):
+            direction = "below"
+            strike_high = None
+        elif strike_type == "between":
             direction = "between"
+        elif strike_low is not None and strike_high is not None and strike_low != strike_high:
+            direction = "between"
+        else:
+            direction = "above"
+            strike_high = None
         # Prices come as decimal-dollar strings ("0.7600"). The local
         # schema uses int cents.
         def _cents(v: Any) -> int | None:
