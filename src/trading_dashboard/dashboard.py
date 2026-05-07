@@ -1799,6 +1799,89 @@ def render_page(
 
     # ── WATCHLIST tab — chart + strike ladder + Kalshi rules ─────────
     _open_panel("watchlist")
+    # If the user picked rules-parser from the bot dropdown, the
+    # Watchlist tab swaps to the rules-arb discrepancy table. The
+    # standard chart + strike ladder don't apply (rules-parser is
+    # cross-series; there's no single "underlying" to chart). We
+    # still render the bot dropdown above it so the user can switch
+    # back to a standard bot.
+    current_bot_entry = next(
+        (b for b in available_bots if b["key"] == current_bot),
+        None,
+    )
+    if (current_bot_entry
+            and current_bot_entry.get("dashboard_type") == "rules"):
+        out.append("<div class='section'><h2>"
+                   "Rules Parser — Arbitrage watchlist</h2>"
+                   "<div class='body'>")
+        _render_bot_filter(out, available_bots, current_bot,
+                            period_key=period_key)
+        if rules_intel_db_path:
+            from . import rules_intel as _ri_view
+            out.append(_ri_view.render_section(
+                rules_intel_db_path,
+                status_filter=rules_intel_status,
+                current_bot=current_bot,
+            ))
+        else:
+            out.append(
+                "<div class='empty'>Rules Intel disabled in dashboard "
+                "config (<code>rules_intel.enabled: false</code>).</div>"
+            )
+        out.append("</div></div>")
+        out.append("</div>")  # /watchlist panel
+        # Skip the standard render path below.
+        _open_panel("rules")
+        # Re-emit the Rules Intel tab body too — keeps content
+        # parity between selecting "Rules Parser" in the bot dropdown
+        # vs clicking the global "Rules Intel" tab.
+        if rules_intel_db_path:
+            from . import rules_intel as _ri_view
+            out.append(_ri_view.render_section(
+                rules_intel_db_path,
+                status_filter=rules_intel_status,
+                current_bot=current_bot,
+            ))
+        out.append("</div>")  # /rules panel
+        # ── HISTORY tab still renders for cross-bot consistency ──
+        _open_panel("history")
+        out.append(
+            f"<div class='section'><h2>Contract history "
+            f"<span class='small gray'>({html.escape(period_label)})"
+            f"</span></h2><div class='body'>"
+        )
+        _render_period_filter(out, period_key, current_bot=current_bot,
+                                tab_key="history")
+        _render_bet_history_block(
+            out, global_history, heading="", shown_initially=20,
+        )
+        out.append("</div></div></div>")  # /section /history panel
+        # Standard footer (criteria modal + JS poller).
+        out.append(
+            "<div id='criteria-overlay' class='criteria-overlay' hidden>"
+            "</div>"
+            "<div id='criteria-modal' class='criteria-modal' hidden>"
+            "  <div class='criteria-modal-head'>"
+            "    <div><h3>Rules</h3>"
+            "      <div class='ticker' id='criteria-modal-ticker'></div>"
+            "    </div>"
+            "    <button type='button' id='criteria-close' "
+            "      class='criteria-modal-close' aria-label='Close'>×</button>"
+            "  </div>"
+            "  <div class='criteria-modal-body' id='criteria-modal-body'>"
+            "  </div></div>"
+        )
+        buy_criteria_payload = json.dumps({
+            "edge": edge_cfg or {}, "validators": validator_cfg or {},
+            "risk": risk_caps or {}, "hedge": hedge_cfg or {},
+        }, separators=(",", ":"), default=str)
+        out.append(
+            f"<script>window.__BUY_CRITERIA__ = {buy_criteria_payload};"
+            "</script>"
+        )
+        out.append(_live_update_script(current_bot, period_key=period_key))
+        out.append("</body></html>")
+        return "".join(out)
     if (not watchlist and not latest_active
             and not [b for b in available_bots
                      if b["key"] == current_bot and b.get("available")]):
@@ -2703,6 +2786,172 @@ def _render_summary(out: List[str], rollup: dict, active_bets: List[dict],
     out.append("</div></div>")
 
 
+def _build_whale_card_entry(b: dict) -> dict:
+    """Adapter — load whale signals + summarise into the dict shape the
+    bot-cards grid renders. Cheap on a missing JSONL (returns empty
+    summary), so the card renders a "no data yet" placeholder.
+    """
+    from . import whale  # local import — pulls heavy deps only when used
+    events = whale.load_events(b.get("signals_path"))
+    summary = whale.summarize(events, candidates=None)
+    return {
+        "bot": b,
+        "model": None,         # standard model fields don't apply
+        "whale_summary": summary,
+    }
+
+
+def _build_rules_card_entry(b: dict) -> dict:
+    """Adapter — load rules-parser SQLite summary into the bot-cards
+    grid shape. Reads via the rules_intel view module so the dashboard
+    process never imports rules_parser.trader (no order surface)."""
+    from . import rules_intel as _ri
+    db_path = b.get("db_path") or ""
+    summary = _ri.fetch_summary(db_path) if db_path else {}
+    # Pull a top-discrepancy hint for the card subtitle so the home
+    # grid hints at what's actionable without forcing a tab switch.
+    top_disc: dict | None = None
+    if summary.get("available"):
+        try:
+            wl = _ri.fetch_watchlist(db_path, limit=10)
+            for r in wl:
+                if (r.get("signal_id") is not None
+                        and r.get("signal_expected") in ("YES", "NO")):
+                    top_disc = _ri.discrepancy(
+                        yes_ask=r.get("yes_ask_cents"),
+                        no_ask=r.get("no_ask_cents"),
+                        expected=r.get("signal_expected"),
+                        confidence=r.get("signal_confidence"),
+                        risk_weight=int(r.get("risk_weight") or 0),
+                        has_signal=True,
+                    )
+                    top_disc["ticker"] = r.get("ticker")
+                    break
+        except Exception:  # noqa: BLE001
+            log.exception("rules card top-discrepancy lookup failed")
+    return {
+        "bot": b,
+        "model": None,
+        "rules_summary": summary,
+        "rules_top_discrepancy": top_disc,
+    }
+
+
+def _render_whale_bot_card(out: List[str], entry: dict) -> None:
+    """Whale Watcher card for the home grid.
+
+    Reuses the same .bot-card class so spacing matches standard cards,
+    but the metric set is whale-native: signals captured, validators
+    passed, simulated buys, 30-min win rate / mean favorable, and the
+    summarize() verdict. Card link → Watchlist tab (which already has a
+    full whale-watcher renderer in whale.py).
+    """
+    b = entry.get("bot") or {}
+    s = entry.get("whale_summary") or {}
+    name = b.get("name", "Whale Watcher")
+    bot_key = b.get("key", "whale-watcher")
+    href = f"?tab=watchlist&bot={html.escape(bot_key)}"
+
+    n_signals = int(s.get("n_signals") or 0)
+    n_passed = int(s.get("n_passed_all_validators") or 0)
+    n_buys   = int(s.get("n_simulated_buys") or 0)
+    win_rate = s.get("win_rate_30m")
+    mean_fav = s.get("mean_fav_30m")
+    verdict = s.get("verdict") or "no signals yet"
+    win_pct = (f"{win_rate*100:.0f}%" if win_rate is not None else "—")
+    mean_fav_str = (f"{mean_fav:+.1f}pp" if mean_fav is not None else "—")
+    win_cls = ("green" if (win_rate or 0) > 0.55
+                else ("red" if (win_rate is not None and win_rate < 0.45)
+                      else ""))
+    fav_cls = ("green" if (mean_fav or 0) > 1.5
+                else ("red" if (mean_fav is not None and mean_fav < -1)
+                      else ""))
+    out.append(f"<a class='bot-card' href='{href}'>")
+    out.append("<div class='bot-card-head'>"
+               f"<div class='bot-name'>{html.escape(name)}</div>"
+               f"<div class='bot-meta'>insider-flow detector · {n_signals} signals</div>"
+               "</div>")
+    if n_signals == 0:
+        out.append("<dl><dt class='gray'>Status</dt>"
+                   "<dd class='gray' style='grid-column:span 3;text-align:left;'>"
+                   "no signals captured yet</dd></dl>")
+    else:
+        out.append("<dl>")
+        out.append(f"<dt>Signals</dt><dd>{n_signals}</dd>"
+                   f"<dt>Passed all</dt><dd>{n_passed}</dd>")
+        out.append(f"<dt>Sim. buys</dt><dd>{n_buys}</dd>"
+                   f"<dt>Win % (30m)</dt><dd class='{win_cls}'>{win_pct}</dd>")
+        out.append(f"<dt>Mean fav.</dt><dd class='{fav_cls}'>{mean_fav_str}</dd>"
+                   f"<dt>Verdict</dt><dd>{html.escape(verdict)}</dd>")
+        out.append("</dl>")
+    out.append("<div class='bot-card-foot'>"
+               "<span>View signals</span><span class='arrow'>›</span>"
+               "</div></a>")
+
+
+def _render_rules_bot_card(out: List[str], entry: dict) -> None:
+    """Rules Parser card for the home grid.
+
+    Metrics come from rules_intel.fetch_summary() — counts of contracts
+    watched, parsed clauses, news items, sources, plus the signals
+    breakdown. The footer shows the most actionable directional
+    discrepancy when one is present, so the user can see at a glance
+    that "we currently think NO is underpriced on KX...".
+    """
+    b = entry.get("bot") or {}
+    s = entry.get("rules_summary") or {}
+    name = b.get("name", "Rules Parser")
+    bot_key = b.get("key", "rules-parser")
+    href = f"?tab=watchlist&bot={html.escape(bot_key)}"
+    available = bool(s.get("available"))
+    contracts = int(s.get("contracts") or 0)
+    clauses = int(s.get("clauses") or 0)
+    news_items = int(s.get("news_items") or 0)
+    sources = int(s.get("sources") or 0)
+    avg_rel = s.get("avg_reliability") or 0.0
+    n_total = int(s.get("signals_total") or 0)
+    n_flagged = int(s.get("signals_flagged") or 0)
+    n_traded = int(s.get("signals_traded") or 0)
+
+    out.append(f"<a class='bot-card' href='{href}'>")
+    out.append("<div class='bot-card-head'>"
+               f"<div class='bot-name'>{html.escape(name)}</div>"
+               f"<div class='bot-meta'>event-driven rules-arb · "
+               f"{contracts} contracts</div>"
+               "</div>")
+    if not available:
+        out.append("<dl><dt class='gray'>Status</dt>"
+                   "<dd class='gray' style='grid-column:span 3;text-align:left;'>"
+                   "rules-parser DB not found — start the kalshi-rules-parser "
+                   "service</dd></dl>")
+    else:
+        out.append("<dl>")
+        out.append(f"<dt>Clauses</dt><dd>{clauses}</dd>"
+                   f"<dt>Sources</dt><dd>{sources}</dd>")
+        out.append(f"<dt>Avg reliab.</dt><dd>{avg_rel*100:.0f}%</dd>"
+                   f"<dt>News items</dt><dd>{news_items}</dd>")
+        flagged_cls = "amber" if n_flagged > 0 else ""
+        out.append(f"<dt>Flagged</dt><dd class='{flagged_cls}'>{n_flagged}</dd>"
+                   f"<dt>Traded (dryrun)</dt><dd>{n_traded}</dd>")
+        out.append(f"<dt>Signals total</dt><dd>{n_total}</dd>"
+                   "<dt>Mode</dt><dd class='gray'>dry-run</dd>")
+        out.append("</dl>")
+        # Top discrepancy (if any) — one-line headline + ticker.
+        td = entry.get("rules_top_discrepancy")
+        if td:
+            cls = td.get("edge_class", "")
+            out.append(
+                f"<div class='small {cls}' style='margin-top:6px;"
+                f"font-size:11px;line-height:1.3;'>"
+                f"<strong>{html.escape(td.get('ticker') or '')}</strong> · "
+                f"{html.escape(td.get('headline') or '')}</div>"
+            )
+    out.append("<div class='bot-card-foot'>"
+               "<span>View arbitrage watchlist</span>"
+               "<span class='arrow'>›</span>"
+               "</div></a>")
+
+
 def _render_bot_cards(out: List[str], rollup: dict,
                         bot_models: List[dict] | None,
                         period_label: str) -> None:
@@ -2730,6 +2979,16 @@ def _render_bot_cards(out: List[str], rollup: dict,
     out.append("<div class='bot-cards-grid'>")
     for entry in bot_models:
         b = entry.get("bot") or {}
+        dtype = b.get("dashboard_type") or "standard"
+        # Special-shape bots get their own renderer (different metric
+        # schema). They still link to the watchlist tab so the card
+        # behaves the same as standard bots from the user's POV.
+        if dtype == "whale":
+            _render_whale_bot_card(out, entry)
+            continue
+        if dtype == "rules":
+            _render_rules_bot_card(out, entry)
+            continue
         m = entry.get("model") or {}
         name = b.get("name", "—")
         bot_key = b.get("key", "")
@@ -4075,7 +4334,15 @@ class Handler(BaseHTTPRequestHandler):
                 # fetch_* helpers below all tolerate a missing DB.
                 bot_models: List[dict] = []
                 for b in self.bots:
-                    if b.get("dashboard_type") and b["dashboard_type"] != "standard":
+                    dtype = b.get("dashboard_type") or "standard"
+                    # Whale + Rules bots aren't sim.db-backed — they
+                    # carry their own card-data shape (signal counts /
+                    # rule clauses) instead of model accuracy/F1.
+                    if dtype == "whale":
+                        bot_models.append(_build_whale_card_entry(b))
+                        continue
+                    if dtype == "rules":
+                        bot_models.append(_build_rules_card_entry(b))
                         continue
                     for ab in fetch_active_bets_with_marks(b["db_path"]):
                         ab["_bot_name"] = b["name"]
@@ -4359,7 +4626,12 @@ def main(argv: list[str] | None = None) -> int:
         # yet, not that the bot is offline. Showing "(no data)" next
         # to the dropdown name is misleading; the page itself renders
         # a clear empty-state when there are zero events.
-        if b.dashboard_type == "whale":
+        if b.dashboard_type in ("whale", "rules"):
+            # Same reasoning as whale: the rules-parser DB always
+            # exists once the service has booted, and the page renders
+            # a clear "no data yet" stub if it doesn't. Showing
+            # "(no data)" next to the dropdown name would be
+            # misleading on a fresh deploy.
             available = True
         else:
             available = Path(b.db_path).exists()
