@@ -1739,6 +1739,8 @@ def render_page(
     period_key: str = "all",
     tab_key: str = "home",
     bot_models: List[dict] | None = None,
+    rules_intel_db_path: str | None = None,
+    rules_intel_status: str = "all",
 ) -> str:
     out: List[str] = []
     out.append("<!doctype html><html><head>")
@@ -1760,6 +1762,7 @@ def render_page(
         ("home", "Home"),
         ("watchlist", "Watchlist"),
         ("history", "History"),
+        ("rules", "Rules Intel"),
     ]
     valid_tabs = {k for k, _ in tabs}
     active_tab = tab_key if tab_key in valid_tabs else "home"
@@ -1825,6 +1828,27 @@ def render_page(
             contract_close_ts=contract_close_ts,
         )
     out.append("</div>")  # /watchlist panel
+
+    # ── RULES INTEL tab — event-driven rules-arbitrage signals ────────
+    # The signals are produced by the sibling rules-parser service
+    # (see Rules Parser/ in the meta-repo). The dashboard opens the
+    # rules_intel.db read-only, so this tab is purely a viewer.
+    _open_panel("rules")
+    if rules_intel_db_path:
+        from . import rules_intel as _ri_view  # local import to avoid hard dep
+        out.append(_ri_view.render_section(
+            rules_intel_db_path,
+            status_filter=rules_intel_status,
+            current_bot=current_bot,
+        ))
+    else:
+        out.append(
+            "<div class='section'><div class='body'>"
+            "<p class='small gray'>Rules Intel disabled in dashboard config "
+            "(<code>rules_intel.enabled: false</code>).</p>"
+            "</div></div>"
+        )
+    out.append("</div>")  # /rules panel
 
     # ── HISTORY tab — closed-bet history across all bots ──────────────
     _open_panel("history")
@@ -3886,6 +3910,9 @@ class Handler(BaseHTTPRequestHandler):
     edge_cfg: dict = {}
     validator_cfg: dict = {}
     hedge_cfg: dict = {}
+    # Path to rules-parser SQLite DB. Set in main() from the dashboard
+    # YAML; None disables the Rules Intel tab and /api/rules-intel.
+    rules_intel_db_path: str | None = None
 
     def log_message(self, format: str, *args: Any) -> None:  # noqa: A002
         log.info("%s - %s", self.address_string(), format % args)
@@ -3918,8 +3945,13 @@ class Handler(BaseHTTPRequestHandler):
                 # silently redirect to home so deep links keep working.
                 if tab_key == "performance":
                     tab_key = "home"
-                if tab_key not in {"home", "watchlist", "history"}:
+                if tab_key not in {"home", "watchlist", "history", "rules"}:
                     tab_key = "home"
+                # Status filter for the Rules Intel tab. ?rstatus=flagged etc.
+                rstatus = qs_top.get("rstatus", ["all"])[0]
+                if rstatus not in {"all", "monitoring", "flagged", "traded",
+                                     "ignored"}:
+                    rstatus = "all"
 
                 # Whale-watcher uses a different page entirely — JSONL
                 # source, signal-analysis-style render. Dispatch early so
@@ -4137,6 +4169,8 @@ class Handler(BaseHTTPRequestHandler):
                     period_key=period_key,
                     tab_key=tab_key,
                     bot_models=bot_models,
+                    rules_intel_db_path=self.rules_intel_db_path,
+                    rules_intel_status=rstatus,
                 )
             except Exception:  # noqa: BLE001
                 log.exception("dashboard render failed")
@@ -4191,6 +4225,49 @@ class Handler(BaseHTTPRequestHandler):
             self.send_header("Content-Length", str(len(payload)))
             self.end_headers()
             self.wfile.write(payload)
+        elif parsed.path == "/api/rules-intel":
+            # JSON view of the rules-parser pipeline. Same data the
+            # Rules Intel tab renders, served as a single payload so
+            # external consumers (e.g. a slackbot or a notebook) can
+            # poll it without scraping HTML.
+            try:
+                if not self.rules_intel_db_path:
+                    payload_dict = {
+                        "enabled": False,
+                        "error": "rules_intel.enabled is false in dashboard config",
+                    }
+                else:
+                    from . import rules_intel as _ri_view
+                    qs_ri = parse_qs(parsed.query)
+                    rstatus = qs_ri.get("status", ["all"])[0]
+                    if rstatus not in {"all", "monitoring", "flagged",
+                                          "traded", "ignored"}:
+                        rstatus = "all"
+                    try:
+                        limit = int(qs_ri.get("limit", ["100"])[0])
+                    except ValueError:
+                        limit = 100
+                    limit = max(1, min(500, limit))
+                    payload_dict = _ri_view.snapshot(
+                        self.rules_intel_db_path,
+                        status_filter=rstatus,
+                        limit=limit,
+                    )
+                    payload_dict["enabled"] = True
+            except Exception:  # noqa: BLE001
+                log.exception("/api/rules-intel failed")
+                self.send_response(500)
+                self.send_header("Content-Type", "application/json")
+                self.end_headers()
+                self.wfile.write(b'{"error":"render failed"}')
+                return
+            payload = json.dumps(payload_dict, default=str).encode("utf-8")
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Cache-Control", "no-store")
+            self.send_header("Content-Length", str(len(payload)))
+            self.end_headers()
+            self.wfile.write(payload)
         elif self.path == "/healthz":
             self.send_response(200)
             self.send_header("Content-Type", "text/plain")
@@ -4201,12 +4278,14 @@ class Handler(BaseHTTPRequestHandler):
 
 
 def serve(host: str, port: int, bots: List[dict], risk_caps: dict,
-          edge_cfg: dict, validator_cfg: dict, hedge_cfg: dict) -> None:
+          edge_cfg: dict, validator_cfg: dict, hedge_cfg: dict,
+          rules_intel_db_path: str | None = None) -> None:
     Handler.bots = bots
     Handler.risk_caps = risk_caps
     Handler.edge_cfg = edge_cfg
     Handler.validator_cfg = validator_cfg
     Handler.hedge_cfg = hedge_cfg
+    Handler.rules_intel_db_path = rules_intel_db_path
     server = ThreadingHTTPServer((host, port), Handler)
     log.info("dashboard listening on http://%s:%d", host, port)
     log.info("registered bots: %s",
@@ -4307,7 +4386,10 @@ def main(argv: list[str] | None = None) -> int:
 
     host = args.host or cfg.host
     port = args.port or cfg.port
-    serve(host, port, bots, risk_caps, edge_cfg, validator_cfg, hedge_cfg)
+    rules_intel_db = (cfg.rules_intel.db_path
+                      if cfg.rules_intel.enabled else None)
+    serve(host, port, bots, risk_caps, edge_cfg, validator_cfg, hedge_cfg,
+          rules_intel_db_path=rules_intel_db)
     return 0
 
 

@@ -111,6 +111,18 @@ class ValidatorCfg:
 
 
 @dataclass
+class RulesIntelCfg:
+    """Where the rules-parser daemon writes its SQLite DB.
+
+    The dashboard opens it read-only via sqlite uri=ro, so even if the
+    file path is wrong the dashboard can still render — the Rules Intel
+    tab just shows a "DB not found" stub instead of a crash.
+    """
+    enabled: bool = True
+    db_path: str = "/root/rules-parser/data/rules_intel.db"
+
+
+@dataclass
 class DashboardConfig:
     host: str
     port: int
@@ -119,6 +131,7 @@ class DashboardConfig:
     edge: EdgeCfg
     hedge: HedgeCfg
     validators: ValidatorCfg
+    rules_intel: RulesIntelCfg = field(default_factory=RulesIntelCfg)
     raw: dict = field(default_factory=dict)
 
 
@@ -136,6 +149,8 @@ def load_config(path: str | Path = "config/dashboard.yaml") -> DashboardConfig:
             b["display"] = DisplayCfg(**b["display"])
         bots.append(BotEntry(**b))
 
+    rules_intel_raw = raw.get("rules_intel") or {}
+
     return DashboardConfig(
         host=raw.get("host", "0.0.0.0"),
         port=int(raw.get("port", 8080)),
@@ -144,5 +159,6 @@ def load_config(path: str | Path = "config/dashboard.yaml") -> DashboardConfig:
         edge=EdgeCfg(**raw["edge"]),
         hedge=HedgeCfg(**raw["hedge"]),
         validators=ValidatorCfg(**validators_raw),
+        rules_intel=RulesIntelCfg(**rules_intel_raw),
         raw=raw,
     )

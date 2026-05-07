@@ -142,3 +142,13 @@ validators:
   min_depth_at_best_ask: 25
   basis_risk_strike_window_dollars: 0.03
   basis_risk_max_hours_to_close: 6
+
+# ---------------------------------------------------------------------------
+# Rules Intel — read-only viewer over the rules-parser daemon's SQLite.
+# The dashboard never imports rules_parser code, so this tab can never
+# place orders. If `enabled` is false (or the file at db_path is missing),
+# the Rules Intel tab renders a friendly stub.
+# ---------------------------------------------------------------------------
+rules_intel:
+  enabled: true
+  db_path: /root/rules-parser/data/rules_intel.db
