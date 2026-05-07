@@ -157,6 +157,124 @@ def fetch_signals(db_path: str, *, status: str = "all",
         return []
 
 
+def fetch_watchlist(db_path: str, *, limit: int = 200) -> List[Dict[str, Any]]:
+    """One row per contract that meets rules-parser criteria.
+
+    "Meets criteria" = open contract with at least one parsed rules
+    clause. The row carries a rollup of clause counts, the most recent
+    signal (if any), and the current YES/NO ask so the caller can build
+    a discrepancy statement.
+
+    Sort order:
+      1. signal-bearing contracts first, by most-recent-signal time
+         (so a freshly fired signal is at the top)
+      2. then contracts with high-impact clauses (cancellation, injury,
+         postponement, force_majeure) on more clauses first
+      3. then alphabetical by ticker for stability
+
+    The query is one big JOIN so the dashboard renders this in a single
+    DB round-trip; SQLite handles 100s of rows here trivially.
+    """
+    c = _conn(db_path)
+    if c is None:
+        return []
+    sql = """
+    WITH clause_rollup AS (
+        SELECT
+            ticker,
+            COUNT(*)                                                    AS n_clauses,
+            SUM(clause_type = 'cancellation')                           AS n_cancel,
+            SUM(clause_type = 'postponement')                           AS n_postpone,
+            SUM(clause_type = 'injury')                                 AS n_injury,
+            SUM(clause_type = 'weather')                                AS n_weather,
+            SUM(clause_type = 'force_majeure')                          AS n_force,
+            SUM(clause_type = 'government_release')                     AS n_govt,
+            SUM(clause_type = 'official_announcement')                  AS n_announce,
+            SUM(clause_type = 'tie_void')                               AS n_void,
+            SUM(clause_type = 'settlement_source')                      AS n_source,
+            SUM(clause_type = 'deadline')                               AS n_deadline,
+            -- Risk score: weighted count of clauses where a triggering
+            -- event would actually flip settlement. Used to sort
+            -- non-signaled rows by "interestingness".
+            (SUM(clause_type = 'cancellation') * 3
+             + SUM(clause_type = 'postponement') * 2
+             + SUM(clause_type = 'injury') * 2
+             + SUM(clause_type = 'force_majeure') * 3
+             + SUM(clause_type = 'weather') * 1
+             + SUM(clause_type = 'tie_void') * 2)                       AS risk_weight
+        FROM rule_clauses
+        GROUP BY ticker
+    ),
+    latest_signal AS (
+        -- One row per ticker with the most recent signal's fields.
+        SELECT s.*
+        FROM signals s
+        JOIN (
+            SELECT ticker, MAX(created_at) AS mx
+            FROM signals GROUP BY ticker
+        ) m ON m.ticker = s.ticker AND m.mx = s.created_at
+    )
+    SELECT
+        c.ticker            AS ticker,
+        c.event_ticker      AS event_ticker,
+        c.series_ticker     AS series_ticker,
+        c.title             AS title,
+        c.subtitle          AS subtitle,
+        c.yes_sub_title     AS yes_sub_title,
+        c.status            AS status,
+        c.close_time        AS close_time,
+        c.yes_bid_cents     AS yes_bid_cents,
+        c.yes_ask_cents     AS yes_ask_cents,
+        c.no_bid_cents      AS no_bid_cents,
+        c.no_ask_cents      AS no_ask_cents,
+        c.last_price_cents  AS last_price_cents,
+        c.last_seen_at      AS last_seen_at,
+        cr.n_clauses        AS n_clauses,
+        cr.n_cancel         AS n_cancel,
+        cr.n_postpone       AS n_postpone,
+        cr.n_injury         AS n_injury,
+        cr.n_weather        AS n_weather,
+        cr.n_force          AS n_force,
+        cr.n_govt           AS n_govt,
+        cr.n_announce       AS n_announce,
+        cr.n_void           AS n_void,
+        cr.n_source         AS n_source,
+        cr.n_deadline       AS n_deadline,
+        cr.risk_weight      AS risk_weight,
+        ls.id               AS signal_id,
+        ls.confidence       AS signal_confidence,
+        ls.expected_resolution AS signal_expected,
+        ls.suggested_action AS signal_action,
+        ls.status           AS signal_status,
+        ls.created_at       AS signal_created_at,
+        ls.reasoning        AS signal_reasoning,
+        ls.clause_id        AS signal_clause_id,
+        ls.news_item_id     AS signal_news_id
+    FROM contracts c
+    JOIN clause_rollup cr ON cr.ticker = c.ticker
+    LEFT JOIN latest_signal ls ON ls.ticker = c.ticker
+    WHERE c.status = 'open'
+      -- "Meets arbitrage criteria" = at least one directionally
+      -- impactful clause (risk_weight >= 1) OR a live signal. Pure
+      -- settlement-source / deadline clauses alone don't qualify
+      -- since there is no event-surface for the rules-arb thesis.
+      AND (cr.risk_weight >= 1 OR ls.id IS NOT NULL)
+    ORDER BY
+        CASE WHEN ls.id IS NULL THEN 1 ELSE 0 END,
+        ls.created_at DESC,
+        cr.risk_weight DESC,
+        c.ticker
+    LIMIT ?
+    """
+    try:
+        with closing(c) as cn:
+            rows = cn.execute(sql, (limit,)).fetchall()
+        return [dict(r) for r in rows]
+    except sqlite3.Error as e:
+        log.warning("rules_intel.fetch_watchlist failed: %s", e)
+        return []
+
+
 def fetch_sources(db_path: str) -> List[Dict[str, Any]]:
     c = _conn(db_path)
     if c is None:
@@ -218,7 +336,145 @@ RULES_INTEL_CSS = """
     border: 1px solid #30363d; border-radius: 6px; }
 .ri-rules-modal { max-height: 60vh; overflow-y: auto; white-space: pre-wrap;
     font-family: ui-monospace, monospace; font-size: 12px; }
+/* Watchlist-specific bits — borrows shape from whale.py's main table */
+.ri-clause-tags { display: flex; flex-wrap: wrap; gap: 4px; }
+.ri-tag { display: inline-block; padding: 1px 6px; border-radius: 8px;
+    font-size: 10px; background: #21262d; color: #8b949e;
+    border: 1px solid #30363d; }
+.ri-tag.high { background: #4d2d00; color: #ffb74d; border-color: #5f3700; }
+.ri-table td.t-disc { max-width: 360px; }
+.ri-disc { color: #c9d1d9; }
+.ri-disc.edge-pos { color: #3fb950; }
+.ri-disc.edge-neg { color: #f85149; }
+.ri-disc.edge-flat { color: #8b949e; }
+.ri-disc .edge-pp { font-weight: 600; margin-left: 6px; }
+.ri-subhead { color: #c9d1d9; font-size: 13px; font-weight: 600;
+    margin: 18px 0 6px 0; }
+.ri-sublead { color: #8b949e; font-size: 12px; margin-bottom: 8px; }
 """
+
+
+# Map clause-type column name -> short display tag. Order matters here:
+# tags are emitted in this order for readability across rows. The "high"
+# subset gets an amber background to flag the structurally risky clauses.
+_CLAUSE_TAGS = [
+    ("n_cancel",   "cancel",   True),
+    ("n_force",    "force-maj", True),
+    ("n_postpone", "postpone", True),
+    ("n_injury",   "injury",   True),
+    ("n_void",     "void/tie", True),
+    ("n_weather",  "weather",  False),
+    ("n_govt",     "gov-rel",  False),
+    ("n_announce", "announce", False),
+    ("n_source",   "src-rule", False),
+    ("n_deadline", "deadline", False),
+]
+
+
+def discrepancy(yes_ask: Optional[int], no_ask: Optional[int],
+                expected: Optional[str], confidence: Optional[float],
+                risk_weight: int, has_signal: bool
+                ) -> Dict[str, Any]:
+    """Return a small dict the renderer turns into a discrepancy cell.
+
+    Two regimes:
+
+      1) Has signal — compare the signal's directional view to the
+         current Kalshi price. Returned ``edge_pp`` is signed:
+         positive means OUR view says the chosen side is more likely
+         than the market currently prices; negative means already
+         priced in. Above ±5pp we render a colored cell.
+
+      2) No signal yet — describe the *passive* watch state instead.
+         For high-risk-weight contracts we say the parser is sitting
+         on N triggering clauses awaiting an event; for low risk
+         we just say "no clauses with directional impact".
+
+    Centralising the logic here means the API endpoint and the HTML
+    table render the same wording.
+    """
+    out: Dict[str, Any] = {
+        "edge_pp": None,
+        "edge_class": "edge-flat",
+        "headline": "—",
+        "detail": "",
+    }
+    if not has_signal or expected is None or confidence is None:
+        if risk_weight >= 4:
+            out["headline"] = (
+                f"Watching {risk_weight}-pt clause stack — no triggering "
+                "news yet"
+            )
+            out["detail"] = (
+                "High structural risk (cancellation / postponement / "
+                "injury / force-majeure clauses present); a matching "
+                "news event would flip this to a directional signal."
+            )
+        elif risk_weight >= 1:
+            out["headline"] = (
+                f"Light clause coverage (risk={risk_weight}) — passive watch"
+            )
+            out["detail"] = ("Only minor settlement clauses parsed; "
+                              "rules-arb opportunities here are unlikely.")
+        else:
+            out["headline"] = "Settlement-source clauses only — no event surface"
+            out["detail"] = "No cancellation / injury / postponement clauses parsed."
+        return out
+
+    # ── Has-signal regime ─────────────────────────────────────────
+    if expected == "UNCERTAIN":
+        out["headline"] = (
+            "Rules flag possible void/postpone — non-directional"
+        )
+        out["detail"] = (
+            "Trader gates this to flag-only; cannot be converted "
+            "to a buy in either direction."
+        )
+        return out
+
+    our_pct = max(0.0, min(1.0, float(confidence))) * 100.0
+    if expected == "YES":
+        market_pct = yes_ask if yes_ask is not None else None
+        side_label = "YES"
+    elif expected == "NO":
+        market_pct = no_ask if no_ask is not None else None
+        side_label = "NO"
+    else:
+        out["headline"] = f"Unknown signal direction ({expected})"
+        return out
+
+    if market_pct is None:
+        out["headline"] = (
+            f"Signal → {side_label} {our_pct:.0f}% confidence; "
+            "market ask unavailable"
+        )
+        return out
+
+    edge = our_pct - float(market_pct)
+    out["edge_pp"] = round(edge, 1)
+    if edge > 5:
+        out["edge_class"] = "edge-pos"
+        out["headline"] = (
+            f"Signal puts {side_label} at {our_pct:.0f}% but market "
+            f"only {market_pct}¢ — {side_label} underpriced"
+        )
+    elif edge < -5:
+        out["edge_class"] = "edge-neg"
+        out["headline"] = (
+            f"Signal puts {side_label} at {our_pct:.0f}% — already "
+            f"priced in by market ({market_pct}¢ ask)"
+        )
+    else:
+        out["edge_class"] = "edge-flat"
+        out["headline"] = (
+            f"Signal aligned with market — both ~{market_pct}¢ on {side_label}"
+        )
+    out["detail"] = (
+        f"market_ask={market_pct}¢ on {side_label}; "
+        f"signal_confidence={confidence:.2f}; "
+        f"edge={edge:+.1f}pp"
+    )
+    return out
 
 
 def _conf_bucket(conf: Optional[float]) -> str:
@@ -266,6 +522,141 @@ def _fmt_ago(ts: str | None) -> str:
     if age_s < 86400:
         return f"{int(age_s // 3600)}h ago"
     return f"{int(age_s // 86400)}d ago"
+
+
+def _render_rules_watchlist(out: List[str], db_path: str) -> None:
+    """Render the "Arbitrage watchlist" table.
+
+    One row per contract that meets the rules-parser arbitrage criteria
+    (see fetch_watchlist for the SQL filter). Borrows the whale-watcher
+    main-table shape — ticker, question, prices, signal direction, and a
+    discrepancy statement that's a full English sentence explaining how
+    the parser's view disagrees with the current Kalshi market price.
+
+    The discrepancy column is the headline output of this section: it's
+    the user-facing translation of "we have a rules-arb opportunity
+    here" into something that's safe to read at a glance. Numbers are
+    shown alongside (edge in pp) but the sentence is the load-bearing
+    field.
+    """
+    rows = fetch_watchlist(db_path, limit=200)
+    out.append("<h3 class='ri-subhead'>Arbitrage watchlist — contracts meeting "
+                "rules-parser criteria</h3>")
+    out.append(
+        "<div class='ri-sublead'>Open contracts whose parsed rules expose an "
+        "event surface (cancellation, postponement, injury, weather, "
+        "force-majeure, void clauses) — i.e. the rules permit a settlement "
+        "flip if a triggering event lands. Sorted by recency of the last "
+        "scored signal, then by clause-risk weight.</div>"
+    )
+    if not rows:
+        out.append(
+            "<div class='ri-empty'>No contracts currently meet the "
+            "arbitrage criteria. The parser ingests + parses every "
+            "watched series each ingest cycle; if you just started the "
+            "service this typically populates within ~10 min.</div>"
+        )
+        return
+
+    out.append("<table class='ri-table'><thead><tr>"
+               "<th>Ticker</th>"
+               "<th>Title</th>"
+               "<th>YES / NO ask</th>"
+               "<th>Clauses</th>"
+               "<th>Signal</th>"
+               "<th>Discrepancy statement</th>"
+               "<th>Edge</th>"
+               "<th>Last seen</th>"
+               "<th>Links</th>"
+               "</tr></thead><tbody>")
+
+    for r in rows:
+        ticker = r["ticker"] or "—"
+        title = (r.get("title") or "")[:90]
+        yes_ask = r.get("yes_ask_cents")
+        no_ask  = r.get("no_ask_cents")
+
+        # Clause tags — skip zeros, mark high-impact ones with .high.
+        tags_html_parts: List[str] = []
+        for col, label, is_high in _CLAUSE_TAGS:
+            n = int(r.get(col) or 0)
+            if n <= 0:
+                continue
+            cls = "ri-tag high" if is_high else "ri-tag"
+            tags_html_parts.append(
+                f"<span class='{cls}' title='{n} {label} clause(s)'>"
+                f"{html.escape(label)}·{n}</span>"
+            )
+        tags_html = ("<div class='ri-clause-tags'>"
+                     + "".join(tags_html_parts) + "</div>"
+                     if tags_html_parts else "<span class='small gray'>—</span>")
+
+        # Signal cell — direction pill + confidence + age. Empty when
+        # the contract is on the watchlist but no news has fired a
+        # signal yet (the common case for high-risk-but-quiet markets).
+        has_signal = r.get("signal_id") is not None
+        signal_cell: str
+        expected = r.get("signal_expected")
+        confidence = r.get("signal_confidence")
+        if has_signal and expected:
+            pill_cls = {
+                "YES": "pill-yes", "NO": "pill-no",
+                "UNCERTAIN": "pill-uncertain",
+            }.get(expected, "pill-uncertain")
+            sig_age = _fmt_ago(r.get("signal_created_at"))
+            conf_pct = (f"{confidence * 100:.0f}%" if confidence is not None
+                         else "—")
+            signal_cell = (
+                f"<span class='pill {pill_cls}'>{html.escape(expected)}</span>"
+                f" <span class='small gray'>{conf_pct} · {html.escape(sig_age)}"
+                f"</span>"
+            )
+        else:
+            signal_cell = "<span class='small gray'>watching — no event yet</span>"
+
+        disc = discrepancy(
+            yes_ask=yes_ask, no_ask=no_ask,
+            expected=expected, confidence=confidence,
+            risk_weight=int(r.get("risk_weight") or 0),
+            has_signal=has_signal,
+        )
+        edge_pp = disc.get("edge_pp")
+        edge_cell: str
+        if edge_pp is None:
+            edge_cell = "—"
+        else:
+            sign = "+" if edge_pp > 0 else ""
+            edge_cell = (
+                f"<span class='ri-disc {disc['edge_class']}'>"
+                f"<span class='edge-pp'>{sign}{edge_pp:.1f}pp</span></span>"
+            )
+
+        kalshi_url = KALSHI_MARKET_URL_FMT.format(ticker=ticker)
+        # Rules text for the modal. Same blob the signals table uses.
+        rules_blob = ""  # supplied by inline data attr below if needed.
+
+        out.append(
+            "<tr>"
+            f"<td class='t-ticker'>"
+            f"<a href='{html.escape(kalshi_url)}' target='_blank' rel='noopener'>"
+            f"{html.escape(ticker)}</a></td>"
+            f"<td>{html.escape(title)}</td>"
+            f"<td>{_fmt_cents(yes_ask)} / {_fmt_cents(no_ask)}</td>"
+            f"<td>{tags_html}</td>"
+            f"<td>{signal_cell}</td>"
+            f"<td class='t-disc'>"
+            f"<div class='ri-disc {disc['edge_class']}' "
+            f"title='{html.escape(disc.get('detail') or '')}'>"
+            f"{html.escape(disc['headline'])}</div></td>"
+            f"<td>{edge_cell}</td>"
+            f"<td>{html.escape(_fmt_ago(r.get('last_seen_at')))}</td>"
+            f"<td>"
+            f"<a href='{html.escape(kalshi_url)}' target='_blank' rel='noopener'>"
+            f"kalshi</a>"
+            f"</td>"
+            "</tr>"
+        )
+    out.append("</tbody></table>")
 
 
 def render_section(db_path: str, *, status_filter: str = "all",
@@ -320,6 +711,13 @@ def render_section(db_path: str, *, status_filter: str = "all",
             f"<div class='val'>{html.escape(str(val))}</div></div>"
         )
     out.append("</div>")
+
+    # ── Watchlist — every contract that meets criteria ─────────────
+    # One row per open contract that has at least one parsed clause.
+    # Borrows the whale-watcher table shape: ticker, question, prices,
+    # latest signal, and a discrepancy statement comparing the
+    # rules+news view to the current Kalshi market price.
+    _render_rules_watchlist(out, db_path)
 
     # ── filter bar ────────────────────────────────────────────────
     out.append("<div class='ri-filter'>")
@@ -485,9 +883,26 @@ def render_section(db_path: str, *, status_filter: str = "all",
 
 def snapshot(db_path: str, *, status_filter: str = "all",
              limit: int = 100) -> Dict[str, Any]:
-    """JSON payload returned by the /api/rules-intel endpoint."""
+    """JSON payload returned by the /api/rules-intel endpoint.
+
+    The ``watchlist`` array is one row per contract that meets the
+    rules-parser arbitrage criteria (see fetch_watchlist). Each row
+    carries an embedded ``discrepancy`` object so a non-HTML consumer
+    (slackbot, notebook) doesn't have to reimplement the comparison.
+    """
+    watchlist = fetch_watchlist(db_path, limit=200)
+    for r in watchlist:
+        r["discrepancy"] = discrepancy(
+            yes_ask=r.get("yes_ask_cents"),
+            no_ask=r.get("no_ask_cents"),
+            expected=r.get("signal_expected"),
+            confidence=r.get("signal_confidence"),
+            risk_weight=int(r.get("risk_weight") or 0),
+            has_signal=r.get("signal_id") is not None,
+        )
     return {
         "summary": fetch_summary(db_path),
+        "watchlist": watchlist,
         "signals": fetch_signals(db_path, status=status_filter, limit=limit),
         "sources": fetch_sources(db_path),
     }
