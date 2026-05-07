@@ -264,6 +264,17 @@ def fetch_watchlist(db_path: str, *, limit: int = 200) -> List[Dict[str, Any]]:
     -- query-string filter value, not the field value. Accept both so
     -- the filter remains correct if Kalshi unifies the namespaces.
     WHERE c.status IN ('active', 'open')
+      -- Restrict to event-based contracts (sports games, awards,
+      -- elections, launches, court rulings, weather events).
+      -- Statistical-release contracts (CPI, jobless, NFP, EIA storage)
+      -- settle on schedule on official numbers — there is no news-event
+      -- arb surface for the rules-parser bot to act on.
+      -- The is_event_based flag is set per-contract by
+      -- discovery.is_event_based_market() during ingestion.
+      -- We tolerate NULL (older rows pre-migration) by treating
+      -- unflagged rows as event-based to avoid hiding the operator's
+      -- existing watchlist mid-rollout.
+      AND COALESCE(c.is_event_based, 1) = 1
       -- "Meets arbitrage criteria" = at least one directionally
       -- impactful clause (risk_weight >= 1) OR a live signal. Pure
       -- settlement-source / deadline clauses alone don't qualify
