@@ -193,15 +193,22 @@ def fetch_watchlist(db_path: str, *, limit: int = 200) -> List[Dict[str, Any]]:
             SUM(clause_type = 'tie_void')                               AS n_void,
             SUM(clause_type = 'settlement_source')                      AS n_source,
             SUM(clause_type = 'deadline')                               AS n_deadline,
-            -- Risk score: weighted count of clauses where a triggering
-            -- event would actually flip settlement. Used to sort
-            -- non-signaled rows by "interestingness".
+            -- Risk score: weighted count of clauses where a
+            -- triggering event would flip settlement. Includes
+            -- low-weight credit for government_release and
+            -- settlement_source clauses, since for econ markets
+            -- (CPI, jobless, NFP, EIA storage) the official data
+            -- release IS the triggering event — they're a legitimate
+            -- arb surface even without explicit cancellation language.
             (SUM(clause_type = 'cancellation') * 3
              + SUM(clause_type = 'postponement') * 2
              + SUM(clause_type = 'injury') * 2
              + SUM(clause_type = 'force_majeure') * 3
              + SUM(clause_type = 'weather') * 1
-             + SUM(clause_type = 'tie_void') * 2)                       AS risk_weight
+             + SUM(clause_type = 'tie_void') * 2
+             + SUM(clause_type = 'government_release') * 2
+             + SUM(clause_type = 'settlement_source') * 1
+             + SUM(clause_type = 'scoring_rule') * 1)                   AS risk_weight
         FROM rule_clauses
         GROUP BY ticker
     ),
@@ -400,25 +407,41 @@ def discrepancy(yes_ask: Optional[int], no_ask: Optional[int],
         "detail": "",
     }
     if not has_signal or expected is None or confidence is None:
-        if risk_weight >= 4:
+        if risk_weight >= 5:
             out["headline"] = (
-                f"Watching {risk_weight}-pt clause stack — no triggering "
-                "news yet"
+                f"High event-surface (risk={risk_weight}) — awaiting "
+                "triggering news"
             )
             out["detail"] = (
-                "High structural risk (cancellation / postponement / "
-                "injury / force-majeure clauses present); a matching "
-                "news event would flip this to a directional signal."
+                "Cancellation / postponement / injury / force-majeure "
+                "clauses parsed; a matching news event would flip this "
+                "to a directional signal."
+            )
+        elif risk_weight >= 2:
+            out["headline"] = (
+                f"Event-driven settlement (risk={risk_weight}) — "
+                "tracking source feeds"
+            )
+            out["detail"] = (
+                "Contract settles on an official release (BLS / EIA / "
+                "league box-score). Discrepancy is between the next "
+                "release print vs the current Kalshi-implied number."
             )
         elif risk_weight >= 1:
             out["headline"] = (
                 f"Light clause coverage (risk={risk_weight}) — passive watch"
             )
-            out["detail"] = ("Only minor settlement clauses parsed; "
-                              "rules-arb opportunities here are unlikely.")
+            out["detail"] = (
+                "Only minor settlement clauses parsed; rules-arb "
+                "opportunities here are unlikely."
+            )
         else:
-            out["headline"] = "Settlement-source clauses only — no event surface"
-            out["detail"] = "No cancellation / injury / postponement clauses parsed."
+            out["headline"] = (
+                "No directional clauses parsed — outside arb surface"
+            )
+            out["detail"] = (
+                "Pure deadline / settlement-source rules only."
+            )
         return out
 
     # ── Has-signal regime ─────────────────────────────────────────
