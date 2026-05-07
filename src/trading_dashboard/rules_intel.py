@@ -260,7 +260,10 @@ def fetch_watchlist(db_path: str, *, limit: int = 200) -> List[Dict[str, Any]]:
     FROM contracts c
     JOIN clause_rollup cr ON cr.ticker = c.ticker
     LEFT JOIN latest_signal ls ON ls.ticker = c.ticker
-    WHERE c.status = 'open'
+    -- Kalshi reports the live-market status as 'active'; 'open' is the
+    -- query-string filter value, not the field value. Accept both so
+    -- the filter remains correct if Kalshi unifies the namespaces.
+    WHERE c.status IN ('active', 'open')
       -- "Meets arbitrage criteria" = at least one directionally
       -- impactful clause (risk_weight >= 1) OR a live signal. Pure
       -- settlement-source / deadline clauses alone don't qualify
