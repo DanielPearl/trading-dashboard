@@ -39,6 +39,23 @@ bots:
       divisor: 1000.0
       # 1-min raw candles — capture every recorded change.
       chart_period_minutes: 1
+  - key: nba
+    name: NBA Forecast
+    db_path: /root/nba/data/sim.db
+    decisions_path: /root/nba/data/decisions.jsonl
+    series_ticker: KXNBAGAME
+    display:
+      # Underlying anchor for this bot is each home team's pre-game ELO
+      # rating — a unitless rating typically in the 1300-1700 range.
+      # The home-page card shows it with one decimal.
+      underlying_label: Home team ELO (pre-game)
+      underlying_unit: ""
+      underlying_decimals: 0
+      unit_position: none
+      chart_period_minutes: 1440
+      # NBA games settle the same evening — "Predicted next game"
+      # makes more sense than "next month" or "next week".
+      prediction_period_label: this game
   - key: cpi
     name: Consumer Price Index
     db_path: /root/cpi/data/sim.db
