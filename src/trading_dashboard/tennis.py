@@ -463,7 +463,11 @@ def _render_active_paper_bets(sim_state: dict) -> str:
         else:
             ticker_cell = html.escape(mid)
         out.append(
-            "<tr>"
+            # Reuse the watchlist row's class + data-mid so the
+            # forecast-graph click handler picks active-bet rows up
+            # as readily as ticker-table rows. Clicking either swaps
+            # the chart to that match's projection.
+            f"<tr class='tennis-row' data-mid='{html.escape(mid)}'>"
             f"<td class='mono small'>{ticker_cell}</td>"
             f"<td><strong>{html.escape(str(p.get('player_a','')))}</strong>"
             f" vs {html.escape(str(p.get('player_b','')))}<br>"
@@ -530,12 +534,10 @@ def _render_watchlist_table(payload: dict) -> str:
            "<th>Ticker</th>"
            "<th title='Who the bot is betting will win.'>Side</th>"
            "<th class='num' title='Open interest — number of YES contracts currently held open on this side.'>Contracts</th>"
-           "<th class='num'>Kalshi YES %</th>"
-           "<th class='num'>Kalshi NO %</th>"
-           "<th class='num'>My YES %</th>"
-           "<th class='num'>My NO %</th>"
-           "<th class='num' title='Expected value per $1 contract on YES, net of slippage.'>EV YES</th>"
-           "<th class='num' title='Expected value per $1 contract on NO, net of slippage.'>EV NO</th>"
+           "<th class='num' title='Kalshi market price for YES / NO sides — implied probability each side wins.'>Kalshi % <span class='small gray'>(yes / no)</span></th>"
+           "<th class='num' title='Bot model probability for YES / NO.'>My % <span class='small gray'>(yes / no)</span></th>"
+           "<th class='num' title='Edge = my probability − Kalshi price, per side. Positive means the bot disagrees with Kalshi in that direction.'>Edge <span class='small gray'>(yes / no)</span></th>"
+           "<th class='num' title='Expected value per $1 contract for YES / NO, net of slippage.'>EV <span class='small gray'>(yes / no)</span></th>"
            "<th>Verdict</th>"
            "</tr></thead><tbody>"]
     for r in rows_sorted:
@@ -589,20 +591,64 @@ def _render_watchlist_table(payload: dict) -> str:
                      else "red" if ev_no is not None and ev_no <= 0
                      else "yellow" if ev_no is not None else "gray")
 
+        # Edge — model probability for the side minus Kalshi's market
+        # price for the same side. Positive = bot disagrees with Kalshi
+        # in that side's favour; negative = market sees more upside than
+        # the model. Half-spread / slippage are not deducted here (that
+        # cost shows up in the EV column).
+        edge_yes_v = (float(live_a) - float(mkt_a)
+                      if (live_a is not None and mkt_a is not None) else None)
+        edge_no_v = ((1.0 - float(live_a)) - (1.0 - float(mkt_a))
+                     if (live_a is not None and mkt_a is not None) else None)
+        def _edge_fmt(e):
+            if e is None:
+                return "—", "gray"
+            cls_ = ("green" if e >= 0.05 else
+                    "yellow" if e > 0 else
+                    "red" if e <= -0.02 else "gray")
+            return f"{e * 100:+.0f}%", cls_
+        edge_yes_str, edge_yes_cls = _edge_fmt(edge_yes_v)
+        edge_no_str, edge_no_cls = _edge_fmt(edge_no_v)
+
         verdict_pill = _label_pill(str(r.get("recommended_action", "NO_TRADE")))
 
+        # Combined cells: yes / no per side, each span coloured to
+        # preserve the per-side cue after the merge. Slash uses the
+        # shared .cell-sep class so the divider stays muted.
+        kalshi_cell = (
+            f"<td class='num'>"
+            f"<span>{kyes_str}</span>"
+            f"<span class='cell-sep'> / </span>"
+            f"<span>{kno_str}</span></td>"
+        )
+        my_cell = (
+            f"<td class='num'>"
+            f"<span>{my_yes_str}</span>"
+            f"<span class='cell-sep'> / </span>"
+            f"<span>{my_no_str}</span></td>"
+        )
+        edge_cell = (
+            f"<td class='num'>"
+            f"<span class='{edge_yes_cls}'>{edge_yes_str}</span>"
+            f"<span class='cell-sep'> / </span>"
+            f"<span class='{edge_no_cls}'>{edge_no_str}</span></td>"
+        )
+        ev_cell = (
+            f"<td class='num'>"
+            f"<span class='{ev_yes_cls}'>{ev_yes_str}</span>"
+            f"<span class='cell-sep'> / </span>"
+            f"<span class='{ev_no_cls}'>{ev_no_str}</span></td>"
+        )
         out.append(
             f"<tr class='tennis-row' data-mid='{html.escape(mid)}' "
             f"style='cursor:pointer'>"
             f"<td class='mono small'>{ticker_cell}</td>"
             f"<td>{side_html}</td>"
             f"<td class='num'>{oi_str}</td>"
-            f"<td class='num'>{kyes_str}</td>"
-            f"<td class='num'>{kno_str}</td>"
-            f"<td class='num'>{my_yes_str}</td>"
-            f"<td class='num'>{my_no_str}</td>"
-            f"<td class='num {ev_yes_cls}'>{ev_yes_str}</td>"
-            f"<td class='num {ev_no_cls}'>{ev_no_str}</td>"
+            f"{kalshi_cell}"
+            f"{my_cell}"
+            f"{edge_cell}"
+            f"{ev_cell}"
             f"<td>{verdict_pill}</td>"
             "</tr>"
         )
@@ -622,7 +668,7 @@ def _render_forecast_graph(rows: List[dict]) -> str:
     the model's uncertainty alongside the point estimate.
     """
     if not rows:
-        return "<div class='empty'>No matches to plot.</div>"
+        return "<div class='empty'>No active bets right now.</div>"
     # Build a JSON map of match_id → forecast payload that the JS
     # reads to swap the graph contents on row click.
     payload_map: Dict[str, Dict[str, Any]] = {}
@@ -864,6 +910,7 @@ _FORECAST_GRAPH_JS = """
 })();
 </script>
 <style>
+tr.tennis-row { cursor: pointer; }
 tr.tennis-row-selected td { background: #1f2630 !important; }
 tr.tennis-row:hover td { background: #1c222b; }
 </style>

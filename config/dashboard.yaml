@@ -39,6 +39,14 @@ bots:
       divisor: 1000.0
       # 1-min raw candles — capture every recorded change.
       chart_period_minutes: 1
+      # Watchlist Title column uses the Kalshi event title ("Initial
+      # jobless claims for the week ending May 9, 2026") for every
+      # row instead of the per-strike "200K"-style market title.
+      watchlist_title_use_event: true
+      # Question column renders the full count with comma separator
+      # ("at least 200,000") so the threshold reads as plain English
+      # rather than the K-shorthand fmt_underlying produces.
+      question_format: at_least_full
   - key: nba
     name: NBA Forecast
     db_path: /root/nba/data/sim.db

@@ -470,7 +470,10 @@ def _interpolate_event_history(
     return history
 
 
-def _pick_current_event_markets(markets: List[dict]) -> List[dict]:
+def _pick_current_event_markets(
+    markets: List[dict],
+    extra_tickers: Optional[Iterable[str]] = None,
+) -> List[dict]:
     """Filter ``markets`` down to the single "current" event in the series.
 
     Kalshi often has overlapping events open simultaneously — for CPI
@@ -490,7 +493,13 @@ def _pick_current_event_markets(markets: List[dict]) -> List[dict]:
          interest. This is a safety net — production Kalshi data
          always has close_time set.
 
-    Returns markets belonging to the chosen event, in the same order
+    Additionally, any event that contains a market whose ticker is in
+    ``extra_tickers`` is always included. This is used by the Watchlist
+    so that markets we hold open positions on stay visible even if
+    they sit on a non-imminent event (e.g. NBA games scheduled later
+    in the week, where the most-imminent event is tonight's game).
+
+    Returns markets belonging to the chosen event(s), in the same order
     they appeared in the input. Empty list maps to empty output.
     """
     if not markets:
@@ -538,7 +547,19 @@ def _pick_current_event_markets(markets: List[dict]) -> List[dict]:
     else:
         # Fallback: pick by aggregate OI.
         chosen = max(by_event.keys(), key=lambda e: _total_oi(by_event[e]))
-    return list(by_event[chosen])
+
+    chosen_events: set[str] = {chosen}
+    extras = set(extra_tickers or ())
+    if extras:
+        for et, group in by_event.items():
+            if any((m.get("ticker") in extras) for m in group):
+                chosen_events.add(et)
+
+    out: List[dict] = []
+    for m in markets:
+        if m.get("event_ticker") in chosen_events:
+            out.append(m)
+    return out
 
 
 def fetch_underlying_history(
@@ -547,6 +568,7 @@ def fetch_underlying_history(
     lookback_hours: Optional[int] = None,
     client: Optional[KalshiClient] = None,
     max_strikes: int = 6,
+    extra_tickers: Optional[Iterable[str]] = None,
 ) -> Tuple[List[dict], Optional[dict], List[dict],
             Optional[float], Optional[float], Optional[str]]:
     """Build the chart + watchlist payload for one series.
@@ -578,8 +600,15 @@ def fetch_underlying_history(
     # Scope to a single event before any downstream picking. This is
     # what gives the Watchlist its "current month only" behaviour and
     # lets it transition to the next month automatically once the
-    # imminent event's close_time passes.
-    markets = _pick_current_event_markets(raw_markets)
+    # imminent event's close_time passes. ``extra_tickers`` (when
+    # provided by the watchlist GET handler) widens the scope to also
+    # include events containing those tickers — keeps open positions
+    # visible even when they're parked on a non-imminent event (e.g.
+    # NBA bets on tomorrow's game while tonight's game is the current
+    # event).
+    markets = _pick_current_event_markets(
+        raw_markets, extra_tickers=extra_tickers,
+    )
     atm = pick_atm_market(markets)
     contract_open_ts = _parse_iso(atm.get("open_time")) if atm else None
     contract_close_ts = _parse_iso(atm.get("close_time")) if atm else None

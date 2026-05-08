@@ -1282,7 +1282,25 @@ def question_str(direction: str, low: float | None, high: float | None,
                  display: dict | None = None) -> str:
     """Format the watchlist's Question column. Uses the bot's display
     config when given so unemployment renders "above 175K" instead of
-    "above $175000.00"."""
+    "above $175000.00".
+
+    When ``display['question_format']`` is set, an alternate idiom
+    is used. Supported values:
+      * ``"at_least_full"`` — "at least 200,000" (raw value, comma-
+        separated, no divisor / unit). Used by the unemployment-claims
+        bot to surface the full strike count in plain English instead
+        of the "above 200K" shorthand fmt_underlying produces.
+    """
+    if display and display.get("question_format") == "at_least_full":
+        if direction == "between" and low is not None and high is not None:
+            return f"{int(round(float(low))):,} – {int(round(float(high))):,}"
+        if low is not None and direction in ("above", "greater"):
+            return f"at least {int(round(float(low))):,}"
+        if low is not None and direction in ("below", "less"):
+            return f"below {int(round(float(low))):,}"
+        if low is not None:
+            return f"{direction} {int(round(float(low))):,}"
+        return direction or "—"
     if display:
         if direction == "between" and low is not None and high is not None:
             return f"{fmt_underlying(low, display)} – {fmt_underlying(high, display)}"
@@ -1635,6 +1653,10 @@ code { background: #161b22; padding: 1px 6px; border-radius: 3px; color: #c9d1d9
    "−$0.26 + $0.02" pattern stays scannable horizontally. */
 .entry-fee { color: #f85149; font-weight: 400; margin-left: 2px; }
 td.num.red, td.num.green { white-space: nowrap; }
+/* Slash separator inside the combined Kalshi/My/Edge/EV cells —
+   muted so the per-side numbers (which keep their own colour
+   spans) stay the visual focus, with the "/" reading as a divider. */
+.cell-sep { color: #6e7681; padding: 0 2px; }
 /* Bot card drift badge — amber pill that lights up when the model's
    training accuracy and live actual-win-% diverge by >10pp on n≥10
    closed bets. Surfaces "this model may have drifted" as a one-look
@@ -2100,6 +2122,35 @@ def _live_update_script(current_bot: str, period_key: str = "all") -> str:
           tr.classList.remove("row-suspect");
         }}
       }});
+      // Patch a single side-span inside one of the combined cells
+      // (Kalshi / My / Edge / EV). Each cell has two spans flanking
+      // a "/" separator; we update them in place so the polled
+      // refresh keeps the per-side colour without re-rendering.
+      function patchSide(cell, side, text, cls) {{
+        if (!cell) return;
+        const span = cell.querySelector("span[data-side='" + side + "']");
+        if (!span) return;
+        if (span.textContent !== text) {{
+          span.textContent = text;
+          flash(cell);
+        }}
+        if (cls !== undefined) {{
+          span.classList.remove("green", "red", "yellow", "gray");
+          if (cls) span.classList.add(cls);
+        }}
+      }}
+      function fmtPctEdge(e) {{
+        if (e === null || e === undefined) return "—";
+        const pp = e * 100;
+        return (pp >= 0 ? "+" : "") + pp.toFixed(0) + "%";
+      }}
+      function edgeClass(e) {{
+        if (e === null || e === undefined) return "gray";
+        if (e >= 0.05) return "green";
+        if (e > 0) return "yellow";
+        if (e <= -0.02) return "red";
+        return "gray";
+      }}
       snap.watchlist.forEach(function (r) {{
         const tr = rowsByTicker[r.ticker];
         if (!tr) return;  // server added a new row — page reload would catch
@@ -2114,17 +2165,30 @@ def _live_update_script(current_bot: str, period_key: str = "all") -> str:
           ? (Math.round(r.model_prob_yes * 100) + "%") : "—";
         const myNo = (r.model_prob_yes !== null && r.model_prob_yes !== undefined)
           ? (Math.round((1 - r.model_prob_yes) * 100) + "%") : "—";
+        // Edge (raw model − Kalshi ask, no half-spread). Computed
+        // here client-side so the snapshot endpoint doesn't need to
+        // ship two extra fields per row.
+        const edgeYes = (r.model_prob_yes !== null && r.model_prob_yes !== undefined
+                          && ya !== null && ya !== undefined)
+          ? (r.model_prob_yes - ya / 100) : null;
+        const edgeNo = (r.model_prob_yes !== null && r.model_prob_yes !== undefined
+                         && na !== null && na !== undefined)
+          ? ((1 - r.model_prob_yes) - na / 100) : null;
         patchCell(tr.querySelector("[data-field='oi']"),
                   r.open_interest !== null && r.open_interest !== undefined
                     ? Number(r.open_interest).toLocaleString() : "—");
-        patchCell(tr.querySelector("[data-field='kyes']"), kyes);
-        patchCell(tr.querySelector("[data-field='kno']"), kno);
-        patchCell(tr.querySelector("[data-field='my_yes']"), myYes);
-        patchCell(tr.querySelector("[data-field='my_no']"), myNo);
-        patchCell(tr.querySelector("[data-field='ev_yes']"),
-                  fmtEv(r.ev_yes), evClass(r.ev_yes, minEv));
-        patchCell(tr.querySelector("[data-field='ev_no']"),
-                  fmtEv(r.ev_no), evClass(r.ev_no, minEv));
+        const kalshiCell = tr.querySelector("[data-field='kalshi']");
+        patchSide(kalshiCell, 'yes', kyes);
+        patchSide(kalshiCell, 'no',  kno);
+        const myCell = tr.querySelector("[data-field='my']");
+        patchSide(myCell, 'yes', myYes);
+        patchSide(myCell, 'no',  myNo);
+        const edgeCell = tr.querySelector("[data-field='edge']");
+        patchSide(edgeCell, 'yes', fmtPctEdge(edgeYes), edgeClass(edgeYes));
+        patchSide(edgeCell, 'no',  fmtPctEdge(edgeNo),  edgeClass(edgeNo));
+        const evCell = tr.querySelector("[data-field='ev']");
+        patchSide(evCell, 'yes', fmtEv(r.ev_yes), evClass(r.ev_yes, minEv));
+        patchSide(evCell, 'no',  fmtEv(r.ev_no),  evClass(r.ev_no, minEv));
       }});
     }}
   }}
@@ -2925,7 +2989,8 @@ def _render_bot_cards(out: List[str], rollup: dict,
 
 def _render_active_bets_table(out: List[str], bets: List[dict],
                               empty_msg: str = "No active bets.",
-                              show_bot: bool = True) -> None:
+                              show_bot: bool = True,
+                              chart_link: bool = False) -> None:
     """Shared renderer used by both Section 1 (cross-bot summary) and
     the per-bot view inside the Watchlist tab. Columns:
         Opened | [Bot] | Ticker | Question | Contracts | Side
@@ -2933,6 +2998,12 @@ def _render_active_bets_table(out: List[str], bets: List[dict],
     The Bot column is skipped when ``show_bot`` is False (per-bot view
     where the bot is implied by the surrounding section). Entry cost /
     Current / Potential gain are in dollars (per-position totals).
+
+    ``chart_link=True`` makes each row clickable and stamps the
+    chart-overlay attributes (``data-ticker``, ``data-strike``,
+    ``data-yes-prob``) so the watchlist hero chart can draw a
+    threshold line at the bet's strike (or entry probability for
+    sport bots) — the same affordance the strike-ladder rows have.
     """
     if not bets:
         out.append(f"<div class='empty'>{html.escape(empty_msg)}</div>")
@@ -2942,6 +3013,7 @@ def _render_active_bets_table(out: List[str], bets: List[dict],
     # (the YES question text). ``Side`` carries the YES / NO badge.
     # No separate ``Question`` column — Title already names the
     # contract, and on sport rows it would just restate the matchup.
+    tbody_attrs = " id='wl-active-tbody' data-chart-link='1'" if chart_link else ""
     out.append("<table><thead><tr>"
                f"<th>Opened</th>{bot_th}<th>Ticker</th>"
                "<th>Title</th>"
@@ -2952,7 +3024,7 @@ def _render_active_bets_table(out: List[str], bets: List[dict],
                "<th class='num' title='(100¢ − entry) × contracts − entry fee — gross profit if our side wins'>Potential gain</th>"
                "<th class='num' title='Time until the contract resolves'>Closes in</th>"
                "<th></th>"
-               "</tr></thead><tbody>")
+               f"</tr></thead><tbody{tbody_attrs}>")
     for b in bets:
         opened = (b.get("opened_at") or "")[:19].replace("T", " ")
         side = (b.get("side") or "").upper()
@@ -3117,8 +3189,29 @@ def _render_active_bets_table(out: List[str], bets: List[dict],
         # Closes in: for tennis paper bets, _minutes_to_close is provided
         # by the tennis adapter (derived from expected_expiration_time);
         # for Kalshi bots the simulator already supplies minutes_to_close.
+        # Chart-overlay data attrs (only emitted when ``chart_link``) —
+        # the watchlist hero chart's row-click hook reads these and
+        # draws a horizontal threshold line at the bet's strike (non-
+        # sport) or entry probability (sport).
+        if chart_link:
+            tr_attrs = f" data-ticker='{html.escape(b.get('ticker') or '')}'"
+            try:
+                if strike_low is not None:
+                    tr_attrs += f" data-strike='{float(strike_low):.6f}'"
+            except (TypeError, ValueError):
+                pass
+            try:
+                # YES bet's entry price = implied YES probability; NO
+                # bet's entry price implies (100 - entry)% YES.
+                yes_prob = (entry / 100.0 if side == "YES"
+                             else (100 - entry) / 100.0)
+                tr_attrs += f" data-yes-prob='{yes_prob:.4f}'"
+            except (TypeError, ValueError):
+                pass
+        else:
+            tr_attrs = ""
         out.append(
-            f"<tr><td>{html.escape(opened)}</td>"
+            f"<tr{tr_attrs}><td>{html.escape(opened)}</td>"
             f"{bot_td}"
             f"<td class='mono'>{ticker_cell_html(b.get('ticker'))}</td>"
             f"<td>{html.escape(title_text)}</td>"
@@ -3749,7 +3842,8 @@ def _render_watchlist(out: List[str], watchlist: List[dict],
             enriched_rows.append(enriched)
         # Most-recently opened first (consistent with the home table).
         enriched_rows.sort(key=lambda r: r.get("opened_at", ""), reverse=True)
-        _render_active_bets_table(out, enriched_rows, show_bot=False)
+        _render_active_bets_table(out, enriched_rows, show_bot=False,
+                                   chart_link=True)
     else:
         out.append("<div class='empty'>No active bets right now.</div>")
 
@@ -3841,12 +3935,10 @@ def _render_watchlist(out: List[str], watchlist: List[dict],
                "<th>Ticker</th>"
                f"{head_cols}"
                "<th class='num' title='Open interest — number of contracts currently held open on this strike.'>Contracts</th>"
-               "<th class='num'>Kalshi YES %</th>"
-               "<th class='num'>Kalshi NO %</th>"
-               "<th class='num'>My YES %</th>"
-               "<th class='num'>My NO %</th>"
-               "<th class='num' title='Expected value per $1 contract on YES, net of half-spread. Positive = profitable in expectation.'>EV YES</th>"
-               "<th class='num' title='Expected value per $1 contract on NO, net of half-spread.'>EV NO</th>"
+               "<th class='num' title='Kalshi market price for YES / NO sides — implied probability each side wins.'>Kalshi % <span class='small gray'>(yes / no)</span></th>"
+               "<th class='num' title='Bot model probability for YES / NO.'>My % <span class='small gray'>(yes / no)</span></th>"
+               "<th class='num' title='Edge = my probability − Kalshi price, per side. Positive means the bot disagrees with Kalshi in that direction.'>Edge <span class='small gray'>(yes / no)</span></th>"
+               "<th class='num' title='Expected value per $1 contract for YES / NO, net of half-spread.'>EV <span class='small gray'>(yes / no)</span></th>"
                "<th>Verdict</th></tr></thead><tbody id='watchlist-tbody'>")
     for v in watchlist:
         ticker = v.get("ticker", "")
@@ -4025,6 +4117,30 @@ def _render_watchlist(out: List[str], watchlist: List[dict],
         ev_yes_str, ev_yes_cls = _ev_cell(ev_yes_v)
         ev_no_str, ev_no_cls = _ev_cell(ev_no_v)
 
+        # Edge cells — model probability for the side minus Kalshi's
+        # ask price for the same side. Positive = bot's model disagrees
+        # with Kalshi in that side's favour. Half-spread is NOT
+        # subtracted here (that's what the EV column is for); Edge is
+        # the raw model-vs-market gap so the user can read the bot's
+        # underlying view independent of liquidity cost.
+        def _edge(p: float | None, ask_c: int | None) -> float | None:
+            if p is None or ask_c is None:
+                return None
+            return float(p) - (int(ask_c) / 100.0)
+        edge_yes_v = _edge(p, ya_c)
+        edge_no_v = _edge((1.0 - float(p)) if p is not None else None,
+                           na_c)
+        def _edge_cell(e: float | None) -> tuple[str, str]:
+            if e is None:
+                return "—", "gray"
+            pp = e * 100.0
+            cls_ = ("green" if e >= 0.05 else
+                    "yellow" if e > 0 else
+                    "red" if e <= -0.02 else "gray")
+            return f"{pp:+.0f}%", cls_
+        edge_yes_str, edge_yes_cls = _edge_cell(edge_yes_v)
+        edge_no_str, edge_no_cls = _edge_cell(edge_no_v)
+
         # data-ticker on the row + data-field on each live cell so the
         # snapshot poller can patch them in place without re-rendering.
         # mtc cell isn't tagged because it doesn't refresh on a 30s
@@ -4062,7 +4178,16 @@ def _render_watchlist(out: List[str], watchlist: List[dict],
         except (TypeError, ValueError):
             yes_attr = ""
         # Sport bots: Title + Side. Non-sport: Title + Question.
-        title_text = v.get("title") or ""
+        # ``watchlist_title_use_event`` overrides the per-market title
+        # with the event-level one (used by the unemployment bot, where
+        # every row of the table is the same Initial-Claims week and
+        # the Kalshi event title — "Initial jobless claims for the
+        # week ending May 9, 2026" — is what the user wants in the
+        # Title column instead of the per-strike "200K" repetition).
+        if (display or {}).get("watchlist_title_use_event") and event_title:
+            title_text = event_title
+        else:
+            title_text = v.get("title") or ""
         if is_sport_bot:
             yes_team = _side_tricode_from_ticker(ticker, "YES")
             opp_team = _side_tricode_from_ticker(ticker, "NO")
@@ -4083,16 +4208,42 @@ def _render_watchlist(out: List[str], watchlist: List[dict],
                 f"<td>{html.escape(title_text)}</td>"
                 f"<td>{html.escape(qstr)}</td>"
             )
+        # Combined Kalshi / My / Edge / EV cells render the YES side on
+        # the left of the slash and the NO side on the right, each
+        # span carrying its own colour class so the visual cue per
+        # side survives the merge.
+        kalshi_cell = (
+            f"<td class='num' data-field='kalshi'>"
+            f"<span data-side='yes'>{kyes_str}</span>"
+            f"<span class='cell-sep'> / </span>"
+            f"<span data-side='no'>{kno_str}</span></td>"
+        )
+        my_cell = (
+            f"<td class='num' data-field='my'{my_yes_tt or my_no_tt}>"
+            f"<span class='{my_yes_cls}' data-side='yes'>{my_yes_str}</span>"
+            f"<span class='cell-sep'> / </span>"
+            f"<span class='{my_no_cls}' data-side='no'>{my_no_str}</span></td>"
+        )
+        edge_cell = (
+            f"<td class='num' data-field='edge'>"
+            f"<span class='{edge_yes_cls}' data-side='yes'>{edge_yes_str}</span>"
+            f"<span class='cell-sep'> / </span>"
+            f"<span class='{edge_no_cls}' data-side='no'>{edge_no_str}</span></td>"
+        )
+        ev_cell = (
+            f"<td class='num' data-field='ev'>"
+            f"<span class='{ev_yes_cls}' data-side='yes'>{ev_yes_str}</span>"
+            f"<span class='cell-sep'> / </span>"
+            f"<span class='{ev_no_cls}' data-side='no'>{ev_no_str}</span></td>"
+        )
         out.append(f"<tr{row_cls} data-ticker='{tt_esc}'{strike_attr}{yes_attr}>"
                    f"<td class='mono'>{ticker_cell}</td>"
                    f"{middle_cells}"
                    f"<td class='num' data-field='oi'>{oi_str}</td>"
-                   f"<td class='num' data-field='kyes'>{kyes_str}</td>"
-                   f"<td class='num' data-field='kno'>{kno_str}</td>"
-                   f"<td class='num {my_yes_cls}' data-field='my_yes'{my_yes_tt}>{my_yes_str}</td>"
-                   f"<td class='num {my_no_cls}' data-field='my_no'{my_no_tt}>{my_no_str}</td>"
-                   f"<td class='num {ev_yes_cls}' data-field='ev_yes'>{ev_yes_str}</td>"
-                   f"<td class='num {ev_no_cls}' data-field='ev_no'>{ev_no_str}</td>"
+                   f"{kalshi_cell}"
+                   f"{my_cell}"
+                   f"{edge_cell}"
+                   f"{ev_cell}"
                    f"<td data-field='verdict'>{badge}</td></tr>")
     out.append("</tbody></table></div>")
     # Append the row-click JS hook so clicks on a watchlist row draw a
@@ -4120,8 +4271,16 @@ def _render_watchlist(out: List[str], watchlist: List[dict],
 _WATCHLIST_ROW_CLICK_JS = """
 <script>
 (function() {
-  const tbody = document.getElementById('watchlist-tbody');
-  if (!tbody) return;
+  // Both the strike-ladder table (id='watchlist-tbody') and the per-bot
+  // active-bets table (id='wl-active-tbody', stamped only on the
+  // watchlist tab via ``chart_link=True``) feed the same hero chart.
+  // Listing them together lets clicks in either table draw the same
+  // overlay line, with rows in both tables clearing each other's
+  // selection (so the user always sees one active selection).
+  const tbodies = Array.from(document.querySelectorAll(
+    \"tbody[data-chart-link], tbody#watchlist-tbody\"
+  ));
+  if (!tbodies.length) return;
 
   function findChart() {
     // Look for the kalshi-history hero chart's SVG. It carries
@@ -4173,14 +4332,22 @@ _WATCHLIST_ROW_CLICK_JS = """
     svg.appendChild(text);
   }
 
-  function setSelected(tr) {
-    tbody.querySelectorAll('tr').forEach(r =>
-      r.classList.toggle('row-selected', r === tr));
+  function setSelected(activeTr) {
+    // Clear selection on every chart-linked row across all tables so
+    // only one row is highlighted at a time.
+    tbodies.forEach(function (tb) {
+      tb.querySelectorAll('tr').forEach(function (r) {
+        r.classList.toggle('row-selected', r === activeTr);
+      });
+    });
   }
 
-  tbody.addEventListener('click', function (ev) {
+  function onClick(ev) {
     const tr = ev.target.closest('tr');
-    if (!tr || !tbody.contains(tr)) return;
+    if (!tr) return;
+    // The criteria-button has its own modal handler — don't hijack it.
+    if (ev.target.closest('.criteria-btn')) return;
+    if (!tr.dataset || !tr.dataset.ticker) return;
     setSelected(tr);
     const svg = findChart();
     if (!svg) return;
@@ -4205,13 +4372,18 @@ _WATCHLIST_ROW_CLICK_JS = """
         text: 'YES ' + (yesProb * 100).toFixed(0) + '%',
       }, '#58a6ff');
     }
-  });
+  }
+
+  tbodies.forEach(function (tb) { tb.addEventListener('click', onClick); });
 })();
 </script>
 <style>
-#watchlist-tbody tr { cursor: pointer; }
-#watchlist-tbody tr.row-selected td { background: #1f2630 !important; }
-#watchlist-tbody tr:hover td { background: #1c222b; }
+#watchlist-tbody tr,
+#wl-active-tbody tr { cursor: pointer; }
+#watchlist-tbody tr.row-selected td,
+#wl-active-tbody tr.row-selected td { background: #1f2630 !important; }
+#watchlist-tbody tr:hover td,
+#wl-active-tbody tr:hover td { background: #1c222b; }
 </style>
 """
 
@@ -4415,6 +4587,18 @@ class Handler(BaseHTTPRequestHandler):
                 model = fetch_latest_model(db_path)
                 latest_active = fetch_latest_open_position(db_path)
                 watchlist = fetch_watchlist(db_path)
+                # Open positions — fetched here (instead of just before
+                # render) so we can pass their tickers into the Kalshi
+                # fetch and force their parent events into the watchlist
+                # ladder, even if they're on a different event than the
+                # most-imminent one.
+                bot_active_bets = fetch_active_bets_with_marks(db_path)
+                for ab in bot_active_bets:
+                    ab.setdefault("_display", bot.get("display") or {})
+                open_position_tickers = {
+                    ab.get("ticker") for ab in bot_active_bets
+                    if ab.get("ticker")
+                }
                 # Will fall back to Kalshi markets below if `watchlist`
                 # comes up empty (bot service not writing market_views,
                 # or the bot is currently between events). Done after
@@ -4450,6 +4634,7 @@ class Handler(BaseHTTPRequestHandler):
                             kalshi_client.fetch_underlying_history(
                                 series_ticker,
                                 period_minutes=chart_period,
+                                extra_tickers=open_position_tickers,
                             )
                         )
                     except Exception:  # noqa: BLE001
@@ -4596,15 +4781,8 @@ class Handler(BaseHTTPRequestHandler):
                 # the active-bet table per request.
                 bot_closed_positions = fetch_bet_history(db_path, limit=100)
 
-                # Bot-scoped OPEN positions — full list rendered on the
-                # watchlist tab. Was previously only ``latest_active``,
-                # which under-reported when the bot held multiple
-                # positions concurrently.
-                bot_active_bets = fetch_active_bets_with_marks(db_path)
-                # Attach display config so the table renders dollar
-                # columns in the bot's native units.
-                for ab in bot_active_bets:
-                    ab.setdefault("_display", bot.get("display") or {})
+                # Open positions were fetched above so their tickers
+                # could be merged into the Kalshi watchlist scope.
 
                 body = render_page(
                     model=model,
