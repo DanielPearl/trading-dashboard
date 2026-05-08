@@ -169,9 +169,9 @@ def active_bets_for_rollup(sim_state_path: str | None,
     """
     s = load_sim_state(sim_state_path)
     # Build a per-match_id → expected_expiration_time map from the
-    # canonical live-state file. We can't look up the file directly
-    # here (no path), so the caller is expected to pass it in. When
-    # missing, we fall through and Closes-in renders a dash.
+    # canonical live-state file so the standard "Closes in" cell can
+    # render a real countdown. When the watchlist path isn't in a
+    # standard layout, the lookup falls through and Closes-in dashes.
     exp_by_id: Dict[str, str] = {}
     if watchlist_path:
         try:
@@ -188,7 +188,13 @@ def active_bets_for_rollup(sim_state_path: str | None,
     now = datetime.now(timezone.utc)
     out: List[Dict[str, Any]] = []
     for p in s.get("open_positions") or []:
-        entry = float(p.get("entry_market_prob") or 0.5)
+        entry = p.get("entry_market_prob")
+        if entry is None:
+            # No real Kalshi quote at open — shouldn't happen given the
+            # simulator's filter, but if it slips through we drop the
+            # row from the table rather than show a fabricated 50%.
+            continue
+        entry = float(entry)
         mark = float(p.get("current_market_prob") or entry)
         mid = p.get("match_id", "")
         mtc: float | None = None
@@ -206,7 +212,13 @@ def active_bets_for_rollup(sim_state_path: str | None,
             "_tournament": p.get("tournament", ""),
             "_surface": p.get("surface", ""),
             "side": "YES",  # tennis always buys the favoured side
-            "contracts": int(round(float(p.get("stake", 1.0)) * 100)),
+            # 1 contract per paper bet — same convention as Kalshi
+            # (1 contract = $1 face value at settlement). The
+            # standard renderer multiplies entry_price_cents × contracts
+            # / 100 for Entry cost; with ``contracts=1`` and entry =
+            # real cents from Kalshi's yes_ask, the dollar columns
+            # match what the user would pay on the actual exchange.
+            "contracts": 1,
             "entry_price_cents": int(round(entry * 100)),
             "mark_mid": mark * 100,
             "opened_at": p.get("opened_at", ""),
@@ -214,7 +226,7 @@ def active_bets_for_rollup(sim_state_path: str | None,
             "label_at_open": p.get("label_at_open", ""),
             "reason_at_open": p.get("reason_at_open", ""),
             # Required by the renderer's "why was this bet chosen" hook.
-            "model_yes_prob_at_entry": float(p.get("entry_model_prob") or 0.5),
+            "model_yes_prob_at_entry": float(p.get("entry_model_prob") or entry),
             "kalshi_yes_prob_at_entry": entry,
         })
     return out
@@ -467,30 +479,47 @@ def _render_watchlist_table(payload: dict) -> str:
         return ("<div class='empty'>No matches yet — run "
                 "<code>scripts/run_daily_prematch.py</code>.</div>")
 
-    # Tennis-flavoured columns. Ticker | Match | Tournament | Surface |
-    # Score | Market | Pre-match | Live | Edge | EV | Conf | Vol | Risk
-    # | Signal. The Ticker cell links to the live Kalshi market page;
-    # the Match cell shows "Player A vs Player B" and the favoured
-    # side underneath in small gray text.
+    # Columns mirror the NBA / standard Kalshi watchlist exactly:
+    #
+    #   Ticker | Question | Contracts | Kalshi YES % | Kalshi NO %
+    #          | My YES % | My NO % | EV YES | EV NO | Verdict
+    #
+    # Field mapping for tennis:
+    #   Ticker        ← real Kalshi event_ticker (links to kalshi.com)
+    #   Question      ← "{player_a} vs {player_b} — bet on {favoured}"
+    #   Contracts     ← open_interest from Kalshi (— when not yet quoted)
+    #   Kalshi YES %  ← market_prob_a × 100  (player_a's YES side)
+    #   Kalshi NO %   ← (1 − market_prob_a) × 100
+    #   My YES %      ← live_prob_a × 100   (live model on player_a)
+    #   My NO %       ← (1 − live_prob_a) × 100
+    #   EV YES        ← ev_a (per-$1 expected value on player_a YES)
+    #   EV NO         ← ev_b (= player_b YES = NO on player_a)
+    #   Verdict       ← recommended_action label pill
     out = ["<table id='tennis-watchlist-table'>",
            "<thead><tr>"
-           "<th>Ticker</th><th>Match</th>"
-           "<th>Tournament</th><th>Surface</th>"
-           "<th>Score</th><th>Market</th><th>Pre-match</th>"
-           "<th>Live</th><th>Edge</th><th>EV</th>"
-           "<th>Conf</th><th>Vol</th><th>Risk</th>"
-           "<th>Signal</th>"
+           "<th>Ticker</th><th>Question</th>"
+           "<th class='num' title='Open interest — number of YES contracts currently held open on this side.'>Contracts</th>"
+           "<th class='num'>Kalshi YES %</th>"
+           "<th class='num'>Kalshi NO %</th>"
+           "<th class='num'>My YES %</th>"
+           "<th class='num'>My NO %</th>"
+           "<th class='num' title='Expected value per $1 contract on YES, net of slippage.'>EV YES</th>"
+           "<th class='num' title='Expected value per $1 contract on NO, net of slippage.'>EV NO</th>"
+           "<th>Verdict</th>"
            "</tr></thead><tbody>"]
     for r in rows_sorted:
-        edge_a = r.get("edge_a")
-        edge_cls = ("green" if (edge_a or 0) > 0
-                    else "red" if (edge_a or 0) < 0 else "gray")
+        edge_a = r.get("edge_a") or 0.0
         player_a = str(r.get("player_a", ""))
         player_b = str(r.get("player_b", ""))
+        # Favoured side from the model's view (positive edge_a → A).
+        favoured_player = player_a if edge_a >= 0 else player_b
         match_text = f"{player_a} vs {player_b}"
-        favoured_player = player_a if (edge_a or 0) >= 0 else player_b
-        injury_html = ('<span class="red">⚠ injury</span>'
-                       if r.get("injury_news_flag") else '—')
+        question_html = (
+            f"<strong>{html.escape(match_text)}</strong>"
+            f"<br><span class='small gray'>bet on "
+            f"{html.escape(favoured_player)}</span>"
+        )
+
         mid = str(r.get("match_id") or "")
         if mid.upper().startswith("KX"):
             kalshi_url = f"https://kalshi.com/markets/{mid.lower()}"
@@ -501,28 +530,45 @@ def _render_watchlist_table(payload: dict) -> str:
             )
         else:
             ticker_cell = html.escape(mid)
-        round_lbl = html.escape(str(r.get('round_label', '')))
+
+        oi = r.get("open_interest")
+        oi_str = f"{int(oi):,}" if oi is not None else "—"
+        kyes_str = _fmt_pct(r.get("market_prob_a"), 0)
+        # Kalshi NO % = 100 − Kalshi YES %. We compute from the raw
+        # probability rather than 100 − cents to keep one rounding step.
+        mkt_a = r.get("market_prob_a")
+        kno_str = (f"{(1.0 - float(mkt_a)) * 100:.0f}%"
+                    if mkt_a is not None else "—")
+        my_yes_str = _fmt_pct(r.get("live_prob_a"), 0)
+        live_a = r.get("live_prob_a")
+        my_no_str = (f"{(1.0 - float(live_a)) * 100:.0f}%"
+                      if live_a is not None else "—")
+        ev_yes = r.get("ev_a")
+        ev_no = r.get("ev_b")
+        ev_yes_str = (f"${ev_yes:+.3f}" if ev_yes is not None else "—")
+        ev_no_str = (f"${ev_no:+.3f}" if ev_no is not None else "—")
+        ev_yes_cls = ("green" if ev_yes is not None and ev_yes >= 0.03
+                      else "red" if ev_yes is not None and ev_yes <= 0
+                      else "yellow" if ev_yes is not None else "gray")
+        ev_no_cls = ("green" if ev_no is not None and ev_no >= 0.03
+                     else "red" if ev_no is not None and ev_no <= 0
+                     else "yellow" if ev_no is not None else "gray")
+
+        verdict_pill = _label_pill(str(r.get("recommended_action", "NO_TRADE")))
+
         out.append(
             f"<tr class='tennis-row' data-mid='{html.escape(mid)}' "
             f"style='cursor:pointer'>"
             f"<td class='mono small'>{ticker_cell}</td>"
-            f"<td><strong>{html.escape(match_text)}</strong><br>"
-            f"<span class='small gray'>bet on {html.escape(favoured_player)}"
-            f" · {round_lbl}</span></td>"
-            f"<td>{html.escape(str(r.get('tournament', '')))}</td>"
-            f"<td>{html.escape(str(r.get('surface', '')))}</td>"
-            f"<td>{html.escape(str(r.get('current_score') or '—'))}</td>"
-            f"<td>{_fmt_pct(r.get('market_prob_a'))}</td>"
-            f"<td>{_fmt_pct(r.get('pre_match_prob_a'))}</td>"
-            f"<td>{_fmt_pct(r.get('live_prob_a'))}</td>"
-            f"<td class='{edge_cls}'>{_fmt_signed_pp(edge_a)}</td>"
-            f"<td>{_fmt_signed_ev(r.get('ev_a'))}</td>"
-            f"<td>{_fmt_pct(r.get('confidence_score'))}</td>"
-            f"<td>{_fmt_pct(r.get('volatility_score'))}</td>"
-            f"<td>{injury_html}</td>"
-            f"<td>{_label_pill(str(r.get('recommended_action', 'NO_TRADE')))}<br>"
-            f"<span class='small gray'>"
-            f"{html.escape(str(r.get('reason_for_signal', '')))}</span></td>"
+            f"<td>{question_html}</td>"
+            f"<td class='num'>{oi_str}</td>"
+            f"<td class='num'>{kyes_str}</td>"
+            f"<td class='num'>{kno_str}</td>"
+            f"<td class='num'>{my_yes_str}</td>"
+            f"<td class='num'>{my_no_str}</td>"
+            f"<td class='num {ev_yes_cls}'>{ev_yes_str}</td>"
+            f"<td class='num {ev_no_cls}'>{ev_no_str}</td>"
+            f"<td>{verdict_pill}</td>"
             "</tr>"
         )
     out.append("</tbody></table>")
