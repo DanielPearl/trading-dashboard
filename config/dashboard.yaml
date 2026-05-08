@@ -104,17 +104,6 @@ bots:
     decisions_path: /root/whale-watcher/data/signal_tracking.jsonl
     signals_path: /root/whale-watcher/data/signal_tracking.jsonl
     orders_path: /root/whale-watcher/data/orders.jsonl
-  - key: rules-parser
-    name: Rules Parser
-    # Rules-parser writes a SQLite db, but it is structurally
-    # different from a standard sim.db — there are no positions /
-    # model_snapshots / training_pairs tables. dashboard_type=rules
-    # tells the dashboard to render a dedicated card on Home and
-    # to swap the Watchlist tab content for the rules-arb
-    # discrepancy table when this bot is selected.
-    dashboard_type: rules
-    db_path: /root/rules-parser/data/rules_intel.db
-    decisions_path: /root/rules-parser/data/rules_intel.db
 
 # ---------------------------------------------------------------------------
 # Display thresholds. Mirror the gas-bot's gates so the buy-criteria panel
@@ -153,13 +142,3 @@ validators:
   min_depth_at_best_ask: 25
   basis_risk_strike_window_dollars: 0.03
   basis_risk_max_hours_to_close: 6
-
-# ---------------------------------------------------------------------------
-# Rules Intel — read-only viewer over the rules-parser daemon's SQLite.
-# The dashboard never imports rules_parser code, so this tab can never
-# place orders. If `enabled` is false (or the file at db_path is missing),
-# the Rules Intel tab renders a friendly stub.
-# ---------------------------------------------------------------------------
-rules_intel:
-  enabled: true
-  db_path: /root/rules-parser/data/rules_intel.db

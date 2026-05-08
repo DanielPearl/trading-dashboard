@@ -25,24 +25,6 @@ one HTML page on port 8080. Stdlib only (`http.server`) — no Flask/FastAPI.
 
 Add or remove bots by editing `config/dashboard.yaml` — no code change needed.
 
-## Rules Intel tab
-
-The dashboard also surfaces signals from the rules-parser daemon
-(`~/Documents/Kalshi/Rules Parser`). The Rules Intel tab is a read-only
-viewer over `rules_intel.db` and a `/api/rules-intel` JSON endpoint is
-exposed for external consumers.
-
-Configure in `config/dashboard.yaml`:
-
-```yaml
-rules_intel:
-  enabled: true
-  db_path: /root/rules-parser/data/rules_intel.db
-```
-
-The dashboard never imports the rules-parser trading code, so this
-tab can never place an order.
-
 ## Run locally
 
 ```bash
