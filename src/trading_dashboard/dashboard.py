@@ -1814,6 +1814,7 @@ def render_page(
     global_active_bets: List[dict],
     global_history: List[dict],
     latest_active: dict | None,
+    bot_active_bets: List[dict] | None,
     bot_closed_positions: List[dict],
     watchlist: List[dict],
     underlying_history: List[dict],
@@ -1902,6 +1903,7 @@ def render_page(
                           underlying_history=underlying_history,
                           display=display,
                           latest_active=latest_active,
+                          bot_active_bets=bot_active_bets or [],
                           kalshi_history=kalshi_history,
                           atm_market=atm_market,
                           contract_open_ts=contract_open_ts,
@@ -3444,6 +3446,7 @@ def _render_watchlist_hero(out: List[str],
                             underlying_history: List[dict],
                             display: dict,
                             latest_active: dict | None,
+                            bot_active_bets: List[dict] | None = None,
                             kalshi_history: List[dict] | None = None,
                             atm_market: dict | None = None,
                             contract_open_ts: float | None = None,
@@ -3701,33 +3704,54 @@ def _render_watchlist(out: List[str], watchlist: List[dict],
     # Inline style only adds flex layout for the h3 + button row; the
     # default .subhead margin-top (16px) collapses with the row's
     # margin-bottom (14px) above to give exactly Summary's rhythm.
+    # Active-bets section header. ``Active bet`` (singular) used to
+    # render only the most recent open position — but a bot can hold
+    # multiple positions concurrently (NBA picks one game per night
+    # but holds the YES and NO sides on different games' tickers).
+    # Now we render the full list in the same shared table the home
+    # summary uses, so the count here matches the per-bot row count
+    # in the cross-bot summary.
+    bets = list(bot_active_bets or [])
+    # Backwards compat: when only `latest_active` is plumbed in (older
+    # callers), fall back to a single-bet list. The new caller always
+    # passes ``bot_active_bets``.
+    if not bets and latest_active:
+        bets = [latest_active]
+    n_bets = len(bets)
+    label = ("Active bets" if n_bets > 1
+              else "Active bet")
+    count_suffix = (f" <span class='small gray'>({n_bets})</span>"
+                     if n_bets > 1 else "")
     out.append(
         "<h3 class='subhead' "
         "style='display:flex;align-items:center;gap:8px;'>"
-        f"Active bet {rules_icon_html}</h3>"
+        f"{label}{count_suffix} {rules_icon_html}</h3>"
     )
-    if latest_active:
-        enriched = dict(latest_active)
-        # Strike data from the matching watchlist row (keyed by ticker).
-        wl_match = next(
-            (w for w in (watchlist or [])
-             if w.get("ticker") == latest_active.get("ticker")),
-            None,
-        )
-        if wl_match:
-            enriched.setdefault("floor_strike", wl_match.get("strike_low"))
-            enriched.setdefault("cap_strike", wl_match.get("strike_high"))
-            enriched.setdefault("minutes_to_close",
-                                  wl_match.get("minutes_to_close"))
-            # mark fallback for bots that don't write position_marks —
-            # use the latest watchlist mark so Current renders.
-            if enriched.get("mark_yes_ask") is None:
-                enriched["mark_yes_ask"] = wl_match.get("yes_ask_cents")
-            if enriched.get("mark_no_ask") is None:
-                enriched["mark_no_ask"] = wl_match.get("no_ask_cents")
-        enriched["_display"] = display or {}
-        _render_active_bets_table(out, [enriched],
-                                    show_bot=False)
+    if bets:
+        enriched_rows: List[dict] = []
+        for ab in bets:
+            enriched = dict(ab)
+            wl_match = next(
+                (w for w in (watchlist or [])
+                 if w.get("ticker") == ab.get("ticker")),
+                None,
+            )
+            if wl_match:
+                enriched.setdefault("floor_strike", wl_match.get("strike_low"))
+                enriched.setdefault("cap_strike", wl_match.get("strike_high"))
+                enriched.setdefault("minutes_to_close",
+                                      wl_match.get("minutes_to_close"))
+                if enriched.get("mark_yes_ask") is None:
+                    enriched["mark_yes_ask"] = wl_match.get("yes_ask_cents")
+                if enriched.get("mark_no_ask") is None:
+                    enriched["mark_no_ask"] = wl_match.get("no_ask_cents")
+            enriched["_display"] = display or {}
+            enriched_rows.append(enriched)
+        # Most-recently opened first (consistent with the home table).
+        enriched_rows.sort(key=lambda r: r.get("opened_at", ""), reverse=True)
+        _render_active_bets_table(out, enriched_rows, show_bot=False)
+    else:
+        out.append("<div class='empty'>No active bets right now.</div>")
 
     # ── Hero header + chart (Kalshi-style) ────────────────────────────────
     # Top-line metrics for the underlying the bot tracks: current value,
@@ -4566,12 +4590,23 @@ class Handler(BaseHTTPRequestHandler):
                 # the active-bet table per request.
                 bot_closed_positions = fetch_bet_history(db_path, limit=100)
 
+                # Bot-scoped OPEN positions — full list rendered on the
+                # watchlist tab. Was previously only ``latest_active``,
+                # which under-reported when the bot held multiple
+                # positions concurrently.
+                bot_active_bets = fetch_active_bets_with_marks(db_path)
+                # Attach display config so the table renders dollar
+                # columns in the bot's native units.
+                for ab in bot_active_bets:
+                    ab.setdefault("_display", bot.get("display") or {})
+
                 body = render_page(
                     model=model,
                     global_summary=global_summary,
                     global_active_bets=global_active_bets,
                     global_history=global_history,
                     latest_active=latest_active,
+                    bot_active_bets=bot_active_bets,
                     bot_closed_positions=bot_closed_positions,
                     watchlist=watchlist,
                     underlying_history=underlying_history,
