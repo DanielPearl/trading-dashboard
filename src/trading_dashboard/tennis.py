@@ -534,10 +534,10 @@ def _render_watchlist_table(payload: dict) -> str:
            "<th>Ticker</th>"
            "<th title='Who the bot is betting will win.'>Side</th>"
            "<th class='num' title='Open interest — number of YES contracts currently held open on this side.'>Contracts</th>"
-           "<th class='num' title='Kalshi market price for YES / NO sides — implied probability each side wins.'>Kalshi % <span class='small gray'>(yes / no)</span></th>"
-           "<th class='num' title='Bot model probability for YES / NO.'>My % <span class='small gray'>(yes / no)</span></th>"
-           "<th class='num' title='Edge = my probability − Kalshi price, per side. Positive means the bot disagrees with Kalshi in that direction.'>Edge <span class='small gray'>(yes / no)</span></th>"
-           "<th class='num' title='Expected value per $1 contract for YES / NO, net of slippage.'>EV <span class='small gray'>(yes / no)</span></th>"
+           "<th class='num' title='Kalshi market price for YES | NO sides — implied probability each side wins.'>Kalshi % <span class='small gray'>(yes | no)</span></th>"
+           "<th class='num' title='Bot model probability for YES | NO.'>My % <span class='small gray'>(yes | no)</span></th>"
+           "<th class='num' title='Edge = my probability − Kalshi price, per side. Positive means the bot disagrees with Kalshi in that direction.'>Edge <span class='small gray'>(yes | no)</span></th>"
+           "<th class='num' title='Expected value per $1 contract for YES | NO, net of slippage.'>EV <span class='small gray'>(yes | no)</span></th>"
            "<th>Verdict</th>"
            "</tr></thead><tbody>"]
     for r in rows_sorted:
@@ -618,25 +618,25 @@ def _render_watchlist_table(payload: dict) -> str:
         kalshi_cell = (
             f"<td class='num'>"
             f"<span>{kyes_str}</span>"
-            f"<span class='cell-sep'> / </span>"
+            f"<span class='cell-sep'> | </span>"
             f"<span>{kno_str}</span></td>"
         )
         my_cell = (
             f"<td class='num'>"
             f"<span>{my_yes_str}</span>"
-            f"<span class='cell-sep'> / </span>"
+            f"<span class='cell-sep'> | </span>"
             f"<span>{my_no_str}</span></td>"
         )
         edge_cell = (
             f"<td class='num'>"
             f"<span class='{edge_yes_cls}'>{edge_yes_str}</span>"
-            f"<span class='cell-sep'> / </span>"
+            f"<span class='cell-sep'> | </span>"
             f"<span class='{edge_no_cls}'>{edge_no_str}</span></td>"
         )
         ev_cell = (
             f"<td class='num'>"
             f"<span class='{ev_yes_cls}'>{ev_yes_str}</span>"
-            f"<span class='cell-sep'> / </span>"
+            f"<span class='cell-sep'> | </span>"
             f"<span class='{ev_no_cls}'>{ev_no_str}</span></td>"
         )
         out.append(

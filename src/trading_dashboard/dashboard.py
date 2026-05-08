@@ -3082,13 +3082,14 @@ def _render_active_bets_table(out: List[str], bets: List[dict],
         entry_cost_base = entry * contracts / 100.0
         entry_fee_dollars = entry_fee_c / 100.0
         potential_gain = ((100 - entry) * contracts - entry_fee_c) / 100.0
-        # Entry-cost cell shows base + fee inline so the user sees
-        # how much of the cost is fee. Tooltip explains.
+        # Entry-cost cell shows base − fee inline so the user reads
+        # both pieces as cash outflows (a positive fee is still cash
+        # leaving the account at open). Tooltip explains.
         entry_cost_cell = (
             f"<td class='num red' title='Entry prob × contracts + "
             f"Kalshi entry fee — total cash out at open'>"
             f"−${entry_cost_base:.2f}"
-            f"<span class='entry-fee'> + ${entry_fee_dollars:.2f}</span>"
+            f"<span class='entry-fee'> − ${entry_fee_dollars:.2f}</span>"
             f"</td>"
         )
         # Probability cells — both rendered in the default white text;
@@ -3935,10 +3936,10 @@ def _render_watchlist(out: List[str], watchlist: List[dict],
                "<th>Ticker</th>"
                f"{head_cols}"
                "<th class='num' title='Open interest — number of contracts currently held open on this strike.'>Contracts</th>"
-               "<th class='num' title='Kalshi market price for YES / NO sides — implied probability each side wins.'>Kalshi % <span class='small gray'>(yes / no)</span></th>"
-               "<th class='num' title='Bot model probability for YES / NO.'>My % <span class='small gray'>(yes / no)</span></th>"
-               "<th class='num' title='Edge = my probability − Kalshi price, per side. Positive means the bot disagrees with Kalshi in that direction.'>Edge <span class='small gray'>(yes / no)</span></th>"
-               "<th class='num' title='Expected value per $1 contract for YES / NO, net of half-spread.'>EV <span class='small gray'>(yes / no)</span></th>"
+               "<th class='num' title='Kalshi market price for YES | NO sides — implied probability each side wins.'>Kalshi % <span class='small gray'>(yes | no)</span></th>"
+               "<th class='num' title='Bot model probability for YES | NO.'>My % <span class='small gray'>(yes | no)</span></th>"
+               "<th class='num' title='Edge = my probability − Kalshi price, per side. Positive means the bot disagrees with Kalshi in that direction.'>Edge <span class='small gray'>(yes | no)</span></th>"
+               "<th class='num' title='Expected value per $1 contract for YES | NO, net of half-spread.'>EV <span class='small gray'>(yes | no)</span></th>"
                "<th>Verdict</th></tr></thead><tbody id='watchlist-tbody'>")
     for v in watchlist:
         ticker = v.get("ticker", "")
@@ -4215,25 +4216,25 @@ def _render_watchlist(out: List[str], watchlist: List[dict],
         kalshi_cell = (
             f"<td class='num' data-field='kalshi'>"
             f"<span data-side='yes'>{kyes_str}</span>"
-            f"<span class='cell-sep'> / </span>"
+            f"<span class='cell-sep'> | </span>"
             f"<span data-side='no'>{kno_str}</span></td>"
         )
         my_cell = (
             f"<td class='num' data-field='my'{my_yes_tt or my_no_tt}>"
             f"<span class='{my_yes_cls}' data-side='yes'>{my_yes_str}</span>"
-            f"<span class='cell-sep'> / </span>"
+            f"<span class='cell-sep'> | </span>"
             f"<span class='{my_no_cls}' data-side='no'>{my_no_str}</span></td>"
         )
         edge_cell = (
             f"<td class='num' data-field='edge'>"
             f"<span class='{edge_yes_cls}' data-side='yes'>{edge_yes_str}</span>"
-            f"<span class='cell-sep'> / </span>"
+            f"<span class='cell-sep'> | </span>"
             f"<span class='{edge_no_cls}' data-side='no'>{edge_no_str}</span></td>"
         )
         ev_cell = (
             f"<td class='num' data-field='ev'>"
             f"<span class='{ev_yes_cls}' data-side='yes'>{ev_yes_str}</span>"
-            f"<span class='cell-sep'> / </span>"
+            f"<span class='cell-sep'> | </span>"
             f"<span class='{ev_no_cls}' data-side='no'>{ev_no_str}</span></td>"
         )
         out.append(f"<tr{row_cls} data-ticker='{tt_esc}'{strike_attr}{yes_attr}>"
