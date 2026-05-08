@@ -3972,10 +3972,14 @@ class Handler(BaseHTTPRequestHandler):
                 # tennis-shaped watchlist rendering. Dispatch early so the
                 # standard render path stays focused on Kalshi event-bots.
                 if bot.get("dashboard_type") == "tennis":
+                    # Tennis page only renders the watchlist content.
+                    # The page's tab bar links Home → / and History →
+                    # /?tab=history (handled by the standard renderer
+                    # at those URLs). So when we get a request for
+                    # ?bot=tennis with any tab, we always render the
+                    # watchlist — there's no separate tennis-specific
+                    # home tab to route to.
                     from . import tennis
-                    tennis_tab = qs_top.get("tab", ["home"])[0]
-                    if tennis_tab not in {k for k, _ in tennis.TENNIS_TABS}:
-                        tennis_tab = "home"
                     body = tennis.render_page(
                         metrics_path=bot.get("metrics_path"),
                         coefficients_path=bot.get("coefficients_path"),
@@ -3983,7 +3987,7 @@ class Handler(BaseHTTPRequestHandler):
                         sim_state_path=bot.get("sim_state_path"),
                         available_bots=self.bots,
                         current_bot_key=bot["key"],
-                        tab_key=tennis_tab,
+                        tab_key="watchlist",
                     )
                     payload = body.encode("utf-8")
                     self.send_response(200)
