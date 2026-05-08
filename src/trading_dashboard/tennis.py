@@ -209,6 +209,12 @@ def active_bets_for_rollup(sim_state_path: str | None,
             "ticker": mid,
             "_match": f"{p.get('player_a','')} vs {p.get('player_b','')}",
             "_side_player": p.get("side_player", ""),
+            # Kalshi-published contract title for the side we're
+            # betting on. The shared active-bets renderer reads this
+            # via ``_title`` (or the standard ``title`` field, which
+            # we also fill in for symmetry with the Kalshi-bot path).
+            "_title": p.get("title") or "",
+            "title": p.get("title") or "",
             "_tournament": p.get("tournament", ""),
             "_surface": p.get("surface", ""),
             "side": "YES",  # tennis always buys the favoured side
@@ -424,12 +430,19 @@ def _render_current_prediction(metrics: dict, sim_state: dict) -> str:
 
 
 def _render_active_paper_bets(sim_state: dict) -> str:
-    """Tennis equivalent of the standard 'Active bet' table."""
+    """Tennis equivalent of the standard 'Active bet' table.
+
+    Columns: Ticker | Title | Match | Side | Entry | Mark | Live model
+            | Unrealized | Label | Opened. Title carries the Kalshi-
+    published YES question for the side we're betting on.
+    """
     open_positions = sim_state.get("open_positions") or []
     if not open_positions:
         return "<div class='empty'>No active paper bets right now.</div>"
     out = ["<table>",
            "<thead><tr>"
+           "<th>Ticker</th>"
+           "<th title='Kalshi-published contract title — the YES question shown on the market page.'>Title</th>"
            "<th>Match</th><th>Side</th><th>Entry</th>"
            "<th>Mark</th><th>Live model</th>"
            "<th>Unrealized</th><th>Label</th><th>Opened</th>"
@@ -438,8 +451,22 @@ def _render_active_paper_bets(sim_state: dict) -> str:
                     reverse=True):
         unr = float(p.get("unrealized_pnl") or 0.0)
         unr_cls = "green" if unr > 0 else ("red" if unr < 0 else "gray")
+        mid = str(p.get("match_id") or "")
+        if mid.upper().startswith("KX"):
+            kalshi_url = f"https://kalshi.com/markets/{mid.lower()}"
+            ticker_cell = (
+                f"<a href='{html.escape(kalshi_url)}' target='_blank' "
+                f"rel='noopener noreferrer' class='ticker-link'>"
+                f"{html.escape(mid)}</a>"
+            )
+        else:
+            ticker_cell = html.escape(mid)
+        title_text = (str(p.get("title") or "")
+                       or f"{p.get('player_a','')} vs {p.get('player_b','')}")
         out.append(
             "<tr>"
+            f"<td class='mono small'>{ticker_cell}</td>"
+            f"<td>{html.escape(title_text)}</td>"
             f"<td><strong>{html.escape(str(p.get('player_a','')))}</strong>"
             f" vs {html.escape(str(p.get('player_b','')))}<br>"
             f"<span class='small gray'>{html.escape(str(p.get('tournament','')))} · "
@@ -481,11 +508,12 @@ def _render_watchlist_table(payload: dict) -> str:
 
     # Columns mirror the NBA / standard Kalshi watchlist exactly:
     #
-    #   Ticker | Question | Contracts | Kalshi YES % | Kalshi NO %
+    #   Ticker | Title | Question | Contracts | Kalshi YES % | Kalshi NO %
     #          | My YES % | My NO % | EV YES | EV NO | Verdict
     #
     # Field mapping for tennis:
     #   Ticker        ← real Kalshi event_ticker (links to kalshi.com)
+    #   Title         ← Kalshi YES question text from the favoured side
     #   Question      ← "{player_a} vs {player_b} — bet on {favoured}"
     #   Contracts     ← open_interest from Kalshi (— when not yet quoted)
     #   Kalshi YES %  ← market_prob_a × 100  (player_a's YES side)
@@ -497,7 +525,9 @@ def _render_watchlist_table(payload: dict) -> str:
     #   Verdict       ← recommended_action label pill
     out = ["<table id='tennis-watchlist-table'>",
            "<thead><tr>"
-           "<th>Ticker</th><th>Question</th>"
+           "<th>Ticker</th>"
+           "<th title='Kalshi-published contract title — the YES question shown on the market page.'>Title</th>"
+           "<th>Question</th>"
            "<th class='num' title='Open interest — number of YES contracts currently held open on this side.'>Contracts</th>"
            "<th class='num'>Kalshi YES %</th>"
            "<th class='num'>Kalshi NO %</th>"
@@ -556,10 +586,16 @@ def _render_watchlist_table(payload: dict) -> str:
 
         verdict_pill = _label_pill(str(r.get("recommended_action", "NO_TRADE")))
 
+        # Title cell: Kalshi's published YES question for the favoured
+        # side (e.g. "Will Jannik Sinner win the Sinner vs Ofner: Round
+        # Of 64 match?"). Falls back to the matchup string when not
+        # populated.
+        title_text = r.get("title") or match_text
         out.append(
             f"<tr class='tennis-row' data-mid='{html.escape(mid)}' "
             f"style='cursor:pointer'>"
             f"<td class='mono small'>{ticker_cell}</td>"
+            f"<td>{html.escape(title_text)}</td>"
             f"<td>{question_html}</td>"
             f"<td class='num'>{oi_str}</td>"
             f"<td class='num'>{kyes_str}</td>"

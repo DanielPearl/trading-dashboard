@@ -2917,13 +2917,14 @@ def _render_active_bets_table(out: List[str], bets: List[dict],
         out.append(f"<div class='empty'>{html.escape(empty_msg)}</div>")
         return
     bot_th = "<th>Bot</th>" if show_bot else ""
-    # Column layout: ``Question`` describes the contract for non-sport
-    # bots (e.g. "Above $3.50 / gal") and the matchup for sport bots
-    # (e.g. "MIN vs SAS — bet on MIN"). ``Side`` carries the YES / NO
-    # badge. Last column is the per-row info button — no header label
-    # needed.
+    # Column layout: ``Title`` carries Kalshi's published contract title
+    # (e.g. "Will MIN win the SAS vs MIN game?"); ``Question`` describes
+    # the contract more concisely (the strike-band for non-sport bots,
+    # the matchup + bet-on-side for sport bots). ``Side`` carries the
+    # YES / NO badge. Last column is the per-row info button.
     out.append("<table><thead><tr>"
-               f"<th>Opened</th>{bot_th}<th>Ticker</th><th>Question</th>"
+               f"<th>Opened</th>{bot_th}<th>Ticker</th>"
+               "<th>Title</th><th>Question</th>"
                "<th class='num'>Contracts</th><th>Side</th>"
                "<th class='num' title='Implied probability of our side at entry (= entry price in ¢).'>Entry prob</th>"
                "<th class='num' title='Implied probability of our side right now, taken from the market mid.'>Current prob</th>"
@@ -3060,6 +3061,11 @@ def _render_active_bets_table(out: List[str], bets: List[dict],
         }
         criteria_json = html.escape(json.dumps(
             criteria, separators=(",", ":"), default=str))
+        # Title cell: Kalshi-published contract title (the exact YES
+        # question text from the market page). Tennis bets carry it
+        # via ``_title``; Kalshi-bot bets via ``title`` — fall through
+        # to the question text when neither is recorded.
+        title_text = b.get("_title") or b.get("title") or ""
         # Question cell: non-sport bots show the Kalshi question text
         # (e.g. "Above $3.50 / gal"). Sport bots show the matchup
         # plus the side we're betting on (e.g. "MIN vs SAS — bet on MIN")
@@ -3074,6 +3080,8 @@ def _render_active_bets_table(out: List[str], bets: List[dict],
                               if tri else match_text)
         else:
             question_text = question
+        if not title_text:
+            title_text = question_text
         # Closes in: for tennis paper bets, _minutes_to_close is provided
         # by the tennis adapter (derived from expected_expiration_time);
         # for Kalshi bots the simulator already supplies minutes_to_close.
@@ -3081,6 +3089,7 @@ def _render_active_bets_table(out: List[str], bets: List[dict],
             f"<tr><td>{html.escape(opened)}</td>"
             f"{bot_td}"
             f"<td class='mono'>{ticker_cell_html(b.get('ticker'))}</td>"
+            f"<td>{html.escape(title_text)}</td>"
             f"<td>{html.escape(question_text)}</td>"
             f"<td class='num'>{contracts}</td>"
             f"<td><span class='badge {badge_cls}'>{side}</span></td>"
@@ -3122,7 +3131,8 @@ def _render_bet_history_block(out: List[str], history: List[dict],
 
     head = (
         "<table><thead><tr>"
-        "<th>Closed</th><th>Bot</th><th>Ticker</th><th>Question</th>"
+        "<th>Closed</th><th>Bot</th><th>Ticker</th>"
+        "<th>Title</th><th>Question</th>"
         "<th>Side</th>"
         "<th class='num'>Entry</th><th class='num'>Exit</th>"
         "<th class='num'>Contracts</th>"
@@ -3183,6 +3193,8 @@ def _render_bet_history_block(out: List[str], history: List[dict],
             ev_cls = "gray"
         else:
             ev_str, ev_cls = (f"${ev:+.3f}", _ev_status(ev)[0])
+        # Title cell: Kalshi-published contract title.
+        title_text = b.get("_title") or b.get("title") or ""
         # Question cell: sport bots show the matchup + side ("MIN vs SAS
         # — bet on MIN"); non-sport bots show the strike-band template
         # ("Above $3.50 / gal").
@@ -3197,9 +3209,12 @@ def _render_bet_history_block(out: List[str], history: List[dict],
                               if tri else match_text)
         else:
             question_text = question
+        if not title_text:
+            title_text = question_text
         return (f"<tr><td>{html.escape(closed)}</td>"
                 f"<td>{html.escape(bot_name)}</td>"
                 f"<td class='mono'>{ticker_cell_html(b.get('ticker'))}</td>"
+                f"<td>{html.escape(title_text)}</td>"
                 f"<td>{html.escape(question_text)}</td>"
                 f"<td><span class='badge {badge_cls}'>{side}</span></td>"
                 f"<td class='num'>{entry}c</td>"
@@ -3718,7 +3733,9 @@ def _render_watchlist(out: List[str], watchlist: List[dict],
     # the hero header instead of being repeated per row.
     out.append("<div class='watchlist-scroll'>"
                "<table><thead><tr>"
-               "<th>Ticker</th><th>Question</th>"
+               "<th>Ticker</th>"
+               "<th title='Kalshi-published contract title — the YES question shown on the market page.'>Title</th>"
+               "<th>Question</th>"
                "<th class='num' title='Open interest — number of contracts currently held open on this strike.'>Contracts</th>"
                "<th class='num'>Kalshi YES %</th>"
                "<th class='num'>Kalshi NO %</th>"
@@ -3940,8 +3957,10 @@ def _render_watchlist(out: List[str], watchlist: List[dict],
             yes_attr = f" data-yes-prob='{int(ya_c) / 100.0:.4f}'" if ya_c is not None else ""
         except (TypeError, ValueError):
             yes_attr = ""
+        title_text = v.get("title") or ""
         out.append(f"<tr{row_cls} data-ticker='{tt_esc}'{strike_attr}{yes_attr}>"
                    f"<td class='mono'>{ticker_cell}</td>"
+                   f"<td>{html.escape(title_text)}</td>"
                    f"<td>{html.escape(qstr)}</td>"
                    f"<td class='num' data-field='oi'>{oi_str}</td>"
                    f"<td class='num' data-field='kyes'>{kyes_str}</td>"
