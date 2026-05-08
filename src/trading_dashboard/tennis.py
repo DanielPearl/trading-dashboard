@@ -491,8 +491,16 @@ def _render_watchlist_table(payload: dict) -> str:
     table body and updates the projected-forecast graph above with
     the row's probabilities. Each row carries a ``data-mid`` attribute
     so the JS can look up the match in the embedded forecast payload.
+
+    Only tradeable rows are rendered: a ticker is shown only when the
+    underlying Kalshi market is active *and* has at least one
+    published quote (yes_ask or no_ask). Most upcoming-day tennis
+    books sit unquoted until close to tipoff; surfacing them here
+    would dilute the watchlist with rows the user can't actually
+    place a bet on.
     """
-    rows = payload.get("rows") or []
+    rows_all = payload.get("rows") or []
+    rows = [r for r in rows_all if r.get("market_prob_a") is not None]
     rows_sorted = sorted(
         rows,
         key=lambda r: (
@@ -503,8 +511,11 @@ def _render_watchlist_table(payload: dict) -> str:
         ),
     )
     if not rows_sorted:
-        return ("<div class='empty'>No matches yet — run "
-                "<code>scripts/run_daily_prematch.py</code>.</div>")
+        unquoted = len(rows_all)
+        suffix = (f" ({unquoted} match{'es' if unquoted != 1 else ''} "
+                  f"awaiting a Kalshi quote)" if unquoted else "")
+        return ("<div class='empty'>No tradeable tennis markets right now"
+                + suffix + ".</div>")
 
     # Sport-table column shape (mirrors the NBA watchlist):
     #
@@ -1017,18 +1028,24 @@ def render_page(*, metrics_path: str | None, coefficients_path: str | None,
     out.append("<h3 class='subhead'>Active paper bets</h3>")
     out.append(_render_active_paper_bets(sim_state))
 
+    # Filter to tradeable rows once and pass the same view to both
+    # the forecast graph and the watchlist table. A row is tradeable
+    # when Kalshi has published a quote (market_prob_a is not None).
+    tradeable = [r for r in rows if r.get("market_prob_a") is not None]
+
     # Active-bets line chart — sport-style row-click changes which
     # match is plotted (pre-match, live model, market probabilities
     # with a 95% CI band). No header label — the chart is the single
     # active-bets visual on the page, no panel chrome.
-    out.append(_render_forecast_graph(rows))
+    out.append(_render_forecast_graph(tradeable))
 
     age = _last_updated_age(payload.get("generated_at"))
     out.append(
-        f"<h3 class='subhead'>Tennis matches · {len(rows)} "
+        f"<h3 class='subhead'>Tennis matches · {len(tradeable)} "
         f"<span class='small gray'>(generated {html.escape(age)})</span></h3>"
     )
-    out.append(_render_watchlist_table(payload))
+    out.append(_render_watchlist_table({"rows": tradeable,
+                                         "generated_at": payload.get("generated_at")}))
 
     out.append("</div></div>")  # /body /section
 
