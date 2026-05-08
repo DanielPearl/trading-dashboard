@@ -46,6 +46,19 @@ class DisplayCfg:
     # watchlist page. Weekly bots (gas, claims) keep the default; the
     # monthly CPI bot overrides this to "next month".
     prediction_period_label: str = "next week"
+    # When true, the watchlist Title column uses the Kalshi event
+    # title (e.g. "Initial jobless claims for the week ending May 9,
+    # 2026") instead of the per-strike market title. Used by the
+    # unemployment-claims bot where every row in the table is the
+    # same event and the per-strike "200K"-shorthand title would
+    # repeat the strike already shown in the Question column.
+    watchlist_title_use_event: bool = False
+    # Watchlist Question column format. Default uses the bot's
+    # underlying_unit / divisor pair via fmt_underlying. Set to
+    # "at_least_full" for "at least 200,000" / "below 200,000" /
+    # "200,000 – 205,000" idiom (raw count, comma-separated, no
+    # divisor / unit).
+    question_format: str = ""
 
 
 @dataclass

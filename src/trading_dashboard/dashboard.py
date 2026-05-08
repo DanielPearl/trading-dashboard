@@ -4989,6 +4989,8 @@ def main(argv: list[str] | None = None) -> int:
                 "divisor": b.display.divisor,
                 "chart_period_minutes": b.display.chart_period_minutes,
                 "prediction_period_label": b.display.prediction_period_label,
+                "watchlist_title_use_event": b.display.watchlist_title_use_event,
+                "question_format": b.display.question_format,
             },
             "available": available,
         })
