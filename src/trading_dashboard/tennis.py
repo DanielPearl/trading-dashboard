@@ -668,7 +668,12 @@ def _render_forecast_graph(rows: List[dict]) -> str:
     the model's uncertainty alongside the point estimate.
     """
     if not rows:
-        return "<div class='empty'>No active bets right now.</div>"
+        # Empty state is already covered by the "Active paper bets"
+        # section above and the "No tradeable tennis markets" copy on
+        # the matches table below. Rendering another "No active bets
+        # right now." here just duplicated the message — return an
+        # empty string so the chart slot collapses cleanly.
+        return ""
     # Build a JSON map of match_id → forecast payload that the JS
     # reads to swap the graph contents on row click.
     payload_map: Dict[str, Dict[str, Any]] = {}
