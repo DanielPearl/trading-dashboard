@@ -3732,23 +3732,25 @@ def _render_watchlist(out: List[str], watchlist: List[dict],
     # YES (same midpoint of the bid/ask); volume and closes-in live in
     # the hero header instead of being repeated per row.
     # Sport bots (NBA today; tennis runs through its own renderer)
-    # use the column shape Match | Side instead of Title | Question.
-    # Match carries the Kalshi-published title of the matchup (e.g.
-    # "Will MIN win the SAS vs MIN game?"); Side carries the team
-    # the bot is betting on.
+    # drop the Kalshi-title / question column entirely — the Side
+    # column already says who the bot is betting on, and the YES
+    # question text "Will MIN win the SAS vs MIN game?" is just a
+    # restatement of that. Non-sport bots (gas / CPI / jobless) keep
+    # Title | Question because the strike-band semantics there make
+    # both columns informative.
     is_sport_bot = current_bot in {"nba"}
     if is_sport_bot:
-        title_h = ("<th title='Kalshi-published contract title — the "
-                   "YES question shown on the market page.'>Match</th>")
-        question_h = "<th title='Who the bot is betting will win.'>Side</th>"
+        head_cols = "<th title='Who the bot is betting will win.'>Side</th>"
     else:
-        title_h = ("<th title='Kalshi-published contract title — the "
-                   "YES question shown on the market page.'>Title</th>")
-        question_h = "<th>Question</th>"
+        head_cols = (
+            "<th title='Kalshi-published contract title — the "
+            "YES question shown on the market page.'>Title</th>"
+            "<th>Question</th>"
+        )
     out.append("<div class='watchlist-scroll'>"
                "<table><thead><tr>"
                "<th>Ticker</th>"
-               f"{title_h}{question_h}"
+               f"{head_cols}"
                "<th class='num' title='Open interest — number of contracts currently held open on this strike.'>Contracts</th>"
                "<th class='num'>Kalshi YES %</th>"
                "<th class='num'>Kalshi NO %</th>"
@@ -3970,27 +3972,27 @@ def _render_watchlist(out: List[str], watchlist: List[dict],
             yes_attr = f" data-yes-prob='{int(ya_c) / 100.0:.4f}'" if ya_c is not None else ""
         except (TypeError, ValueError):
             yes_attr = ""
-        title_text = v.get("title") or ""
-        # Sport-bot Side cell: pull the team being bet on (the YES
-        # team) from the ticker and stack the opponent below it.
-        # Non-sport bots just render the question text.
+        # Sport bots: only the Side cell. Non-sport: Title + Question.
         if is_sport_bot:
             yes_team = _side_tricode_from_ticker(ticker, "YES")
             opp_team = _side_tricode_from_ticker(ticker, "NO")
             if yes_team:
-                second_cell = (
+                middle_cells = (
                     f"<td><strong>{html.escape(yes_team)}</strong>"
                     f"<br><span class='small gray'>vs "
                     f"{html.escape(opp_team)}</span></td>"
                 )
             else:
-                second_cell = f"<td>{html.escape(qstr)}</td>"
+                middle_cells = f"<td>{html.escape(qstr)}</td>"
         else:
-            second_cell = f"<td>{html.escape(qstr)}</td>"
+            title_text = v.get("title") or ""
+            middle_cells = (
+                f"<td>{html.escape(title_text)}</td>"
+                f"<td>{html.escape(qstr)}</td>"
+            )
         out.append(f"<tr{row_cls} data-ticker='{tt_esc}'{strike_attr}{yes_attr}>"
                    f"<td class='mono'>{ticker_cell}</td>"
-                   f"<td>{html.escape(title_text)}</td>"
-                   f"{second_cell}"
+                   f"{middle_cells}"
                    f"<td class='num' data-field='oi'>{oi_str}</td>"
                    f"<td class='num' data-field='kyes'>{kyes_str}</td>"
                    f"<td class='num' data-field='kno'>{kno_str}</td>"

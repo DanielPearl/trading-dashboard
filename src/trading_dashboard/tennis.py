@@ -432,9 +432,11 @@ def _render_current_prediction(metrics: dict, sim_state: dict) -> str:
 def _render_active_paper_bets(sim_state: dict) -> str:
     """Tennis equivalent of the standard 'Active bet' table.
 
-    Columns: Ticker | Title | Match | Side | Entry | Mark | Live model
-            | Unrealized | Label | Opened. Title carries the Kalshi-
-    published YES question for the side we're betting on.
+    Columns (sport idiom): Ticker | Match | Side | Entry | Mark |
+    Live model | Unrealized | Label | Opened. The Match cell shows
+    "Player A vs Player B" with tournament + surface underneath; the
+    Kalshi YES question text would be redundant on a sport bet so
+    the Title column is dropped here too.
     """
     open_positions = sim_state.get("open_positions") or []
     if not open_positions:
@@ -442,7 +444,6 @@ def _render_active_paper_bets(sim_state: dict) -> str:
     out = ["<table>",
            "<thead><tr>"
            "<th>Ticker</th>"
-           "<th title='Kalshi-published contract title — the YES question shown on the market page.'>Title</th>"
            "<th>Match</th><th>Side</th><th>Entry</th>"
            "<th>Mark</th><th>Live model</th>"
            "<th>Unrealized</th><th>Label</th><th>Opened</th>"
@@ -461,12 +462,9 @@ def _render_active_paper_bets(sim_state: dict) -> str:
             )
         else:
             ticker_cell = html.escape(mid)
-        title_text = (str(p.get("title") or "")
-                       or f"{p.get('player_a','')} vs {p.get('player_b','')}")
         out.append(
             "<tr>"
             f"<td class='mono small'>{ticker_cell}</td>"
-            f"<td>{html.escape(title_text)}</td>"
             f"<td><strong>{html.escape(str(p.get('player_a','')))}</strong>"
             f" vs {html.escape(str(p.get('player_b','')))}<br>"
             f"<span class='small gray'>{html.escape(str(p.get('tournament','')))} · "
@@ -520,16 +518,16 @@ def _render_watchlist_table(payload: dict) -> str:
 
     # Sport-table column shape (mirrors the NBA watchlist):
     #
-    #   Ticker | Match | Side | Contracts | Kalshi YES % | Kalshi NO %
+    #   Ticker | Side | Contracts | Kalshi YES % | Kalshi NO %
     #          | My YES % | My NO % | EV YES | EV NO | Verdict
     #
-    # Match = the Kalshi-published title of the match contract.
-    # Side  = who's going to win — the favoured player the bot is
-    #         betting on.
+    # Side = who's going to win — the favoured player the bot is
+    #        betting on, with the opponent stacked underneath. The
+    #        Kalshi-published "Will X win?" title would be redundant
+    #        with this on a sport bet watchlist, so it's dropped.
     out = ["<table id='tennis-watchlist-table'>",
            "<thead><tr>"
            "<th>Ticker</th>"
-           "<th title='Kalshi-published contract title — the YES question shown on the market page.'>Match</th>"
            "<th title='Who the bot is betting will win.'>Side</th>"
            "<th class='num' title='Open interest — number of YES contracts currently held open on this side.'>Contracts</th>"
            "<th class='num'>Kalshi YES %</th>"
@@ -593,16 +591,10 @@ def _render_watchlist_table(payload: dict) -> str:
 
         verdict_pill = _label_pill(str(r.get("recommended_action", "NO_TRADE")))
 
-        # Match cell: Kalshi's published YES question for the favoured
-        # side (e.g. "Will Jannik Sinner win the Sinner vs Ofner: Round
-        # Of 64 match?"). Falls back to the matchup string when not
-        # populated.
-        match_cell_text = r.get("title") or match_text
         out.append(
             f"<tr class='tennis-row' data-mid='{html.escape(mid)}' "
             f"style='cursor:pointer'>"
             f"<td class='mono small'>{ticker_cell}</td>"
-            f"<td>{html.escape(match_cell_text)}</td>"
             f"<td>{side_html}</td>"
             f"<td class='num'>{oi_str}</td>"
             f"<td class='num'>{kyes_str}</td>"
