@@ -3811,6 +3811,13 @@ def _render_watchlist(out: List[str], watchlist: List[dict],
     # passes ``bot_active_bets``.
     if not bets and latest_active:
         bets = [latest_active]
+    # Map of every held ticker to its position record. Used by the
+    # strike-ladder verdict cell so EVERY held strike gets the
+    # HOLDING badge — not just the most-recently-opened one (the
+    # previous single-`latest_active` lookup left other concurrently-
+    # held strikes still rendering "BUY YES", which is what prompted
+    # this fix).
+    held_by_ticker = {b.get("ticker"): b for b in bets if b.get("ticker")}
     n_bets = len(bets)
     label = ("Active bets" if n_bets > 1
               else "Active bet")
@@ -4028,10 +4035,10 @@ def _render_watchlist(out: List[str], watchlist: List[dict],
         # Bought rows (the strike the bot currently holds) win over
         # suspect-row dimming — we always want the held position to
         # pop visually, even if its book is currently thin/one-sided.
-        is_bought = bool(latest_active and
-                         latest_active.get("ticker") == ticker)
-        bought_side = ((latest_active.get("side") or "").upper()
-                       if is_bought else "")
+        held_bet = held_by_ticker.get(ticker)
+        is_bought = held_bet is not None
+        bought_side = ((held_bet.get("side") or "").upper()
+                       if held_bet else "")
         bot_verdict = v.get("bot_verdict", "SKIP")
         reason = v.get("rejection_reason") or ""
         best_ev_v = v.get("_best_ev")
@@ -4045,7 +4052,7 @@ def _render_watchlist(out: List[str], watchlist: List[dict],
             # price + the model's fresh take as tooltip text so the user
             # can audit "is the model still on board with this position?"
             held_cls = "badge-yes" if bought_side == "YES" else "badge-no"
-            entry_c = latest_active.get("entry_price_cents")
+            entry_c = held_bet.get("entry_price_cents")
             entry_part = f" @ {entry_c}c" if entry_c is not None else ""
             model_part = ""
             if best_ev_v is not None and best_side_v in ("YES", "NO"):
@@ -4080,8 +4087,8 @@ def _render_watchlist(out: List[str], watchlist: List[dict],
             classes.append("bought-yes" if bought_side == "YES"
                            else "bought-no" if bought_side == "NO"
                            else "")
-            entry_c = latest_active.get("entry_price_cents")
-            contracts = latest_active.get("contracts")
+            entry_c = held_bet.get("entry_price_cents")
+            contracts = held_bet.get("contracts")
             tip_parts = ["You are holding this strike"]
             if bought_side:
                 tip_parts.append(f"on {bought_side}")
