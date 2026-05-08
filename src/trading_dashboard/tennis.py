@@ -92,6 +92,86 @@ def load_coefficients(coefs_path: str | None) -> Dict[str, Any]:
         return {}
 
 
+def load_sim_state(sim_state_path: str | None) -> Dict[str, Any]:
+    """Read the paper-trade simulator's state file. Tolerates missing
+    file (returns an empty-state stub so the renderer shows a clean
+    'no positions yet' panel)."""
+    empty = {"open_positions": [], "closed_positions": [],
+             "stats": {"open_count": 0, "total_closed": 0, "wins": 0,
+                       "losses": 0, "total_realized_pnl": 0.0,
+                       "total_unrealized_pnl": 0.0, "total_staked": 0.0,
+                       "win_rate": None, "roi": None}}
+    if not sim_state_path:
+        return empty
+    p = Path(sim_state_path)
+    if not p.exists():
+        return empty
+    try:
+        with p.open("r", encoding="utf-8") as f:
+            data = json.load(f)
+    except (OSError, json.JSONDecodeError):
+        return empty
+    # Backfill any missing fields.
+    for k, v in empty.items():
+        data.setdefault(k, v)
+    for k, v in empty["stats"].items():
+        data["stats"].setdefault(k, v)
+    return data
+
+
+def summary_for_rollup(sim_state_path: str | None) -> Dict[str, Any]:
+    """Tennis summary in the shape the cross-bot rollup expects.
+
+    The trading dashboard's home-page summary cards aggregate
+    ``open_count``, ``period_bets_made``, ``period_net_pnl_cents``,
+    ``period_wins``, ``period_losses``, ``period_money_spent_cents``,
+    ``period_money_gained_cents``, ``potential_gain_cents`` across
+    bots. We map the tennis sim state into those names so the user
+    sees a single set of numbers.
+
+    Cents conversion: tennis stake is in dollars (1.0 = $1); multiply
+    by 100 to match the rest of the dashboard.
+    """
+    s = load_sim_state(sim_state_path)
+    stats = s.get("stats") or {}
+    open_positions = s.get("open_positions") or []
+    closed = s.get("closed_positions") or []
+
+    money_spent_cents = int(round(sum(
+        float(c.get("stake", 0)) * 100.0 for c in closed
+    )))
+    # Money "gained" = stake when we won, 0 when we lost. (Realized P&L
+    # = money_gained - money_spent.) We don't have a per-bet payout
+    # field on closed positions; reconstruct from won + realized_pnl.
+    money_gained_cents = 0
+    for c in closed:
+        stake = float(c.get("stake", 0))
+        pnl = float(c.get("realized_pnl", 0))
+        money_gained_cents += int(round((stake + pnl) * 100.0))
+    realized_pnl_cents = money_gained_cents - money_spent_cents
+    # Potential gain on the open book: sum of (1 - entry) * stake, the
+    # max additional payoff if all open positions resolve our way.
+    potential_gain_cents = int(round(sum(
+        (1.0 - float(p.get("entry_market_prob", 0.5))) * float(p.get("stake", 0)) * 100.0
+        for p in open_positions
+    )))
+
+    return {
+        "open_count": len(open_positions),
+        "period_bets_made": int(stats.get("total_closed", 0)) + len(open_positions),
+        "period_net_pnl_cents": realized_pnl_cents,
+        "period_wins": int(stats.get("wins", 0)),
+        "period_losses": int(stats.get("losses", 0)),
+        "period_money_spent_cents": money_spent_cents,
+        "period_money_gained_cents": money_gained_cents,
+        "potential_gain_cents": potential_gain_cents,
+        "total_bets": int(stats.get("total_closed", 0)) + len(open_positions),
+        "realized_pnl_cents": realized_pnl_cents,
+        "wins_lifetime": int(stats.get("wins", 0)),
+        "losses_lifetime": int(stats.get("losses", 0)),
+    }
+
+
 def model_summary_for_card(metrics_path: str | None) -> Dict[str, Any]:
     """Return a dict shaped like ``fetch_latest_model``'s output so the
     cross-bot card grid on the standard dashboards can render the
@@ -205,8 +285,129 @@ def _summary_stats(rows: List[dict]) -> Dict[str, Any]:
     }
 
 
-def render_home(metrics: dict, coefficients: dict, watchlist_payload: dict
-                ) -> str:
+def _signed_dollars(cents: float | int) -> str:
+    sign = "+" if cents >= 0 else "−"
+    return f"{sign}${abs(cents) / 100:.2f}"
+
+
+def render_simulation_section(sim_state: dict) -> str:
+    """Open + closed paper positions panel — the actual paper-trading
+    ledger for the tennis bot. Same idiom as the active-bets table on
+    the gas/jobless pages.
+    """
+    stats = sim_state.get("stats") or {}
+    open_positions = sim_state.get("open_positions") or []
+    closed = list(sim_state.get("closed_positions") or [])
+    closed.sort(key=lambda c: c.get("closed_at", ""), reverse=True)
+
+    out: List[str] = []
+    out.append("<div class='card' style='margin-top:18px'>")
+    out.append("<h3 class='section-title'>Simulation · paper trades</h3>")
+    out.append("<p class='small gray'>$1 unit stake. Position opens "
+               "when a match's signal label is STRONG_EDGE, SMALL_EDGE, "
+               "or MARKET_OVERREACTION; mark-to-market every tick; "
+               "settles when the match completes. Slippage is the "
+               "configured per-trade cost (half-spread + book-walk).</p>")
+
+    # Headline numbers.
+    win_rate = stats.get("win_rate")
+    roi = stats.get("roi")
+    realized = float(stats.get("total_realized_pnl") or 0.0)
+    unrealized = float(stats.get("total_unrealized_pnl") or 0.0)
+    out.append("<div class='row compact'>")
+    out.append(_stat("Open positions", str(len(open_positions))))
+    out.append(_stat("Closed positions", str(len(closed))))
+    pnl_cls = "green" if realized > 0 else ("red" if realized < 0 else "")
+    out.append(_stat(
+        "Realized P&L", f"{realized:+.2f}", cls=pnl_cls,
+        small="includes slippage",
+    ))
+    u_cls = "green" if unrealized > 0 else ("red" if unrealized < 0 else "")
+    out.append(_stat("Unrealized P&L", f"{unrealized:+.2f}", cls=u_cls))
+    out.append(_stat(
+        "Win rate",
+        "—" if win_rate is None else f"{win_rate * 100:.0f}%",
+    ))
+    out.append(_stat(
+        "ROI",
+        "—" if roi is None else f"{roi * 100:+.1f}%",
+    ))
+    out.append("</div>")
+
+    # Open positions table.
+    out.append("<h4 class='subsection-title' style='margin-top:18px'>"
+               "Open positions</h4>")
+    if not open_positions:
+        out.append("<div class='empty'>No open positions right now.</div>")
+    else:
+        out.append("<div style='overflow-x:auto'>"
+                   "<table class='watchlist-table'><thead><tr>"
+                   "<th>Match</th><th>Side</th><th>Entry</th>"
+                   "<th>Mark</th><th>Live model</th>"
+                   "<th>Unrealized</th><th>Label</th><th>Opened</th>"
+                   "</tr></thead><tbody>")
+        for p in sorted(open_positions, key=lambda r: r.get("opened_at", ""),
+                          reverse=True):
+            unr = float(p.get("unrealized_pnl") or 0.0)
+            unr_cls = "green" if unr > 0 else ("red" if unr < 0 else "gray")
+            out.append(
+                "<tr>"
+                f"<td><strong>{html.escape(str(p.get('player_a','')))}</strong>"
+                f" vs {html.escape(str(p.get('player_b','')))}<br>"
+                f"<span class='small gray'>{html.escape(str(p.get('tournament','')))} · "
+                f"{html.escape(str(p.get('surface','')))}</span></td>"
+                f"<td><strong>{html.escape(str(p.get('side_player','')))}</strong></td>"
+                f"<td>{_fmt_pct(p.get('entry_market_prob'), 1)}</td>"
+                f"<td>{_fmt_pct(p.get('current_market_prob'), 1)}</td>"
+                f"<td>{_fmt_pct(p.get('current_model_prob'), 1)}</td>"
+                f"<td class='{unr_cls}'>{unr:+.3f}</td>"
+                f"<td>{_label_pill(str(p.get('label_at_open', '')))}</td>"
+                f"<td class='small gray'>{html.escape(str(p.get('opened_at',''))[:19])}</td>"
+                "</tr>"
+            )
+        out.append("</tbody></table></div>")
+
+    # Closed positions table — most recent first, capped to 25 rows so
+    # the page stays reasonable. The full ledger is in sim_state.json.
+    out.append("<h4 class='subsection-title' style='margin-top:18px'>"
+               "Recent closed positions</h4>")
+    if not closed:
+        out.append("<div class='empty'>No settled positions yet — "
+                   "wait for a match to complete.</div>")
+    else:
+        out.append("<div style='overflow-x:auto'>"
+                   "<table class='watchlist-table'><thead><tr>"
+                   "<th>Match</th><th>Side</th><th>Entry</th>"
+                   "<th>Result</th><th>Realized P&L</th>"
+                   "<th>Closed</th>"
+                   "</tr></thead><tbody>")
+        for c in closed[:25]:
+            won = c.get("won")
+            result_html = ("<span class='green'>WIN</span>" if won
+                            else "<span class='red'>LOSS</span>")
+            pnl = float(c.get("realized_pnl", 0))
+            pnl_cls = "green" if pnl > 0 else ("red" if pnl < 0 else "gray")
+            out.append(
+                "<tr>"
+                f"<td><strong>{html.escape(str(c.get('player_a','')))}</strong>"
+                f" vs {html.escape(str(c.get('player_b','')))}<br>"
+                f"<span class='small gray'>{html.escape(str(c.get('tournament','')))} · "
+                f"{html.escape(str(c.get('surface','')))}</span></td>"
+                f"<td><strong>{html.escape(str(c.get('side_player','')))}</strong></td>"
+                f"<td>{_fmt_pct(c.get('entry_market_prob'), 1)}</td>"
+                f"<td>{result_html}</td>"
+                f"<td class='{pnl_cls}'>{pnl:+.3f}</td>"
+                f"<td class='small gray'>{html.escape(str(c.get('closed_at',''))[:19])}</td>"
+                "</tr>"
+            )
+        out.append("</tbody></table></div>")
+
+    out.append("</div>")  # /card
+    return "".join(out)
+
+
+def render_home(metrics: dict, coefficients: dict, watchlist_payload: dict,
+                sim_state: dict | None = None) -> str:
     """Tennis "home" tab — model card + headline numbers.
 
     The model card shows the metrics that matter for a probability
@@ -337,6 +538,10 @@ def render_home(metrics: dict, coefficients: dict, watchlist_payload: dict
         out.append("</dl>")
 
     out.append("</div>")  # /card
+
+    # --- Simulation panel (paper trades) -------------------------------
+    if sim_state is not None:
+        out.append(render_simulation_section(sim_state))
 
     out.append("</div>")  # /tennis-home
     return "".join(out)
@@ -478,8 +683,9 @@ _TENNIS_CSS = """
 
 
 def render_page(*, metrics_path: str | None, coefficients_path: str | None,
-                watchlist_path: str | None, available_bots: List[dict],
-                current_bot_key: str, tab_key: str = "home") -> str:
+                watchlist_path: str | None, sim_state_path: str | None = None,
+                available_bots: List[dict], current_bot_key: str,
+                tab_key: str = "home") -> str:
     """Top-level renderer for the tennis-forecast page.
 
     Reuses the standard dashboard's chrome (header, bot filter, tab bar)
@@ -490,11 +696,12 @@ def render_page(*, metrics_path: str | None, coefficients_path: str | None,
     metrics = load_metrics(metrics_path)
     coefficients = load_coefficients(coefficients_path)
     payload = load_watchlist(watchlist_path)
+    sim_state = load_sim_state(sim_state_path) if sim_state_path else None
 
     if tab_key == "watchlist":
         body = render_watchlist(payload)
     else:
-        body = render_home(metrics, coefficients, payload)
+        body = render_home(metrics, coefficients, payload, sim_state=sim_state)
 
     return _wrap_shell(body, available_bots, current_bot_key, tab_key)
 

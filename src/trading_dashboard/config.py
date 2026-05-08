@@ -68,6 +68,7 @@ class BotEntry:
     watchlist_json_path: str | None = None
     metrics_path: str | None = None
     coefficients_path: str | None = None
+    sim_state_path: str | None = None
     # Kalshi series_ticker for the family the bot trades (e.g.
     # "KXAAAGASW", "KXNATGASD", "KXJOBLESSCLAIMS"). The dashboard uses
     # this to fetch live candlesticks straight from Kalshi for the

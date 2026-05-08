@@ -416,9 +416,19 @@ def fetch_global_summary(bots: List[dict],
         # their realized-P&L story is told on the whale page itself.
         # Skip them in the cross-bot rollup so the summary card row
         # stays focused on the recurrent-series bots.
-        if b.get("dashboard_type") and b["dashboard_type"] != "standard":
+        if b.get("dashboard_type") == "whale":
             continue
-        s = fetch_summary(b["db_path"], period_days=period_days)
+        # Tennis bot keeps its paper-trade ledger in a JSON file rather
+        # than a sim.db; we map it onto the same dict shape via
+        # ``tennis.summary_for_rollup`` so the cross-bot summary cards
+        # at the top of the home page DO include tennis volume + P&L.
+        if b.get("dashboard_type") == "tennis":
+            from . import tennis as _tennis
+            s = _tennis.summary_for_rollup(b.get("sim_state_path"))
+        elif b.get("dashboard_type") and b["dashboard_type"] != "standard":
+            continue
+        else:
+            s = fetch_summary(b["db_path"], period_days=period_days)
         rollup["active_bets"] += s.get("open_count", 0)
         rollup["period_bets_made"] += s.get("period_bets_made", 0)
         rollup["period_net_pnl_cents"] += s.get("period_net_pnl_cents", 0)
@@ -3990,6 +4000,7 @@ class Handler(BaseHTTPRequestHandler):
                         metrics_path=bot.get("metrics_path"),
                         coefficients_path=bot.get("coefficients_path"),
                         watchlist_path=bot.get("watchlist_json_path"),
+                        sim_state_path=bot.get("sim_state_path"),
                         available_bots=self.bots,
                         current_bot_key=bot["key"],
                         tab_key=tennis_tab,
@@ -4404,6 +4415,7 @@ def main(argv: list[str] | None = None) -> int:
             "watchlist_json_path": b.watchlist_json_path,
             "metrics_path": b.metrics_path,
             "coefficients_path": b.coefficients_path,
+            "sim_state_path": b.sim_state_path,
             "series_ticker": b.series_ticker,
             "display": {
                 "underlying_label": b.display.underlying_label,
