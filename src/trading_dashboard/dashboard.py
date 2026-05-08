@@ -3497,16 +3497,8 @@ def _read_feature_importance(csv_path: str) -> List[dict]:
 
 
 def fetch_calibration_bins(db_path: str, n_bins: int = 10) -> List[dict]:
-    """Decile calibration: for each bin of model probabilities, the
-    realized win rate of bets the bot opened in that bin.
-
-    Joins the closed `positions` rows against the snapshot at entry
-    (`model_yes_prob_at_entry` / `kalshi_yes_prob_at_entry`), takes
-    the side-aligned probability, buckets into N evenly-spaced bins
-    over [0,1], and returns the count + observed-win-rate per bin.
-
-    Skips ties at the boundaries by including the upper edge in the
-    last bin (so prob=1.0 lands in the top decile, not a 11th bin).
+    """Decile calibration: predicted-prob bin → observed win rate, on
+    closed positions. Win = realized_pnl_cents > 0.
     """
     if not Path(db_path).exists():
         return []
@@ -3517,9 +3509,9 @@ def fetch_calibration_bins(db_path: str, n_bins: int = 10) -> List[dict]:
         with closing(_conn(db_path)) as c:
             rows = c.execute(
                 "SELECT side, model_yes_prob_at_entry AS p, "
-                "       result "
+                "       realized_pnl_cents "
                 "FROM positions "
-                "WHERE result IN ('WIN','LOSS') "
+                "WHERE status='closed' "
                 "  AND model_yes_prob_at_entry IS NOT NULL"
             ).fetchall()
     except (sqlite3.OperationalError, sqlite3.DatabaseError):
@@ -3530,30 +3522,22 @@ def fetch_calibration_bins(db_path: str, n_bins: int = 10) -> List[dict]:
             p_yes = float(r["p"])
         except (TypeError, ValueError):
             continue
-        # Probability of OUR side winning at entry — same shape as the
-        # ROC / calibration target.
         p_side = p_yes if side == "YES" else (1.0 - p_yes)
         idx = min(n_bins - 1, max(0, int(p_side * n_bins)))
         bins[idx]["n"] += 1
-        if (r["result"] or "").upper() == "WIN":
+        try:
+            won = float(r["realized_pnl_cents"] or 0) > 0
+        except (TypeError, ValueError):
+            won = False
+        if won:
             bins[idx]["wins"] += 1
     return bins
 
 
 def fetch_confusion_matrix(db_path: str, threshold: float = 0.5) -> dict:
-    """Confusion matrix from the bot's realized closed bets.
-
-    The "prediction" is the side the bot took (YES or NO); the
-    "actual" comes from the position's WIN/LOSS result. We bucket
-    the model's probability for the chosen side at entry into
-    "high-confidence prediction" (>= threshold) vs the rest. This
-    yields four cells:
-      TP — high-conf bet won (model said likely, it happened)
-      FP — high-conf bet lost (model said likely, it didn't)
-      TN — low-conf bet lost (model less sure, it didn't)
-      FN — low-conf bet won (model less sure, it happened anyway)
-
-    Returns {"tp": …, "fp": …, "tn": …, "fn": …, "n": total}.
+    """Confusion matrix from realized closed bets. Win =
+    realized_pnl_cents > 0. Confidence = side-prob at entry ≥
+    threshold.
     """
     out = {"tp": 0, "fp": 0, "tn": 0, "fn": 0, "n": 0}
     if not Path(db_path).exists():
@@ -3561,9 +3545,10 @@ def fetch_confusion_matrix(db_path: str, threshold: float = 0.5) -> dict:
     try:
         with closing(_conn(db_path)) as c:
             rows = c.execute(
-                "SELECT side, model_yes_prob_at_entry AS p, result "
+                "SELECT side, model_yes_prob_at_entry AS p, "
+                "       realized_pnl_cents "
                 "FROM positions "
-                "WHERE result IN ('WIN','LOSS') "
+                "WHERE status='closed' "
                 "  AND model_yes_prob_at_entry IS NOT NULL"
             ).fetchall()
     except (sqlite3.OperationalError, sqlite3.DatabaseError):
@@ -3575,7 +3560,10 @@ def fetch_confusion_matrix(db_path: str, threshold: float = 0.5) -> dict:
             continue
         side = (r["side"] or "").upper()
         p_side = p_yes if side == "YES" else (1.0 - p_yes)
-        won = (r["result"] or "").upper() == "WIN"
+        try:
+            won = float(r["realized_pnl_cents"] or 0) > 0
+        except (TypeError, ValueError):
+            won = False
         confident = p_side >= threshold
         if confident and won:
             out["tp"] += 1
@@ -3590,45 +3578,108 @@ def fetch_confusion_matrix(db_path: str, threshold: float = 0.5) -> dict:
 
 
 def fetch_per_strike_accuracy(db_path: str) -> List[dict]:
-    """Accuracy by strike-band — closed bets grouped by (floor_strike,
-    cap_strike, direction). Useful for spotting which strikes the
-    model handles well vs poorly across the contract ladder.
-
-    Returns rows sorted by sample count descending so the strikes
-    with the most evidence come first.
+    """Accuracy by strike-band on closed bets. Strike floor/cap come
+    from market_views (positions doesn't carry the strike directly).
     """
     if not Path(db_path).exists():
         return []
     try:
         with closing(_conn(db_path)) as c:
             rows = c.execute(
-                "SELECT floor_strike, cap_strike, direction, "
-                "       SUM(CASE WHEN result='WIN' THEN 1 ELSE 0 END) AS wins, "
-                "       SUM(CASE WHEN result='LOSS' THEN 1 ELSE 0 END) AS losses, "
-                "       COUNT(*) AS n "
-                "FROM positions "
-                "WHERE result IN ('WIN','LOSS') "
-                "GROUP BY floor_strike, cap_strike, direction "
-                "ORDER BY n DESC"
+                "SELECT "
+                "  (SELECT mv.strike_low FROM market_views mv "
+                "    WHERE mv.ticker = p.ticker ORDER BY mv.id DESC LIMIT 1) "
+                "    AS floor_strike, "
+                "  (SELECT mv.strike_high FROM market_views mv "
+                "    WHERE mv.ticker = p.ticker ORDER BY mv.id DESC LIMIT 1) "
+                "    AS cap_strike, "
+                "  (SELECT mv.direction FROM market_views mv "
+                "    WHERE mv.ticker = p.ticker ORDER BY mv.id DESC LIMIT 1) "
+                "    AS direction, "
+                "  realized_pnl_cents "
+                "FROM positions p "
+                "WHERE p.status='closed'"
             ).fetchall()
     except (sqlite3.OperationalError, sqlite3.DatabaseError):
         return []
-    out = []
+    grouped: dict = {}
     for r in rows:
-        n = int(r["n"] or 0)
-        wins = int(r["wins"] or 0)
-        if n == 0:
-            continue
-        out.append({
+        key = (r["floor_strike"], r["cap_strike"], r["direction"])
+        g = grouped.setdefault(key, {
             "floor_strike": r["floor_strike"],
             "cap_strike": r["cap_strike"],
             "direction": r["direction"],
-            "n": n,
-            "wins": wins,
-            "losses": int(r["losses"] or 0),
-            "accuracy": wins / n,
+            "n": 0, "wins": 0, "losses": 0,
         })
+        g["n"] += 1
+        try:
+            pnl = float(r["realized_pnl_cents"] or 0)
+        except (TypeError, ValueError):
+            pnl = 0.0
+        if pnl > 0:
+            g["wins"] += 1
+        else:
+            g["losses"] += 1
+    out = []
+    for g in grouped.values():
+        if g["n"] == 0:
+            continue
+        g["accuracy"] = g["wins"] / g["n"]
+        out.append(g)
+    out.sort(key=lambda g: g["n"], reverse=True)
     return out
+
+
+def fetch_metric_history(db_path: str, limit: int = 200) -> List[dict]:
+    """Recent model_snapshots rows — used to draw the model's
+    metric-trajectory chart (accuracy / F1 / ROC AUC over time).
+    Always has data on bots that retrain regularly, so this section
+    populates even when there are no closed bets yet.
+    """
+    if not Path(db_path).exists():
+        return []
+    try:
+        with closing(_conn(db_path)) as c:
+            rows = c.execute(
+                "SELECT captured_at, classifier_accuracy, "
+                "       training_f1, training_precision, "
+                "       training_recall, training_roc_auc "
+                "FROM model_snapshots "
+                "WHERE classifier_accuracy IS NOT NULL "
+                "ORDER BY captured_at DESC LIMIT ?",
+                (int(limit),),
+            ).fetchall()
+    except (sqlite3.OperationalError, sqlite3.DatabaseError):
+        return []
+    return list(reversed([dict(r) for r in rows]))
+
+
+def fetch_prob_distribution(db_path: str, n_bins: int = 20) -> List[dict]:
+    """Histogram of every model_prob_yes the bot has ever published
+    via market_views. Always populates as long as the bot has scored
+    at least one market — useful "what does the model usually say?"
+    view that doesn't depend on any bet ever closing.
+    """
+    if not Path(db_path).exists():
+        return []
+    try:
+        with closing(_conn(db_path)) as c:
+            rows = c.execute(
+                "SELECT model_prob_yes FROM market_views "
+                "WHERE model_prob_yes IS NOT NULL"
+            ).fetchall()
+    except (sqlite3.OperationalError, sqlite3.DatabaseError):
+        return []
+    bins = [{"lo": i / n_bins, "hi": (i + 1) / n_bins,
+             "n": 0} for i in range(n_bins)]
+    for r in rows:
+        try:
+            p = float(r["model_prob_yes"])
+        except (TypeError, ValueError):
+            continue
+        idx = min(n_bins - 1, max(0, int(p * n_bins)))
+        bins[idx]["n"] += 1
+    return bins
 
 
 def _svg_feature_importance(features: List[dict],
@@ -3850,6 +3901,164 @@ def _svg_confusion(cm: dict) -> str:
     return "".join(parts)
 
 
+def _svg_metric_history(rows: List[dict]) -> str:
+    """Multi-series line chart of training accuracy / F1 / ROC AUC
+    across the bot's model_snapshots history. X axis = snapshot
+    index (left = oldest, right = newest); Y axis = 0..1.
+    """
+    rows = [r for r in rows if r and r.get("classifier_accuracy") is not None]
+    if len(rows) < 2:
+        return ("<div class='empty'>Not enough model snapshots yet — "
+                "the trajectory populates after a few retrains.</div>")
+    width, height = 760, 280
+    pad_l, pad_r, pad_t, pad_b = 50, 110, 24, 36
+    inner_w = width - pad_l - pad_r
+    inner_h = height - pad_t - pad_b
+    n = len(rows)
+    series = [
+        ("Accuracy", "classifier_accuracy", "#58a6ff"),
+        ("F1",       "training_f1",          "#3fb950"),
+        ("Precision","training_precision",   "#d29922"),
+        ("Recall",   "training_recall",      "#bc8cff"),
+        ("ROC AUC",  "training_roc_auc",     "#f78166"),
+    ]
+    # Y range: clamp to the data, but never show below 0 or above 1.
+    vals = [float(r[k]) for _, k, _ in series for r in rows
+             if r.get(k) is not None]
+    if not vals:
+        return "<div class='empty'>No metric data.</div>"
+    y_lo = max(0.0, min(vals) - 0.05)
+    y_hi = min(1.0, max(vals) + 0.05)
+    if y_hi - y_lo < 0.05:
+        y_lo, y_hi = max(0.0, y_lo - 0.05), min(1.0, y_hi + 0.05)
+    parts: List[str] = []
+    parts.append(
+        f"<svg viewBox='0 0 {width} {height}' "
+        f"style='width:100%;height:auto;display:block;"
+        f"background:#0d1117;border:1px solid #21262d;border-radius:6px;'>"
+    )
+    # Axes + horizontal gridlines.
+    for k in range(5):
+        frac = k / 4.0
+        v = y_lo + frac * (y_hi - y_lo)
+        y = pad_t + (1 - frac) * inner_h
+        parts.append(
+            f"<line x1='{pad_l}' x2='{pad_l + inner_w}' "
+            f"y1='{y:.1f}' y2='{y:.1f}' stroke='#161b22'/>"
+            f"<text x='{pad_l - 6}' y='{y + 3:.1f}' fill='#8b949e' "
+            f"font-size='10' text-anchor='end'>{v*100:.0f}%</text>"
+        )
+    # X axis: just left/right tick labels (count is more useful than
+    # absolute timestamps for a fast trend read).
+    parts.append(
+        f"<line x1='{pad_l}' x2='{pad_l + inner_w}' "
+        f"y1='{pad_t + inner_h}' y2='{pad_t + inner_h}' stroke='#21262d'/>"
+        f"<text x='{pad_l}' y='{height - 8}' fill='#8b949e' "
+        f"font-size='10'>oldest</text>"
+        f"<text x='{pad_l + inner_w}' y='{height - 8}' fill='#8b949e' "
+        f"font-size='10' text-anchor='end'>{n} snapshots</text>"
+    )
+    # Plot each series.
+    for i, (label, key, colour) in enumerate(series):
+        pts = []
+        for j, r in enumerate(rows):
+            v = r.get(key)
+            if v is None:
+                continue
+            try:
+                v = float(v)
+            except (TypeError, ValueError):
+                continue
+            x = pad_l + (j / max(1, n - 1)) * inner_w
+            y = pad_t + (1 - (v - y_lo) / max(1e-9, y_hi - y_lo)) * inner_h
+            pts.append((x, y))
+        if len(pts) < 2:
+            continue
+        poly = " ".join(f"{x:.1f},{y:.1f}" for x, y in pts)
+        parts.append(
+            f"<polyline points='{poly}' fill='none' "
+            f"stroke='{colour}' stroke-width='1.6'/>"
+        )
+        # Right-side legend entry — colour swatch + last value.
+        legend_y = pad_t + 14 + i * 18
+        last_v = pts[-1][1] if pts else None
+        # Use the actual last metric value (not screen y) for the label.
+        last_metric = next((float(r[key]) for r in reversed(rows)
+                             if r.get(key) is not None), None)
+        last_str = (f"{last_metric*100:.0f}%"
+                     if last_metric is not None else "—")
+        parts.append(
+            f"<line x1='{pad_l + inner_w + 8}' "
+            f"x2='{pad_l + inner_w + 24}' y1='{legend_y}' y2='{legend_y}' "
+            f"stroke='{colour}' stroke-width='2'/>"
+            f"<text x='{pad_l + inner_w + 28}' y='{legend_y + 4}' "
+            f"fill='#c9d1d9' font-size='11'>{label} "
+            f"<tspan fill='#8b949e'>{last_str}</tspan></text>"
+        )
+    parts.append("</svg>")
+    return "".join(parts)
+
+
+def _svg_prob_distribution(bins: List[dict]) -> str:
+    """Histogram of model_prob_yes across every market the bot has
+    scored. Reads as "where does the model concentrate its
+    probability?" — wide spread = confident on lots of markets,
+    pile near 50% = mostly hedging.
+    """
+    if not bins or all(b["n"] == 0 for b in bins):
+        return ("<div class='empty'>The bot hasn't scored any markets "
+                "yet — distribution will populate after the first poll.</div>")
+    width, height = 760, 220
+    pad_l, pad_r, pad_t, pad_b = 50, 20, 24, 36
+    inner_w = width - pad_l - pad_r
+    inner_h = height - pad_t - pad_b
+    max_n = max(b["n"] for b in bins) or 1
+    n_total = sum(b["n"] for b in bins) or 1
+    n_bins = len(bins)
+    bar_w = inner_w / n_bins
+    parts: List[str] = []
+    parts.append(
+        f"<svg viewBox='0 0 {width} {height}' "
+        f"style='width:100%;height:auto;display:block;"
+        f"background:#0d1117;border:1px solid #21262d;border-radius:6px;'>"
+    )
+    parts.append(
+        f"<line x1='{pad_l}' x2='{pad_l + inner_w}' "
+        f"y1='{pad_t + inner_h}' y2='{pad_t + inner_h}' stroke='#21262d'/>"
+    )
+    for i, b in enumerate(bins):
+        h = (b["n"] / max_n) * inner_h
+        x = pad_l + i * bar_w
+        y = pad_t + (inner_h - h)
+        share = (b["n"] / n_total) * 100
+        parts.append(
+            f"<g><title>P(YES) {b['lo']*100:.0f}–{b['hi']*100:.0f}%: "
+            f"{b['n']:,} markets ({share:.1f}%)</title>"
+            f"<rect x='{x:.1f}' y='{y:.1f}' "
+            f"width='{bar_w - 1:.1f}' height='{h:.1f}' "
+            f"fill='#58a6ff' fill-opacity='0.7'/></g>"
+        )
+    # X-axis labels: every 5th bin.
+    for i in range(0, n_bins + 1, max(1, n_bins // 5)):
+        frac = i / n_bins
+        x = pad_l + frac * inner_w
+        parts.append(
+            f"<text x='{x:.1f}' y='{pad_t + inner_h + 14}' "
+            f"fill='#8b949e' font-size='10' text-anchor='middle'>"
+            f"{int(frac*100)}%</text>"
+        )
+    parts.append(
+        f"<text x='{pad_l + inner_w/2}' y='{height - 6}' fill='#8b949e' "
+        f"font-size='11' text-anchor='middle'>Predicted P(YES)</text>"
+        f"<text x='15' y='{pad_t + inner_h/2}' fill='#8b949e' "
+        f"font-size='11' text-anchor='middle' "
+        f"transform='rotate(-90 15 {pad_t + inner_h/2})'>"
+        f"Markets ({n_total:,} total)</text>"
+    )
+    parts.append("</svg>")
+    return "".join(parts)
+
+
 def _render_models_panel(out: List[str], bot: dict, model: dict | None,
                           display: dict | None,
                           available_bots: List[dict],
@@ -3872,7 +4081,7 @@ def _render_models_panel(out: List[str], bot: dict, model: dict | None,
         out.append("</div></div>")
         return
 
-    # ── Headline metrics ────────────────────────────────────────────
+    # ── Headline metrics — full-width row, one card per metric ──────
     out.append("<h3 class='subhead'>Headline metrics</h3>")
     if not model:
         out.append("<div class='empty'>No model snapshot yet.</div>")
@@ -3884,7 +4093,14 @@ def _render_models_panel(out: List[str], bot: dict, model: dict | None,
                 return f"{float(v)*100:.{decimals}f}%"
             except (TypeError, ValueError):
                 return "—"
-        out.append("<div class='cards'>")
+        # Inline grid override (display:grid; 6 equal columns) so the
+        # cards span the full panel width regardless of the global
+        # .cards rule (which auto-fits on minmax 200px).
+        out.append(
+            "<div class='cards' "
+            "style='display:grid;grid-template-columns:repeat(6, 1fr);"
+            "gap:10px;width:100%;'>"
+        )
         for label, v, decimals in [
             ("Accuracy", model.get("classifier_accuracy"), 1),
             ("F1", model.get("training_f1"), 0),
@@ -3902,14 +4118,39 @@ def _render_models_panel(out: List[str], bot: dict, model: dict | None,
                         f"<div class='value'>{shown}</div></div>")
         out.append("</div>")
 
-    # ── Feature importance — every feature the model considered ────
+    # ── Metric trajectory — populates from every model_snapshots row,
+    # so this section has data even when there are no closed bets yet.
+    out.append("<h3 class='subhead'>Training-metric trajectory "
+                "<span class='small gray'>(across recent retrains)"
+                "</span></h3>")
+    metric_rows = fetch_metric_history(db_path, limit=200)
+    out.append(_svg_metric_history(metric_rows))
+
+    # ── Probability distribution — every market the bot has scored ──
+    # Always populates as long as the bot has touched the live market
+    # at least once. Reads "what's the model usually saying?".
+    out.append("<h3 class='subhead'>Predicted-probability distribution "
+                "<span class='small gray'>(every market the bot has "
+                "scored)</span></h3>")
+    prob_bins = fetch_prob_distribution(db_path, n_bins=20)
+    out.append(_svg_prob_distribution(prob_bins))
+
+    # ── Feature importance — top N, with full count in the heading ──
     fi_path = Path(db_path).parent / "feature_importance.csv"
     feats = _read_feature_importance(str(fi_path))
     n_kept = sum(1 for f in feats if f.get("selected"))
     n_total = len(feats)
+    # Top-N keepers: show the kept ones first (biggest impact on live
+    # decisions), then fill with rejected candidates if there's room.
+    TOP_N = 25
+    feats_sorted = sorted(feats,
+                           key=lambda f: f.get("mean_importance") or 0.0,
+                           reverse=True)
+    feats_shown = feats_sorted[:TOP_N]
     out.append(
-        f"<h3 class='subhead'>Features the model uses to make decisions"
-        f" <span class='small gray'>({n_kept} kept of {n_total} considered)"
+        f"<h3 class='subhead'>Top features the model uses to make "
+        f"decisions <span class='small gray'>(top {len(feats_shown)} "
+        f"of {n_total}, {n_kept} kept after stability filter)"
         f"</span></h3>"
     )
     out.append("<p class='small gray' style='margin:0 0 8px 0;'>"
@@ -3917,7 +4158,7 @@ def _render_models_panel(out: List[str], bot: dict, model: dict | None,
                 "<span style='color:#3fb950;'>Green</span> bars are the "
                 "features the bot actually scores live with; muted bars are "
                 "candidates the stability filter rejected this retrain.</p>")
-    out.append(_svg_feature_importance(feats))
+    out.append(_svg_feature_importance(feats_shown))
 
     # ── Calibration curve — predicted prob vs realized win rate ─────
     out.append("<h3 class='subhead'>Calibration "
