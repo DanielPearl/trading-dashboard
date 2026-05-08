@@ -1880,7 +1880,8 @@ def render_page(
     # overview that doubles as a click-through to each bot's Watchlist.
     _open_panel("home")
     _render_summary(out, global_summary, global_active_bets, global_history,
-                     period_key=period_key, current_bot=current_bot)
+                     period_key=period_key, current_bot=current_bot,
+                     available_bots=available_bots)
     out.append("<div class='section'><h2>Bot performance</h2>"
                "<div class='body'>")
     _render_bot_cards(out, global_summary, bot_models, period_label)
@@ -2145,13 +2146,16 @@ def _live_update_script(current_bot: str, period_key: str = "all") -> str:
   // dropdowns are just a quieter UI for the same action. The Period
   // selector appears on both Home and History tabs (one instance
   // each, marked with [data-period-select] so we can wire them all).
-  const botSelect = document.getElementById("bot-select");
-  if (botSelect) {{
-    botSelect.addEventListener("change", function () {{
-      const url = botSelect.value;
+  // Bot-selectors (one on Home, one on each per-bot Watchlist tab).
+  // All marked with [data-bot-select]; on change we navigate to the
+  // option's value (the target URL).
+  document.querySelectorAll("[data-bot-select]").forEach(function (sel) {{
+    sel.addEventListener("change", function () {{
+      const url = sel.value;
       if (url) window.location.href = url;
     }});
-  }}
+  }});
+  // Period-selectors (Home + History tabs).
   document.querySelectorAll("[data-period-select]").forEach(function (sel) {{
     sel.addEventListener("change", function () {{
       const url = sel.value;
@@ -2683,11 +2687,14 @@ def _render_period_filter(out: List[str], period_key: str,
 def _render_summary(out: List[str], rollup: dict, active_bets: List[dict],
                     history: List[dict],
                     period_key: str = "all",
-                    current_bot: str = "") -> None:
-    """Section 1 — global cross-bot summary. Period filter pills control
-    the "Bets made / Net gain / Total win %" cards; "Active bets" is
-    always live (per user spec). Switching bots in the per-bot filter
-    below leaves these cards unchanged.
+                    current_bot: str = "",
+                    available_bots: List[dict] | None = None) -> None:
+    """Section 1 — global cross-bot summary. The dropdown above the
+    headline cards is a Bot navigator: selecting any bot jumps to its
+    Watchlist tab so the user can dive into per-bot detail without
+    hunting through the bot-card grid below. The summary cards
+    themselves stay scoped to All-time totals (the period filter
+    moved off Home — the History tab still has its period filter).
     """
     period_label = next(
         (lbl for k, lbl, _ in PERIOD_OPTIONS if k == period_key),
@@ -2706,9 +2713,17 @@ def _render_summary(out: List[str], rollup: dict, active_bets: List[dict],
     out.append("<div class='section'><h2>1 · Summary — across all bots</h2>"
                "<div class='body summary-body'>")
 
-    # ── Period filter pills (shared helper, also used on History) ────
-    _render_period_filter(out, period_key, current_bot=current_bot,
-                            tab_key="home")
+    # ── Bot-jump dropdown ─────────────────────────────────────────────
+    # Replaces the prior period filter that lived here. Selecting a
+    # bot navigates to that bot's Watchlist tab so the user can drill
+    # into per-bot detail in one click instead of scrolling to the
+    # bot-card grid below. The leading "All bots" entry returns to
+    # this Home view.
+    if available_bots:
+        _render_bot_filter(out, available_bots, current_bot=current_bot,
+                            period_key=period_key,
+                            select_id="bot-select-home",
+                            include_all_option=True)
 
     # ── Headline cards ────────────────────────────────────────────────
     # 6 cards (Potential gains was dropped per user request). Card
@@ -3267,25 +3282,49 @@ def _render_bet_history_block(out: List[str], history: List[dict],
 
 def _render_bot_filter(out: List[str], available_bots: List[dict],
                        current_bot: str,
-                       period_key: str = "all") -> None:
-    """Bot selector dropdown for the Watchlist tab. Native <select>
-    so it's keyboard-friendly and feels like part of the dashboard
-    rather than another row of pills. Switching navigates to
-    ?bot=<key>&tab=watchlist; the active period is preserved.
+                       period_key: str = "all",
+                       select_id: str = "bot-select",
+                       include_all_option: bool = False) -> None:
+    """Bot selector dropdown — used on both the Home tab (as the
+    "jump to a bot's watchlist" navigator) and on the per-bot
+    Watchlist tab. Native <select> for keyboard-friendliness.
+
+    Each instance gets its own ``select_id`` so multiple dropdowns
+    coexist on the same DOM (the page's tab panels all live in one
+    document). The page's onchange JS finds them via
+    ``[data-bot-select]`` so it doesn't need to know the id.
+
+    ``include_all_option`` adds a leading "All bots" entry that lands
+    on ``/`` — used on Home so the dropdown can return the user to
+    the cross-bot summary view after browsing into a watchlist.
     """
     period_qs = (f"&period={html.escape(period_key)}"
                  if period_key and period_key != "all" else "")
     out.append("<div class='bot-filter-bar'>")
-    out.append("<label for='bot-select' class='filter-label'>Bot</label>")
-    out.append("<select id='bot-select' class='bot-select'>")
+    out.append(f"<label for='{html.escape(select_id)}' "
+               f"class='filter-label'>Bot</label>")
+    out.append(
+        f"<select id='{html.escape(select_id)}' class='bot-select' "
+        f"data-bot-select>"
+    )
+    if include_all_option:
+        # "All bots" returns to the cross-bot home page.
+        all_url = f"/?period={html.escape(period_key)}" if period_key and period_key != "all" else "/"
+        sel = " selected" if not current_bot else ""
+        out.append(
+            f"<option value='{html.escape(all_url)}'{sel}>All bots</option>"
+        )
     for b in available_bots:
         avail = b.get("available", True)
         suffix = "" if avail else " (no data)"
         sel = " selected" if b["key"] == current_bot else ""
-        # data-href carries the target URL; the JS at the bottom of
-        # the page wires the <select>'s onchange event to navigate
-        # there (same pattern as the prior pill links).
-        href = (f"?bot={html.escape(b['key'])}&tab=watchlist{period_qs}")
+        # Tennis routes through its own renderer, so the watchlist
+        # URL drops the &tab=watchlist suffix (its dispatcher always
+        # serves the watchlist).
+        if b.get("dashboard_type") == "tennis":
+            href = f"?bot={html.escape(b['key'])}&tab=watchlist{period_qs}"
+        else:
+            href = f"?bot={html.escape(b['key'])}&tab=watchlist{period_qs}"
         out.append(
             f"<option value='{html.escape(href)}'{sel}>"
             f"{html.escape(b['name'])}{html.escape(suffix)}</option>"
