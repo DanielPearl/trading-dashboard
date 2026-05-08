@@ -57,9 +57,17 @@ class BotEntry:
     # "standard" → render the gas-bot-style page (model card, watchlist,
     # positions). "whale" → render the signal-analysis page driven by
     # signals_path / orders_path instead of a sim.db.
+    # "tennis" → render the tennis-forecast page driven by
+    # watchlist_json_path + metrics_path + coefficients_path.
     dashboard_type: str = "standard"
     signals_path: str | None = None
     orders_path: str | None = None
+    # Tennis bot inputs — the tennis-forecast project writes these to
+    # data/outputs/ + data/processed/artifacts/ on its own cadence;
+    # the dashboard just reads them.
+    watchlist_json_path: str | None = None
+    metrics_path: str | None = None
+    coefficients_path: str | None = None
     # Kalshi series_ticker for the family the bot trades (e.g.
     # "KXAAAGASW", "KXNATGASD", "KXJOBLESSCLAIMS"). The dashboard uses
     # this to fetch live candlesticks straight from Kalshi for the

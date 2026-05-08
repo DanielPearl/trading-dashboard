@@ -2734,16 +2734,27 @@ def _render_bot_cards(out: List[str], rollup: dict,
         m = entry.get("model") or {}
         name = b.get("name", "—")
         bot_key = b.get("key", "")
-        series_ticker = b.get("series_ticker") or "—"
+        # Tennis bot doesn't trade a Kalshi series — show its model
+        # family in the meta slot instead so the card still reads sensibly.
+        if b.get("dashboard_type") == "tennis":
+            series_ticker = "Baseline Break · ATP/WTA"
+        else:
+            series_ticker = b.get("series_ticker") or "—"
         # Period-scoped net P&L from this bot's per-bot summary row.
         perf = perf_by_name.get(name, {})
         gain_loss = perf.get("period_net_pnl_cents", 0) or 0
         gl_cls = ("green" if gain_loss > 0
                    else ("red" if gain_loss < 0 else "gray"))
         gl_str = fmt_signed_cents(gain_loss)
-        # Each card is a link to the bot's Watchlist tab.
-        href = (f"?tab=watchlist&bot={html.escape(bot_key)}"
-                if bot_key else "#")
+        # Each card is a link to the bot's Watchlist tab. Tennis routes
+        # to its own page (own renderer), the rest land on the standard
+        # watchlist tab.
+        if not bot_key:
+            href = "#"
+        elif (b.get("dashboard_type") == "tennis"):
+            href = f"?bot={html.escape(bot_key)}&tab=watchlist"
+        else:
+            href = f"?tab=watchlist&bot={html.escape(bot_key)}"
 
         # Compute drift-badge HTML (if any) up-front so it can be
         # rendered inline with the bot name in the card header.
@@ -2784,6 +2795,26 @@ def _render_bot_cards(out: List[str], rollup: dict,
             out.append("<dl><dt class='gray'>Model</dt>"
                        "<dd class='gray' style='grid-column:span 3;text-align:left;'>"
                        "no snapshot yet</dd></dl>")
+        elif b.get("dashboard_type") == "tennis":
+            # Tennis card carries the metrics that actually fit a
+            # probability forecaster (accuracy + Brier + log-loss + the
+            # current actionable-signal count from the watchlist), not
+            # the Kalshi-bet-specific F1 / win-rate fields.
+            from . import tennis as _tennis
+            wl = _tennis.load_watchlist(b.get("watchlist_json_path"))
+            wl_stats = _tennis._summary_stats(wl.get("rows") or [])
+            features = int(m.get("feature_count") or 0)
+            out.append("<dl>")
+            out.append(f"<dt>Accuracy</dt><dd>{_fmt_pct(m.get('classifier_accuracy'), 1)}</dd>"
+                        f"<dt>Brier</dt><dd>{m.get('training_brier', 0):.3f}</dd>")
+            out.append(f"<dt>Log loss</dt><dd>{m.get('training_log_loss', 0):.3f}</dd>"
+                        f"<dt>Features</dt><dd>{features}</dd>")
+            out.append(f"<dt>Tracked</dt><dd>{wl_stats['total']}</dd>"
+                        f"<dt>Live</dt><dd>{wl_stats['live']}</dd>")
+            actionable_cls = "green" if wl_stats["actionable"] > 0 else "gray"
+            out.append(f"<dt>Actionable</dt><dd class='{actionable_cls}'>{wl_stats['actionable']}</dd>"
+                        f"<dt>Max edge</dt><dd>{wl_stats['max_edge_pp']:.1f}pp</dd>")
+            out.append("</dl>")
         else:
             a_wins = int(m.get("actual_wins") or 0)
             a_losses = int(m.get("actual_losses") or 0)
@@ -3946,6 +3977,32 @@ class Handler(BaseHTTPRequestHandler):
                 if tab_key not in {"home", "watchlist", "history"}:
                     tab_key = "home"
 
+                # Tennis-forecast uses a different page entirely — JSON
+                # source (watchlist.json + metrics.json + coefficients.json),
+                # tennis-shaped watchlist rendering. Dispatch early so the
+                # standard render path stays focused on Kalshi event-bots.
+                if bot.get("dashboard_type") == "tennis":
+                    from . import tennis
+                    tennis_tab = qs_top.get("tab", ["home"])[0]
+                    if tennis_tab not in {k for k, _ in tennis.TENNIS_TABS}:
+                        tennis_tab = "home"
+                    body = tennis.render_page(
+                        metrics_path=bot.get("metrics_path"),
+                        coefficients_path=bot.get("coefficients_path"),
+                        watchlist_path=bot.get("watchlist_json_path"),
+                        available_bots=self.bots,
+                        current_bot_key=bot["key"],
+                        tab_key=tennis_tab,
+                    )
+                    payload = body.encode("utf-8")
+                    self.send_response(200)
+                    self.send_header("Content-Type", "text/html; charset=utf-8")
+                    self.send_header("Cache-Control", "no-store")
+                    self.send_header("Content-Length", str(len(payload)))
+                    self.end_headers()
+                    self.wfile.write(payload)
+                    return
+
                 # Whale-watcher uses a different page entirely — JSONL
                 # source, signal-analysis-style render. Dispatch early so
                 # the standard render path stays focused on sim.db bots.
@@ -4068,6 +4125,21 @@ class Handler(BaseHTTPRequestHandler):
                 # fetch_* helpers below all tolerate a missing DB.
                 bot_models: List[dict] = []
                 for b in self.bots:
+                    # Tennis bot doesn't have a sim.db, but it does have a
+                    # metrics.json / coefficients.json. Synthesize a model
+                    # dict for the card grid so the tennis bot shows up
+                    # alongside the Kalshi bots on the home page.
+                    if b.get("dashboard_type") == "tennis":
+                        from . import tennis as _tennis
+                        m = _tennis.model_summary_for_card(b.get("metrics_path"))
+                        bot_models.append({
+                            "bot": b,
+                            "model": m,
+                            "rules_text": "",
+                            "strike_count": 0,
+                            "strike_lo": None, "strike_hi": None,
+                        })
+                        continue
                     if b.get("dashboard_type") and b["dashboard_type"] != "standard":
                         continue
                     for ab in fetch_active_bets_with_marks(b["db_path"]):
@@ -4197,6 +4269,12 @@ class Handler(BaseHTTPRequestHandler):
                     # Return a minimal stub so any client polling this
                     # endpoint gets a clean 200.
                     payload_dict = {"bot": bot["key"], "type": "whale"}
+                elif bot.get("dashboard_type") == "tennis":
+                    # Tennis page also uses simple page reloads to pick
+                    # up the latest watchlist file — no JS poller. Stub
+                    # the snapshot endpoint so client navigation past
+                    # the tennis tab doesn't 500 on /api/snapshot.
+                    payload_dict = {"bot": bot["key"], "type": "tennis"}
                 else:
                     db_path = bot["db_path"]
                     payload_dict = build_snapshot(db_path, self.bots,
@@ -4307,6 +4385,12 @@ def main(argv: list[str] | None = None) -> int:
         # a clear empty-state when there are zero events.
         if b.dashboard_type == "whale":
             available = True
+        elif b.dashboard_type == "tennis":
+            # Tennis bot is "available" if the watchlist JSON exists. The
+            # tennis-forecast cron writes it on every refresh; an empty
+            # rows list still counts as available (renders empty state).
+            available = bool(b.watchlist_json_path
+                             and Path(b.watchlist_json_path).exists())
         else:
             available = Path(b.db_path).exists()
         bots.append({
@@ -4317,6 +4401,9 @@ def main(argv: list[str] | None = None) -> int:
             "dashboard_type": b.dashboard_type,
             "signals_path": b.signals_path,
             "orders_path": b.orders_path,
+            "watchlist_json_path": b.watchlist_json_path,
+            "metrics_path": b.metrics_path,
+            "coefficients_path": b.coefficients_path,
             "series_ticker": b.series_ticker,
             "display": {
                 "underlying_label": b.display.underlying_label,

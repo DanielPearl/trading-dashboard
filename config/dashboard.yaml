@@ -104,6 +104,18 @@ bots:
     decisions_path: /root/whale-watcher/data/signal_tracking.jsonl
     signals_path: /root/whale-watcher/data/signal_tracking.jsonl
     orders_path: /root/whale-watcher/data/orders.jsonl
+  - key: tennis
+    name: Tennis Forecast
+    # Tennis bot (Baseline Break) writes a JSON watchlist + metrics +
+    # coefficients files instead of a sim.db. The dashboard reads them
+    # directly. db_path/decisions_path are unused but kept set so the
+    # generic "available" check has somewhere to look.
+    dashboard_type: tennis
+    db_path: /root/tennis-forecast/data/outputs/watchlist.json
+    decisions_path: /root/tennis-forecast/data/outputs/watchlist.json
+    watchlist_json_path: /root/tennis-forecast/data/outputs/watchlist.json
+    metrics_path: /root/tennis-forecast/data/processed/artifacts/metrics.json
+    coefficients_path: /root/tennis-forecast/data/processed/artifacts/model_coefficients.json
 
 # ---------------------------------------------------------------------------
 # Display thresholds. Mirror the gas-bot's gates so the buy-criteria panel
