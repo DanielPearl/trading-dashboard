@@ -452,20 +452,29 @@ def discrepancy(yes_ask: Optional[int], no_ask: Optional[int],
         "headline": "—",
         "detail": "",
     }
-    # Cancellation news, but no scored signal yet (or the scored
-    # signal hasn't beaten the gates). Surface this regardless — the
-    # operator should see the news + headline so they can manually
-    # trade it even before the scorer catches up.
-    if cancel_news_count > 0 and not has_signal:
+    # When cancellation news is linked to this contract, the
+    # *headline* of the discrepancy cell becomes the latest news
+    # headline itself — that's the actionable trigger the operator
+    # cares about. The scored signal (if any) is still appended in
+    # the detail line for context. Falls through to the regular
+    # signal-vs-market branches when no cancel news exists yet.
+    if cancel_news_count > 0 and latest_cancel_headline:
         out["edge_class"] = "edge-pos"
+        clean = latest_cancel_headline.replace("\n", " ").strip()
         out["headline"] = (
-            f"Cancellation news detected — {cancel_news_count} item(s) "
-            f"in last 7 days; rules permit settlement flip"
+            f"📰 \"{clean[:160]}\" "
+            f"({cancel_news_count} cancel-news item"
+            f"{'s' if cancel_news_count != 1 else ''} in 7d)"
         )
-        if latest_cancel_headline:
+        if has_signal and expected:
             out["detail"] = (
-                "Latest headline: "
-                + latest_cancel_headline.replace("\n", " ").strip()[:240]
+                f"signal={expected} conf={confidence:.2f}; "
+                "rules permit settlement flip"
+            )
+        else:
+            out["detail"] = (
+                "Rules permit settlement flip on cancellation/"
+                "postponement; awaiting scored signal."
             )
         return out
 
