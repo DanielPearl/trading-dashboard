@@ -506,28 +506,19 @@ def _render_watchlist_table(payload: dict) -> str:
         return ("<div class='empty'>No matches yet — run "
                 "<code>scripts/run_daily_prematch.py</code>.</div>")
 
-    # Columns mirror the NBA / standard Kalshi watchlist exactly:
+    # Sport-table column shape (mirrors the NBA watchlist):
     #
-    #   Ticker | Title | Question | Contracts | Kalshi YES % | Kalshi NO %
+    #   Ticker | Match | Side | Contracts | Kalshi YES % | Kalshi NO %
     #          | My YES % | My NO % | EV YES | EV NO | Verdict
     #
-    # Field mapping for tennis:
-    #   Ticker        ← real Kalshi event_ticker (links to kalshi.com)
-    #   Title         ← Kalshi YES question text from the favoured side
-    #   Question      ← "{player_a} vs {player_b} — bet on {favoured}"
-    #   Contracts     ← open_interest from Kalshi (— when not yet quoted)
-    #   Kalshi YES %  ← market_prob_a × 100  (player_a's YES side)
-    #   Kalshi NO %   ← (1 − market_prob_a) × 100
-    #   My YES %      ← live_prob_a × 100   (live model on player_a)
-    #   My NO %       ← (1 − live_prob_a) × 100
-    #   EV YES        ← ev_a (per-$1 expected value on player_a YES)
-    #   EV NO         ← ev_b (= player_b YES = NO on player_a)
-    #   Verdict       ← recommended_action label pill
+    # Match = the Kalshi-published title of the match contract.
+    # Side  = who's going to win — the favoured player the bot is
+    #         betting on.
     out = ["<table id='tennis-watchlist-table'>",
            "<thead><tr>"
            "<th>Ticker</th>"
-           "<th title='Kalshi-published contract title — the YES question shown on the market page.'>Title</th>"
-           "<th>Question</th>"
+           "<th title='Kalshi-published contract title — the YES question shown on the market page.'>Match</th>"
+           "<th title='Who the bot is betting will win.'>Side</th>"
            "<th class='num' title='Open interest — number of YES contracts currently held open on this side.'>Contracts</th>"
            "<th class='num'>Kalshi YES %</th>"
            "<th class='num'>Kalshi NO %</th>"
@@ -541,13 +532,17 @@ def _render_watchlist_table(payload: dict) -> str:
         edge_a = r.get("edge_a") or 0.0
         player_a = str(r.get("player_a", ""))
         player_b = str(r.get("player_b", ""))
-        # Favoured side from the model's view (positive edge_a → A).
+        # Side (who the bot thinks will win) is whichever player the
+        # model's edge favours.
         favoured_player = player_a if edge_a >= 0 else player_b
+        opponent = player_b if favoured_player == player_a else player_a
         match_text = f"{player_a} vs {player_b}"
-        question_html = (
-            f"<strong>{html.escape(match_text)}</strong>"
-            f"<br><span class='small gray'>bet on "
-            f"{html.escape(favoured_player)}</span>"
+        # The Side cell shows the favoured player on top with the
+        # opponent stacked underneath in small gray text — same idiom
+        # the NBA watchlist uses for its Side cell.
+        side_html = (
+            f"<strong>{html.escape(favoured_player)}</strong>"
+            f"<br><span class='small gray'>vs {html.escape(opponent)}</span>"
         )
 
         mid = str(r.get("match_id") or "")
@@ -586,17 +581,17 @@ def _render_watchlist_table(payload: dict) -> str:
 
         verdict_pill = _label_pill(str(r.get("recommended_action", "NO_TRADE")))
 
-        # Title cell: Kalshi's published YES question for the favoured
+        # Match cell: Kalshi's published YES question for the favoured
         # side (e.g. "Will Jannik Sinner win the Sinner vs Ofner: Round
         # Of 64 match?"). Falls back to the matchup string when not
         # populated.
-        title_text = r.get("title") or match_text
+        match_cell_text = r.get("title") or match_text
         out.append(
             f"<tr class='tennis-row' data-mid='{html.escape(mid)}' "
             f"style='cursor:pointer'>"
             f"<td class='mono small'>{ticker_cell}</td>"
-            f"<td>{html.escape(title_text)}</td>"
-            f"<td>{question_html}</td>"
+            f"<td>{html.escape(match_cell_text)}</td>"
+            f"<td>{side_html}</td>"
             f"<td class='num'>{oi_str}</td>"
             f"<td class='num'>{kyes_str}</td>"
             f"<td class='num'>{kno_str}</td>"

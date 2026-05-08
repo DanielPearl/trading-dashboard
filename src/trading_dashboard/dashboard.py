@@ -3731,11 +3731,24 @@ def _render_watchlist(out: List[str], watchlist: List[dict],
     # grouped | Verdict (rightmost). Chance was redundant with Kalshi
     # YES (same midpoint of the bid/ask); volume and closes-in live in
     # the hero header instead of being repeated per row.
+    # Sport bots (NBA today; tennis runs through its own renderer)
+    # use the column shape Match | Side instead of Title | Question.
+    # Match carries the Kalshi-published title of the matchup (e.g.
+    # "Will MIN win the SAS vs MIN game?"); Side carries the team
+    # the bot is betting on.
+    is_sport_bot = current_bot in {"nba"}
+    if is_sport_bot:
+        title_h = ("<th title='Kalshi-published contract title — the "
+                   "YES question shown on the market page.'>Match</th>")
+        question_h = "<th title='Who the bot is betting will win.'>Side</th>"
+    else:
+        title_h = ("<th title='Kalshi-published contract title — the "
+                   "YES question shown on the market page.'>Title</th>")
+        question_h = "<th>Question</th>"
     out.append("<div class='watchlist-scroll'>"
                "<table><thead><tr>"
                "<th>Ticker</th>"
-               "<th title='Kalshi-published contract title — the YES question shown on the market page.'>Title</th>"
-               "<th>Question</th>"
+               f"{title_h}{question_h}"
                "<th class='num' title='Open interest — number of contracts currently held open on this strike.'>Contracts</th>"
                "<th class='num'>Kalshi YES %</th>"
                "<th class='num'>Kalshi NO %</th>"
@@ -3958,10 +3971,26 @@ def _render_watchlist(out: List[str], watchlist: List[dict],
         except (TypeError, ValueError):
             yes_attr = ""
         title_text = v.get("title") or ""
+        # Sport-bot Side cell: pull the team being bet on (the YES
+        # team) from the ticker and stack the opponent below it.
+        # Non-sport bots just render the question text.
+        if is_sport_bot:
+            yes_team = _side_tricode_from_ticker(ticker, "YES")
+            opp_team = _side_tricode_from_ticker(ticker, "NO")
+            if yes_team:
+                second_cell = (
+                    f"<td><strong>{html.escape(yes_team)}</strong>"
+                    f"<br><span class='small gray'>vs "
+                    f"{html.escape(opp_team)}</span></td>"
+                )
+            else:
+                second_cell = f"<td>{html.escape(qstr)}</td>"
+        else:
+            second_cell = f"<td>{html.escape(qstr)}</td>"
         out.append(f"<tr{row_cls} data-ticker='{tt_esc}'{strike_attr}{yes_attr}>"
                    f"<td class='mono'>{ticker_cell}</td>"
                    f"<td>{html.escape(title_text)}</td>"
-                   f"<td>{html.escape(qstr)}</td>"
+                   f"{second_cell}"
                    f"<td class='num' data-field='oi'>{oi_str}</td>"
                    f"<td class='num' data-field='kyes'>{kyes_str}</td>"
                    f"<td class='num' data-field='kno'>{kno_str}</td>"
