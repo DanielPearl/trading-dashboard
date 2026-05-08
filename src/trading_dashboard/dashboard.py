@@ -1477,6 +1477,10 @@ td.mono, code { font-family: ui-monospace, SFMono-Regular, Consolas, monospace; 
    is discoverable without making the table feel like a wall of links. */
 td.mono a.ticker-link { color: inherit; text-decoration: none; }
 td.mono a.ticker-link:hover { color: #58a6ff; text-decoration: underline; }
+/* Bot-name link in the active-bets / bet-history tables — same
+   restraint as the ticker links so the table stays readable. */
+a.bot-link { color: inherit; text-decoration: none; }
+a.bot-link:hover { color: #58a6ff; text-decoration: underline; }
 code { background: #161b22; padding: 1px 6px; border-radius: 3px; color: #c9d1d9; }
 /* hero-card sits inside the body which already has padding; only need
    internal vertical breathing room for multi-card scenarios. */
@@ -3016,7 +3020,22 @@ def _render_active_bets_table(out: List[str], bets: List[dict],
         # high entry prices on extreme strikes can flip negative.
         pg_sign = "+" if potential_gain >= 0 else "−"
         pg_cls  = "green" if potential_gain >= 0 else "red"
-        bot_td = (f"<td>{html.escape(bot_name)}</td>" if show_bot else "")
+        # Bot cell: link to that bot's watchlist tab so the user can
+        # jump from a row in the cross-bot active-bets summary into
+        # the per-bot detail view in one click. Tennis routes through
+        # its own page; the rest land on the standard watchlist tab.
+        bot_key = b.get("_bot_key") or ""
+        bot_dt = b.get("_dashboard_type") or "standard"
+        if bot_key:
+            if bot_dt == "tennis":
+                href = f"?bot={html.escape(bot_key)}&tab=watchlist"
+            else:
+                href = f"?tab=watchlist&bot={html.escape(bot_key)}"
+            bot_link = (f"<a href='{href}' class='bot-link'>"
+                        f"{html.escape(bot_name)}</a>")
+        else:
+            bot_link = html.escape(bot_name)
+        bot_td = (f"<td>{bot_link}</td>" if show_bot else "")
         # Build the "why was this bet chosen" payload from entry-time
         # snapshot fields recorded on the position. JS reads this from
         # data-criteria on click and populates the shared modal.
@@ -3204,8 +3223,21 @@ def _render_bet_history_block(out: List[str], history: List[dict],
                                if tri else match_text)
             else:
                 title_text = question
+        # Bot cell: link to the bot's watchlist (same idiom as the
+        # active-bets table).
+        bot_key = b.get("_bot_key") or ""
+        bot_dt = b.get("_dashboard_type") or "standard"
+        if bot_key:
+            if bot_dt == "tennis":
+                bot_href = f"?bot={html.escape(bot_key)}&tab=watchlist"
+            else:
+                bot_href = f"?tab=watchlist&bot={html.escape(bot_key)}"
+            bot_cell = (f"<td><a href='{bot_href}' class='bot-link'>"
+                         f"{html.escape(bot_name)}</a></td>")
+        else:
+            bot_cell = f"<td>{html.escape(bot_name)}</td>"
         return (f"<tr><td>{html.escape(closed)}</td>"
-                f"<td>{html.escape(bot_name)}</td>"
+                f"{bot_cell}"
                 f"<td class='mono'>{ticker_cell_html(b.get('ticker'))}</td>"
                 f"<td>{html.escape(title_text)}</td>"
                 f"<td><span class='badge {badge_cls}'>{side}</span></td>"
@@ -4416,6 +4448,8 @@ class Handler(BaseHTTPRequestHandler):
                             watchlist_path=b.get("watchlist_json_path"),
                         ):
                             ab["_bot_name"] = b["name"]
+                            ab["_bot_key"] = b["key"]
+                            ab["_dashboard_type"] = b.get("dashboard_type") or "standard"
                             ab["_display"] = b.get("display") or {}
                             global_active_bets.append(ab)
                         continue
@@ -4423,6 +4457,8 @@ class Handler(BaseHTTPRequestHandler):
                         continue
                     for ab in fetch_active_bets_with_marks(b["db_path"]):
                         ab["_bot_name"] = b["name"]
+                        ab["_bot_key"] = b["key"]
+                        ab["_dashboard_type"] = b.get("dashboard_type") or "standard"
                         # Attach the bot's display config so the
                         # question column can be formatted in the bot's
                         # native units (K claims vs $ vs ...).
@@ -4430,6 +4466,8 @@ class Handler(BaseHTTPRequestHandler):
                         global_active_bets.append(ab)
                     for h in fetch_bet_history(b["db_path"], limit=50):
                         h["_bot_name"] = b["name"]
+                        h["_bot_key"] = b["key"]
+                        h["_dashboard_type"] = b.get("dashboard_type") or "standard"
                         h["_display"] = b.get("display") or {}
                         global_history.append(h)
                     m = fetch_latest_model(b["db_path"])
