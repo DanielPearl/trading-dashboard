@@ -512,10 +512,11 @@ def _render_watchlist_table(payload: dict) -> str:
     )
     if not rows_sorted:
         unquoted = len(rows_all)
-        suffix = (f" ({unquoted} match{'es' if unquoted != 1 else ''} "
-                  f"awaiting a Kalshi quote)" if unquoted else "")
-        return ("<div class='empty'>No tradeable tennis markets right now"
-                + suffix + ".</div>")
+        if unquoted:
+            return (f"<div class='empty'>No tradeable tennis markets right "
+                    f"now — {unquoted} match{'es' if unquoted != 1 else ''} "
+                    f"awaiting a Kalshi quote.</div>")
+        return "<div class='empty'>No active tennis markets.</div>"
 
     # Sport-table column shape (mirrors the NBA watchlist):
     #
@@ -1028,9 +1029,10 @@ def render_page(*, metrics_path: str | None, coefficients_path: str | None,
     out.append("<h3 class='subhead'>Active paper bets</h3>")
     out.append(_render_active_paper_bets(sim_state))
 
-    # Filter to tradeable rows once and pass the same view to both
-    # the forecast graph and the watchlist table. A row is tradeable
-    # when Kalshi has published a quote (market_prob_a is not None).
+    # Filter to tradeable rows for the forecast graph. A row is
+    # tradeable when Kalshi has published a quote (market_prob_a not
+    # None). The watchlist table does its own filter (and uses the
+    # untradeable count for an informative empty state).
     tradeable = [r for r in rows if r.get("market_prob_a") is not None]
 
     # Active-bets line chart — sport-style row-click changes which
@@ -1044,8 +1046,7 @@ def render_page(*, metrics_path: str | None, coefficients_path: str | None,
         f"<h3 class='subhead'>Tennis matches · {len(tradeable)} "
         f"<span class='small gray'>(generated {html.escape(age)})</span></h3>"
     )
-    out.append(_render_watchlist_table({"rows": tradeable,
-                                         "generated_at": payload.get("generated_at")}))
+    out.append(_render_watchlist_table(payload))
 
     out.append("</div></div>")  # /body /section
 
