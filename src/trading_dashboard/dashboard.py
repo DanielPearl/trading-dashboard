@@ -1100,6 +1100,11 @@ def svg_kalshi_chart(history: List[dict], display: dict,
         "unit": display.get("underlying_unit", ""),
         "unit_position": display.get("unit_position", "prefix"),
     }, separators=(",", ":"))
+    # ``data-y-range`` exposes the chart's plotted Y range + padding to
+    # the row-click JS hook so it can draw a horizontal threshold line
+    # at the clicked row's strike value. Format:
+    #   y_min, y_max, pad_b, pad_t, pad_l, pad_r
+    y_range_attr = f"{y_lo:.6f},{y_hi:.6f},{pad_b},{pad_t},{pad_l},{pad_r}"
     out: List[str] = [
         f"<div class='wl-chart-wrap' "
         f"data-tmin='{t_min:.0f}' data-tmax='{t_max:.0f}' "
@@ -1108,7 +1113,8 @@ def svg_kalshi_chart(history: List[dict], display: dict,
         f"data-vbw='{width}' "
         f"data-points='{html.escape(points_payload)}' "
         f"data-fmt='{html.escape(fmt_payload)}'>",
-        f"<svg width='100%' height='{height}' viewBox='0 0 {width} {height}' "
+        f"<svg data-chart='wl-hero' data-y-range='{y_range_attr}' "
+        f"width='100%' height='{height}' viewBox='0 0 {width} {height}' "
         f"preserveAspectRatio='none' style='display:block'>"
     ]
 
@@ -2911,17 +2917,14 @@ def _render_active_bets_table(out: List[str], bets: List[dict],
         out.append(f"<div class='empty'>{html.escape(empty_msg)}</div>")
         return
     bot_th = "<th>Bot</th>" if show_bot else ""
-    # Column layout: ``Match`` (matchup string) and ``Side`` (the
-    # team/player we bet on) replace the previous ``Question`` +
-    # YES/NO ``Side`` pair so the table reads cleanly for sport bots
-    # (NBA, tennis) where there is a well-defined two-sided contest.
-    # For non-match bots (gas / CPI / jobless) Match falls back to the
-    # underlying label and Side shows the YES/NO + question fragment.
-    # Last column is the per-row info button — no header label needed.
+    # Column layout: ``Question`` describes the contract for non-sport
+    # bots (e.g. "Above $3.50 / gal") and the matchup for sport bots
+    # (e.g. "MIN vs SAS — bet on MIN"). ``Side`` carries the YES / NO
+    # badge. Last column is the per-row info button — no header label
+    # needed.
     out.append("<table><thead><tr>"
-               f"<th>Opened</th>{bot_th}<th>Ticker</th>"
-               "<th>Match</th><th>Side</th>"
-               "<th class='num'>Contracts</th>"
+               f"<th>Opened</th>{bot_th}<th>Ticker</th><th>Question</th>"
+               "<th class='num'>Contracts</th><th>Side</th>"
                "<th class='num' title='Implied probability of our side at entry (= entry price in ¢).'>Entry prob</th>"
                "<th class='num' title='Implied probability of our side right now, taken from the market mid.'>Current prob</th>"
                "<th class='num' title='Entry prob × contracts + Kalshi entry fee — total cash out at open'>Entry cost</th>"
@@ -3057,36 +3060,30 @@ def _render_active_bets_table(out: List[str], bets: List[dict],
         }
         criteria_json = html.escape(json.dumps(
             criteria, separators=(",", ":"), default=str))
-        # Match cell: tennis pre-fills _match; for NBA we parse the
-        # matchup from the ticker (e.g. KXNBAGAME-26MAY08SASMIN-MIN
-        # → "MIN vs SAS"); for non-match bots it falls back to "—".
+        # Question cell: non-sport bots show the Kalshi question text
+        # (e.g. "Above $3.50 / gal"). Sport bots show the matchup
+        # plus the side we're betting on (e.g. "MIN vs SAS — bet on MIN")
+        # so the trader sees who they're long without reading the ticker.
         match_text = b.get("_match") or _match_text_from_ticker(b.get("ticker"))
-        match_html = (f"<strong>{html.escape(match_text)}</strong>"
-                       if match_text else "<span class='gray'>—</span>")
-        # Side cell: the team / player / "YES question" depending on bot.
         side_player = b.get("_side_player")
         if side_player:
-            side_inner = (f"<strong>{html.escape(side_player)}</strong>"
-                          f" <span class='badge {badge_cls}'>{side}</span>")
+            question_text = f"{match_text} — bet on {side_player}" if match_text else side_player
         elif match_text:
-            # NBA-style: prefer the team's tricode (parsed from ticker).
             tri = _side_tricode_from_ticker(b.get("ticker"), side)
-            if tri:
-                side_inner = (f"<strong>{html.escape(tri)}</strong>"
-                              f" <span class='badge {badge_cls}'>{side}</span>")
-            else:
-                side_inner = f"<span class='badge {badge_cls}'>{side}</span>"
+            question_text = (f"{match_text} — bet on {tri}"
+                              if tri else match_text)
         else:
-            # Non-match bots — collapse the old Question text into Side.
-            side_inner = (f"<span class='badge {badge_cls}'>{side}</span> "
-                          f"<span class='small gray'>{html.escape(question)}</span>")
+            question_text = question
+        # Closes in: for tennis paper bets, _minutes_to_close is provided
+        # by the tennis adapter (derived from expected_expiration_time);
+        # for Kalshi bots the simulator already supplies minutes_to_close.
         out.append(
             f"<tr><td>{html.escape(opened)}</td>"
             f"{bot_td}"
             f"<td class='mono'>{ticker_cell_html(b.get('ticker'))}</td>"
-            f"<td>{match_html}</td>"
-            f"<td>{side_inner}</td>"
+            f"<td>{html.escape(question_text)}</td>"
             f"<td class='num'>{contracts}</td>"
+            f"<td><span class='badge {badge_cls}'>{side}</span></td>"
             f"{entry_prob_cell}"
             f"{current_prob_cell}"
             f"{entry_cost_cell}"
@@ -3125,8 +3122,8 @@ def _render_bet_history_block(out: List[str], history: List[dict],
 
     head = (
         "<table><thead><tr>"
-        "<th>Closed</th><th>Bot</th><th>Ticker</th>"
-        "<th>Match</th><th>Side</th>"
+        "<th>Closed</th><th>Bot</th><th>Ticker</th><th>Question</th>"
+        "<th>Side</th>"
         "<th class='num'>Entry</th><th class='num'>Exit</th>"
         "<th class='num'>Contracts</th>"
         "<th class='num' title='Model probability for the side we bet on, recorded at entry.'>Model p</th>"
@@ -3186,29 +3183,25 @@ def _render_bet_history_block(out: List[str], history: List[dict],
             ev_cls = "gray"
         else:
             ev_str, ev_cls = (f"${ev:+.3f}", _ev_status(ev)[0])
-        # Match + Side cells. NBA tickers parse cleanly into team
-        # names; non-NBA bots fall back to the question text in Side.
+        # Question cell: sport bots show the matchup + side ("MIN vs SAS
+        # — bet on MIN"); non-sport bots show the strike-band template
+        # ("Above $3.50 / gal").
         match_text = b.get("_match") or _match_text_from_ticker(b.get("ticker"))
         side_player = b.get("_side_player")
         if side_player:
-            match_cell = f"<td><strong>{html.escape(match_text)}</strong></td>" if match_text else "<td class='gray'>—</td>"
-            side_cell = (f"<td><strong>{html.escape(side_player)}</strong>"
-                         f" <span class='badge {badge_cls}'>{side}</span></td>")
+            question_text = (f"{match_text} — bet on {side_player}"
+                              if match_text else side_player)
         elif match_text:
             tri = _side_tricode_from_ticker(b.get("ticker"), side)
-            opp = _side_tricode_from_ticker(b.get("ticker"), "NO" if side == "YES" else "YES")
-            match_cell = f"<td>{html.escape(match_text)}</td>"
-            side_cell = (f"<td><strong>{html.escape(tri)}</strong>"
-                         f" <span class='badge {badge_cls}'>{side}</span><br>"
-                         f"<span class='small gray'>vs {html.escape(opp)}</span></td>")
+            question_text = (f"{match_text} — bet on {tri}"
+                              if tri else match_text)
         else:
-            match_cell = "<td class='gray'>—</td>"
-            side_cell = (f"<td><span class='badge {badge_cls}'>{side}</span> "
-                         f"<span class='small gray'>{html.escape(question)}</span></td>")
+            question_text = question
         return (f"<tr><td>{html.escape(closed)}</td>"
                 f"<td>{html.escape(bot_name)}</td>"
                 f"<td class='mono'>{ticker_cell_html(b.get('ticker'))}</td>"
-                f"{match_cell}{side_cell}"
+                f"<td>{html.escape(question_text)}</td>"
+                f"<td><span class='badge {badge_cls}'>{side}</span></td>"
                 f"<td class='num'>{entry}c</td>"
                 f"<td class='num'>{cents_or_dash(exit_c)}</td>"
                 f"<td class='num'>{contracts}</td>"
@@ -3677,13 +3670,6 @@ def _render_watchlist(out: List[str], watchlist: List[dict],
         out.append("</div></div>")
         return
 
-    # ── Per-ticker forecast panel ─────────────────────────────────────────
-    # Shows the model vs market probabilities (with confidence band) AND
-    # the contract rules for whichever ticker the user clicks. Sits
-    # between the active-bet table and the watchlist grid so the user
-    # can pivot to "what's the deal with this row" without scrolling.
-    _render_per_ticker_forecast_panel(out, watchlist, contract_close_ts)
-
     # ── Pre-pass: enrich each row with EV/BE numbers, then sort by best
     # EV. Sorting by EV (not by gap or by alphabetical ticker) puts the
     # genuinely-actionable opportunities at the top of the table.
@@ -3732,7 +3718,7 @@ def _render_watchlist(out: List[str], watchlist: List[dict],
     # the hero header instead of being repeated per row.
     out.append("<div class='watchlist-scroll'>"
                "<table><thead><tr>"
-               "<th>Ticker</th><th>Match</th><th>Side</th>"
+               "<th>Ticker</th><th>Question</th>"
                "<th class='num' title='Open interest — number of contracts currently held open on this strike.'>Contracts</th>"
                "<th class='num'>Kalshi YES %</th>"
                "<th class='num'>Kalshi NO %</th>"
@@ -3939,29 +3925,24 @@ def _render_watchlist(out: List[str], watchlist: List[dict],
         # The "BOUGHT YES/NO" inline pill was retired — the row's
         # side-colored left bar + colored ticker text already convey
         # the bet at a glance.
-        # Match + Side cells. NBA tickers carry both teams; we parse
-        # them so the user sees "MIN vs SAS" and "MIN / vs SAS" stacked.
-        # Non-NBA bots don't fit the matchup mold — Match collapses to
-        # a placeholder and Side shows the question text the column
-        # used to carry verbatim.
-        match_text = _match_text_from_ticker(ticker)
-        if match_text:
-            yes_team = _side_tricode_from_ticker(ticker, "YES")
-            opp_team = _side_tricode_from_ticker(ticker, "NO")
-            match_cell = f"<td>{html.escape(match_text)}</td>"
-            side_cell = (
-                f"<td><strong>{html.escape(yes_team)}</strong>"
-                f"<br><span class='small gray'>vs "
-                f"{html.escape(opp_team)}</span></td>"
-            )
-        else:
-            # Fallback for non-match bots: keep the old question text
-            # in the Side column so the row still describes itself.
-            match_cell = "<td class='gray'>—</td>"
-            side_cell = f"<td>{html.escape(qstr)}</td>"
-        out.append(f"<tr{row_cls} data-ticker='{tt_esc}'>"
+        # Pass the row's strike value through ``data-strike`` so the
+        # JS row-click hook can draw a horizontal threshold line on the
+        # chart at this market's strike level (non-sport bots) or at the
+        # ticker's YES ask price (sport bots, where strike isn't a
+        # meaningful concept).
+        sl = v.get("strike_low")
+        sh = v.get("strike_high")
+        try:
+            strike_attr = f" data-strike='{float(sl):.6f}'" if sl is not None else ""
+        except (TypeError, ValueError):
+            strike_attr = ""
+        try:
+            yes_attr = f" data-yes-prob='{int(ya_c) / 100.0:.4f}'" if ya_c is not None else ""
+        except (TypeError, ValueError):
+            yes_attr = ""
+        out.append(f"<tr{row_cls} data-ticker='{tt_esc}'{strike_attr}{yes_attr}>"
                    f"<td class='mono'>{ticker_cell}</td>"
-                   f"{match_cell}{side_cell}"
+                   f"<td>{html.escape(qstr)}</td>"
                    f"<td class='num' data-field='oi'>{oi_str}</td>"
                    f"<td class='num' data-field='kyes'>{kyes_str}</td>"
                    f"<td class='num' data-field='kno'>{kno_str}</td>"
@@ -3971,245 +3952,116 @@ def _render_watchlist(out: List[str], watchlist: List[dict],
                    f"<td class='num {ev_no_cls}' data-field='ev_no'>{ev_no_str}</td>"
                    f"<td data-field='verdict'>{badge}</td></tr>")
     out.append("</tbody></table></div>")
+    # Append the row-click JS hook so clicks on a watchlist row draw a
+    # horizontal threshold line on the hero chart at the row's value.
+    out.append(_WATCHLIST_ROW_CLICK_JS)
     out.append("</div></div>")
 
 
-def _render_per_ticker_forecast_panel(
-    out: List[str], watchlist: List[dict],
-    contract_close_ts: float | None = None,
-) -> None:
-    """Click-driven per-ticker forecast + rules panel.
-
-    For each watchlist row we serialize a small JSON record (model
-    prob, market prob, confidence band, rules text, match label).
-    The page's JS listens for clicks on the watchlist tbody and
-    redraws an SVG comparison chart + rules paragraph for the
-    selected row. Default shows the highest-EV row so the panel is
-    always populated.
-    """
-    if not watchlist:
-        return
-    payload: Dict[str, Dict[str, object]] = {}
-    for v in watchlist:
-        ticker = v.get("ticker") or ""
-        if not ticker:
-            continue
-        p_yes = v.get("model_prob_yes")
-        ya = v.get("yes_ask_cents")
-        na = v.get("no_ask_cents")
-        market_yes = (float(ya) / 100.0 if ya is not None
-                       else 1.0 - (float(na) / 100.0)
-                       if na is not None else None)
-        # CI half-width — borrow tennis's heuristic. Wider when low
-        # confidence (model close to 50/50), tighter when extreme.
-        if p_yes is not None:
-            extremity = abs(float(p_yes) - 0.5) * 2.0  # 0..1
-            ci_half = max(0.03, min(0.20, 0.12 - extremity * 0.06))
-        else:
-            ci_half = 0.10
-        ci_low = max(0.0, (p_yes or 0.5) - ci_half)
-        ci_high = min(1.0, (p_yes or 0.5) + ci_half)
-        match_text = _match_text_from_ticker(ticker)
-        yes_team = _side_tricode_from_ticker(ticker, "YES")
-        opp_team = _side_tricode_from_ticker(ticker, "NO")
-        edge_pp = ((float(p_yes) - market_yes) * 100.0
-                    if (p_yes is not None and market_yes is not None) else None)
-        verdict = v.get("bot_verdict", "SKIP")
-        payload[ticker] = {
-            "ticker": ticker,
-            "match": match_text or ticker,
-            "yes_team": yes_team or "",
-            "opp_team": opp_team or "",
-            "model_yes": float(p_yes) if p_yes is not None else None,
-            "market_yes": market_yes,
-            "ci_low": ci_low, "ci_high": ci_high,
-            "edge_pp": edge_pp,
-            "ev_yes": v.get("_ev_yes"),
-            "ev_no": v.get("_ev_no"),
-            "best_ev": v.get("_best_ev"),
-            "best_side": v.get("_best_side"),
-            "verdict": verdict,
-            "rules": v.get("rules_primary") or "",
-            "strike_low": v.get("strike_low"),
-            "strike_high": v.get("strike_high"),
-        }
-    # Pick the default (highest absolute edge / EV).
-    default_ticker = ""
-    if watchlist:
-        sorted_wl = sorted(
-            watchlist,
-            key=lambda r: -abs(float(r.get("_best_ev") or 0)),
-        )
-        default_ticker = (sorted_wl[0].get("ticker") or "") if sorted_wl else ""
-    js_payload = json.dumps(payload, separators=(",", ":"), default=str)
-
-    out.append(
-        "<h3 class='subhead' style='margin-top:18px;'>"
-        "Selected ticker — forecast + market rules</h3>"
-    )
-    out.append(
-        "<div id='per-ticker-panel' "
-        f"data-default-ticker='{html.escape(default_ticker)}' "
-        "style='background:#0d1117;border:1px solid #21262d;"
-        "border-radius:8px;padding:14px 18px;margin:6px 0 14px 0;'>"
-        "<div id='ptp-title' style='font-size:13px;color:#f0f6fc;"
-        "margin-bottom:6px;font-weight:600;'></div>"
-        "<div id='ptp-sub' class='small gray' style='margin-bottom:10px;'></div>"
-        "<svg id='ptp-svg' width='100%' height='180' "
-        "viewBox='0 0 700 180' preserveAspectRatio='none' "
-        "style='display:block;'></svg>"
-        "<div id='ptp-legend' class='small' style='margin-top:8px;"
-        "display:flex;gap:18px;flex-wrap:wrap;color:#8b949e;'></div>"
-        "<div id='ptp-rules' style='margin-top:14px;padding-top:10px;"
-        "border-top:1px solid #21262d;font-size:12px;color:#c9d1d9;'>"
-        "<div class='small gray' style='margin-bottom:4px;'>"
-        "MARKET RULES</div>"
-        "<div id='ptp-rules-body'></div></div>"
-        f"<script type='application/json' id='ptp-data'>{js_payload}</script>"
-        "</div>"
-    )
-    out.append(_PER_TICKER_PANEL_JS)
-
-
-# Vanilla-JS panel updater. Reads the inline payload and the active
-# ticker (default: top-EV row). Hooks ``click`` on every watchlist
-# row to swap in the clicked ticker's data — chart, header text,
-# rules. Uses the standard CSS classes already on the page so no
-# additional styling is needed beyond the inline ``style=`` attrs.
-_PER_TICKER_PANEL_JS = """
+# Vanilla-JS hook for the Kalshi watchlist tables. Each watchlist row
+# carries ``data-ticker`` plus (for non-sport bots) ``data-strike`` and
+# (sport / NBA) ``data-yes-prob``. On click:
+#
+#   * Highlight the selected row.
+#   * Find the existing chart's SVG and overlay a horizontal dashed
+#     line at the row's strike value (non-sport: strike on the
+#     underlying-value Y axis) or at the YES ask probability (sport:
+#     plotted on a 0..1 secondary axis). The line replaces any prior
+#     overlay so each click "moves" the threshold rather than stacking.
+#
+# The chart-coordinate math is delegated to a per-chart ``data-y-min``
+# / ``data-y-max`` pair the chart renderer stamps onto its SVG. When
+# the chart isn't tagged, the JS bails quietly so it never breaks the
+# page. The hero-chart implementation in ``_render_watchlist_hero``
+# emits these attributes alongside the existing polyline.
+_WATCHLIST_ROW_CLICK_JS = """
 <script>
 (function() {
-  const dataEl = document.getElementById('ptp-data');
-  const panel = document.getElementById('per-ticker-panel');
-  if (!dataEl || !panel) return;
-  const payload = JSON.parse(dataEl.textContent || '{}');
-  const svg = document.getElementById('ptp-svg');
-  const titleEl = document.getElementById('ptp-title');
-  const subEl = document.getElementById('ptp-sub');
-  const legendEl = document.getElementById('ptp-legend');
-  const rulesEl = document.getElementById('ptp-rules-body');
-  const W = 700, H = 180, PAD_L = 50, PAD_R = 30, PAD_T = 26, PAD_B = 36;
-  const innerW = W - PAD_L - PAD_R;
-  const innerH = H - PAD_T - PAD_B;
-  const xOf = (p) => PAD_L + p * innerW;
+  const tbody = document.getElementById('watchlist-tbody');
+  if (!tbody) return;
 
-  function el(tag, attrs, children) {
-    const e = document.createElementNS('http://www.w3.org/2000/svg', tag);
-    for (const [k, v] of Object.entries(attrs || {})) e.setAttribute(k, v);
-    (children || []).forEach(c => e.appendChild(c));
-    return e;
+  function findChart() {
+    // Look for the kalshi-history hero chart's SVG. It carries
+    // ``data-chart='wl-hero'`` so we can find it without grabbing
+    // any stray SVG (the favicon is one). Returns null when the
+    // page renders the empty-frame placeholder.
+    return document.querySelector(\"svg[data-chart='wl-hero']\");
   }
-  function txt(t) { return document.createTextNode(String(t)); }
 
-  function draw(ticker) {
-    const d = payload[ticker];
-    svg.innerHTML = '';
-    legendEl.innerHTML = '';
-    if (!d) {
-      titleEl.textContent = 'No forecast for that ticker';
-      subEl.textContent = '';
-      rulesEl.textContent = '';
-      return;
+  function clearOverlay(svg) {
+    svg.querySelectorAll('.row-overlay').forEach(n => n.remove());
+  }
+
+  function drawOverlay(svg, label, color) {
+    // Read the chart's plotted Y range from the SVG's data attrs
+    // and draw a horizontal line at the requested data value.
+    const rangeAttr = svg.getAttribute('data-y-range');
+    if (!rangeAttr) return;
+    const [yMin, yMax, yPad, padT, padL, padR] = rangeAttr.split(',').map(parseFloat);
+    if (!Number.isFinite(yMin) || !Number.isFinite(yMax) || yMax === yMin) return;
+    const value = label.value;
+    if (!Number.isFinite(value)) return;
+    if (value < yMin || value > yMax) return;
+    const w = svg.viewBox && svg.viewBox.baseVal && svg.viewBox.baseVal.width || 760;
+    const h = svg.viewBox && svg.viewBox.baseVal && svg.viewBox.baseVal.height || 220;
+    const innerH = h - padT - yPad;
+    const y = padT + (1 - (value - yMin) / (yMax - yMin)) * innerH;
+    const xL = padL, xR = w - padR;
+
+    const ns = 'http://www.w3.org/2000/svg';
+    const line = document.createElementNS(ns, 'line');
+    line.setAttribute('class', 'row-overlay');
+    line.setAttribute('x1', xL); line.setAttribute('x2', xR);
+    line.setAttribute('y1', y); line.setAttribute('y2', y);
+    line.setAttribute('stroke', color);
+    line.setAttribute('stroke-width', '1.5');
+    line.setAttribute('stroke-dasharray', '6,4');
+    svg.appendChild(line);
+
+    const text = document.createElementNS(ns, 'text');
+    text.setAttribute('class', 'row-overlay');
+    text.setAttribute('x', xR - 4);
+    text.setAttribute('y', y - 4);
+    text.setAttribute('fill', color);
+    text.setAttribute('text-anchor', 'end');
+    text.setAttribute('font-size', '11');
+    text.setAttribute('font-weight', '600');
+    text.appendChild(document.createTextNode(label.text));
+    svg.appendChild(text);
+  }
+
+  function setSelected(tr) {
+    tbody.querySelectorAll('tr').forEach(r =>
+      r.classList.toggle('row-selected', r === tr));
+  }
+
+  tbody.addEventListener('click', function (ev) {
+    const tr = ev.target.closest('tr');
+    if (!tr || !tbody.contains(tr)) return;
+    setSelected(tr);
+    const svg = findChart();
+    if (!svg) return;
+    clearOverlay(svg);
+    // Sport bots stamp data-yes-prob (0..1); non-sport bots stamp
+    // data-strike (raw underlying value). Whichever attribute is
+    // present drives the overlay's value + label.
+    const strike = parseFloat(tr.dataset.strike);
+    const yesProb = parseFloat(tr.dataset.yesProb);
+    if (Number.isFinite(strike)) {
+      drawOverlay(svg, {
+        value: strike,
+        text: 'strike ' + strike.toFixed(2),
+      }, '#e3b341');
+    } else if (Number.isFinite(yesProb)) {
+      // Sport-style chart: yesProb is plotted on a 0..1 axis. The
+      // hero chart for NBA carries ELO as its Y axis, so a 0..1 line
+      // wouldn't fall inside its range. We bail in that case (the
+      // overlay's range check above takes care of it).
+      drawOverlay(svg, {
+        value: yesProb,
+        text: 'YES ' + (yesProb * 100).toFixed(0) + '%',
+      }, '#58a6ff');
     }
-    titleEl.textContent = d.match + (d.yes_team ? ' — betting on ' + d.yes_team : '');
-    const edgeStr = (d.edge_pp !== null && d.edge_pp !== undefined)
-      ? (d.edge_pp >= 0 ? '+' : '') + d.edge_pp.toFixed(1) + 'pp' : '—';
-    const evStr = (d.best_ev !== null && d.best_ev !== undefined)
-      ? '$' + (d.best_ev >= 0 ? '+' : '') + d.best_ev.toFixed(3) : '—';
-    subEl.textContent = ticker + ' · edge ' + edgeStr
-      + ' · best EV ' + evStr + ' (' + (d.best_side || '—') + ') · '
-      + 'verdict ' + d.verdict;
-
-    const axisY = PAD_T + innerH - 18;
-    svg.appendChild(el('rect', {
-      x: PAD_L, y: axisY - 8, width: innerW, height: 16,
-      fill: '#1d232c', stroke: '#30363d', 'stroke-width': '1', rx: 4,
-    }));
-    svg.appendChild(el('line', {
-      x1: xOf(0.5), x2: xOf(0.5),
-      y1: PAD_T + 4, y2: PAD_T + innerH + 4,
-      stroke: '#30363d', 'stroke-dasharray': '3,4',
-    }));
-    if (d.ci_low !== null && d.ci_high !== null) {
-      svg.appendChild(el('rect', {
-        x: xOf(d.ci_low), y: axisY - 14,
-        width: Math.max(2, xOf(d.ci_high) - xOf(d.ci_low)),
-        height: 28, fill: '#58a6ff22', stroke: '#58a6ff55',
-        'stroke-width': '1', rx: 3,
-      }));
-    }
-    const points = [
-      { v: d.model_yes, color: '#58a6ff', label: 'Model YES' },
-      { v: d.market_yes, color: '#e3b341', label: 'Market YES' },
-    ];
-    points.forEach((p) => {
-      if (p.v === null || p.v === undefined) return;
-      const x = xOf(p.v);
-      svg.appendChild(el('circle', {
-        cx: x, cy: axisY, r: 7,
-        fill: p.color, stroke: '#0d1117', 'stroke-width': '2',
-      }));
-      const lbl = el('text', {
-        x: x, y: axisY - 16, fill: p.color,
-        'text-anchor': 'middle', 'font-size': '11', 'font-weight': '600',
-      });
-      lbl.appendChild(txt((p.v * 100).toFixed(0) + '%'));
-      svg.appendChild(lbl);
-    });
-    [0, 0.25, 0.5, 0.75, 1].forEach((t) => {
-      const x = xOf(t);
-      svg.appendChild(el('line', {
-        x1: x, x2: x, y1: axisY + 10, y2: axisY + 14,
-        stroke: '#30363d',
-      }));
-      const lbl = el('text', {
-        x: x, y: axisY + 28, fill: '#8b949e',
-        'text-anchor': 'middle', 'font-size': '10',
-      });
-      lbl.appendChild(txt((t * 100).toFixed(0) + '%'));
-      svg.appendChild(lbl);
-    });
-    const yLbl = el('text', {
-      x: PAD_L, y: PAD_T + 12, fill: '#8b949e', 'font-size': '11',
-    });
-    yLbl.appendChild(txt('P(YES)'));
-    svg.appendChild(yLbl);
-    points.forEach((p) => {
-      if (p.v === null || p.v === undefined) return;
-      const item = document.createElement('span');
-      item.style.display = 'inline-flex';
-      item.style.alignItems = 'center';
-      item.style.gap = '6px';
-      const dot = document.createElement('span');
-      dot.style.cssText = 'display:inline-block;width:10px;height:10px;'
-        + 'border-radius:50%;background:' + p.color + ';';
-      item.appendChild(dot);
-      item.appendChild(txt(p.label + ' ' + (p.v * 100).toFixed(0) + '%'));
-      legendEl.appendChild(item);
-    });
-
-    rulesEl.textContent = d.rules || 'No rules text published for this market yet.';
-  }
-
-  function setSelected(ticker) {
-    document.querySelectorAll('#watchlist-tbody tr').forEach((tr) => {
-      tr.classList.toggle('row-selected', tr.dataset.ticker === ticker);
-    });
-  }
-
-  const def = panel.dataset.defaultTicker || '';
-  if (def) { draw(def); setSelected(def); }
-
-  document.addEventListener('click', function (ev) {
-    const tr = ev.target.closest('#watchlist-tbody tr');
-    if (!tr) return;
-    const ticker = tr.dataset.ticker;
-    if (!ticker) return;
-    draw(ticker);
-    setSelected(ticker);
-    // Smooth-scroll the panel into view if it's offscreen.
-    const c = document.getElementById('per-ticker-panel');
-    if (c) c.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
   });
 })();
 </script>
@@ -4514,7 +4366,13 @@ class Handler(BaseHTTPRequestHandler):
                         # Pull tennis open paper bets into the cross-bot
                         # active-bets table so the user sees them in the
                         # home summary alongside the Kalshi bots' bets.
-                        for ab in _tennis.active_bets_for_rollup(b.get("sim_state_path")):
+                        # Pass the watchlist path so the adapter can
+                        # populate Closes in from the matching live
+                        # record's expected_expiration_time.
+                        for ab in _tennis.active_bets_for_rollup(
+                            b.get("sim_state_path"),
+                            watchlist_path=b.get("watchlist_json_path"),
+                        ):
                             ab["_bot_name"] = b["name"]
                             ab["_display"] = b.get("display") or {}
                             global_active_bets.append(ab)
