@@ -470,6 +470,77 @@ def _interpolate_event_history(
     return history
 
 
+def _pick_current_event_markets(markets: List[dict]) -> List[dict]:
+    """Filter ``markets`` down to the single "current" event in the series.
+
+    Kalshi often has overlapping events open simultaneously — for CPI
+    a typical day might have April / May / June markets all listed
+    open, because Kalshi pre-publishes the upcoming months. The
+    Watchlist table is meant for ONE contract at a time: the one most
+    imminently going to settle. When that one closes, the next month
+    naturally becomes the earliest-future event and rolls forward.
+
+    Selection rule:
+      1. Group by ``event_ticker``.
+      2. Among events with at least one market whose ``close_time`` is
+         still in the future, pick the one with the earliest
+         ``close_time`` (most-imminent-but-not-yet-closed).
+      3. If no future close_times are available (e.g., test fixture),
+         fall back to the event with the highest aggregate open
+         interest. This is a safety net — production Kalshi data
+         always has close_time set.
+
+    Returns markets belonging to the chosen event, in the same order
+    they appeared in the input. Empty list maps to empty output.
+    """
+    if not markets:
+        return []
+    by_event: dict[str, List[dict]] = {}
+    for m in markets:
+        et = m.get("event_ticker")
+        if not et:
+            continue
+        by_event.setdefault(et, []).append(m)
+    if not by_event:
+        # No event_ticker on any market — surface them all rather than
+        # hiding everything; the upstream fetch already scopes to one
+        # series so this is conservative.
+        return list(markets)
+
+    now_ts = _time.time()
+
+    def _earliest_future_close(group: List[dict]) -> Optional[float]:
+        ts: List[float] = []
+        for m in group:
+            t = _parse_iso(m.get("close_time"))
+            if t is not None and t > now_ts:
+                ts.append(t)
+        return min(ts) if ts else None
+
+    def _total_oi(group: List[dict]) -> float:
+        oi = 0.0
+        for m in group:
+            v = (_to_float(m.get("open_interest_fp"))
+                 or _to_float(m.get("open_interest")) or 0.0)
+            oi += v
+        return oi
+
+    scored: List[Tuple[float, str]] = []
+    for et, group in by_event.items():
+        close = _earliest_future_close(group)
+        if close is not None:
+            # Earliest future close wins; use the timestamp itself as
+            # the sort key (smaller = more imminent).
+            scored.append((close, et))
+    if scored:
+        scored.sort(key=lambda x: x[0])
+        chosen = scored[0][1]
+    else:
+        # Fallback: pick by aggregate OI.
+        chosen = max(by_event.keys(), key=lambda e: _total_oi(by_event[e]))
+    return list(by_event[chosen])
+
+
 def fetch_underlying_history(
     series_ticker: str,
     period_minutes: int = 60,
@@ -487,8 +558,10 @@ def fetch_underlying_history(
     atm_market : dict or None
         The ATM market (used as the chart anchor).
     markets : list[dict]
-        Every currently-open market in the series — used by the
-        Watchlist table when the bot's local DB is empty/stale.
+        Every currently-open market for the *current event* in the
+        series. Used by the Watchlist table; the multi-event listing
+        Kalshi returns is filtered down by _pick_current_event_markets
+        so the user only ever sees one contract at a time.
     contract_open_ts : float or None
         Unix epoch of the current event's open. Chart x-axis start.
     contract_close_ts : float or None
@@ -499,9 +572,14 @@ def fetch_underlying_history(
     c = client or get_client()
     if not c.available:
         return [], None, [], None, None, None
-    markets = c.list_markets(series_ticker=series_ticker)
-    if not markets:
-        return [], None, markets, None, None, None
+    raw_markets = c.list_markets(series_ticker=series_ticker)
+    if not raw_markets:
+        return [], None, raw_markets, None, None, None
+    # Scope to a single event before any downstream picking. This is
+    # what gives the Watchlist its "current month only" behaviour and
+    # lets it transition to the next month automatically once the
+    # imminent event's close_time passes.
+    markets = _pick_current_event_markets(raw_markets)
     atm = pick_atm_market(markets)
     contract_open_ts = _parse_iso(atm.get("open_time")) if atm else None
     contract_close_ts = _parse_iso(atm.get("close_time")) if atm else None
@@ -549,9 +627,10 @@ def fetch_event_metadata(
     c = client or get_client()
     if not c.available:
         return None, [], None, None, None
-    markets = c.list_markets(series_ticker=series_ticker)
-    if not markets:
+    raw_markets = c.list_markets(series_ticker=series_ticker)
+    if not raw_markets:
         return None, [], None, None, None
+    markets = _pick_current_event_markets(raw_markets)
     atm = pick_atm_market(markets)
     contract_open_ts = _parse_iso(atm.get("open_time")) if atm else None
     contract_close_ts = _parse_iso(atm.get("close_time")) if atm else None
