@@ -4102,9 +4102,13 @@ def _svg_feature_importance_vertical(features: List[dict]) -> str:
         src_label, src_color = feature_source(name)
         opacity = 1.0 if sel else 0.42
         text_color = "#c9d1d9" if sel else "#8b949e"
-        # Text-anchor='start' + rotate(-45°) → text starts at
-        # (label_x, label_y) and extends up-and-to-the-right. The
-        # bar's centre-x is the anchor.
+        # Position the tick label BELOW the X axis (where x-axis
+        # labels conventionally sit) and rotate +45° clockwise so
+        # the text extends down-and-to-the-right from the anchor.
+        # text-anchor='start' anchors the LEFT edge of the text at
+        # the bar's centre; the rotated label then leans away from
+        # its bar into the bottom-padding region without crossing
+        # back into the plot area.
         label_x = pad_l + i * bar_pitch + bar_pitch / 2
         label_y = pad_t + inner_h + 10
         parts.append(
@@ -4118,7 +4122,7 @@ def _svg_feature_importance_vertical(features: List[dict]) -> str:
             f"fill='{text_color}' font-size='11' "
             f"font-family='ui-monospace,SFMono-Regular,monospace' "
             f"text-anchor='start' "
-            f"transform='rotate(-45 {label_x:.1f} {label_y:.1f})'>"
+            f"transform='rotate(45 {label_x:.1f} {label_y:.1f})'>"
             f"{html.escape(name)}</text>"
             f"</g>"
         )
