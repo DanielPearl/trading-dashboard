@@ -141,6 +141,53 @@ def model_summary_for_card(metrics_path: str | None,
     }
 
 
+def active_bets_for_rollup(sim_state_path: str | None) -> List[Dict[str, Any]]:
+    """Return tennis open paper positions in the dict shape the
+    standard ``_render_active_bets_table`` expects.
+
+    Mapping from sim_state.json position record → standard schema:
+      ticker          ← match_id
+      _match          ← "{player_a} vs {player_b}"
+      _side_player    ← side_player (the player we're betting on)
+      side            ← "YES" (we always buy the favoured side)
+      contracts       ← stake (= 1.0 by default; expressed as $1 = 1 contract)
+      entry_price_cents ← entry_market_prob * 100
+      mark_mid        ← current_market_prob * 100
+      opened_at       ← opened_at
+      minutes_to_close ← None (no contract expiry; settles when match ends)
+      _bot_name       ← caller fills in
+
+    Tennis stake is in dollars rather than Kalshi contracts; we use a
+    1-contract / dollar mapping so the existing dollar columns
+    (Entry cost / Potential gain) render in the same units as Kalshi
+    bets without special-casing the renderer.
+    """
+    s = load_sim_state(sim_state_path)
+    out: List[Dict[str, Any]] = []
+    for p in s.get("open_positions") or []:
+        entry = float(p.get("entry_market_prob") or 0.5)
+        mark = float(p.get("current_market_prob") or entry)
+        out.append({
+            "ticker": p.get("match_id", ""),
+            "_match": f"{p.get('player_a','')} vs {p.get('player_b','')}",
+            "_side_player": p.get("side_player", ""),
+            "_tournament": p.get("tournament", ""),
+            "_surface": p.get("surface", ""),
+            "side": "YES",  # tennis always buys the favoured side
+            "contracts": int(round(float(p.get("stake", 1.0)) * 100)),
+            "entry_price_cents": int(round(entry * 100)),
+            "mark_mid": mark * 100,
+            "opened_at": p.get("opened_at", ""),
+            "minutes_to_close": None,
+            "label_at_open": p.get("label_at_open", ""),
+            "reason_at_open": p.get("reason_at_open", ""),
+            # Required by the renderer's "why was this bet chosen" hook.
+            "model_yes_prob_at_entry": float(p.get("entry_model_prob") or 0.5),
+            "kalshi_yes_prob_at_entry": entry,
+        })
+    return out
+
+
 def summary_for_rollup(sim_state_path: str | None) -> Dict[str, Any]:
     """Tennis summary in the shape the cross-bot rollup expects.
     Cents conversion: tennis stake is dollars (1.0 = $1) → ×100 for cents.
@@ -388,9 +435,17 @@ def _render_watchlist_table(payload: dict) -> str:
         return ("<div class='empty'>No matches yet — run "
                 "<code>scripts/run_daily_prematch.py</code>.</div>")
 
+    # Column shape mirrors the NBA watchlist's: Ticker | Match | Side
+    # (the player we're betting on, with their opponent stacked
+    # underneath in small text) | Tournament | Surface | Score |
+    # Market | Pre-match | Live | Edge | EV | Conf | Vol | Risk |
+    # Signal. The Match cell shows "Player A vs Player B"; the Side
+    # cell shows the favoured player on top with "vs Opp" below —
+    # matching the NBA "TEAM / vs OPP" idiom.
     out = ["<table id='tennis-watchlist-table'>",
            "<thead><tr>"
-           "<th>Match</th><th>Tournament</th><th>Surface</th>"
+           "<th>Ticker</th><th>Match</th><th>Side</th>"
+           "<th>Tournament</th><th>Surface</th>"
            "<th>Score</th><th>Market</th><th>Pre-match</th>"
            "<th>Live</th><th>Edge</th><th>EV</th>"
            "<th>Conf</th><th>Vol</th><th>Risk</th>"
@@ -400,18 +455,23 @@ def _render_watchlist_table(payload: dict) -> str:
         edge_a = r.get("edge_a")
         edge_cls = ("green" if (edge_a or 0) > 0
                     else "red" if (edge_a or 0) < 0 else "gray")
-        match_html = (
-            f"<strong>{html.escape(str(r.get('player_a', '')))}</strong>"
-            f" vs {html.escape(str(r.get('player_b', '')))}<br>"
-            f"<span class='small gray'>"
-            f"{html.escape(str(r.get('round_label', '')))}</span>"
-        )
+        player_a = str(r.get("player_a", ""))
+        player_b = str(r.get("player_b", ""))
+        match_text = f"{player_a} vs {player_b}"
+        # Side = whoever the model leans on (positive edge_a → A, else B).
+        favoured_player = player_a if (edge_a or 0) >= 0 else player_b
+        opponent = player_b if favoured_player == player_a else player_a
         injury_html = ('<span class="red">⚠ injury</span>'
                        if r.get("injury_news_flag") else '—')
         mid = html.escape(str(r.get("match_id") or ""))
+        round_lbl = html.escape(str(r.get('round_label', '')))
         out.append(
             f"<tr class='tennis-row' data-mid='{mid}' style='cursor:pointer'>"
-            f"<td>{match_html}</td>"
+            f"<td class='mono small gray'>{mid}</td>"
+            f"<td><strong>{html.escape(match_text)}</strong>"
+            f"<br><span class='small gray'>{round_lbl}</span></td>"
+            f"<td><strong>{html.escape(favoured_player)}</strong>"
+            f"<br><span class='small gray'>vs {html.escape(opponent)}</span></td>"
             f"<td>{html.escape(str(r.get('tournament', '')))}</td>"
             f"<td>{html.escape(str(r.get('surface', '')))}</td>"
             f"<td>{html.escape(str(r.get('current_score') or '—'))}</td>"
@@ -460,9 +520,26 @@ def _render_forecast_graph(rows: List[dict]) -> str:
         # already uses ``volatility_score``.
         vol = float(r.get("volatility_score") or 0.05)
         ci_half = max(0.03, min(0.30, 0.05 + vol * 0.45))
+        # Synthesize a per-match "market rules" string so the panel's
+        # rules pane reads like the NBA contract-rules block. Tennis
+        # markets here aren't real Kalshi contracts, so we describe
+        # them in plain English: "settles at 100¢ if {favoured player}
+        # beats {opponent} in {tournament} on {surface}; otherwise 0¢."
+        favoured = (r.get("player_a", "") if (r.get("edge_a") or 0) >= 0
+                     else r.get("player_b", ""))
+        opponent = (r.get("player_b", "") if favoured == r.get("player_a", "")
+                     else r.get("player_a", ""))
+        rules_str = (
+            f"YES settles at $1.00 if {favoured} beats {opponent} in this "
+            f"{r.get('tournament', '')} match on {r.get('surface', 'Hard')} "
+            f"({r.get('round_label', '')}); $0 otherwise. Settled paper "
+            f"trade — no Kalshi exchange fees applied."
+        )
         payload_map[mid] = {
             "player_a": r.get("player_a", ""),
             "player_b": r.get("player_b", ""),
+            "favoured": favoured,
+            "opponent": opponent,
             "tournament": r.get("tournament", ""),
             "surface": r.get("surface", ""),
             "pre": float(r.get("pre_match_prob_a") or 0.5),
@@ -475,6 +552,7 @@ def _render_forecast_graph(rows: List[dict]) -> str:
                       if r.get("edge_a") is not None else None),
             "label": r.get("recommended_action", "NO_TRADE"),
             "score": r.get("current_score", ""),
+            "rules": rules_str,
         }
     # Pick the top-edge match as the default.
     default_mid = ""
@@ -498,6 +576,11 @@ def _render_forecast_graph(rows: List[dict]) -> str:
         "style='display:block;'></svg>"
         "<div id='tfg-legend' class='small' style='margin-top:8px;"
         "display:flex;gap:18px;flex-wrap:wrap;color:#8b949e;'></div>"
+        "<div id='tfg-rules' style='margin-top:14px;padding-top:10px;"
+        "border-top:1px solid #21262d;font-size:12px;color:#c9d1d9;'>"
+        "<div class='small gray' style='margin-bottom:4px;'>"
+        "MARKET RULES</div>"
+        "<div id='tfg-rules-body'></div></div>"
         f"<script type='application/json' id='tfg-data'>{js_payload}</script>"
         "</div>"
         + _FORECAST_GRAPH_JS
@@ -537,10 +620,15 @@ _FORECAST_GRAPH_JS = """
     const d = payload[mid];
     svg.innerHTML = '';
     legendEl.innerHTML = '';
+    const rulesBody = document.getElementById('tfg-rules-body');
     if (!d) {
       titleEl.textContent = 'No forecast available';
       subEl.textContent = '';
+      if (rulesBody) rulesBody.textContent = '';
       return;
+    }
+    if (rulesBody) {
+      rulesBody.textContent = d.rules || 'No rules text published for this match.';
     }
     titleEl.textContent = d.player_a + ' vs ' + d.player_b;
     const labelTxt = (d.label || '').replace('_', ' ');

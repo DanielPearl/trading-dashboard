@@ -1326,6 +1326,54 @@ def ticker_cell_html(ticker: str | None) -> str:
             f"rel='noopener noreferrer' class='ticker-link'>{tt_esc}</a>")
 
 
+def _match_text_from_ticker(ticker: str | None) -> str:
+    """Parse the matchup string out of a Kalshi NBA ticker.
+
+    Format: ``KXNBAGAME-{YY}{MMM}{DD}{AWAY}{HOME}-{TEAM}``
+    Example: ``KXNBAGAME-26MAY08SASMIN-MIN`` → ``"MIN vs SAS"``.
+
+    Returns ``""`` when the ticker doesn't fit the NBA pattern (gas /
+    CPI / jobless tickers); the caller renders a ``—`` placeholder.
+    """
+    if not ticker:
+        return ""
+    parts = ticker.split("-")
+    if len(parts) < 3 or not parts[0].startswith("KXNBAGAME"):
+        return ""
+    # Middle chunk: 7-char date prefix (YYMMMDD = e.g. ``26MAY08``)
+    # then two 3-char tricodes for away + home.
+    body = parts[1]
+    if len(body) < 13:
+        return ""
+    away_tri = body[7:10]
+    home_tri = body[10:13]
+    if not (away_tri.isalpha() and home_tri.isalpha()):
+        return ""
+    return f"{home_tri.upper()} vs {away_tri.upper()}"
+
+
+def _side_tricode_from_ticker(ticker: str | None, side: str) -> str:
+    """Return the team tricode the bet is on. The third hyphen-segment
+    of an NBA ticker carries the team for which YES = "this team wins".
+    On a NO bet, we want the *other* team. Returns "" for non-NBA tickers.
+    """
+    if not ticker:
+        return ""
+    parts = ticker.split("-")
+    if len(parts) < 3 or not parts[0].startswith("KXNBAGAME"):
+        return ""
+    yes_team = parts[2].upper()
+    if (side or "").upper() == "YES":
+        return yes_team
+    # NO side → return the other team from the matchup chunk.
+    body = parts[1]
+    if len(body) < 13:
+        return yes_team
+    away_tri = body[7:10].upper()
+    home_tri = body[10:13].upper()
+    return away_tri if yes_team == home_tri else home_tri
+
+
 # --------------------------------------------------------------------------- #
 # HTML rendering
 # --------------------------------------------------------------------------- #
@@ -2744,10 +2792,12 @@ def _render_bot_cards(out: List[str], rollup: dict,
         m = entry.get("model") or {}
         name = b.get("name", "—")
         bot_key = b.get("key", "")
-        # Tennis bot doesn't trade a Kalshi series — show its model
-        # family in the meta slot instead so the card still reads sensibly.
+        # Upper-right meta slot. For Kalshi bots this is the series_ticker
+        # prefix (e.g. "KXNBAGAME"). For tennis we show the ticker
+        # prefix the bot's matches use ("BASELINEBREAK") so the card
+        # has the same shape and reads "first part of the tickers".
         if b.get("dashboard_type") == "tennis":
-            series_ticker = "Baseline Break · ATP/WTA"
+            series_ticker = "BASELINEBREAK"
         else:
             series_ticker = b.get("series_ticker") or "—"
         # Period-scoped net P&L from this bot's per-bot summary row.
@@ -2770,10 +2820,13 @@ def _render_bot_cards(out: List[str], rollup: dict,
         # rendered inline with the bot name in the card header.
         # Drift = |training accuracy − live actual-win-%| > 10pp on
         # n ≥ 10 closed bets.
+        # Tennis is exempt from the drift badge — its paper-trade
+        # ledger settles probabilistically and the user explicitly
+        # asked not to surface drift on the tennis card.
         ACTUAL_WIN_MIN_N = 10
         DRIFT_PP_THRESHOLD = 0.10
         drift_html = ""
-        if m:
+        if m and b.get("dashboard_type") != "tennis":
             a_wins_pre = int(m.get("actual_wins") or 0)
             a_losses_pre = int(m.get("actual_losses") or 0)
             a_total_pre = a_wins_pre + a_losses_pre
@@ -2858,11 +2911,17 @@ def _render_active_bets_table(out: List[str], bets: List[dict],
         out.append(f"<div class='empty'>{html.escape(empty_msg)}</div>")
         return
     bot_th = "<th>Bot</th>" if show_bot else ""
-    # Last column is the per-row info button — no header label needed
-    # (the icon is self-explanatory; tooltip on hover spells it out).
+    # Column layout: ``Match`` (matchup string) and ``Side`` (the
+    # team/player we bet on) replace the previous ``Question`` +
+    # YES/NO ``Side`` pair so the table reads cleanly for sport bots
+    # (NBA, tennis) where there is a well-defined two-sided contest.
+    # For non-match bots (gas / CPI / jobless) Match falls back to the
+    # underlying label and Side shows the YES/NO + question fragment.
+    # Last column is the per-row info button — no header label needed.
     out.append("<table><thead><tr>"
-               f"<th>Opened</th>{bot_th}<th>Ticker</th><th>Question</th>"
-               "<th class='num'>Contracts</th><th>Side</th>"
+               f"<th>Opened</th>{bot_th}<th>Ticker</th>"
+               "<th>Match</th><th>Side</th>"
+               "<th class='num'>Contracts</th>"
                "<th class='num' title='Implied probability of our side at entry (= entry price in ¢).'>Entry prob</th>"
                "<th class='num' title='Implied probability of our side right now, taken from the market mid.'>Current prob</th>"
                "<th class='num' title='Entry prob × contracts + Kalshi entry fee — total cash out at open'>Entry cost</th>"
@@ -2998,13 +3057,36 @@ def _render_active_bets_table(out: List[str], bets: List[dict],
         }
         criteria_json = html.escape(json.dumps(
             criteria, separators=(",", ":"), default=str))
+        # Match cell: tennis pre-fills _match; for NBA we parse the
+        # matchup from the ticker (e.g. KXNBAGAME-26MAY08SASMIN-MIN
+        # → "MIN vs SAS"); for non-match bots it falls back to "—".
+        match_text = b.get("_match") or _match_text_from_ticker(b.get("ticker"))
+        match_html = (f"<strong>{html.escape(match_text)}</strong>"
+                       if match_text else "<span class='gray'>—</span>")
+        # Side cell: the team / player / "YES question" depending on bot.
+        side_player = b.get("_side_player")
+        if side_player:
+            side_inner = (f"<strong>{html.escape(side_player)}</strong>"
+                          f" <span class='badge {badge_cls}'>{side}</span>")
+        elif match_text:
+            # NBA-style: prefer the team's tricode (parsed from ticker).
+            tri = _side_tricode_from_ticker(b.get("ticker"), side)
+            if tri:
+                side_inner = (f"<strong>{html.escape(tri)}</strong>"
+                              f" <span class='badge {badge_cls}'>{side}</span>")
+            else:
+                side_inner = f"<span class='badge {badge_cls}'>{side}</span>"
+        else:
+            # Non-match bots — collapse the old Question text into Side.
+            side_inner = (f"<span class='badge {badge_cls}'>{side}</span> "
+                          f"<span class='small gray'>{html.escape(question)}</span>")
         out.append(
             f"<tr><td>{html.escape(opened)}</td>"
             f"{bot_td}"
             f"<td class='mono'>{ticker_cell_html(b.get('ticker'))}</td>"
-            f"<td>{html.escape(question)}</td>"
+            f"<td>{match_html}</td>"
+            f"<td>{side_inner}</td>"
             f"<td class='num'>{contracts}</td>"
-            f"<td><span class='badge {badge_cls}'>{side}</span></td>"
             f"{entry_prob_cell}"
             f"{current_prob_cell}"
             f"{entry_cost_cell}"
@@ -3043,8 +3125,8 @@ def _render_bet_history_block(out: List[str], history: List[dict],
 
     head = (
         "<table><thead><tr>"
-        "<th>Closed</th><th>Bot</th><th>Ticker</th><th>Question</th>"
-        "<th>Side</th>"
+        "<th>Closed</th><th>Bot</th><th>Ticker</th>"
+        "<th>Match</th><th>Side</th>"
         "<th class='num'>Entry</th><th class='num'>Exit</th>"
         "<th class='num'>Contracts</th>"
         "<th class='num' title='Model probability for the side we bet on, recorded at entry.'>Model p</th>"
@@ -3104,11 +3186,29 @@ def _render_bet_history_block(out: List[str], history: List[dict],
             ev_cls = "gray"
         else:
             ev_str, ev_cls = (f"${ev:+.3f}", _ev_status(ev)[0])
+        # Match + Side cells. NBA tickers parse cleanly into team
+        # names; non-NBA bots fall back to the question text in Side.
+        match_text = b.get("_match") or _match_text_from_ticker(b.get("ticker"))
+        side_player = b.get("_side_player")
+        if side_player:
+            match_cell = f"<td><strong>{html.escape(match_text)}</strong></td>" if match_text else "<td class='gray'>—</td>"
+            side_cell = (f"<td><strong>{html.escape(side_player)}</strong>"
+                         f" <span class='badge {badge_cls}'>{side}</span></td>")
+        elif match_text:
+            tri = _side_tricode_from_ticker(b.get("ticker"), side)
+            opp = _side_tricode_from_ticker(b.get("ticker"), "NO" if side == "YES" else "YES")
+            match_cell = f"<td>{html.escape(match_text)}</td>"
+            side_cell = (f"<td><strong>{html.escape(tri)}</strong>"
+                         f" <span class='badge {badge_cls}'>{side}</span><br>"
+                         f"<span class='small gray'>vs {html.escape(opp)}</span></td>")
+        else:
+            match_cell = "<td class='gray'>—</td>"
+            side_cell = (f"<td><span class='badge {badge_cls}'>{side}</span> "
+                         f"<span class='small gray'>{html.escape(question)}</span></td>")
         return (f"<tr><td>{html.escape(closed)}</td>"
                 f"<td>{html.escape(bot_name)}</td>"
                 f"<td class='mono'>{ticker_cell_html(b.get('ticker'))}</td>"
-                f"<td>{html.escape(question)}</td>"
-                f"<td><span class='badge {badge_cls}'>{side}</span></td>"
+                f"{match_cell}{side_cell}"
                 f"<td class='num'>{entry}c</td>"
                 f"<td class='num'>{cents_or_dash(exit_c)}</td>"
                 f"<td class='num'>{contracts}</td>"
@@ -3577,6 +3677,13 @@ def _render_watchlist(out: List[str], watchlist: List[dict],
         out.append("</div></div>")
         return
 
+    # ── Per-ticker forecast panel ─────────────────────────────────────────
+    # Shows the model vs market probabilities (with confidence band) AND
+    # the contract rules for whichever ticker the user clicks. Sits
+    # between the active-bet table and the watchlist grid so the user
+    # can pivot to "what's the deal with this row" without scrolling.
+    _render_per_ticker_forecast_panel(out, watchlist, contract_close_ts)
+
     # ── Pre-pass: enrich each row with EV/BE numbers, then sort by best
     # EV. Sorting by EV (not by gap or by alphabetical ticker) puts the
     # genuinely-actionable opportunities at the top of the table.
@@ -3625,7 +3732,7 @@ def _render_watchlist(out: List[str], watchlist: List[dict],
     # the hero header instead of being repeated per row.
     out.append("<div class='watchlist-scroll'>"
                "<table><thead><tr>"
-               "<th>Ticker</th><th>Question</th>"
+               "<th>Ticker</th><th>Match</th><th>Side</th>"
                "<th class='num' title='Open interest — number of contracts currently held open on this strike.'>Contracts</th>"
                "<th class='num'>Kalshi YES %</th>"
                "<th class='num'>Kalshi NO %</th>"
@@ -3832,9 +3939,29 @@ def _render_watchlist(out: List[str], watchlist: List[dict],
         # The "BOUGHT YES/NO" inline pill was retired — the row's
         # side-colored left bar + colored ticker text already convey
         # the bet at a glance.
+        # Match + Side cells. NBA tickers carry both teams; we parse
+        # them so the user sees "MIN vs SAS" and "MIN / vs SAS" stacked.
+        # Non-NBA bots don't fit the matchup mold — Match collapses to
+        # a placeholder and Side shows the question text the column
+        # used to carry verbatim.
+        match_text = _match_text_from_ticker(ticker)
+        if match_text:
+            yes_team = _side_tricode_from_ticker(ticker, "YES")
+            opp_team = _side_tricode_from_ticker(ticker, "NO")
+            match_cell = f"<td>{html.escape(match_text)}</td>"
+            side_cell = (
+                f"<td><strong>{html.escape(yes_team)}</strong>"
+                f"<br><span class='small gray'>vs "
+                f"{html.escape(opp_team)}</span></td>"
+            )
+        else:
+            # Fallback for non-match bots: keep the old question text
+            # in the Side column so the row still describes itself.
+            match_cell = "<td class='gray'>—</td>"
+            side_cell = f"<td>{html.escape(qstr)}</td>"
         out.append(f"<tr{row_cls} data-ticker='{tt_esc}'>"
                    f"<td class='mono'>{ticker_cell}</td>"
-                   f"<td>{html.escape(qstr)}</td>"
+                   f"{match_cell}{side_cell}"
                    f"<td class='num' data-field='oi'>{oi_str}</td>"
                    f"<td class='num' data-field='kyes'>{kyes_str}</td>"
                    f"<td class='num' data-field='kno'>{kno_str}</td>"
@@ -3845,6 +3972,253 @@ def _render_watchlist(out: List[str], watchlist: List[dict],
                    f"<td data-field='verdict'>{badge}</td></tr>")
     out.append("</tbody></table></div>")
     out.append("</div></div>")
+
+
+def _render_per_ticker_forecast_panel(
+    out: List[str], watchlist: List[dict],
+    contract_close_ts: float | None = None,
+) -> None:
+    """Click-driven per-ticker forecast + rules panel.
+
+    For each watchlist row we serialize a small JSON record (model
+    prob, market prob, confidence band, rules text, match label).
+    The page's JS listens for clicks on the watchlist tbody and
+    redraws an SVG comparison chart + rules paragraph for the
+    selected row. Default shows the highest-EV row so the panel is
+    always populated.
+    """
+    if not watchlist:
+        return
+    payload: Dict[str, Dict[str, object]] = {}
+    for v in watchlist:
+        ticker = v.get("ticker") or ""
+        if not ticker:
+            continue
+        p_yes = v.get("model_prob_yes")
+        ya = v.get("yes_ask_cents")
+        na = v.get("no_ask_cents")
+        market_yes = (float(ya) / 100.0 if ya is not None
+                       else 1.0 - (float(na) / 100.0)
+                       if na is not None else None)
+        # CI half-width — borrow tennis's heuristic. Wider when low
+        # confidence (model close to 50/50), tighter when extreme.
+        if p_yes is not None:
+            extremity = abs(float(p_yes) - 0.5) * 2.0  # 0..1
+            ci_half = max(0.03, min(0.20, 0.12 - extremity * 0.06))
+        else:
+            ci_half = 0.10
+        ci_low = max(0.0, (p_yes or 0.5) - ci_half)
+        ci_high = min(1.0, (p_yes or 0.5) + ci_half)
+        match_text = _match_text_from_ticker(ticker)
+        yes_team = _side_tricode_from_ticker(ticker, "YES")
+        opp_team = _side_tricode_from_ticker(ticker, "NO")
+        edge_pp = ((float(p_yes) - market_yes) * 100.0
+                    if (p_yes is not None and market_yes is not None) else None)
+        verdict = v.get("bot_verdict", "SKIP")
+        payload[ticker] = {
+            "ticker": ticker,
+            "match": match_text or ticker,
+            "yes_team": yes_team or "",
+            "opp_team": opp_team or "",
+            "model_yes": float(p_yes) if p_yes is not None else None,
+            "market_yes": market_yes,
+            "ci_low": ci_low, "ci_high": ci_high,
+            "edge_pp": edge_pp,
+            "ev_yes": v.get("_ev_yes"),
+            "ev_no": v.get("_ev_no"),
+            "best_ev": v.get("_best_ev"),
+            "best_side": v.get("_best_side"),
+            "verdict": verdict,
+            "rules": v.get("rules_primary") or "",
+            "strike_low": v.get("strike_low"),
+            "strike_high": v.get("strike_high"),
+        }
+    # Pick the default (highest absolute edge / EV).
+    default_ticker = ""
+    if watchlist:
+        sorted_wl = sorted(
+            watchlist,
+            key=lambda r: -abs(float(r.get("_best_ev") or 0)),
+        )
+        default_ticker = (sorted_wl[0].get("ticker") or "") if sorted_wl else ""
+    js_payload = json.dumps(payload, separators=(",", ":"), default=str)
+
+    out.append(
+        "<h3 class='subhead' style='margin-top:18px;'>"
+        "Selected ticker — forecast + market rules</h3>"
+    )
+    out.append(
+        "<div id='per-ticker-panel' "
+        f"data-default-ticker='{html.escape(default_ticker)}' "
+        "style='background:#0d1117;border:1px solid #21262d;"
+        "border-radius:8px;padding:14px 18px;margin:6px 0 14px 0;'>"
+        "<div id='ptp-title' style='font-size:13px;color:#f0f6fc;"
+        "margin-bottom:6px;font-weight:600;'></div>"
+        "<div id='ptp-sub' class='small gray' style='margin-bottom:10px;'></div>"
+        "<svg id='ptp-svg' width='100%' height='180' "
+        "viewBox='0 0 700 180' preserveAspectRatio='none' "
+        "style='display:block;'></svg>"
+        "<div id='ptp-legend' class='small' style='margin-top:8px;"
+        "display:flex;gap:18px;flex-wrap:wrap;color:#8b949e;'></div>"
+        "<div id='ptp-rules' style='margin-top:14px;padding-top:10px;"
+        "border-top:1px solid #21262d;font-size:12px;color:#c9d1d9;'>"
+        "<div class='small gray' style='margin-bottom:4px;'>"
+        "MARKET RULES</div>"
+        "<div id='ptp-rules-body'></div></div>"
+        f"<script type='application/json' id='ptp-data'>{js_payload}</script>"
+        "</div>"
+    )
+    out.append(_PER_TICKER_PANEL_JS)
+
+
+# Vanilla-JS panel updater. Reads the inline payload and the active
+# ticker (default: top-EV row). Hooks ``click`` on every watchlist
+# row to swap in the clicked ticker's data — chart, header text,
+# rules. Uses the standard CSS classes already on the page so no
+# additional styling is needed beyond the inline ``style=`` attrs.
+_PER_TICKER_PANEL_JS = """
+<script>
+(function() {
+  const dataEl = document.getElementById('ptp-data');
+  const panel = document.getElementById('per-ticker-panel');
+  if (!dataEl || !panel) return;
+  const payload = JSON.parse(dataEl.textContent || '{}');
+  const svg = document.getElementById('ptp-svg');
+  const titleEl = document.getElementById('ptp-title');
+  const subEl = document.getElementById('ptp-sub');
+  const legendEl = document.getElementById('ptp-legend');
+  const rulesEl = document.getElementById('ptp-rules-body');
+  const W = 700, H = 180, PAD_L = 50, PAD_R = 30, PAD_T = 26, PAD_B = 36;
+  const innerW = W - PAD_L - PAD_R;
+  const innerH = H - PAD_T - PAD_B;
+  const xOf = (p) => PAD_L + p * innerW;
+
+  function el(tag, attrs, children) {
+    const e = document.createElementNS('http://www.w3.org/2000/svg', tag);
+    for (const [k, v] of Object.entries(attrs || {})) e.setAttribute(k, v);
+    (children || []).forEach(c => e.appendChild(c));
+    return e;
+  }
+  function txt(t) { return document.createTextNode(String(t)); }
+
+  function draw(ticker) {
+    const d = payload[ticker];
+    svg.innerHTML = '';
+    legendEl.innerHTML = '';
+    if (!d) {
+      titleEl.textContent = 'No forecast for that ticker';
+      subEl.textContent = '';
+      rulesEl.textContent = '';
+      return;
+    }
+    titleEl.textContent = d.match + (d.yes_team ? ' — betting on ' + d.yes_team : '');
+    const edgeStr = (d.edge_pp !== null && d.edge_pp !== undefined)
+      ? (d.edge_pp >= 0 ? '+' : '') + d.edge_pp.toFixed(1) + 'pp' : '—';
+    const evStr = (d.best_ev !== null && d.best_ev !== undefined)
+      ? '$' + (d.best_ev >= 0 ? '+' : '') + d.best_ev.toFixed(3) : '—';
+    subEl.textContent = ticker + ' · edge ' + edgeStr
+      + ' · best EV ' + evStr + ' (' + (d.best_side || '—') + ') · '
+      + 'verdict ' + d.verdict;
+
+    const axisY = PAD_T + innerH - 18;
+    svg.appendChild(el('rect', {
+      x: PAD_L, y: axisY - 8, width: innerW, height: 16,
+      fill: '#1d232c', stroke: '#30363d', 'stroke-width': '1', rx: 4,
+    }));
+    svg.appendChild(el('line', {
+      x1: xOf(0.5), x2: xOf(0.5),
+      y1: PAD_T + 4, y2: PAD_T + innerH + 4,
+      stroke: '#30363d', 'stroke-dasharray': '3,4',
+    }));
+    if (d.ci_low !== null && d.ci_high !== null) {
+      svg.appendChild(el('rect', {
+        x: xOf(d.ci_low), y: axisY - 14,
+        width: Math.max(2, xOf(d.ci_high) - xOf(d.ci_low)),
+        height: 28, fill: '#58a6ff22', stroke: '#58a6ff55',
+        'stroke-width': '1', rx: 3,
+      }));
+    }
+    const points = [
+      { v: d.model_yes, color: '#58a6ff', label: 'Model YES' },
+      { v: d.market_yes, color: '#e3b341', label: 'Market YES' },
+    ];
+    points.forEach((p) => {
+      if (p.v === null || p.v === undefined) return;
+      const x = xOf(p.v);
+      svg.appendChild(el('circle', {
+        cx: x, cy: axisY, r: 7,
+        fill: p.color, stroke: '#0d1117', 'stroke-width': '2',
+      }));
+      const lbl = el('text', {
+        x: x, y: axisY - 16, fill: p.color,
+        'text-anchor': 'middle', 'font-size': '11', 'font-weight': '600',
+      });
+      lbl.appendChild(txt((p.v * 100).toFixed(0) + '%'));
+      svg.appendChild(lbl);
+    });
+    [0, 0.25, 0.5, 0.75, 1].forEach((t) => {
+      const x = xOf(t);
+      svg.appendChild(el('line', {
+        x1: x, x2: x, y1: axisY + 10, y2: axisY + 14,
+        stroke: '#30363d',
+      }));
+      const lbl = el('text', {
+        x: x, y: axisY + 28, fill: '#8b949e',
+        'text-anchor': 'middle', 'font-size': '10',
+      });
+      lbl.appendChild(txt((t * 100).toFixed(0) + '%'));
+      svg.appendChild(lbl);
+    });
+    const yLbl = el('text', {
+      x: PAD_L, y: PAD_T + 12, fill: '#8b949e', 'font-size': '11',
+    });
+    yLbl.appendChild(txt('P(YES)'));
+    svg.appendChild(yLbl);
+    points.forEach((p) => {
+      if (p.v === null || p.v === undefined) return;
+      const item = document.createElement('span');
+      item.style.display = 'inline-flex';
+      item.style.alignItems = 'center';
+      item.style.gap = '6px';
+      const dot = document.createElement('span');
+      dot.style.cssText = 'display:inline-block;width:10px;height:10px;'
+        + 'border-radius:50%;background:' + p.color + ';';
+      item.appendChild(dot);
+      item.appendChild(txt(p.label + ' ' + (p.v * 100).toFixed(0) + '%'));
+      legendEl.appendChild(item);
+    });
+
+    rulesEl.textContent = d.rules || 'No rules text published for this market yet.';
+  }
+
+  function setSelected(ticker) {
+    document.querySelectorAll('#watchlist-tbody tr').forEach((tr) => {
+      tr.classList.toggle('row-selected', tr.dataset.ticker === ticker);
+    });
+  }
+
+  const def = panel.dataset.defaultTicker || '';
+  if (def) { draw(def); setSelected(def); }
+
+  document.addEventListener('click', function (ev) {
+    const tr = ev.target.closest('#watchlist-tbody tr');
+    if (!tr) return;
+    const ticker = tr.dataset.ticker;
+    if (!ticker) return;
+    draw(ticker);
+    setSelected(ticker);
+    // Smooth-scroll the panel into view if it's offscreen.
+    const c = document.getElementById('per-ticker-panel');
+    if (c) c.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+  });
+})();
+</script>
+<style>
+#watchlist-tbody tr { cursor: pointer; }
+#watchlist-tbody tr.row-selected td { background: #1f2630 !important; }
+#watchlist-tbody tr:hover td { background: #1c222b; }
+</style>
+"""
 
 
 def _render_contract_rules(out: List[str], watchlist: List[dict],
@@ -4137,6 +4511,13 @@ class Handler(BaseHTTPRequestHandler):
                             "strike_count": 0,
                             "strike_lo": None, "strike_hi": None,
                         })
+                        # Pull tennis open paper bets into the cross-bot
+                        # active-bets table so the user sees them in the
+                        # home summary alongside the Kalshi bots' bets.
+                        for ab in _tennis.active_bets_for_rollup(b.get("sim_state_path")):
+                            ab["_bot_name"] = b["name"]
+                            ab["_display"] = b.get("display") or {}
+                            global_active_bets.append(ab)
                         continue
                     if b.get("dashboard_type") and b["dashboard_type"] != "standard":
                         continue
