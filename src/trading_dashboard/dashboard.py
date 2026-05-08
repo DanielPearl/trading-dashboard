@@ -3496,80 +3496,68 @@ def _read_feature_importance(csv_path: str) -> List[dict]:
     return out
 
 
-def fetch_calibration_bins(db_path: str, n_bins: int = 10) -> List[dict]:
-    """Decile calibration: predicted-prob bin → observed win rate, on
-    closed positions. Win = realized_pnl_cents > 0.
+def calibration_from_holdout(pairs: List[Tuple[float, int]],
+                               n_bins: int = 10) -> List[dict]:
+    """Decile calibration on the trainer's held-out predictions:
+    predicted-prob bin → observed positive-class rate. Same shape as
+    the prior closed-bet version, just sourced from training-time
+    evaluation instead of paper trades.
     """
-    if not Path(db_path).exists():
-        return []
     edges = [i / n_bins for i in range(n_bins + 1)]
     bins = [{"lo": edges[i], "hi": edges[i + 1],
              "n": 0, "wins": 0} for i in range(n_bins)]
-    try:
-        with closing(_conn(db_path)) as c:
-            rows = c.execute(
-                "SELECT side, model_yes_prob_at_entry AS p, "
-                "       realized_pnl_cents "
-                "FROM positions "
-                "WHERE status='closed' "
-                "  AND model_yes_prob_at_entry IS NOT NULL"
-            ).fetchall()
-    except (sqlite3.OperationalError, sqlite3.DatabaseError):
-        return []
-    for r in rows:
-        side = (r["side"] or "").upper()
-        try:
-            p_yes = float(r["p"])
-        except (TypeError, ValueError):
-            continue
-        p_side = p_yes if side == "YES" else (1.0 - p_yes)
-        idx = min(n_bins - 1, max(0, int(p_side * n_bins)))
+    for p, y in pairs:
+        idx = min(n_bins - 1, max(0, int(p * n_bins)))
         bins[idx]["n"] += 1
-        try:
-            won = float(r["realized_pnl_cents"] or 0) > 0
-        except (TypeError, ValueError):
-            won = False
-        if won:
+        if y == 1:
             bins[idx]["wins"] += 1
     return bins
 
 
-def fetch_confusion_matrix(db_path: str, threshold: float = 0.5) -> dict:
-    """Confusion matrix from realized closed bets. Win =
-    realized_pnl_cents > 0. Confidence = side-prob at entry ≥
-    threshold.
+def _read_holdout_predictions(csv_path: str) -> List[Tuple[float, int]]:
+    """Load (predicted_prob, actual_label) pairs from a bot's
+    holdout_predictions.csv. The trainer writes this file on each
+    retrain — it carries the model's evaluation against the held-out
+    historical test set, which is what the user sees as "the
+    model's accuracy" on the Models tab.
+
+    Returns an empty list when the file is missing or unreadable
+    (e.g. a bot whose trainer hasn't been redeployed yet).
+    """
+    p = Path(csv_path)
+    if not p.exists():
+        return []
+    out: List[Tuple[float, int]] = []
+    try:
+        with p.open("r") as f:
+            rd = csv.DictReader(f)
+            for row in rd:
+                try:
+                    prob = float(row.get("predicted_prob") or 0.0)
+                    label = int(float(row.get("actual_label") or 0))
+                except (TypeError, ValueError):
+                    continue
+                out.append((prob, 1 if label else 0))
+    except (OSError, csv.Error):
+        return []
+    return out
+
+
+def confusion_from_holdout(pairs: List[Tuple[float, int]],
+                            threshold: float = 0.5) -> dict:
+    """Build a confusion matrix from the trainer's held-out
+    (prob, label) pairs. The model's "prediction" is whether the
+    predicted prob exceeds the threshold; the "actual" is the
+    historical ground-truth label.
     """
     out = {"tp": 0, "fp": 0, "tn": 0, "fn": 0, "n": 0}
-    if not Path(db_path).exists():
-        return out
-    try:
-        with closing(_conn(db_path)) as c:
-            rows = c.execute(
-                "SELECT side, model_yes_prob_at_entry AS p, "
-                "       realized_pnl_cents "
-                "FROM positions "
-                "WHERE status='closed' "
-                "  AND model_yes_prob_at_entry IS NOT NULL"
-            ).fetchall()
-    except (sqlite3.OperationalError, sqlite3.DatabaseError):
-        return out
-    for r in rows:
-        try:
-            p_yes = float(r["p"])
-        except (TypeError, ValueError):
-            continue
-        side = (r["side"] or "").upper()
-        p_side = p_yes if side == "YES" else (1.0 - p_yes)
-        try:
-            won = float(r["realized_pnl_cents"] or 0) > 0
-        except (TypeError, ValueError):
-            won = False
-        confident = p_side >= threshold
-        if confident and won:
+    for p, y in pairs:
+        pred = 1 if p >= threshold else 0
+        if pred == 1 and y == 1:
             out["tp"] += 1
-        elif confident and not won:
+        elif pred == 1 and y == 0:
             out["fp"] += 1
-        elif not confident and not won:
+        elif pred == 0 and y == 0:
             out["tn"] += 1
         else:
             out["fn"] += 1
@@ -3630,64 +3618,36 @@ def fetch_per_strike_accuracy(db_path: str) -> List[dict]:
     return out
 
 
-def fetch_roc_points(db_path: str) -> List[dict]:
-    """Build an ROC curve from closed positions.
-
-    Each closed bet contributes one (predicted side-prob, won) pair;
-    we sweep thresholds from 1.0 down to 0.0 and at each threshold
-    record the (FPR, TPR). Returns a list of {fpr, tpr, threshold}
-    dicts plus a final point at (1, 1) so the polyline closes.
+def roc_from_holdout(pairs: List[Tuple[float, int]]) -> List[dict]:
+    """Sweep thresholds across the trainer's held-out predictions to
+    produce an ROC curve. Returns a list of {fpr, tpr, threshold}
+    dicts. Empty when the file is missing or only one class is
+    present in the holdout.
     """
-    if not Path(db_path).exists():
-        return []
-    try:
-        with closing(_conn(db_path)) as c:
-            rows = c.execute(
-                "SELECT side, model_yes_prob_at_entry AS p, "
-                "       realized_pnl_cents "
-                "FROM positions "
-                "WHERE status='closed' "
-                "  AND model_yes_prob_at_entry IS NOT NULL"
-            ).fetchall()
-    except (sqlite3.OperationalError, sqlite3.DatabaseError):
-        return []
-    pairs: List[Tuple[float, bool]] = []
-    for r in rows:
-        try:
-            p_yes = float(r["p"])
-        except (TypeError, ValueError):
-            continue
-        side = (r["side"] or "").upper()
-        p_side = p_yes if side == "YES" else (1.0 - p_yes)
-        try:
-            won = float(r["realized_pnl_cents"] or 0) > 0
-        except (TypeError, ValueError):
-            won = False
-        pairs.append((p_side, won))
     if not pairs:
         return []
-    n_pos = sum(1 for _, w in pairs if w)
-    n_neg = sum(1 for _, w in pairs if not w)
+    n_pos = sum(1 for _, y in pairs if y == 1)
+    n_neg = sum(1 for _, y in pairs if y == 0)
     if n_pos == 0 or n_neg == 0:
         return []
-    pairs.sort(key=lambda x: -x[0])
+    sorted_pairs = sorted(pairs, key=lambda x: -x[0])
     tp = fp = 0
     points: List[dict] = [{"fpr": 0.0, "tpr": 0.0, "threshold": 1.0}]
     last_p: float | None = None
-    for p, w in pairs:
+    for p, y in sorted_pairs:
         if last_p is not None and p != last_p:
             points.append({
                 "fpr": fp / n_neg,
                 "tpr": tp / n_pos,
                 "threshold": last_p,
             })
-        if w:
+        if y == 1:
             tp += 1
         else:
             fp += 1
         last_p = p
     points.append({"fpr": 1.0, "tpr": 1.0,
-                   "threshold": pairs[-1][0]})
+                    "threshold": sorted_pairs[-1][0]})
     return points
 
 
@@ -4083,21 +4043,22 @@ def _svg_feature_importance_vertical(features: List[dict]) -> str:
                     key=lambda f: f.get("mean_importance") or 0.0,
                     reverse=True)
     n = len(feats)
-    # Dynamic right padding so the rightmost rotated label has room
-    # to extend up-and-right without clipping. A 30-char monospace
-    # at 11px is ~165px wide; rotated 45° projects 165/√2 ≈ 117px
-    # horizontally. Add slack for the longest label actually shown.
-    char_w_px = 7  # rough width of a monospace 11px glyph
+    # Dynamic right + bottom padding so the rotated labels never
+    # clip the SVG edge. A 36-char monospace at 11px is ~250px wide;
+    # rotated 45° its bounding box projects ~180px horizontally and
+    # ~180px vertically from the anchor. We pad slightly beyond that
+    # so the label tail has breathing room from the edge.
+    char_w_px = 7
     longest_chars = max((len(f.get("feature") or "") for f in feats),
                          default=0)
-    label_text_px = max(60, min(longest_chars, 36) * char_w_px)
-    label_x_extent = int(label_text_px * 0.75)  # cos(45°) projection
-    label_y_extent = int(label_text_px * 0.75)
+    label_text_px = max(80, longest_chars * char_w_px)
+    # cos(45°) = sin(45°) ≈ 0.707; round up + buffer.
+    label_extent = int(label_text_px * 0.72) + 20
     width = 1180
     pad_l = 56
-    pad_r = max(40, label_x_extent + 12)
+    pad_r = max(60, label_extent + 18)
     pad_t = 18
-    pad_b = max(120, label_y_extent + 30)
+    pad_b = max(160, label_extent + 32)
     inner_w = width - pad_l - pad_r
     height = pad_t + pad_b + 260
     inner_h = height - pad_t - pad_b
@@ -4450,34 +4411,41 @@ def _render_models_panel(out: List[str], bot: dict, model: dict | None,
         )
     out.append("</dl>")
 
-    # ── ROC curve + confusion matrix — same row, equal columns. ─────
+    # ── ROC curve + confusion matrix — both sourced from the
+    # trainer's held-out predictions (data/holdout_predictions.csv).
+    # That file is the model's evaluation against historical
+    # ground-truth (game outcomes / claims releases / etc.) — what
+    # the user sees as "the model's accuracy", separate from any
+    # closed-bet noise.
     auc_scalar = (model or {}).get("training_roc_auc")
-    roc_points = fetch_roc_points(db_path)
-    cm = fetch_confusion_matrix(db_path, threshold=0.5)
+    holdout_path = Path(db_path).parent / "holdout_predictions.csv"
+    pairs = _read_holdout_predictions(str(holdout_path))
+    roc_points = roc_from_holdout(pairs)
+    cm = confusion_from_holdout(pairs, threshold=0.5)
     out.append(
         "<div style='display:grid;grid-template-columns:1fr 1fr;"
         "gap:14px;align-items:start;'>"
     )
     out.append("<div>")
     out.append("<h3 class='subhead' style='margin-top:0;'>"
-                "ROC curve <span class='small gray'>(closed bets, "
-                "threshold sweep)</span></h3>")
+                "ROC curve <span class='small gray'>(held-out "
+                f"test set, {len(pairs):,} predictions)</span></h3>")
     out.append(_svg_roc_curve(roc_points, auc_scalar=auc_scalar))
     out.append("</div>")
     out.append("<div>")
     out.append("<h3 class='subhead' style='margin-top:0;'>"
                 "Confusion matrix <span class='small gray'>"
-                "(threshold = 0.5)</span></h3>")
+                "(held-out test set, threshold = 0.5)</span></h3>")
     out.append(_svg_confusion(cm))
     out.append("</div>")
     out.append("</div>")
 
-    # ── Calibration curve — full-width below the duo. ───────────────
+    # ── Calibration curve from the held-out predictions ─────────────
     out.append("<h3 class='subhead'>Calibration "
-                "<span class='small gray'>(predicted prob vs realized "
-                "win rate, on closed bets)</span></h3>")
-    bins = fetch_calibration_bins(db_path, n_bins=10)
-    out.append(_svg_calibration(bins))
+                "<span class='small gray'>(held-out test set, "
+                "predicted prob vs observed positive rate)</span></h3>")
+    cal_bins = calibration_from_holdout(pairs, n_bins=10)
+    out.append(_svg_calibration(cal_bins))
 
     # ── Per-strike accuracy ─────────────────────────────────────────
     rows = fetch_per_strike_accuracy(db_path)
