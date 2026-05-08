@@ -1291,6 +1291,31 @@ def time_to_close_str(minutes: float | None) -> str:
     return f"{int(minutes)}m"
 
 
+def ticker_cell_html(ticker: str | None) -> str:
+    """Render a ticker as a Kalshi market-page link.
+
+    Output mirrors the convention already used in the Watchlist table
+    (``class='ticker-link'``): the visible text is the full market
+    ticker, but the href targets ``kalshi.com/markets/<series>``
+    where series is everything before the first hyphen, lowercased.
+    Linking to the series page lands on the same market group the
+    row is describing; Kalshi resolves it to whichever event is
+    currently live.
+
+    Returns "—" for None / empty input so callers can drop it into a
+    `<td>` directly.
+    """
+    if not ticker:
+        return "—"
+    tt_esc = html.escape(ticker)
+    series_lower = ticker.split("-", 1)[0].lower()
+    if not series_lower:
+        return tt_esc
+    url = f"https://kalshi.com/markets/{series_lower}"
+    return (f"<a href='{html.escape(url)}' target='_blank' "
+            f"rel='noopener noreferrer' class='ticker-link'>{tt_esc}</a>")
+
+
 # --------------------------------------------------------------------------- #
 # HTML rendering
 # --------------------------------------------------------------------------- #
@@ -2955,7 +2980,7 @@ def _render_active_bets_table(out: List[str], bets: List[dict],
         out.append(
             f"<tr><td>{html.escape(opened)}</td>"
             f"{bot_td}"
-            f"<td class='mono'>{html.escape(b['ticker'])}</td>"
+            f"<td class='mono'>{ticker_cell_html(b.get('ticker'))}</td>"
             f"<td>{html.escape(question)}</td>"
             f"<td class='num'>{contracts}</td>"
             f"<td><span class='badge {badge_cls}'>{side}</span></td>"
@@ -3060,7 +3085,7 @@ def _render_bet_history_block(out: List[str], history: List[dict],
             ev_str, ev_cls = (f"${ev:+.3f}", _ev_status(ev)[0])
         return (f"<tr><td>{html.escape(closed)}</td>"
                 f"<td>{html.escape(bot_name)}</td>"
-                f"<td class='mono'>{html.escape(b['ticker'])}</td>"
+                f"<td class='mono'>{ticker_cell_html(b.get('ticker'))}</td>"
                 f"<td>{html.escape(question)}</td>"
                 f"<td><span class='badge {badge_cls}'>{side}</span></td>"
                 f"<td class='num'>{entry}c</td>"

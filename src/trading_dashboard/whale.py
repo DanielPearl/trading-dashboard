@@ -617,7 +617,10 @@ def fetch_live_big_bets(series_tickers: List[str],
     bot's signal_tracker has a chance to capture +30m checkpoints.
     """
     from . import kalshi_client
-    client = kalshi_client.default_client()
+    # The kalshi_client module was refactored from a bespoke client to
+    # a thin shim around kalshi_sdk; the singleton accessor was renamed
+    # default_client() → get_client() at that time. Call the new name.
+    client = kalshi_client.get_client()
     if not client.available:
         return []
 

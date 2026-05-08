@@ -131,6 +131,54 @@ class KalshiClient:
             log.warning("get_event(%s) failed: %s", event_ticker, e)
             return None
 
+    def fetch_trades(self, market_ticker: Optional[str] = None,
+                     lookback_hours: float = 1.0,
+                     limit: int = 1000) -> List[dict]:
+        """Recent trades, paginated. Used by whale.py to detect
+        large-notional bets; whale reads ``count_fp`` / ``yes_price_dollars``
+        / ``no_price_dollars`` / ``ticker`` directly from the dict shape,
+        so this method preserves the raw payload (the SDK's
+        ``iter_trades`` returns ``Trade`` dataclasses which would lose
+        those fields).
+
+        Args:
+            market_ticker: optional ticker filter. None = all markets
+                in the most-recent ``lookback_hours``.
+            lookback_hours: window before now to scan, translated to
+                Kalshi's ``min_ts`` query param (epoch seconds).
+            limit: hard cap across all paginated pages so a chatty
+                series doesn't blow up the dashboard render.
+
+        Returns: list of raw trade dicts (empty on failure / no creds).
+        """
+        self._init()
+        if not self._available:
+            return []
+        import time as _time
+        min_ts = int(_time.time() - lookback_hours * 3600)
+        out: List[dict] = []
+        cursor: Optional[str] = None
+        try:
+            assert self._sdk is not None
+            while len(out) < limit:
+                page_limit = min(1000, limit - len(out))
+                resp = self._sdk.get_trades(
+                    ticker=market_ticker,
+                    limit=page_limit,
+                    min_ts=min_ts,
+                    cursor=cursor,
+                )
+                trades = resp.get("trades") or []
+                out.extend(trades)
+                cursor = resp.get("cursor") or None
+                if not cursor or not trades:
+                    break
+        except Exception as e:  # noqa: BLE001
+            log.warning("fetch_trades(%s, lookback=%sh) failed: %s",
+                        market_ticker, lookback_hours, e)
+            return out  # return whatever we got before the error
+        return out
+
     def get_market_candlesticks(
         self,
         ticker: str,
