@@ -3921,16 +3921,100 @@ def _svg_confusion(cm: dict) -> str:
     return "".join(parts)
 
 
-def _svg_feature_importance_vertical(features: List[dict]) -> str:
-    """Vertical-bar variant of the feature-importance chart. X axis =
-    feature names rotated 45° so the chart can fit the full feature
-    label without truncation; Y axis = mean permutation importance
-    (computed on the historical training/test splits, not live
-    Kalshi data).
+# Source mapping for ML features. Maps each feature name (after a
+# couple of normalisations) to a human-readable data source. Used
+# both in tooltip text and as the colour-coded legend on the
+# feature-importance chart so the user can see at a glance which
+# data dependencies the model leans on.
+def feature_source(name: str) -> Tuple[str, str]:
+    """Best-effort source lookup. Returns (label, css_color).
 
-    Selected (kept) features render in green; rejected candidates
-    (didn't survive the walk-forward stability filter) render muted
-    so the user can see "considered then dropped" alongside "kept".
+    Prefers specific matches (jolts → FRED JOLTS) over the catch-all
+    macro/derived buckets. Unknown names fall through to a generic
+    "Derived / other" bucket so we never blow up.
+    """
+    n = (name or "").lower()
+    # NBA bot — Elo + nba_api advanced stats. Keep tests cheap by
+    # checking the most-frequent prefixes first.
+    if "elo" in n:
+        return ("Elo (bot-computed)", "#bc8cff")
+    if "_b2b" in n or n.startswith("b2b"):
+        return ("Schedule (bot-computed)", "#bc8cff")
+    if any(k in n for k in (
+        "_team_", "_off_rating", "_def_rating", "_net_rating",
+        "_efg_pct", "_oreb_pct", "_tov_pct", "_ft_per_fga",
+        "_fg3m", "_margin", "_pace", "_win_r", "_team_win",
+    )):
+        return ("nba_api advanced stats", "#58a6ff")
+    if n.startswith("diff_") or n.startswith("home_") or n.startswith("away_"):
+        return ("nba_api derived (diff)", "#58a6ff")
+    # FRED macro series — most numerous on the macro bots.
+    fred_keys = {
+        "nonfarm_payrolls": "FRED PAYEMS",
+        "treasury_10y": "FRED DGS10",
+        "wti_oil": "FRED DCOILWTICO",
+        "henry_hub": "FRED MHHNGSP",
+        "vix": "FRED VIXCLS",
+        "unemployment_rate": "FRED UNRATE",
+        "continuing_claims": "FRED CCSA",
+        "claims": "FRED ICSA",
+        "ppi": "FRED PPIACO",
+        "headline_cpi": "FRED CPIAUCSL",
+        "core_mom": "FRED CPILFESL",
+        "core_cpi": "FRED CPILFESL",
+        "used_cars_cpi": "FRED CUUR0000SETA02",
+        "fed_funds_rate": "FRED FEDFUNDS",
+        "industrial_prod": "FRED INDPRO",
+        "umich_inflation": "FRED MICH",
+        "cleveland_expinf": "FRED EXPINF1YR",
+        "m2_yoy": "FRED M2SL",
+        "retail_gas": "FRED GASREGW",
+        "jolts_layoffs": "FRED JTSLDL (JOLTS)",
+        "jolts_hires": "FRED JTSHIL (JOLTS)",
+        "jolts_quits": "FRED JTSQUL (JOLTS)",
+        "jolts_openings": "FRED JTSJOL (JOLTS)",
+        "uemp": "FRED UEMP* (duration buckets)",
+        "google_trends": "Google Trends",
+        "layoffs_fyi": "layoffs.fyi",
+        "challenger": "Challenger Gray & Christmas",
+        "warn": "WARN notices",
+        "reddit": "Reddit r/layoffs",
+    }
+    for key, src in fred_keys.items():
+        if key in n:
+            color = ("#3fb950" if "FRED" in src
+                     else "#d29922" if any(k in src.lower()
+                                            for k in ("layoffs", "warn",
+                                                      "reddit", "google",
+                                                      "challenger"))
+                     else "#58a6ff")
+            return (src, color)
+    # Time-of-period / seasonal flags.
+    if any(k in n for k in ("week_sin", "week_cos", "week_of_year",
+                              "month", "day_of_year", "holiday",
+                              "is_holiday")):
+        return ("Seasonal / calendar", "#d29922")
+    # Bot-computed transforms (lags, rolling stats, z-scores derived
+    # from the target itself when the prefix isn't matched above).
+    if any(k in n for k in ("_lag_", "rolling_", "ma13_", "ma52_",
+                              "_change_", "_zscore", "_mean_",
+                              "_std_", "rolling_mean", "_diff")):
+        return ("Derived transform", "#8b949e")
+    return ("Other", "#6e7681")
+
+
+def _svg_feature_importance_vertical(features: List[dict]) -> str:
+    """Full-width vertical bar chart of feature importance. X axis =
+    features (with names rotated -45° anchored at the bar tick so
+    each label reads diagonally up-and-to-the-left from its bar);
+    Y axis = mean permutation importance from the historical
+    walk-forward training set.
+
+    Bars are colour-coded by data source (see feature_source) and a
+    legend caption sits above the chart so the user can see which
+    families of inputs the model leans on at a glance. Selected
+    (kept) features render at full opacity; rejected candidates
+    render dimmed so the rejected pool is visible alongside.
     """
     if not features:
         return ("<div class='empty'>"
@@ -3940,23 +4024,21 @@ def _svg_feature_importance_vertical(features: List[dict]) -> str:
                     key=lambda f: f.get("mean_importance") or 0.0,
                     reverse=True)
     n = len(feats)
-    # Width scales with feature count so the bars stay readable; cap
-    # at the panel width on small lists.
-    bar_w = 22
-    width = max(620, 40 + n * bar_w + 20)
-    pad_l, pad_r, pad_t, pad_b = 50, 20, 18, 180
+    width = 1180
+    pad_l, pad_r, pad_t, pad_b = 56, 24, 18, 200
     inner_w = width - pad_l - pad_r
-    height = pad_t + pad_b + 220
+    height = pad_t + pad_b + 280
     inner_h = height - pad_t - pad_b
     max_imp = max(
         (abs(f.get("mean_importance") or 0.0) for f in feats),
         default=1.0,
     ) or 1.0
+    bar_pitch = inner_w / max(1, n)
+    bar_w = max(8.0, min(28.0, bar_pitch * 0.62))
     parts: List[str] = []
     parts.append(
-        f"<div style='overflow-x:auto;'>"
-        f"<svg viewBox='0 0 {width} {height}' "
-        f"style='width:{width}px;max-width:none;height:auto;display:block;"
+        f"<svg viewBox='0 0 {width} {height}' preserveAspectRatio='none' "
+        f"style='width:100%;height:auto;display:block;"
         f"background:#0d1117;border:1px solid #21262d;border-radius:6px;'>"
     )
     # Y-axis gridlines + labels.
@@ -3976,8 +4058,6 @@ def _svg_feature_importance_vertical(features: List[dict]) -> str:
         f"y1='{pad_t + inner_h}' y2='{pad_t + inner_h}' "
         f"stroke='#21262d'/>"
     )
-    # Bars + labels.
-    bar_pitch = inner_w / max(1, n)
     for i, f in enumerate(feats):
         imp = abs(f.get("mean_importance") or 0.0)
         h = (imp / max_imp) * inner_h
@@ -3985,31 +4065,105 @@ def _svg_feature_importance_vertical(features: List[dict]) -> str:
         y = pad_t + (inner_h - h)
         sel = bool(f.get("selected"))
         pf = int(f.get("positive_folds") or 0)
-        bar_color = "#3fb950" if sel else "#484f58"
+        name = f.get("feature") or ""
+        src_label, src_color = feature_source(name)
+        opacity = 1.0 if sel else 0.42
         text_color = "#c9d1d9" if sel else "#8b949e"
-        name = html.escape(f.get("feature") or "")
-        # Truncate displayed labels to keep the rotated tick height
-        # bounded; full name is in the title hover.
-        display_name = (name if len(name) <= 26
-                          else name[:23] + "…")
-        # Anchor the label at its top-right corner and rotate -45°
-        # around that point so the text reads up-and-right from the
-        # bar tick (so taller bars don't overlap their own label).
+        # Anchor the rotated tick label at the bar's top-of-axis
+        # position with text-anchor='end'; rotating -45° around that
+        # anchor makes the text read diagonally up-and-to-the-left
+        # — the "going up" direction the user asked for.
         label_x = pad_l + i * bar_pitch + bar_pitch / 2
-        label_y = pad_t + inner_h + 6
+        label_y = pad_t + inner_h + 8
+        display_name = (name if len(name) <= 30 else name[:27] + "…")
         parts.append(
-            f"<g><title>{name} · imp {imp:.4f} · {pf}/{int(feats[0].get('positive_folds', 5) or 5) if feats else 5} folds · "
+            f"<g><title>{html.escape(name)} · {html.escape(src_label)} "
+            f"· imp {imp:.4f} · {pf}/5 folds · "
             f"{'kept' if sel else 'rejected'}</title>"
-            f"<rect x='{x:.1f}' y='{y:.1f}' width='{bar_w}' "
-            f"height='{h:.1f}' fill='{bar_color}' rx='1'/>"
-            f"<text x='{label_x:.1f}' y='{label_y:.1f}' fill='{text_color}' "
-            f"font-size='11' "
+            f"<rect x='{x:.1f}' y='{y:.1f}' width='{bar_w:.1f}' "
+            f"height='{h:.1f}' fill='{src_color}' "
+            f"fill-opacity='{opacity:.2f}' rx='1'/>"
+            f"<text x='{label_x:.1f}' y='{label_y:.1f}' "
+            f"fill='{text_color}' font-size='11' "
             f"font-family='ui-monospace,SFMono-Regular,monospace' "
-            f"transform='rotate(45 {label_x:.1f} {label_y:.1f})'>"
-            f"{display_name}</text>"
+            f"text-anchor='end' "
+            f"transform='rotate(-45 {label_x:.1f} {label_y:.1f})'>"
+            f"{html.escape(display_name)}</text>"
             f"</g>"
         )
-    parts.append("</svg></div>")
+    parts.append("</svg>")
+    return "".join(parts)
+
+
+def _render_feature_source_legend(features: List[dict]) -> str:
+    """Coloured-swatch legend row showing every distinct source the
+    feature pool draws from + how many features are sourced from
+    each. Sits above the chart so colour-coding is self-explanatory.
+    """
+    counts: dict = {}
+    for f in features:
+        label, color = feature_source(f.get("feature") or "")
+        bucket = counts.setdefault(label, {"color": color, "n": 0, "kept": 0})
+        bucket["n"] += 1
+        if f.get("selected"):
+            bucket["kept"] += 1
+    if not counts:
+        return ""
+    items = sorted(counts.items(), key=lambda kv: -kv[1]["n"])
+    parts = ["<div class='source-legend' "
+             "style='display:flex;flex-wrap:wrap;gap:14px;"
+             "margin:6px 0 12px 0;font-size:12px;color:#8b949e;'>"]
+    for label, info in items:
+        parts.append(
+            f"<span style='display:inline-flex;align-items:center;gap:6px;'>"
+            f"<span style='display:inline-block;width:10px;height:10px;"
+            f"background:{info['color']};border-radius:2px;'></span>"
+            f"<span>{html.escape(label)} "
+            f"<span style='color:#6e7681;'>"
+            f"({info['kept']}/{info['n']})</span></span></span>"
+        )
+    parts.append("</div>")
+    return "".join(parts)
+
+
+def _render_feature_source_table(features: List[dict]) -> str:
+    """Compact table listing every feature the trainer looked at,
+    with its source attribution. Sits below the chart so the user
+    can audit the full source dependency list — not just the top 25
+    that fit on the chart.
+    """
+    if not features:
+        return ""
+    feats = sorted(features,
+                    key=lambda f: f.get("mean_importance") or 0.0,
+                    reverse=True)
+    parts = ["<details style='margin-top:12px;'>"
+             "<summary class='small gray' style='cursor:pointer;'>"
+             f"Show all {len(feats)} features and their sources</summary>",
+             "<table><thead><tr>"
+             "<th>Feature</th>"
+             "<th>Source</th>"
+             "<th class='num'>Importance</th>"
+             "<th class='num'>Folds</th>"
+             "<th>Status</th>"
+             "</tr></thead><tbody>"]
+    for f in feats:
+        name = f.get("feature") or ""
+        imp = float(f.get("mean_importance") or 0.0)
+        pf = int(f.get("positive_folds") or 0)
+        sel = bool(f.get("selected"))
+        src_label, src_color = feature_source(name)
+        status_cls = "green" if sel else "gray"
+        status_txt = "Kept" if sel else "Rejected"
+        parts.append(
+            f"<tr><td class='mono small'>{html.escape(name)}</td>"
+            f"<td><span style='color:{src_color};'>● </span>"
+            f"{html.escape(src_label)}</td>"
+            f"<td class='num'>{imp:.4f}</td>"
+            f"<td class='num'>{pf}/5</td>"
+            f"<td class='{status_cls}'>{status_txt}</td></tr>"
+        )
+    parts.append("</tbody></table></details>")
     return "".join(parts)
 
 
@@ -4072,58 +4226,53 @@ def _render_models_panel(out: List[str], bot: dict, model: dict | None,
                         f"<div class='value'>{shown}</div></div>")
         out.append("</div>")
 
-    # ── Model overview — training-derived facts about this artifact.
-    # Everything below comes from the trainer's outputs (model.pkl
-    # mtime, feature_importance.csv) — none of it is sourced from
-    # live Kalshi data, so the snapshot reads "what is this model?"
-    # not "what's it predicting today?".
+    # ── Model overview — training-derived facts rendered as a
+    # compact definition list (no extra card boxes). All values come
+    # from the trainer's outputs (model.pkl mtime,
+    # feature_importance.csv); none from live Kalshi data.
     fi_path = Path(db_path).parent / "feature_importance.csv"
     feats = _read_feature_importance(str(fi_path))
     overview = fetch_model_overview(db_path, str(fi_path), feats)
     n_total = overview["n_considered"]
     n_kept = overview["n_kept"]
-    out.append("<h3 class='subhead'>Model overview "
-                "<span class='small gray'>(from training "
-                "artifacts)</span></h3>")
     top_imp = overview.get("top_importance")
     top_imp_str = (f"{top_imp:.4f}" if isinstance(top_imp, (int, float))
                     else "—")
-    overview_cards = [
-        ("Last retrained",   overview.get("last_retrained") or "—"),
-        ("Features considered", str(n_total)),
-        ("Features kept",    f"{n_kept} ({n_kept/n_total*100:.0f}%)"
-                              if n_total else "—"),
+    out.append("<h3 class='subhead'>Model overview "
+                "<span class='small gray'>(from training "
+                "artifacts)</span></h3>")
+    overview_items: List[Tuple[str, str]] = [
+        ("Last retrained", overview.get("last_retrained") or "—"),
+        ("Features considered → kept",
+            (f"{n_total} → {n_kept} "
+             f"({n_kept/n_total*100:.0f}%)" if n_total else "—")),
         (f"Stable across all {overview['max_folds']} folds",
             str(overview["n_stable_all_folds"])),
-        ("Top feature",      overview.get("top_feature") or "—"),
-        ("Top importance",   top_imp_str),
+        ("Top feature",
+            (f"{overview.get('top_feature')} ({top_imp_str})"
+             if overview.get("top_feature") else "—")),
     ]
-    out.append(
-        "<div class='cards' "
-        "style='display:grid;grid-template-columns:repeat(6, 1fr);"
-        "gap:10px;width:100%;'>"
-    )
-    for label, value in overview_cards:
-        # Long label/value combos (Top feature names) need a smaller
-        # value font to avoid truncating mid-card.
-        font_style = ("font-size:13px;" if len(str(value)) > 14
-                       else "")
-        out.append(
-            f"<div class='card'><div class='label'>"
-            f"{html.escape(label)}</div>"
-            f"<div class='value' style='{font_style}'>"
-            f"{html.escape(str(value))}</div></div>"
-        )
-    out.append("</div>")
     if overview.get("snapshot_first") and overview.get("snapshot_last"):
+        overview_items.append((
+            "Deployed",
+            f"live since {overview['snapshot_first'][:10]} · "
+            f"{overview.get('snapshots_recorded') or 0} snapshots",
+        ))
+    out.append(
+        "<dl class='model-overview-dl' "
+        "style='display:grid;grid-template-columns:auto 1fr;"
+        "gap:6px 18px;margin:0 0 12px 0;font-size:13px;'>"
+    )
+    for label, value in overview_items:
         out.append(
-            f"<p class='small gray' style='margin:6px 0 0 0;'>"
-            f"Live since {html.escape(overview['snapshot_first'][:10])}"
-            f" · {overview.get('snapshots_recorded') or 0} snapshots "
-            f"recorded</p>"
+            f"<dt class='gray' style='margin:0;'>"
+            f"{html.escape(label)}</dt>"
+            f"<dd style='margin:0;color:#c9d1d9;'>"
+            f"{html.escape(str(value))}</dd>"
         )
+    out.append("</dl>")
 
-    # ── Feature importance — top N, vertical bars, 45° labels ───────
+    # ── Feature importance — full-width vertical bars, source-coded.
     TOP_N = 25
     feats_sorted = sorted(feats,
                            key=lambda f: f.get("mean_importance") or 0.0,
@@ -4135,15 +4284,14 @@ def _render_models_panel(out: List[str], bot: dict, model: dict | None,
         f"of {n_total}, walk-forward permutation importance on the "
         f"historical training set)</span></h3>"
     )
-    out.append("<p class='small gray' style='margin:0 0 8px 0;'>"
-                "<span style='color:#3fb950;'>Green</span> bars are "
-                "features the bot actually scores live with; "
-                "<span style='color:#8b949e;'>muted</span> bars are "
-                "candidates the stability filter rejected this "
-                "retrain. Importance is averaged across walk-forward "
-                "folds — held-out historical data, not the current "
-                "Kalshi book.</p>")
+    out.append("<p class='small gray' style='margin:0 0 4px 0;'>"
+                "Bars colour-coded by data source; full opacity = kept "
+                "by the stability filter, muted = rejected. Importance "
+                "is averaged across walk-forward folds — held-out "
+                "historical data, not the current Kalshi book.</p>")
+    out.append(_render_feature_source_legend(feats))
     out.append(_svg_feature_importance_vertical(feats_shown))
+    out.append(_render_feature_source_table(feats))
 
     # ── Calibration curve — predicted prob vs realized win rate ─────
     out.append("<h3 class='subhead'>Calibration "
