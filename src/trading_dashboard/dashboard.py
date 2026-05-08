@@ -4385,6 +4385,24 @@ _WATCHLIST_ROW_CLICK_JS = """
 #wl-active-tbody tr.row-selected td { background: #1f2630 !important; }
 #watchlist-tbody tr:hover td,
 #wl-active-tbody tr:hover td { background: #1c222b; }
+/* Held-position rows keep their side-coloured tint when hovered or
+   selected, just one shade deeper than the at-rest tint above —
+   so the user reads "this is the row I'm holding" even while
+   their mouse is on it or after they click to lock it in. ID-
+   prefixed selectors + !important so we win specificity over the
+   neutral grey hover/selected rules immediately above. */
+#watchlist-tbody tr.row-bought.bought-yes:hover td,
+#watchlist-tbody tr.row-bought.bought-yes.row-selected td,
+#wl-active-tbody tr.row-bought.bought-yes:hover td,
+#wl-active-tbody tr.row-bought.bought-yes.row-selected td {
+  background: rgba(63, 185, 80, 0.34) !important;
+}
+#watchlist-tbody tr.row-bought.bought-no:hover td,
+#watchlist-tbody tr.row-bought.bought-no.row-selected td,
+#wl-active-tbody tr.row-bought.bought-no:hover td,
+#wl-active-tbody tr.row-bought.bought-no.row-selected td {
+  background: rgba(248, 81, 73, 0.34) !important;
+}
 </style>
 """
 
