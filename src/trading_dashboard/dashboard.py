@@ -3630,56 +3630,76 @@ def fetch_per_strike_accuracy(db_path: str) -> List[dict]:
     return out
 
 
-def fetch_metric_history(db_path: str, limit: int = 200) -> List[dict]:
-    """Recent model_snapshots rows — used to draw the model's
-    metric-trajectory chart (accuracy / F1 / ROC AUC over time).
-    Always has data on bots that retrain regularly, so this section
-    populates even when there are no closed bets yet.
-    """
-    if not Path(db_path).exists():
-        return []
-    try:
-        with closing(_conn(db_path)) as c:
-            rows = c.execute(
-                "SELECT captured_at, classifier_accuracy, "
-                "       training_f1, training_precision, "
-                "       training_recall, training_roc_auc "
-                "FROM model_snapshots "
-                "WHERE classifier_accuracy IS NOT NULL "
-                "ORDER BY captured_at DESC LIMIT ?",
-                (int(limit),),
-            ).fetchall()
-    except (sqlite3.OperationalError, sqlite3.DatabaseError):
-        return []
-    return list(reversed([dict(r) for r in rows]))
+def fetch_model_overview(db_path: str, fi_path: str,
+                          features: List[dict]) -> dict:
+    """Roll-up of training-derived stats about the model: when it was
+    last retrained, how many features were considered vs kept, how
+    stable the kept features were across walk-forward folds, etc.
 
-
-def fetch_prob_distribution(db_path: str, n_bins: int = 20) -> List[dict]:
-    """Histogram of every model_prob_yes the bot has ever published
-    via market_views. Always populates as long as the bot has scored
-    at least one market — useful "what does the model usually say?"
-    view that doesn't depend on any bet ever closing.
+    Everything here comes from training-time artifacts (the saved
+    model.pkl on disk, the feature_importance.csv that the trainer
+    writes alongside it). No live Kalshi data is consulted, so the
+    snapshot reads "what is this model, and how was it trained?"
+    rather than "what's the model saying right now?".
     """
-    if not Path(db_path).exists():
-        return []
-    try:
-        with closing(_conn(db_path)) as c:
-            rows = c.execute(
-                "SELECT model_prob_yes FROM market_views "
-                "WHERE model_prob_yes IS NOT NULL"
-            ).fetchall()
-    except (sqlite3.OperationalError, sqlite3.DatabaseError):
-        return []
-    bins = [{"lo": i / n_bins, "hi": (i + 1) / n_bins,
-             "n": 0} for i in range(n_bins)]
-    for r in rows:
+    out = {
+        "last_retrained": None,
+        "n_considered": len(features),
+        "n_kept": sum(1 for f in features if f.get("selected")),
+        "n_stable_all_folds": 0,
+        "n_stable_4_folds": 0,
+        "max_folds": 5,
+        "top_feature": None,
+        "top_importance": None,
+        "snapshots_recorded": None,
+        "snapshot_first": None,
+        "snapshot_last": None,
+    }
+    # Last retrain — the model.pkl mtime is the canonical signal
+    # since the trainer writes the file at the end of every retrain.
+    pkl = Path(db_path).parent / "model.pkl"
+    if pkl.exists():
         try:
-            p = float(r["model_prob_yes"])
-        except (TypeError, ValueError):
-            continue
-        idx = min(n_bins - 1, max(0, int(p * n_bins)))
-        bins[idx]["n"] += 1
-    return bins
+            mt = datetime.fromtimestamp(pkl.stat().st_mtime, tz=timezone.utc)
+            out["last_retrained"] = mt.strftime("%Y-%m-%d %H:%M UTC")
+        except (OSError, OverflowError):
+            pass
+    # Walk-forward fold stability (positive_folds is how many of the
+    # 5 folds had positive permutation importance for that feature).
+    if features:
+        max_folds = max(int(f.get("positive_folds") or 0) for f in features)
+        if max_folds:
+            out["max_folds"] = max_folds
+        kept = [f for f in features if f.get("selected")]
+        out["n_stable_all_folds"] = sum(
+            1 for f in kept
+            if int(f.get("positive_folds") or 0) >= out["max_folds"]
+        )
+        out["n_stable_4_folds"] = sum(
+            1 for f in kept
+            if int(f.get("positive_folds") or 0) >= max(1, out["max_folds"] - 1)
+        )
+        top = max(kept, key=lambda f: f.get("mean_importance") or 0.0,
+                   default=None)
+        if top:
+            out["top_feature"] = top.get("feature")
+            out["top_importance"] = top.get("mean_importance")
+    # Snapshot range — proxy for "how long has this model been live?".
+    if Path(db_path).exists():
+        try:
+            with closing(_conn(db_path)) as c:
+                row = c.execute(
+                    "SELECT COUNT(*) AS n, MIN(captured_at) AS first, "
+                    "       MAX(captured_at) AS last "
+                    "FROM model_snapshots"
+                ).fetchone()
+            if row:
+                out["snapshots_recorded"] = int(row["n"] or 0)
+                out["snapshot_first"] = row["first"]
+                out["snapshot_last"] = row["last"]
+        except (sqlite3.OperationalError, sqlite3.DatabaseError):
+            pass
+    return out
 
 
 def _svg_feature_importance(features: List[dict],
@@ -3901,161 +3921,95 @@ def _svg_confusion(cm: dict) -> str:
     return "".join(parts)
 
 
-def _svg_metric_history(rows: List[dict]) -> str:
-    """Multi-series line chart of training accuracy / F1 / ROC AUC
-    across the bot's model_snapshots history. X axis = snapshot
-    index (left = oldest, right = newest); Y axis = 0..1.
+def _svg_feature_importance_vertical(features: List[dict]) -> str:
+    """Vertical-bar variant of the feature-importance chart. X axis =
+    feature names rotated 45° so the chart can fit the full feature
+    label without truncation; Y axis = mean permutation importance
+    (computed on the historical training/test splits, not live
+    Kalshi data).
+
+    Selected (kept) features render in green; rejected candidates
+    (didn't survive the walk-forward stability filter) render muted
+    so the user can see "considered then dropped" alongside "kept".
     """
-    rows = [r for r in rows if r and r.get("classifier_accuracy") is not None]
-    if len(rows) < 2:
-        return ("<div class='empty'>Not enough model snapshots yet — "
-                "the trajectory populates after a few retrains.</div>")
-    width, height = 760, 280
-    pad_l, pad_r, pad_t, pad_b = 50, 110, 24, 36
+    if not features:
+        return ("<div class='empty'>"
+                "Feature importance not yet written for this bot — "
+                "the file lands after the next retrain.</div>")
+    feats = sorted(features,
+                    key=lambda f: f.get("mean_importance") or 0.0,
+                    reverse=True)
+    n = len(feats)
+    # Width scales with feature count so the bars stay readable; cap
+    # at the panel width on small lists.
+    bar_w = 22
+    width = max(620, 40 + n * bar_w + 20)
+    pad_l, pad_r, pad_t, pad_b = 50, 20, 18, 180
     inner_w = width - pad_l - pad_r
+    height = pad_t + pad_b + 220
     inner_h = height - pad_t - pad_b
-    n = len(rows)
-    series = [
-        ("Accuracy", "classifier_accuracy", "#58a6ff"),
-        ("F1",       "training_f1",          "#3fb950"),
-        ("Precision","training_precision",   "#d29922"),
-        ("Recall",   "training_recall",      "#bc8cff"),
-        ("ROC AUC",  "training_roc_auc",     "#f78166"),
-    ]
-    # Y range: clamp to the data, but never show below 0 or above 1.
-    vals = [float(r[k]) for _, k, _ in series for r in rows
-             if r.get(k) is not None]
-    if not vals:
-        return "<div class='empty'>No metric data.</div>"
-    y_lo = max(0.0, min(vals) - 0.05)
-    y_hi = min(1.0, max(vals) + 0.05)
-    if y_hi - y_lo < 0.05:
-        y_lo, y_hi = max(0.0, y_lo - 0.05), min(1.0, y_hi + 0.05)
+    max_imp = max(
+        (abs(f.get("mean_importance") or 0.0) for f in feats),
+        default=1.0,
+    ) or 1.0
     parts: List[str] = []
     parts.append(
+        f"<div style='overflow-x:auto;'>"
         f"<svg viewBox='0 0 {width} {height}' "
-        f"style='width:100%;height:auto;display:block;"
+        f"style='width:{width}px;max-width:none;height:auto;display:block;"
         f"background:#0d1117;border:1px solid #21262d;border-radius:6px;'>"
     )
-    # Axes + horizontal gridlines.
+    # Y-axis gridlines + labels.
     for k in range(5):
         frac = k / 4.0
-        v = y_lo + frac * (y_hi - y_lo)
+        v = frac * max_imp
         y = pad_t + (1 - frac) * inner_h
         parts.append(
             f"<line x1='{pad_l}' x2='{pad_l + inner_w}' "
             f"y1='{y:.1f}' y2='{y:.1f}' stroke='#161b22'/>"
             f"<text x='{pad_l - 6}' y='{y + 3:.1f}' fill='#8b949e' "
-            f"font-size='10' text-anchor='end'>{v*100:.0f}%</text>"
+            f"font-size='10' text-anchor='end'>{v:.4f}</text>"
         )
-    # X axis: just left/right tick labels (count is more useful than
-    # absolute timestamps for a fast trend read).
+    # Baseline X axis.
     parts.append(
         f"<line x1='{pad_l}' x2='{pad_l + inner_w}' "
-        f"y1='{pad_t + inner_h}' y2='{pad_t + inner_h}' stroke='#21262d'/>"
-        f"<text x='{pad_l}' y='{height - 8}' fill='#8b949e' "
-        f"font-size='10'>oldest</text>"
-        f"<text x='{pad_l + inner_w}' y='{height - 8}' fill='#8b949e' "
-        f"font-size='10' text-anchor='end'>{n} snapshots</text>"
+        f"y1='{pad_t + inner_h}' y2='{pad_t + inner_h}' "
+        f"stroke='#21262d'/>"
     )
-    # Plot each series.
-    for i, (label, key, colour) in enumerate(series):
-        pts = []
-        for j, r in enumerate(rows):
-            v = r.get(key)
-            if v is None:
-                continue
-            try:
-                v = float(v)
-            except (TypeError, ValueError):
-                continue
-            x = pad_l + (j / max(1, n - 1)) * inner_w
-            y = pad_t + (1 - (v - y_lo) / max(1e-9, y_hi - y_lo)) * inner_h
-            pts.append((x, y))
-        if len(pts) < 2:
-            continue
-        poly = " ".join(f"{x:.1f},{y:.1f}" for x, y in pts)
-        parts.append(
-            f"<polyline points='{poly}' fill='none' "
-            f"stroke='{colour}' stroke-width='1.6'/>"
-        )
-        # Right-side legend entry — colour swatch + last value.
-        legend_y = pad_t + 14 + i * 18
-        last_v = pts[-1][1] if pts else None
-        # Use the actual last metric value (not screen y) for the label.
-        last_metric = next((float(r[key]) for r in reversed(rows)
-                             if r.get(key) is not None), None)
-        last_str = (f"{last_metric*100:.0f}%"
-                     if last_metric is not None else "—")
-        parts.append(
-            f"<line x1='{pad_l + inner_w + 8}' "
-            f"x2='{pad_l + inner_w + 24}' y1='{legend_y}' y2='{legend_y}' "
-            f"stroke='{colour}' stroke-width='2'/>"
-            f"<text x='{pad_l + inner_w + 28}' y='{legend_y + 4}' "
-            f"fill='#c9d1d9' font-size='11'>{label} "
-            f"<tspan fill='#8b949e'>{last_str}</tspan></text>"
-        )
-    parts.append("</svg>")
-    return "".join(parts)
-
-
-def _svg_prob_distribution(bins: List[dict]) -> str:
-    """Histogram of model_prob_yes across every market the bot has
-    scored. Reads as "where does the model concentrate its
-    probability?" — wide spread = confident on lots of markets,
-    pile near 50% = mostly hedging.
-    """
-    if not bins or all(b["n"] == 0 for b in bins):
-        return ("<div class='empty'>The bot hasn't scored any markets "
-                "yet — distribution will populate after the first poll.</div>")
-    width, height = 760, 220
-    pad_l, pad_r, pad_t, pad_b = 50, 20, 24, 36
-    inner_w = width - pad_l - pad_r
-    inner_h = height - pad_t - pad_b
-    max_n = max(b["n"] for b in bins) or 1
-    n_total = sum(b["n"] for b in bins) or 1
-    n_bins = len(bins)
-    bar_w = inner_w / n_bins
-    parts: List[str] = []
-    parts.append(
-        f"<svg viewBox='0 0 {width} {height}' "
-        f"style='width:100%;height:auto;display:block;"
-        f"background:#0d1117;border:1px solid #21262d;border-radius:6px;'>"
-    )
-    parts.append(
-        f"<line x1='{pad_l}' x2='{pad_l + inner_w}' "
-        f"y1='{pad_t + inner_h}' y2='{pad_t + inner_h}' stroke='#21262d'/>"
-    )
-    for i, b in enumerate(bins):
-        h = (b["n"] / max_n) * inner_h
-        x = pad_l + i * bar_w
+    # Bars + labels.
+    bar_pitch = inner_w / max(1, n)
+    for i, f in enumerate(feats):
+        imp = abs(f.get("mean_importance") or 0.0)
+        h = (imp / max_imp) * inner_h
+        x = pad_l + i * bar_pitch + (bar_pitch - bar_w) / 2
         y = pad_t + (inner_h - h)
-        share = (b["n"] / n_total) * 100
+        sel = bool(f.get("selected"))
+        pf = int(f.get("positive_folds") or 0)
+        bar_color = "#3fb950" if sel else "#484f58"
+        text_color = "#c9d1d9" if sel else "#8b949e"
+        name = html.escape(f.get("feature") or "")
+        # Truncate displayed labels to keep the rotated tick height
+        # bounded; full name is in the title hover.
+        display_name = (name if len(name) <= 26
+                          else name[:23] + "…")
+        # Anchor the label at its top-right corner and rotate -45°
+        # around that point so the text reads up-and-right from the
+        # bar tick (so taller bars don't overlap their own label).
+        label_x = pad_l + i * bar_pitch + bar_pitch / 2
+        label_y = pad_t + inner_h + 6
         parts.append(
-            f"<g><title>P(YES) {b['lo']*100:.0f}–{b['hi']*100:.0f}%: "
-            f"{b['n']:,} markets ({share:.1f}%)</title>"
-            f"<rect x='{x:.1f}' y='{y:.1f}' "
-            f"width='{bar_w - 1:.1f}' height='{h:.1f}' "
-            f"fill='#58a6ff' fill-opacity='0.7'/></g>"
+            f"<g><title>{name} · imp {imp:.4f} · {pf}/{int(feats[0].get('positive_folds', 5) or 5) if feats else 5} folds · "
+            f"{'kept' if sel else 'rejected'}</title>"
+            f"<rect x='{x:.1f}' y='{y:.1f}' width='{bar_w}' "
+            f"height='{h:.1f}' fill='{bar_color}' rx='1'/>"
+            f"<text x='{label_x:.1f}' y='{label_y:.1f}' fill='{text_color}' "
+            f"font-size='11' "
+            f"font-family='ui-monospace,SFMono-Regular,monospace' "
+            f"transform='rotate(45 {label_x:.1f} {label_y:.1f})'>"
+            f"{display_name}</text>"
+            f"</g>"
         )
-    # X-axis labels: every 5th bin.
-    for i in range(0, n_bins + 1, max(1, n_bins // 5)):
-        frac = i / n_bins
-        x = pad_l + frac * inner_w
-        parts.append(
-            f"<text x='{x:.1f}' y='{pad_t + inner_h + 14}' "
-            f"fill='#8b949e' font-size='10' text-anchor='middle'>"
-            f"{int(frac*100)}%</text>"
-        )
-    parts.append(
-        f"<text x='{pad_l + inner_w/2}' y='{height - 6}' fill='#8b949e' "
-        f"font-size='11' text-anchor='middle'>Predicted P(YES)</text>"
-        f"<text x='15' y='{pad_t + inner_h/2}' fill='#8b949e' "
-        f"font-size='11' text-anchor='middle' "
-        f"transform='rotate(-90 15 {pad_t + inner_h/2})'>"
-        f"Markets ({n_total:,} total)</text>"
-    )
-    parts.append("</svg>")
+    parts.append("</svg></div>")
     return "".join(parts)
 
 
@@ -4118,30 +4072,58 @@ def _render_models_panel(out: List[str], bot: dict, model: dict | None,
                         f"<div class='value'>{shown}</div></div>")
         out.append("</div>")
 
-    # ── Metric trajectory — populates from every model_snapshots row,
-    # so this section has data even when there are no closed bets yet.
-    out.append("<h3 class='subhead'>Training-metric trajectory "
-                "<span class='small gray'>(across recent retrains)"
-                "</span></h3>")
-    metric_rows = fetch_metric_history(db_path, limit=200)
-    out.append(_svg_metric_history(metric_rows))
-
-    # ── Probability distribution — every market the bot has scored ──
-    # Always populates as long as the bot has touched the live market
-    # at least once. Reads "what's the model usually saying?".
-    out.append("<h3 class='subhead'>Predicted-probability distribution "
-                "<span class='small gray'>(every market the bot has "
-                "scored)</span></h3>")
-    prob_bins = fetch_prob_distribution(db_path, n_bins=20)
-    out.append(_svg_prob_distribution(prob_bins))
-
-    # ── Feature importance — top N, with full count in the heading ──
+    # ── Model overview — training-derived facts about this artifact.
+    # Everything below comes from the trainer's outputs (model.pkl
+    # mtime, feature_importance.csv) — none of it is sourced from
+    # live Kalshi data, so the snapshot reads "what is this model?"
+    # not "what's it predicting today?".
     fi_path = Path(db_path).parent / "feature_importance.csv"
     feats = _read_feature_importance(str(fi_path))
-    n_kept = sum(1 for f in feats if f.get("selected"))
-    n_total = len(feats)
-    # Top-N keepers: show the kept ones first (biggest impact on live
-    # decisions), then fill with rejected candidates if there's room.
+    overview = fetch_model_overview(db_path, str(fi_path), feats)
+    n_total = overview["n_considered"]
+    n_kept = overview["n_kept"]
+    out.append("<h3 class='subhead'>Model overview "
+                "<span class='small gray'>(from training "
+                "artifacts)</span></h3>")
+    top_imp = overview.get("top_importance")
+    top_imp_str = (f"{top_imp:.4f}" if isinstance(top_imp, (int, float))
+                    else "—")
+    overview_cards = [
+        ("Last retrained",   overview.get("last_retrained") or "—"),
+        ("Features considered", str(n_total)),
+        ("Features kept",    f"{n_kept} ({n_kept/n_total*100:.0f}%)"
+                              if n_total else "—"),
+        (f"Stable across all {overview['max_folds']} folds",
+            str(overview["n_stable_all_folds"])),
+        ("Top feature",      overview.get("top_feature") or "—"),
+        ("Top importance",   top_imp_str),
+    ]
+    out.append(
+        "<div class='cards' "
+        "style='display:grid;grid-template-columns:repeat(6, 1fr);"
+        "gap:10px;width:100%;'>"
+    )
+    for label, value in overview_cards:
+        # Long label/value combos (Top feature names) need a smaller
+        # value font to avoid truncating mid-card.
+        font_style = ("font-size:13px;" if len(str(value)) > 14
+                       else "")
+        out.append(
+            f"<div class='card'><div class='label'>"
+            f"{html.escape(label)}</div>"
+            f"<div class='value' style='{font_style}'>"
+            f"{html.escape(str(value))}</div></div>"
+        )
+    out.append("</div>")
+    if overview.get("snapshot_first") and overview.get("snapshot_last"):
+        out.append(
+            f"<p class='small gray' style='margin:6px 0 0 0;'>"
+            f"Live since {html.escape(overview['snapshot_first'][:10])}"
+            f" · {overview.get('snapshots_recorded') or 0} snapshots "
+            f"recorded</p>"
+        )
+
+    # ── Feature importance — top N, vertical bars, 45° labels ───────
     TOP_N = 25
     feats_sorted = sorted(feats,
                            key=lambda f: f.get("mean_importance") or 0.0,
@@ -4150,15 +4132,18 @@ def _render_models_panel(out: List[str], bot: dict, model: dict | None,
     out.append(
         f"<h3 class='subhead'>Top features the model uses to make "
         f"decisions <span class='small gray'>(top {len(feats_shown)} "
-        f"of {n_total}, {n_kept} kept after stability filter)"
-        f"</span></h3>"
+        f"of {n_total}, walk-forward permutation importance on the "
+        f"historical training set)</span></h3>"
     )
     out.append("<p class='small gray' style='margin:0 0 8px 0;'>"
-                "Walk-forward permutation importance, averaged across folds. "
-                "<span style='color:#3fb950;'>Green</span> bars are the "
-                "features the bot actually scores live with; muted bars are "
-                "candidates the stability filter rejected this retrain.</p>")
-    out.append(_svg_feature_importance(feats_shown))
+                "<span style='color:#3fb950;'>Green</span> bars are "
+                "features the bot actually scores live with; "
+                "<span style='color:#8b949e;'>muted</span> bars are "
+                "candidates the stability filter rejected this "
+                "retrain. Importance is averaged across walk-forward "
+                "folds — held-out historical data, not the current "
+                "Kalshi book.</p>")
+    out.append(_svg_feature_importance_vertical(feats_shown))
 
     # ── Calibration curve — predicted prob vs realized win rate ─────
     out.append("<h3 class='subhead'>Calibration "
