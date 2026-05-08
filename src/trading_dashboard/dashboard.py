@@ -3630,6 +3630,67 @@ def fetch_per_strike_accuracy(db_path: str) -> List[dict]:
     return out
 
 
+def fetch_roc_points(db_path: str) -> List[dict]:
+    """Build an ROC curve from closed positions.
+
+    Each closed bet contributes one (predicted side-prob, won) pair;
+    we sweep thresholds from 1.0 down to 0.0 and at each threshold
+    record the (FPR, TPR). Returns a list of {fpr, tpr, threshold}
+    dicts plus a final point at (1, 1) so the polyline closes.
+    """
+    if not Path(db_path).exists():
+        return []
+    try:
+        with closing(_conn(db_path)) as c:
+            rows = c.execute(
+                "SELECT side, model_yes_prob_at_entry AS p, "
+                "       realized_pnl_cents "
+                "FROM positions "
+                "WHERE status='closed' "
+                "  AND model_yes_prob_at_entry IS NOT NULL"
+            ).fetchall()
+    except (sqlite3.OperationalError, sqlite3.DatabaseError):
+        return []
+    pairs: List[Tuple[float, bool]] = []
+    for r in rows:
+        try:
+            p_yes = float(r["p"])
+        except (TypeError, ValueError):
+            continue
+        side = (r["side"] or "").upper()
+        p_side = p_yes if side == "YES" else (1.0 - p_yes)
+        try:
+            won = float(r["realized_pnl_cents"] or 0) > 0
+        except (TypeError, ValueError):
+            won = False
+        pairs.append((p_side, won))
+    if not pairs:
+        return []
+    n_pos = sum(1 for _, w in pairs if w)
+    n_neg = sum(1 for _, w in pairs if not w)
+    if n_pos == 0 or n_neg == 0:
+        return []
+    pairs.sort(key=lambda x: -x[0])
+    tp = fp = 0
+    points: List[dict] = [{"fpr": 0.0, "tpr": 0.0, "threshold": 1.0}]
+    last_p: float | None = None
+    for p, w in pairs:
+        if last_p is not None and p != last_p:
+            points.append({
+                "fpr": fp / n_neg,
+                "tpr": tp / n_pos,
+                "threshold": last_p,
+            })
+        if w:
+            tp += 1
+        else:
+            fp += 1
+        last_p = p
+    points.append({"fpr": 1.0, "tpr": 1.0,
+                   "threshold": pairs[-1][0]})
+    return points
+
+
 def fetch_model_overview(db_path: str, fi_path: str,
                           features: List[dict]) -> dict:
     """Roll-up of training-derived stats about the model: when it was
@@ -4004,17 +4065,15 @@ def feature_source(name: str) -> Tuple[str, str]:
 
 
 def _svg_feature_importance_vertical(features: List[dict]) -> str:
-    """Full-width vertical bar chart of feature importance. X axis =
-    features (with names rotated -45° anchored at the bar tick so
-    each label reads diagonally up-and-to-the-left from its bar);
-    Y axis = mean permutation importance from the historical
-    walk-forward training set.
+    """Full-width vertical bar chart of feature importance. Labels
+    sit on the X axis below each bar, rotated -45° so they read
+    diagonally up-and-to-the-right (anchor at the start, text
+    extends up from there). Y axis = mean permutation importance
+    from the historical walk-forward training set.
 
-    Bars are colour-coded by data source (see feature_source) and a
-    legend caption sits above the chart so the user can see which
-    families of inputs the model leans on at a glance. Selected
-    (kept) features render at full opacity; rejected candidates
-    render dimmed so the rejected pool is visible alongside.
+    Bars are colour-coded by data source (see feature_source).
+    Selected (kept) features render at full opacity; rejected
+    candidates render dimmed.
     """
     if not features:
         return ("<div class='empty'>"
@@ -4024,10 +4083,23 @@ def _svg_feature_importance_vertical(features: List[dict]) -> str:
                     key=lambda f: f.get("mean_importance") or 0.0,
                     reverse=True)
     n = len(feats)
+    # Dynamic right padding so the rightmost rotated label has room
+    # to extend up-and-right without clipping. A 30-char monospace
+    # at 11px is ~165px wide; rotated 45° projects 165/√2 ≈ 117px
+    # horizontally. Add slack for the longest label actually shown.
+    char_w_px = 7  # rough width of a monospace 11px glyph
+    longest_chars = max((len(f.get("feature") or "") for f in feats),
+                         default=0)
+    label_text_px = max(60, min(longest_chars, 36) * char_w_px)
+    label_x_extent = int(label_text_px * 0.75)  # cos(45°) projection
+    label_y_extent = int(label_text_px * 0.75)
     width = 1180
-    pad_l, pad_r, pad_t, pad_b = 56, 24, 18, 200
+    pad_l = 56
+    pad_r = max(40, label_x_extent + 12)
+    pad_t = 18
+    pad_b = max(120, label_y_extent + 30)
     inner_w = width - pad_l - pad_r
-    height = pad_t + pad_b + 280
+    height = pad_t + pad_b + 260
     inner_h = height - pad_t - pad_b
     max_imp = max(
         (abs(f.get("mean_importance") or 0.0) for f in feats),
@@ -4037,7 +4109,7 @@ def _svg_feature_importance_vertical(features: List[dict]) -> str:
     bar_w = max(8.0, min(28.0, bar_pitch * 0.62))
     parts: List[str] = []
     parts.append(
-        f"<svg viewBox='0 0 {width} {height}' preserveAspectRatio='none' "
+        f"<svg viewBox='0 0 {width} {height}' "
         f"style='width:100%;height:auto;display:block;"
         f"background:#0d1117;border:1px solid #21262d;border-radius:6px;'>"
     )
@@ -4069,13 +4141,11 @@ def _svg_feature_importance_vertical(features: List[dict]) -> str:
         src_label, src_color = feature_source(name)
         opacity = 1.0 if sel else 0.42
         text_color = "#c9d1d9" if sel else "#8b949e"
-        # Anchor the rotated tick label at the bar's top-of-axis
-        # position with text-anchor='end'; rotating -45° around that
-        # anchor makes the text read diagonally up-and-to-the-left
-        # — the "going up" direction the user asked for.
+        # Text-anchor='start' + rotate(-45°) → text starts at
+        # (label_x, label_y) and extends up-and-to-the-right. The
+        # bar's centre-x is the anchor.
         label_x = pad_l + i * bar_pitch + bar_pitch / 2
-        label_y = pad_t + inner_h + 8
-        display_name = (name if len(name) <= 30 else name[:27] + "…")
+        label_y = pad_t + inner_h + 10
         parts.append(
             f"<g><title>{html.escape(name)} · {html.escape(src_label)} "
             f"· imp {imp:.4f} · {pf}/5 folds · "
@@ -4086,9 +4156,9 @@ def _svg_feature_importance_vertical(features: List[dict]) -> str:
             f"<text x='{label_x:.1f}' y='{label_y:.1f}' "
             f"fill='{text_color}' font-size='11' "
             f"font-family='ui-monospace,SFMono-Regular,monospace' "
-            f"text-anchor='end' "
+            f"text-anchor='start' "
             f"transform='rotate(-45 {label_x:.1f} {label_y:.1f})'>"
-            f"{html.escape(display_name)}</text>"
+            f"{html.escape(name)}</text>"
             f"</g>"
         )
     parts.append("</svg>")
@@ -4167,6 +4237,98 @@ def _render_feature_source_table(features: List[dict]) -> str:
     return "".join(parts)
 
 
+def _svg_roc_curve(points: List[dict],
+                    auc_scalar: float | None = None) -> str:
+    """ROC curve SVG. Diagonal reference + the actual TPR/FPR sweep.
+    Drops to an empty-state when there are no closed bets yet —
+    surfaces the scalar trained AUC in that case so the panel still
+    has a numeric anchor.
+    """
+    width, height = 460, 320
+    pad_l, pad_r, pad_t, pad_b = 50, 20, 24, 36
+    inner_w = width - pad_l - pad_r
+    inner_h = height - pad_t - pad_b
+    parts: List[str] = []
+    parts.append(
+        f"<svg viewBox='0 0 {width} {height}' "
+        f"style='width:100%;height:auto;display:block;"
+        f"background:#0d1117;border:1px solid #21262d;"
+        f"border-radius:6px;'>"
+    )
+    # Axes + decile gridlines.
+    for k in range(0, 11, 2):
+        frac = k / 10.0
+        x = pad_l + frac * inner_w
+        y = pad_t + (1 - frac) * inner_h
+        parts.append(
+            f"<line x1='{x}' x2='{x}' y1='{pad_t}' "
+            f"y2='{pad_t + inner_h}' stroke='#161b22'/>"
+            f"<text x='{x}' y='{pad_t + inner_h + 14}' fill='#8b949e' "
+            f"font-size='10' text-anchor='middle'>{int(frac*100)}%</text>"
+            f"<line x1='{pad_l}' x2='{pad_l + inner_w}' "
+            f"y1='{y}' y2='{y}' stroke='#161b22'/>"
+            f"<text x='{pad_l - 6}' y='{y + 3}' fill='#8b949e' "
+            f"font-size='10' text-anchor='end'>{int(frac*100)}%</text>"
+        )
+    # Random-baseline diagonal.
+    parts.append(
+        f"<line x1='{pad_l}' y1='{pad_t + inner_h}' "
+        f"x2='{pad_l + inner_w}' y2='{pad_t}' stroke='#484f58' "
+        f"stroke-dasharray='4,3'/>"
+    )
+    # Axis labels.
+    parts.append(
+        f"<text x='{pad_l + inner_w/2}' y='{height - 6}' fill='#8b949e' "
+        f"font-size='11' text-anchor='middle'>"
+        f"False positive rate</text>"
+        f"<text x='15' y='{pad_t + inner_h/2}' fill='#8b949e' "
+        f"font-size='11' text-anchor='middle' "
+        f"transform='rotate(-90 15 {pad_t + inner_h/2})'>"
+        f"True positive rate</text>"
+    )
+    if not points:
+        # Empty state — surface the trained AUC as a numeric anchor
+        # so the section isn't dead until bets close.
+        scalar = (f"{auc_scalar*100:.0f}%"
+                   if isinstance(auc_scalar, (int, float))
+                   else "—")
+        parts.append(
+            f"<text x='{pad_l + inner_w/2}' "
+            f"y='{pad_t + inner_h/2 - 8}' fill='#8b949e' "
+            f"font-size='12' text-anchor='middle'>"
+            f"No closed bets yet</text>"
+            f"<text x='{pad_l + inner_w/2}' "
+            f"y='{pad_t + inner_h/2 + 12}' fill='#c9d1d9' "
+            f"font-size='13' text-anchor='middle'>"
+            f"trained ROC AUC: {scalar}</text>"
+        )
+        parts.append("</svg>")
+        return "".join(parts)
+    # Plot the curve.
+    pts = []
+    for p in points:
+        x = pad_l + p["fpr"] * inner_w
+        y = pad_t + (1 - p["tpr"]) * inner_h
+        pts.append((x, y))
+    poly = " ".join(f"{x:.1f},{y:.1f}" for x, y in pts)
+    parts.append(
+        f"<polyline points='{poly}' fill='none' "
+        f"stroke='#58a6ff' stroke-width='2'/>"
+    )
+    # Trapezoid AUC for the legend label.
+    auc = 0.0
+    for (x1, y1), (x2, y2) in zip(points, points[1:]):
+        # x = fpr, height = tpr; integrate.
+        auc += (x2["fpr"] - x1["fpr"]) * (x1["tpr"] + x2["tpr"]) / 2.0
+    parts.append(
+        f"<text x='{pad_l + inner_w - 6}' y='{pad_t + inner_h - 6}' "
+        f"fill='#58a6ff' font-size='12' font-weight='600' "
+        f"text-anchor='end'>AUC {auc*100:.0f}%</text>"
+    )
+    parts.append("</svg>")
+    return "".join(parts)
+
+
 def _render_models_panel(out: List[str], bot: dict, model: dict | None,
                           display: dict | None,
                           available_bots: List[dict],
@@ -4189,7 +4351,37 @@ def _render_models_panel(out: List[str], bot: dict, model: dict | None,
         out.append("</div></div>")
         return
 
-    # ── Headline metrics — full-width row, one card per metric ──────
+    # ── Top features (chart first, sources below) ───────────────────
+    fi_path = Path(db_path).parent / "feature_importance.csv"
+    feats = _read_feature_importance(str(fi_path))
+    overview = fetch_model_overview(db_path, str(fi_path), feats)
+    n_total = overview["n_considered"]
+    n_kept = overview["n_kept"]
+    top_imp = overview.get("top_importance")
+    top_imp_str = (f"{top_imp:.4f}" if isinstance(top_imp, (int, float))
+                    else "—")
+    TOP_N = 25
+    feats_sorted = sorted(feats,
+                           key=lambda f: f.get("mean_importance") or 0.0,
+                           reverse=True)
+    feats_shown = feats_sorted[:TOP_N]
+    out.append(
+        f"<h3 class='subhead'>Top features <span class='small gray'>"
+        f"({len(feats_shown)} of {n_total}, walk-forward permutation "
+        f"importance on the historical training set)</span></h3>"
+    )
+    out.append("<p class='small gray' style='margin:0 0 4px 0;'>"
+                "Bars colour-coded by data source; full opacity = kept "
+                "by the stability filter, muted = rejected. Importance "
+                "is averaged across walk-forward folds — held-out "
+                "historical data, not the current Kalshi book.</p>")
+    out.append(_svg_feature_importance_vertical(feats_shown))
+    # Sources legend + full-list table sit BELOW the chart so the
+    # eye lands on the bars first and uses the legend to decode.
+    out.append(_render_feature_source_legend(feats))
+    out.append(_render_feature_source_table(feats))
+
+    # ── Headline metrics — full-width row underneath the chart ──────
     out.append("<h3 class='subhead'>Headline metrics</h3>")
     if not model:
         out.append("<div class='empty'>No model snapshot yet.</div>")
@@ -4201,9 +4393,6 @@ def _render_models_panel(out: List[str], bot: dict, model: dict | None,
                 return f"{float(v)*100:.{decimals}f}%"
             except (TypeError, ValueError):
                 return "—"
-        # Inline grid override (display:grid; 6 equal columns) so the
-        # cards span the full panel width regardless of the global
-        # .cards rule (which auto-fits on minmax 200px).
         out.append(
             "<div class='cards' "
             "style='display:grid;grid-template-columns:repeat(6, 1fr);"
@@ -4226,18 +4415,7 @@ def _render_models_panel(out: List[str], bot: dict, model: dict | None,
                         f"<div class='value'>{shown}</div></div>")
         out.append("</div>")
 
-    # ── Model overview — training-derived facts rendered as a
-    # compact definition list (no extra card boxes). All values come
-    # from the trainer's outputs (model.pkl mtime,
-    # feature_importance.csv); none from live Kalshi data.
-    fi_path = Path(db_path).parent / "feature_importance.csv"
-    feats = _read_feature_importance(str(fi_path))
-    overview = fetch_model_overview(db_path, str(fi_path), feats)
-    n_total = overview["n_considered"]
-    n_kept = overview["n_kept"]
-    top_imp = overview.get("top_importance")
-    top_imp_str = (f"{top_imp:.4f}" if isinstance(top_imp, (int, float))
-                    else "—")
+    # ── Model overview — compact definition list (no card chrome). ──
     out.append("<h3 class='subhead'>Model overview "
                 "<span class='small gray'>(from training "
                 "artifacts)</span></h3>")
@@ -4272,39 +4450,34 @@ def _render_models_panel(out: List[str], bot: dict, model: dict | None,
         )
     out.append("</dl>")
 
-    # ── Feature importance — full-width vertical bars, source-coded.
-    TOP_N = 25
-    feats_sorted = sorted(feats,
-                           key=lambda f: f.get("mean_importance") or 0.0,
-                           reverse=True)
-    feats_shown = feats_sorted[:TOP_N]
+    # ── ROC curve + confusion matrix — same row, equal columns. ─────
+    auc_scalar = (model or {}).get("training_roc_auc")
+    roc_points = fetch_roc_points(db_path)
+    cm = fetch_confusion_matrix(db_path, threshold=0.5)
     out.append(
-        f"<h3 class='subhead'>Top features the model uses to make "
-        f"decisions <span class='small gray'>(top {len(feats_shown)} "
-        f"of {n_total}, walk-forward permutation importance on the "
-        f"historical training set)</span></h3>"
+        "<div style='display:grid;grid-template-columns:1fr 1fr;"
+        "gap:14px;align-items:start;'>"
     )
-    out.append("<p class='small gray' style='margin:0 0 4px 0;'>"
-                "Bars colour-coded by data source; full opacity = kept "
-                "by the stability filter, muted = rejected. Importance "
-                "is averaged across walk-forward folds — held-out "
-                "historical data, not the current Kalshi book.</p>")
-    out.append(_render_feature_source_legend(feats))
-    out.append(_svg_feature_importance_vertical(feats_shown))
-    out.append(_render_feature_source_table(feats))
+    out.append("<div>")
+    out.append("<h3 class='subhead' style='margin-top:0;'>"
+                "ROC curve <span class='small gray'>(closed bets, "
+                "threshold sweep)</span></h3>")
+    out.append(_svg_roc_curve(roc_points, auc_scalar=auc_scalar))
+    out.append("</div>")
+    out.append("<div>")
+    out.append("<h3 class='subhead' style='margin-top:0;'>"
+                "Confusion matrix <span class='small gray'>"
+                "(threshold = 0.5)</span></h3>")
+    out.append(_svg_confusion(cm))
+    out.append("</div>")
+    out.append("</div>")
 
-    # ── Calibration curve — predicted prob vs realized win rate ─────
+    # ── Calibration curve — full-width below the duo. ───────────────
     out.append("<h3 class='subhead'>Calibration "
                 "<span class='small gray'>(predicted prob vs realized "
                 "win rate, on closed bets)</span></h3>")
     bins = fetch_calibration_bins(db_path, n_bins=10)
     out.append(_svg_calibration(bins))
-
-    # ── Confusion matrix at the bot's threshold ─────────────────────
-    out.append("<h3 class='subhead'>Confusion matrix "
-                "<span class='small gray'>(threshold = 0.5)</span></h3>")
-    cm = fetch_confusion_matrix(db_path, threshold=0.5)
-    out.append(_svg_confusion(cm))
 
     # ── Per-strike accuracy ─────────────────────────────────────────
     rows = fetch_per_strike_accuracy(db_path)
