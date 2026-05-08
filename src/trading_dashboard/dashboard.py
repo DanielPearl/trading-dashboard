@@ -1174,7 +1174,7 @@ def svg_kalshi_chart(history: List[dict], display: dict,
 
     # Horizontal strike line — dotted, drawn ONLY for an active bet.
     # YES position → green dotted line, label reads "Above $X"
-    # NO  position → red dotted line, label reads "Not above $X"
+    # NO  position → red dotted line, label reads "Below $X"
     # The colour communicates "your winning territory": YES bets win
     # when the underlying ends up above the line (green = win), NO
     # bets win when it stays below (red = the threshold you don't
@@ -1184,7 +1184,7 @@ def svg_kalshi_chart(history: List[dict], display: dict,
         is_no = (side == "NO")
         line_color = "#f85149" if is_no else "#3fb950"
         label_strike = fmt_underlying(float(reference_strike), display)
-        label = (f"Not above {label_strike}" if is_no
+        label = (f"Below {label_strike}" if is_no
                  else f"Above {label_strike}")
         out.append(f"<line x1='{pad_l}' y1='{ys}' x2='{width-pad_r}' y2='{ys}' "
                    f"stroke='{line_color}' stroke-width='1.5' "
