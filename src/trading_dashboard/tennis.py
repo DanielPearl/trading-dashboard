@@ -440,7 +440,7 @@ def _render_active_paper_bets(sim_state: dict) -> str:
     """
     open_positions = sim_state.get("open_positions") or []
     if not open_positions:
-        return "<div class='empty'>No active paper bets right now.</div>"
+        return "<div class='empty'>No active bets right now.</div>"
     out = ["<table>",
            "<thead><tr>"
            "<th>Ticker</th>"
