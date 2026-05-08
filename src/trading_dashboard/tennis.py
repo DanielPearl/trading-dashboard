@@ -463,11 +463,24 @@ def _render_watchlist_table(payload: dict) -> str:
         opponent = player_b if favoured_player == player_a else player_a
         injury_html = ('<span class="red">⚠ injury</span>'
                        if r.get("injury_news_flag") else '—')
-        mid = html.escape(str(r.get("match_id") or ""))
+        mid = str(r.get("match_id") or "")
+        # Ticker cell links to the live Kalshi market page so the user
+        # can hop straight to the order book. Kalshi's market URL uses
+        # the lowercased event ticker.
+        if mid.upper().startswith("KX"):
+            kalshi_url = f"https://kalshi.com/markets/{mid.lower()}"
+            ticker_cell = (
+                f"<a href='{html.escape(kalshi_url)}' target='_blank' "
+                f"rel='noopener noreferrer' class='ticker-link'>"
+                f"{html.escape(mid)}</a>"
+            )
+        else:
+            ticker_cell = html.escape(mid)
         round_lbl = html.escape(str(r.get('round_label', '')))
         out.append(
-            f"<tr class='tennis-row' data-mid='{mid}' style='cursor:pointer'>"
-            f"<td class='mono small gray'>{mid}</td>"
+            f"<tr class='tennis-row' data-mid='{html.escape(mid)}' "
+            f"style='cursor:pointer'>"
+            f"<td class='mono small'>{ticker_cell}</td>"
             f"<td><strong>{html.escape(match_text)}</strong>"
             f"<br><span class='small gray'>{round_lbl}</span></td>"
             f"<td><strong>{html.escape(favoured_player)}</strong>"
