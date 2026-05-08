@@ -354,6 +354,7 @@ def _render_tab_bar(active: str = "watchlist") -> str:
     tabs = [
         ("home", "Home", "/"),
         ("watchlist", "Watchlist", "?bot=tennis&tab=watchlist"),
+        ("models", "Models", "?bot=tennis&tab=models"),
         ("history", "History", "/?tab=history"),
     ]
     out = ["<div class='tab-bar'>"]
@@ -1022,6 +1023,149 @@ def _render_model_card_section(metrics: dict, coefficients: dict) -> str:
 
 
 # --------------------------------------------------------------------------- #
+# Models tab                                                                  #
+# --------------------------------------------------------------------------- #
+
+def _render_tennis_models_page(metrics: dict, coefficients: dict,
+                                sim_state: dict) -> str:
+    """Tennis-flavoured deep-dive: held-out metrics for each blend
+    component (elo-only, ensemble, blended), the full feature
+    coefficient table, and live-trade calibration drawn from the
+    paper-bet sim state.
+    """
+    out: List[str] = []
+
+    # Headline metrics — three rows (elo_only / ensemble / blended)
+    # so the user can compare what each component contributes.
+    components = [
+        ("elo_only", "ELO baseline"),
+        ("ensemble", "Gradient-boost ensemble"),
+        ("blended", "Blended (final)"),
+    ]
+    rows = []
+    for key, label in components:
+        c = (metrics or {}).get(key) or {}
+        if not c:
+            continue
+        rows.append((label, c))
+    if rows:
+        out.append("<h3 class='subhead'>Held-out metrics by component"
+                    " <span class='small gray'>(test set, "
+                    f"{int((metrics or {}).get('rows_test') or 0):,} rows)"
+                    "</span></h3>")
+        out.append("<table><thead><tr><th>Model</th>"
+                    "<th class='num'>Accuracy</th>"
+                    "<th class='num'>F1</th>"
+                    "<th class='num'>Precision</th>"
+                    "<th class='num'>Recall</th>"
+                    "<th class='num'>ROC AUC</th>"
+                    "<th class='num'>Brier</th>"
+                    "<th class='num'>Log loss</th>"
+                    "</tr></thead><tbody>")
+        for label, c in rows:
+            out.append(
+                f"<tr><td>{html.escape(label)}</td>"
+                f"<td class='num'>{_fmt_pct(c.get('accuracy'), 1)}</td>"
+                f"<td class='num'>{_fmt_pct(c.get('f1'), 1)}</td>"
+                f"<td class='num'>{_fmt_pct(c.get('precision'), 1)}</td>"
+                f"<td class='num'>{_fmt_pct(c.get('recall'), 1)}</td>"
+                f"<td class='num'>{_fmt_pct(c.get('roc_auc'), 1)}</td>"
+                f"<td class='num'>{(c.get('brier') or 0):.4f}</td>"
+                f"<td class='num'>{(c.get('log_loss') or 0):.4f}</td>"
+                "</tr>"
+            )
+        out.append("</tbody></table>")
+
+    # Full feature list — every coefficient the bot uses to score a
+    # match (the user explicitly asked for "all features being used to
+    # make decisions"). Sorted by absolute coefficient size so the
+    # most-influential ones float to the top.
+    coeffs = (coefficients or {}).get("coefficients") or {}
+    if isinstance(coeffs, dict) and coeffs:
+        items = sorted(coeffs.items(),
+                        key=lambda kv: abs(float(kv[1] or 0)),
+                        reverse=True)
+        out.append(
+            f"<h3 class='subhead'>Features the model uses to make decisions"
+            f" <span class='small gray'>({len(items)} total)</span></h3>"
+        )
+        out.append("<p class='small gray' style='margin:0 0 8px 0;'>"
+                    "Per-feature coefficient on the live blended logistic. "
+                    "<span style='color:#3fb950;'>Green</span> bars push "
+                    "toward player A winning; "
+                    "<span style='color:#f85149;'>red</span> push toward "
+                    "player B.</p>")
+        max_abs = max((abs(float(v or 0)) for _, v in items), default=1.0) or 1.0
+        out.append("<svg viewBox='0 0 760 "
+                    f"{30 + len(items) * 18}' "
+                    "style='width:100%;height:auto;display:block;"
+                    "background:#0d1117;border:1px solid #21262d;"
+                    "border-radius:6px;'>")
+        for i, (name, val) in enumerate(items):
+            try:
+                v = float(val or 0)
+            except (TypeError, ValueError):
+                v = 0.0
+            y = 16 + i * 18
+            mid = 280
+            bar_w = abs(v) / max_abs * 380
+            color = "#3fb950" if v >= 0 else "#f85149"
+            x = mid if v >= 0 else mid - bar_w
+            display_name = name if len(name) <= 32 else name[:29] + "…"
+            out.append(
+                f"<g><title>{html.escape(name)} · coef {v:+.4f}</title>"
+                f"<text x='270' y='{y + 4}' fill='#c9d1d9' font-size='11' "
+                f"text-anchor='end' "
+                f"font-family='ui-monospace,SFMono-Regular,monospace'>"
+                f"{html.escape(display_name)}</text>"
+                f"<line x1='{mid}' y1='{y - 6}' x2='{mid}' y2='{y + 6}' "
+                f"stroke='#484f58'/>"
+                f"<rect x='{x:.1f}' y='{y - 4}' width='{bar_w:.1f}' "
+                f"height='8' fill='{color}' rx='1'/>"
+                f"<text x='{(x + bar_w + 6) if v >= 0 else (x - 6):.1f}' "
+                f"y='{y + 4}' fill='#8b949e' font-size='10' "
+                f"text-anchor='{'start' if v >= 0 else 'end'}'>"
+                f"{v:+.3f}</text></g>"
+            )
+        out.append("</svg>")
+    else:
+        out.append("<div class='empty'>Coefficients file not "
+                    "available — feature list will populate after the "
+                    "next retrain.</div>")
+
+    # Live calibration on closed paper bets — same shape as the sim.db
+    # bots' calibration plot, just sourced from sim_state instead of a
+    # SQL table. Kept simple: bin by predicted side-prob at entry,
+    # measure realized win rate.
+    closed = list((sim_state or {}).get("closed_positions") or [])
+    if closed:
+        n_bins = 10
+        bins = [{"lo": i / n_bins, "hi": (i + 1) / n_bins,
+                 "n": 0, "wins": 0} for i in range(n_bins)]
+        for c in closed:
+            entry_p = c.get("entry_model_prob")
+            if entry_p is None:
+                continue
+            try:
+                p = float(entry_p)
+            except (TypeError, ValueError):
+                continue
+            idx = min(n_bins - 1, max(0, int(p * n_bins)))
+            bins[idx]["n"] += 1
+            if (c.get("result") or "").upper() == "WIN":
+                bins[idx]["wins"] += 1
+        populated = [b for b in bins if b["n"] > 0]
+        if populated:
+            out.append("<h3 class='subhead'>Live calibration "
+                        "<span class='small gray'>(closed paper bets, "
+                        f"{len(closed)} total)</span></h3>")
+            from .dashboard import _svg_calibration  # type: ignore
+            out.append(_svg_calibration(bins))
+
+    return "".join(out)
+
+
+# --------------------------------------------------------------------------- #
 # Page renderer                                                                #
 # --------------------------------------------------------------------------- #
 
@@ -1058,41 +1202,45 @@ def render_page(*, metrics_path: str | None, coefficients_path: str | None,
         f"{datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%SZ')}"
         f" · live updates every 60s · DRY-RUN mode (no real orders)</div>"
     )
-    out.append(_render_tab_bar(active="watchlist"))
+    active_tab = tab_key if tab_key in ("watchlist", "models") else "watchlist"
+    out.append(_render_tab_bar(active=active_tab))
 
-    # ── Watchlist section ────────────────────────────────────────────────
-    # Order per user spec: Active paper bets at top, forecast graph in
-    # the middle (interactive — click a ticker row to plot it), ticker
-    # table at the bottom. The model card lives on the home page (the
-    # cross-bot bot grid card), not here.
-    out.append("<div class='section'><h2>Watchlist — model vs market</h2>"
-               "<div class='body'>")
-    out.append(_render_bot_dropdown(available_bots, current_bot_key))
-    out.append(_render_current_prediction(metrics, sim_state))
+    if active_tab == "models":
+        # ── Models section ───────────────────────────────────────────
+        out.append("<div class='section'><h2>Model</h2><div class='body'>")
+        out.append(_render_bot_dropdown(available_bots, current_bot_key))
+        out.append(_render_tennis_models_page(metrics, coefficients,
+                                                sim_state))
+        out.append("</div></div>")
+    else:
+        # ── Watchlist section ────────────────────────────────────────
+        # Order per user spec: Active paper bets at top, forecast graph
+        # in the middle (interactive — click a ticker row to plot it),
+        # ticker table at the bottom.
+        out.append("<div class='section'><h2>Watchlist — model vs market</h2>"
+                    "<div class='body'>")
+        out.append(_render_bot_dropdown(available_bots, current_bot_key))
+        out.append(_render_current_prediction(metrics, sim_state))
 
-    out.append("<h3 class='subhead'>Active paper bets</h3>")
-    out.append(_render_active_paper_bets(sim_state))
+        out.append("<h3 class='subhead'>Active paper bets</h3>")
+        out.append(_render_active_paper_bets(sim_state))
 
-    # Filter to tradeable rows for the forecast graph. A row is
-    # tradeable when Kalshi has published a quote (market_prob_a not
-    # None). The watchlist table does its own filter (and uses the
-    # untradeable count for an informative empty state).
-    tradeable = [r for r in rows if r.get("market_prob_a") is not None]
+        # Filter to tradeable rows for the forecast graph. A row is
+        # tradeable when Kalshi has published a quote (market_prob_a
+        # not None). The watchlist table does its own filter.
+        tradeable = [r for r in rows if r.get("market_prob_a") is not None]
 
-    # Active-bets line chart — sport-style row-click changes which
-    # match is plotted (pre-match, live model, market probabilities
-    # with a 95% CI band). No header label — the chart is the single
-    # active-bets visual on the page, no panel chrome.
-    out.append(_render_forecast_graph(tradeable))
+        out.append(_render_forecast_graph(tradeable))
 
-    age = _last_updated_age(payload.get("generated_at"))
-    out.append(
-        f"<h3 class='subhead'>Tennis matches · {len(tradeable)} "
-        f"<span class='small gray'>(generated {html.escape(age)})</span></h3>"
-    )
-    out.append(_render_watchlist_table(payload))
+        age = _last_updated_age(payload.get("generated_at"))
+        out.append(
+            f"<h3 class='subhead'>Tennis matches · {len(tradeable)} "
+            f"<span class='small gray'>(generated {html.escape(age)})"
+            f"</span></h3>"
+        )
+        out.append(_render_watchlist_table(payload))
 
-    out.append("</div></div>")  # /body /section
+        out.append("</div></div>")  # /body /section
 
     out.append("</body></html>")
     return "".join(out)

@@ -18,6 +18,7 @@ Memory footprint is ~25 MB.
 from __future__ import annotations
 
 import argparse
+import csv
 import html
 import json
 import logging
@@ -1875,6 +1876,7 @@ def render_page(
     tabs = [
         ("home", "Home"),
         ("watchlist", "Watchlist"),
+        ("models", "Models"),
         ("history", "History"),
     ]
     valid_tabs = {k for k, _ in tabs}
@@ -1905,7 +1907,7 @@ def render_page(
     _render_summary(out, global_summary, global_active_bets, global_history,
                      period_key=period_key, current_bot=current_bot,
                      available_bots=available_bots)
-    out.append("<div class='section'><h2>Bot performance</h2>"
+    out.append("<div class='section'><h2>Model performance</h2>"
                "<div class='body'>")
     _render_bot_cards(out, global_summary, bot_models, period_label)
     out.append("</div></div>")
@@ -1943,6 +1945,22 @@ def render_page(
             contract_close_ts=contract_close_ts,
         )
     out.append("</div>")  # /watchlist panel
+
+    # ── MODELS tab — per-bot model deep-dive ─────────────────────────
+    _open_panel("models")
+    current_bot_dict = next(
+        (b for b in available_bots if b.get("key") == current_bot),
+        None,
+    )
+    _render_models_panel(
+        out,
+        bot=current_bot_dict or {},
+        model=model,
+        display=display,
+        available_bots=available_bots,
+        current_bot=current_bot,
+    )
+    out.append("</div>")  # /models panel
 
     # ── HISTORY tab — closed-bet history across all bots ──────────────
     _open_panel("history")
@@ -2897,15 +2915,16 @@ def _render_bot_cards(out: List[str], rollup: dict,
         gl_cls = ("green" if gain_loss > 0
                    else ("red" if gain_loss < 0 else "gray"))
         gl_str = fmt_signed_cents(gain_loss)
-        # Each card is a link to the bot's Watchlist tab. Tennis routes
-        # to its own page (own renderer), the rest land on the standard
-        # watchlist tab.
+        # Each card is a link to the bot's Models tab — the deeper
+        # per-bot view (feature importance, calibration, confusion
+        # matrix, all features used to make decisions). Tennis routes
+        # through its own page since its model has its own renderer.
         if not bot_key:
             href = "#"
         elif (b.get("dashboard_type") == "tennis"):
-            href = f"?bot={html.escape(bot_key)}&tab=watchlist"
+            href = f"?bot={html.escape(bot_key)}&tab=models"
         else:
-            href = f"?tab=watchlist&bot={html.escape(bot_key)}"
+            href = f"?tab=models&bot={html.escape(bot_key)}"
 
         # Compute drift-badge HTML (if any) up-front so it can be
         # rendered inline with the bot name in the card header.
@@ -2980,7 +2999,7 @@ def _render_bot_cards(out: List[str], rollup: dict,
         # Footer hints at the click affordance — same idiom as the
         # ticker cells in the watchlist (subtle "go here" signal).
         out.append("<div class='bot-card-foot'>"
-                   "<span>View watchlist</span>"
+                   "<span>View model</span>"
                    "<span class='arrow'>›</span>"
                    "</div>")
         out.append("</a>")  # /bot-card
@@ -3380,7 +3399,8 @@ def _render_bot_filter(out: List[str], available_bots: List[dict],
                        current_bot: str,
                        period_key: str = "all",
                        select_id: str = "bot-select",
-                       include_all_option: bool = False) -> None:
+                       include_all_option: bool = False,
+                       tab_key: str = "watchlist") -> None:
     """Bot selector dropdown — used on both the Home tab (as the
     "jump to a bot's watchlist" navigator) and on the per-bot
     Watchlist tab. Native <select> for keyboard-friendliness.
@@ -3414,13 +3434,11 @@ def _render_bot_filter(out: List[str], available_bots: List[dict],
         avail = b.get("available", True)
         suffix = "" if avail else " (no data)"
         sel = " selected" if b["key"] == current_bot else ""
-        # Tennis routes through its own renderer, so the watchlist
-        # URL drops the &tab=watchlist suffix (its dispatcher always
-        # serves the watchlist).
-        if b.get("dashboard_type") == "tennis":
-            href = f"?bot={html.escape(b['key'])}&tab=watchlist{period_qs}"
-        else:
-            href = f"?bot={html.escape(b['key'])}&tab=watchlist{period_qs}"
+        # Tennis routes through its own renderer; both branches build
+        # the same URL shape so the dropdown jumps the user into the
+        # right per-bot tab regardless of dashboard_type.
+        href = (f"?bot={html.escape(b['key'])}"
+                f"&tab={html.escape(tab_key)}{period_qs}")
         out.append(
             f"<option value='{html.escape(href)}'{sel}>"
             f"{html.escape(b['name'])}{html.escape(suffix)}</option>"
@@ -3435,6 +3453,518 @@ def _render_bot_unavailable(out: List[str], bot_key: str) -> None:
                f"but has no data on this host yet. Switch to a different bot above, "
                f"or run that bot's service to populate <code>data/sim.db</code>.</div>"
                "</div></div>")
+
+
+# ── Models page (per-bot deep-dive) ──────────────────────────────────────
+def _read_feature_importance(csv_path: str) -> List[dict]:
+    """Parse the bot's feature_importance.csv into a list of feature
+    dicts: {feature, mean_importance, positive_folds, selected}.
+
+    Tolerates missing/empty files by returning an empty list — the
+    renderer shows an empty-state in that case rather than crashing.
+    All bots running the standard ensemble pipeline write this file
+    on every retrain; the column shape has been stable since the
+    walk-forward feature selector landed.
+    """
+    p = Path(csv_path)
+    if not p.exists():
+        return []
+    out: List[dict] = []
+    try:
+        with p.open("r") as f:
+            rd = csv.DictReader(f)
+            for row in rd:
+                try:
+                    imp = float(row.get("mean_importance") or 0.0)
+                except (TypeError, ValueError):
+                    imp = 0.0
+                try:
+                    pf = int(float(row.get("positive_folds") or 0))
+                except (TypeError, ValueError):
+                    pf = 0
+                sel = (row.get("selected") or "").strip().lower() in (
+                    "true", "1", "yes",
+                )
+                out.append({
+                    "feature": row.get("feature") or "",
+                    "mean_importance": imp,
+                    "positive_folds": pf,
+                    "selected": sel,
+                })
+    except (OSError, csv.Error):
+        return []
+    return out
+
+
+def fetch_calibration_bins(db_path: str, n_bins: int = 10) -> List[dict]:
+    """Decile calibration: for each bin of model probabilities, the
+    realized win rate of bets the bot opened in that bin.
+
+    Joins the closed `positions` rows against the snapshot at entry
+    (`model_yes_prob_at_entry` / `kalshi_yes_prob_at_entry`), takes
+    the side-aligned probability, buckets into N evenly-spaced bins
+    over [0,1], and returns the count + observed-win-rate per bin.
+
+    Skips ties at the boundaries by including the upper edge in the
+    last bin (so prob=1.0 lands in the top decile, not a 11th bin).
+    """
+    if not Path(db_path).exists():
+        return []
+    edges = [i / n_bins for i in range(n_bins + 1)]
+    bins = [{"lo": edges[i], "hi": edges[i + 1],
+             "n": 0, "wins": 0} for i in range(n_bins)]
+    try:
+        with closing(_conn(db_path)) as c:
+            rows = c.execute(
+                "SELECT side, model_yes_prob_at_entry AS p, "
+                "       result "
+                "FROM positions "
+                "WHERE result IN ('WIN','LOSS') "
+                "  AND model_yes_prob_at_entry IS NOT NULL"
+            ).fetchall()
+    except (sqlite3.OperationalError, sqlite3.DatabaseError):
+        return []
+    for r in rows:
+        side = (r["side"] or "").upper()
+        try:
+            p_yes = float(r["p"])
+        except (TypeError, ValueError):
+            continue
+        # Probability of OUR side winning at entry — same shape as the
+        # ROC / calibration target.
+        p_side = p_yes if side == "YES" else (1.0 - p_yes)
+        idx = min(n_bins - 1, max(0, int(p_side * n_bins)))
+        bins[idx]["n"] += 1
+        if (r["result"] or "").upper() == "WIN":
+            bins[idx]["wins"] += 1
+    return bins
+
+
+def fetch_confusion_matrix(db_path: str, threshold: float = 0.5) -> dict:
+    """Confusion matrix from the bot's realized closed bets.
+
+    The "prediction" is the side the bot took (YES or NO); the
+    "actual" comes from the position's WIN/LOSS result. We bucket
+    the model's probability for the chosen side at entry into
+    "high-confidence prediction" (>= threshold) vs the rest. This
+    yields four cells:
+      TP — high-conf bet won (model said likely, it happened)
+      FP — high-conf bet lost (model said likely, it didn't)
+      TN — low-conf bet lost (model less sure, it didn't)
+      FN — low-conf bet won (model less sure, it happened anyway)
+
+    Returns {"tp": …, "fp": …, "tn": …, "fn": …, "n": total}.
+    """
+    out = {"tp": 0, "fp": 0, "tn": 0, "fn": 0, "n": 0}
+    if not Path(db_path).exists():
+        return out
+    try:
+        with closing(_conn(db_path)) as c:
+            rows = c.execute(
+                "SELECT side, model_yes_prob_at_entry AS p, result "
+                "FROM positions "
+                "WHERE result IN ('WIN','LOSS') "
+                "  AND model_yes_prob_at_entry IS NOT NULL"
+            ).fetchall()
+    except (sqlite3.OperationalError, sqlite3.DatabaseError):
+        return out
+    for r in rows:
+        try:
+            p_yes = float(r["p"])
+        except (TypeError, ValueError):
+            continue
+        side = (r["side"] or "").upper()
+        p_side = p_yes if side == "YES" else (1.0 - p_yes)
+        won = (r["result"] or "").upper() == "WIN"
+        confident = p_side >= threshold
+        if confident and won:
+            out["tp"] += 1
+        elif confident and not won:
+            out["fp"] += 1
+        elif not confident and not won:
+            out["tn"] += 1
+        else:
+            out["fn"] += 1
+        out["n"] += 1
+    return out
+
+
+def fetch_per_strike_accuracy(db_path: str) -> List[dict]:
+    """Accuracy by strike-band — closed bets grouped by (floor_strike,
+    cap_strike, direction). Useful for spotting which strikes the
+    model handles well vs poorly across the contract ladder.
+
+    Returns rows sorted by sample count descending so the strikes
+    with the most evidence come first.
+    """
+    if not Path(db_path).exists():
+        return []
+    try:
+        with closing(_conn(db_path)) as c:
+            rows = c.execute(
+                "SELECT floor_strike, cap_strike, direction, "
+                "       SUM(CASE WHEN result='WIN' THEN 1 ELSE 0 END) AS wins, "
+                "       SUM(CASE WHEN result='LOSS' THEN 1 ELSE 0 END) AS losses, "
+                "       COUNT(*) AS n "
+                "FROM positions "
+                "WHERE result IN ('WIN','LOSS') "
+                "GROUP BY floor_strike, cap_strike, direction "
+                "ORDER BY n DESC"
+            ).fetchall()
+    except (sqlite3.OperationalError, sqlite3.DatabaseError):
+        return []
+    out = []
+    for r in rows:
+        n = int(r["n"] or 0)
+        wins = int(r["wins"] or 0)
+        if n == 0:
+            continue
+        out.append({
+            "floor_strike": r["floor_strike"],
+            "cap_strike": r["cap_strike"],
+            "direction": r["direction"],
+            "n": n,
+            "wins": wins,
+            "losses": int(r["losses"] or 0),
+            "accuracy": wins / n,
+        })
+    return out
+
+
+def _svg_feature_importance(features: List[dict],
+                             max_height_px: int = 600) -> str:
+    """Horizontal-bar chart of every feature, sorted by mean_importance
+    descending. Selected features render in green; rejected (didn't
+    survive the walk-forward stability filter) in muted gray with a
+    smaller bar so the user can see "tried, dropped" alongside "kept".
+    """
+    if not features:
+        return ("<div class='empty'>"
+                "Feature importance not yet written for this bot — "
+                "the file lands after the next retrain.</div>")
+    feats = sorted(features,
+                    key=lambda f: f.get("mean_importance") or 0.0,
+                    reverse=True)
+    n = len(feats)
+    row_h = 18
+    pad_t, pad_b, pad_l, pad_r = 18, 24, 220, 60
+    height = pad_t + pad_b + n * row_h
+    width = 760
+    inner_w = width - pad_l - pad_r
+    # Normalize to the largest abs importance so the longest bar fills
+    # most of the inner width.
+    max_imp = max((abs(f.get("mean_importance") or 0.0) for f in feats),
+                   default=1.0) or 1.0
+    parts: List[str] = []
+    parts.append(
+        f"<svg viewBox='0 0 {width} {height}' "
+        f"style='width:100%;height:auto;max-height:{max_height_px}px;"
+        f"display:block;background:#0d1117;border:1px solid #21262d;"
+        f"border-radius:6px;'>"
+    )
+    parts.append(f"<text x='{pad_l - 8}' y='{pad_t - 4}' fill='#8b949e' "
+                  f"font-size='11' text-anchor='end'>feature</text>")
+    parts.append(f"<text x='{pad_l + 4}' y='{pad_t - 4}' fill='#8b949e' "
+                  f"font-size='11'>importance</text>")
+    for i, f in enumerate(feats):
+        y = pad_t + i * row_h + 2
+        imp = f.get("mean_importance") or 0.0
+        bar_w = max(1.0, abs(imp) / max_imp * inner_w)
+        sel = bool(f.get("selected"))
+        pf = int(f.get("positive_folds") or 0)
+        # Green for selected (kept), muted for unselected (rejected).
+        bar_color = "#3fb950" if sel else "#484f58"
+        text_color = "#c9d1d9" if sel else "#8b949e"
+        name = html.escape(f.get("feature") or "")
+        # Truncate very long names with ellipsis (the full name lives
+        # in the title attribute for hover).
+        display_name = (name if len(name) <= 28
+                          else name[:25] + "…")
+        parts.append(
+            f"<g><title>{name} · imp {imp:.4f} · {pf}/5 folds · "
+            f"{'kept' if sel else 'rejected'}</title>"
+            f"<text x='{pad_l - 8}' y='{y + 12}' fill='{text_color}' "
+            f"font-size='11' text-anchor='end' "
+            f"font-family='ui-monospace,SFMono-Regular,monospace'>"
+            f"{display_name}</text>"
+            f"<rect x='{pad_l}' y='{y + 3}' width='{bar_w:.1f}' "
+            f"height='10' fill='{bar_color}' rx='1'/>"
+            f"<text x='{pad_l + bar_w + 4:.1f}' y='{y + 12}' "
+            f"fill='#8b949e' font-size='10'>{imp:.4f}</text>"
+            f"</g>"
+        )
+    parts.append("</svg>")
+    return "".join(parts)
+
+
+def _svg_calibration(bins: List[dict]) -> str:
+    """Reliability diagram — predicted-prob bin midpoint on X, observed
+    win-rate on Y, point size scales with bin sample count. Diagonal
+    reference line shows perfect calibration.
+    """
+    populated = [b for b in bins if b.get("n", 0) > 0]
+    if not populated:
+        return ("<div class='empty'>Not enough closed bets yet to "
+                "draw a calibration curve.</div>")
+    width, height = 460, 320
+    pad_l, pad_r, pad_t, pad_b = 50, 20, 24, 36
+    inner_w = width - pad_l - pad_r
+    inner_h = height - pad_t - pad_b
+    parts: List[str] = []
+    parts.append(
+        f"<svg viewBox='0 0 {width} {height}' "
+        f"style='width:100%;height:auto;max-height:340px;"
+        f"display:block;background:#0d1117;border:1px solid #21262d;"
+        f"border-radius:6px;'>"
+    )
+    # Axes — 0..1 both directions.
+    parts.append(
+        f"<line x1='{pad_l}' y1='{pad_t}' x2='{pad_l}' "
+        f"y2='{pad_t + inner_h}' stroke='#21262d'/>"
+        f"<line x1='{pad_l}' y1='{pad_t + inner_h}' "
+        f"x2='{pad_l + inner_w}' y2='{pad_t + inner_h}' stroke='#21262d'/>"
+    )
+    # Gridlines + labels at each decile.
+    for k in range(0, 11, 2):
+        frac = k / 10.0
+        x = pad_l + frac * inner_w
+        y = pad_t + (1 - frac) * inner_h
+        parts.append(
+            f"<line x1='{x}' x2='{x}' y1='{pad_t}' "
+            f"y2='{pad_t + inner_h}' stroke='#161b22'/>"
+            f"<text x='{x}' y='{pad_t + inner_h + 14}' fill='#8b949e' "
+            f"font-size='10' text-anchor='middle'>{int(frac*100)}%</text>"
+            f"<line x1='{pad_l}' x2='{pad_l + inner_w}' "
+            f"y1='{y}' y2='{y}' stroke='#161b22'/>"
+            f"<text x='{pad_l - 6}' y='{y + 3}' fill='#8b949e' "
+            f"font-size='10' text-anchor='end'>{int(frac*100)}%</text>"
+        )
+    # Diagonal: perfect calibration.
+    parts.append(
+        f"<line x1='{pad_l}' y1='{pad_t + inner_h}' "
+        f"x2='{pad_l + inner_w}' y2='{pad_t}' stroke='#484f58' "
+        f"stroke-dasharray='4,3'/>"
+    )
+    # Polyline through populated bins so the reliability shape is easy
+    # to follow even when some deciles are sparsely populated.
+    pts: List[Tuple[float, float]] = []
+    n_total = sum(b.get("n", 0) for b in populated) or 1
+    for b in populated:
+        mid = (b["lo"] + b["hi"]) / 2.0
+        rate = b["wins"] / b["n"]
+        x = pad_l + mid * inner_w
+        y = pad_t + (1 - rate) * inner_h
+        pts.append((x, y))
+    poly = " ".join(f"{x:.1f},{y:.1f}" for x, y in pts)
+    parts.append(
+        f"<polyline points='{poly}' fill='none' "
+        f"stroke='#58a6ff' stroke-width='2'/>"
+    )
+    # Points sized by bin n. Tooltip shows the raw count + win rate.
+    for b, (x, y) in zip(populated, pts):
+        size = max(3, min(14, (b["n"] / n_total) * 60))
+        parts.append(
+            f"<g><title>{b['lo']*100:.0f}–{b['hi']*100:.0f}%: "
+            f"{b['wins']}/{b['n']} won "
+            f"({b['wins']/b['n']*100:.0f}%)</title>"
+            f"<circle cx='{x:.1f}' cy='{y:.1f}' r='{size:.1f}' "
+            f"fill='#58a6ff' fill-opacity='0.7' stroke='#58a6ff'/></g>"
+        )
+    # Axis labels.
+    parts.append(
+        f"<text x='{pad_l + inner_w/2}' y='{height - 6}' fill='#8b949e' "
+        f"font-size='11' text-anchor='middle'>Predicted probability</text>"
+        f"<text x='15' y='{pad_t + inner_h/2}' fill='#8b949e' "
+        f"font-size='11' text-anchor='middle' "
+        f"transform='rotate(-90 15 {pad_t + inner_h/2})'>"
+        f"Observed win rate</text>"
+    )
+    parts.append("</svg>")
+    return "".join(parts)
+
+
+def _svg_confusion(cm: dict) -> str:
+    """2×2 confusion-matrix grid, cell shaded by share of total, labels
+    showing absolute count + row %.
+    """
+    n = int(cm.get("n") or 0)
+    if n == 0:
+        return ("<div class='empty'>No closed bets yet — confusion "
+                "matrix will populate after the first WIN/LOSS.</div>")
+    tp = int(cm.get("tp") or 0)
+    fp = int(cm.get("fp") or 0)
+    fn = int(cm.get("fn") or 0)
+    tn = int(cm.get("tn") or 0)
+    cells = [
+        ("TP", tp, "Confident bet · won",   "#3fb950", 0, 0),
+        ("FP", fp, "Confident bet · lost",  "#f85149", 0, 1),
+        ("FN", fn, "Low-conf bet · won",    "#d29922", 1, 0),
+        ("TN", tn, "Low-conf bet · lost",   "#484f58", 1, 1),
+    ]
+    width, height = 360, 260
+    pad_l, pad_t = 60, 60
+    cell_w = (width - pad_l - 20) / 2
+    cell_h = (height - pad_t - 30) / 2
+    parts: List[str] = []
+    parts.append(
+        f"<svg viewBox='0 0 {width} {height}' "
+        f"style='width:100%;height:auto;max-width:380px;"
+        f"display:block;background:#0d1117;border:1px solid #21262d;"
+        f"border-radius:6px;'>"
+    )
+    # Outer axis labels.
+    parts.append(
+        f"<text x='{pad_l + cell_w}' y='20' fill='#8b949e' "
+        f"font-size='11' text-anchor='middle'>Outcome</text>"
+        f"<text x='{pad_l + cell_w/2}' y='40' fill='#8b949e' "
+        f"font-size='11' text-anchor='middle'>Won</text>"
+        f"<text x='{pad_l + cell_w + cell_w/2}' y='40' fill='#8b949e' "
+        f"font-size='11' text-anchor='middle'>Lost</text>"
+        f"<text x='15' y='{pad_t + cell_h}' fill='#8b949e' "
+        f"font-size='11' text-anchor='middle' "
+        f"transform='rotate(-90 15 {pad_t + cell_h})'>Confidence</text>"
+        f"<text x='{pad_l - 6}' y='{pad_t + cell_h/2 + 3}' "
+        f"fill='#8b949e' font-size='11' text-anchor='end'>≥ 0.5</text>"
+        f"<text x='{pad_l - 6}' y='{pad_t + cell_h + cell_h/2 + 3}' "
+        f"fill='#8b949e' font-size='11' text-anchor='end'>&lt; 0.5</text>"
+    )
+    for label, count, tip, base, row, col in cells:
+        x = pad_l + col * cell_w
+        y = pad_t + row * cell_h
+        share = count / n
+        parts.append(
+            f"<g><title>{label} — {tip}: {count} of {n} "
+            f"({share*100:.0f}%)</title>"
+            f"<rect x='{x:.1f}' y='{y:.1f}' "
+            f"width='{cell_w:.1f}' height='{cell_h:.1f}' "
+            f"fill='{base}' fill-opacity='{0.18 + share*0.45:.2f}' "
+            f"stroke='#21262d'/>"
+            f"<text x='{x + cell_w/2:.1f}' y='{y + cell_h/2 - 2:.1f}' "
+            f"fill='#c9d1d9' font-size='22' font-weight='700' "
+            f"text-anchor='middle'>{count}</text>"
+            f"<text x='{x + cell_w/2:.1f}' y='{y + cell_h/2 + 18:.1f}' "
+            f"fill='#8b949e' font-size='11' "
+            f"text-anchor='middle'>{label}</text></g>"
+        )
+    parts.append("</svg>")
+    return "".join(parts)
+
+
+def _render_models_panel(out: List[str], bot: dict, model: dict | None,
+                          display: dict | None,
+                          available_bots: List[dict],
+                          current_bot: str) -> None:
+    """Per-bot Models tab content. Standard sim.db bots get the full
+    deep-dive (headline metrics card row, full feature list bar chart,
+    calibration curve, confusion matrix, per-strike accuracy table).
+    Tennis and whale dispatch into their own renderers.
+    """
+    out.append("<div class='section'><h2>Model</h2><div class='body'>")
+    _render_bot_filter(out, available_bots, current_bot=current_bot,
+                        tab_key="models")
+    if not bot:
+        out.append("<div class='empty'>Bot not found.</div>")
+        out.append("</div></div>")
+        return
+    db_path = bot.get("db_path") or ""
+    if not db_path or not Path(db_path).exists():
+        _render_bot_unavailable(out, bot.get("key", ""))
+        out.append("</div></div>")
+        return
+
+    # ── Headline metrics ────────────────────────────────────────────
+    out.append("<h3 class='subhead'>Headline metrics</h3>")
+    if not model:
+        out.append("<div class='empty'>No model snapshot yet.</div>")
+    else:
+        def _pct(v, decimals=0):
+            if v is None:
+                return "—"
+            try:
+                return f"{float(v)*100:.{decimals}f}%"
+            except (TypeError, ValueError):
+                return "—"
+        out.append("<div class='cards'>")
+        for label, v, decimals in [
+            ("Accuracy", model.get("classifier_accuracy"), 1),
+            ("F1", model.get("training_f1"), 0),
+            ("Precision", model.get("training_precision"), 0),
+            ("Recall", model.get("training_recall"), 0),
+            ("ROC AUC", model.get("training_roc_auc"), 0),
+            ("Features", model.get("feature_count"), None),
+        ]:
+            if label == "Features":
+                shown = (str(int(v)) if v is not None else "—")
+            else:
+                shown = _pct(v, decimals or 0)
+            out.append(f"<div class='card'><div class='label'>"
+                        f"{html.escape(label)}</div>"
+                        f"<div class='value'>{shown}</div></div>")
+        out.append("</div>")
+
+    # ── Feature importance — every feature the model considered ────
+    fi_path = Path(db_path).parent / "feature_importance.csv"
+    feats = _read_feature_importance(str(fi_path))
+    n_kept = sum(1 for f in feats if f.get("selected"))
+    n_total = len(feats)
+    out.append(
+        f"<h3 class='subhead'>Features the model uses to make decisions"
+        f" <span class='small gray'>({n_kept} kept of {n_total} considered)"
+        f"</span></h3>"
+    )
+    out.append("<p class='small gray' style='margin:0 0 8px 0;'>"
+                "Walk-forward permutation importance, averaged across folds. "
+                "<span style='color:#3fb950;'>Green</span> bars are the "
+                "features the bot actually scores live with; muted bars are "
+                "candidates the stability filter rejected this retrain.</p>")
+    out.append(_svg_feature_importance(feats))
+
+    # ── Calibration curve — predicted prob vs realized win rate ─────
+    out.append("<h3 class='subhead'>Calibration "
+                "<span class='small gray'>(predicted prob vs realized "
+                "win rate, on closed bets)</span></h3>")
+    bins = fetch_calibration_bins(db_path, n_bins=10)
+    out.append(_svg_calibration(bins))
+
+    # ── Confusion matrix at the bot's threshold ─────────────────────
+    out.append("<h3 class='subhead'>Confusion matrix "
+                "<span class='small gray'>(threshold = 0.5)</span></h3>")
+    cm = fetch_confusion_matrix(db_path, threshold=0.5)
+    out.append(_svg_confusion(cm))
+
+    # ── Per-strike accuracy ─────────────────────────────────────────
+    rows = fetch_per_strike_accuracy(db_path)
+    out.append("<h3 class='subhead'>Accuracy by strike band "
+                "<span class='small gray'>(closed bets only)</span></h3>")
+    if not rows:
+        out.append("<div class='empty'>No closed bets to break down by "
+                    "strike yet.</div>")
+    else:
+        out.append("<table><thead><tr>"
+                    "<th>Strike</th><th>Direction</th>"
+                    "<th class='num'>Bets</th><th class='num'>Wins</th>"
+                    "<th class='num'>Losses</th><th class='num'>Accuracy</th>"
+                    "</tr></thead><tbody>")
+        for r in rows:
+            sl = r.get("floor_strike")
+            sh = r.get("cap_strike")
+            direction = r.get("direction") or "—"
+            qstr = question_str(direction, sl, sh, display=display)
+            acc = r["accuracy"]
+            cls = ("green" if acc > 0.6 else
+                   "yellow" if acc > 0.5 else
+                   "red")
+            out.append(
+                f"<tr><td>{html.escape(qstr)}</td>"
+                f"<td>{html.escape(direction)}</td>"
+                f"<td class='num'>{r['n']}</td>"
+                f"<td class='num green'>{r['wins']}</td>"
+                f"<td class='num red'>{r['losses']}</td>"
+                f"<td class='num {cls}'>{acc*100:.0f}%</td></tr>"
+            )
+        out.append("</tbody></table>")
+
+    out.append("</div></div>")
 
 
 def _fmt_signed_underlying(value: float | None, display: dict) -> str:
@@ -4535,7 +5065,7 @@ class Handler(BaseHTTPRequestHandler):
                 # silently redirect to home so deep links keep working.
                 if tab_key == "performance":
                     tab_key = "home"
-                if tab_key not in {"home", "watchlist", "history"}:
+                if tab_key not in {"home", "watchlist", "models", "history"}:
                     tab_key = "home"
 
                 # Tennis-forecast uses a different page entirely — JSON
@@ -4543,13 +5073,10 @@ class Handler(BaseHTTPRequestHandler):
                 # tennis-shaped watchlist rendering. Dispatch early so the
                 # standard render path stays focused on Kalshi event-bots.
                 if bot.get("dashboard_type") == "tennis":
-                    # Tennis page only renders the watchlist content.
-                    # The page's tab bar links Home → / and History →
-                    # /?tab=history (handled by the standard renderer
-                    # at those URLs). So when we get a request for
-                    # ?bot=tennis with any tab, we always render the
-                    # watchlist — there's no separate tennis-specific
-                    # home tab to route to.
+                    # Tennis renderer covers Watchlist + Models tabs;
+                    # Home and History fall through to the standard
+                    # renderer at /?... URLs since they're cross-bot.
+                    tennis_tab = "models" if tab_key == "models" else "watchlist"
                     from . import tennis
                     body = tennis.render_page(
                         metrics_path=bot.get("metrics_path"),
@@ -4558,7 +5085,7 @@ class Handler(BaseHTTPRequestHandler):
                         sim_state_path=bot.get("sim_state_path"),
                         available_bots=self.bots,
                         current_bot_key=bot["key"],
-                        tab_key="watchlist",
+                        tab_key=tennis_tab,
                     )
                     payload = body.encode("utf-8")
                     self.send_response(200)

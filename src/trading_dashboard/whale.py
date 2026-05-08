@@ -1115,8 +1115,117 @@ def _fmt_age(signal_ts: float | None) -> str:
 WHALE_TABS = [
     ("home", "Home"),
     ("watchlist", "Watchlist"),
+    ("models", "Models"),
     ("history", "History"),
 ]
+
+
+def _render_whale_models_tab(out: List[str], events: List[dict],
+                              orders: List[dict], summary: dict,
+                              available_bots: List[dict],
+                              current_bot_key: str) -> None:
+    """Whale-watcher's Models tab.
+
+    Whale isn't a trained ML model — it's a rule-based detector that
+    flags trades whose notional size sits N standard deviations above
+    each market's normal flow. So this page exposes the *signal* the
+    bot makes its decisions on (z-score buckets, signal-type mix,
+    follow-through win rate at +30min) instead of the feature
+    importance / coefficient list a classical model would have.
+    """
+    from .dashboard import _render_bot_filter  # type: ignore
+    out.append("<div class='section'><h2>Model</h2><div class='body'>")
+    _render_bot_filter(out, available_bots, current_bot_key,
+                        tab_key="models")
+
+    out.append("<p class='small gray' style='margin:0 0 10px 0;'>"
+                "The whale-watcher uses a heuristic signal detector "
+                "instead of a trained classifier — it flags trades "
+                "whose notional size is anomalous (high z-score) "
+                "relative to each market's normal flow, then watches "
+                "the price for follow-through. The sections below "
+                "expose the inputs the detector keys on so you can "
+                "audit which signal cohorts actually have edge.</p>")
+
+    # Signal volume / 30-minute follow-through win rate.
+    out.append("<h3 class='subhead'>Signal stats</h3>")
+    out.append("<div class='cards'>")
+    cards = [
+        ("Signals (lookback)", str(summary.get("n_signals") or 0)),
+        ("Simulated buys", str(summary.get("n_simulated_buys") or 0)),
+        ("Passed all validators",
+            str(summary.get("n_passed_all_validators") or 0)),
+        ("+30min win rate",
+            (f"{summary['win_rate_30m']*100:.0f}%"
+                if summary.get("win_rate_30m") is not None else "—")),
+        ("Mean favourable move",
+            (f"{summary['mean_fav_30m']:+.2f}¢"
+                if summary.get("mean_fav_30m") is not None else "—")),
+        ("Verdict", str(summary.get("verdict") or "—")),
+    ]
+    for label, value in cards:
+        out.append(f"<div class='card'><div class='label'>"
+                    f"{html.escape(label)}</div>"
+                    f"<div class='value'>{html.escape(value)}</div></div>")
+    out.append("</div>")
+
+    # Z-score bucket breakdown — how much edge is in each tier of
+    # "anomaly intensity"? Bucket the events into 4 z-score bands and
+    # compute follow-through stats per band.
+    z_bands = [(0, 3, "z 0–3"),
+                (3, 5, "z 3–5"),
+                (5, 8, "z 5–8"),
+                (8, float("inf"), "z 8+")]
+    band_stats = []
+    for lo, hi, label in z_bands:
+        favs = []
+        n = 0
+        for e in events:
+            try:
+                z = float(e.get("z_score") or 0)
+            except (TypeError, ValueError):
+                continue
+            if not (lo <= z < hi):
+                continue
+            n += 1
+            f30 = _last_favorable(e)
+            if f30 is not None:
+                favs.append(f30)
+        if n == 0:
+            continue
+        wins = sum(1 for f in favs if f > 0)
+        win_rate = (wins / len(favs)) if favs else None
+        mean_fav = (sum(favs) / len(favs)) if favs else None
+        band_stats.append({
+            "label": label, "n": n,
+            "win_rate": win_rate, "mean_fav": mean_fav,
+        })
+    if band_stats:
+        out.append("<h3 class='subhead'>Edge by z-score band "
+                    "<span class='small gray'>(+30min follow-through)"
+                    "</span></h3>")
+        out.append("<table><thead><tr><th>Band</th>"
+                    "<th class='num'>Signals</th>"
+                    "<th class='num'>Win rate</th>"
+                    "<th class='num'>Mean move</th>"
+                    "</tr></thead><tbody>")
+        for b in band_stats:
+            wr = b["win_rate"]
+            wr_cls = ("green" if wr is not None and wr > 0.55
+                      else "red" if wr is not None and wr < 0.45
+                      else "")
+            wr_str = f"{wr*100:.0f}%" if wr is not None else "—"
+            mf_str = (f"{b['mean_fav']:+.2f}¢"
+                      if b["mean_fav"] is not None else "—")
+            out.append(
+                f"<tr><td>{html.escape(b['label'])}</td>"
+                f"<td class='num'>{b['n']}</td>"
+                f"<td class='num {wr_cls}'>{wr_str}</td>"
+                f"<td class='num'>{mf_str}</td></tr>"
+            )
+        out.append("</tbody></table>")
+
+    out.append("</div></div>")
 
 
 def render_page(
@@ -1250,16 +1359,25 @@ def render_page(
     # main dashboard's pages so the navigation is one idiom across
     # the whole app). Watchlist is the active tab — that's what this
     # whale view is, a Watchlist variant.
+    active_tab = "models" if tab_key == "models" else "watchlist"
     main_tabs = [
         ("home",      "Home",      "?tab=home"),
         ("watchlist", "Watchlist", f"?tab=watchlist&bot={html.escape(current_bot_key)}"),
+        ("models",    "Models",    f"?tab=models&bot={html.escape(current_bot_key)}"),
         ("history",   "History",   "?tab=history"),
     ]
     out.append("<div class='tab-bar'>")
     for key, label, href in main_tabs:
-        cls = "tab-pill" + (" tab-pill-active" if key == "watchlist" else "")
+        cls = "tab-pill" + (" tab-pill-active" if key == active_tab else "")
         out.append(f"<a class='{cls}' href='{href}'>{html.escape(label)}</a>")
     out.append("</div>")
+
+    if active_tab == "models":
+        _render_whale_models_tab(out, events, orders, summary,
+                                  available_bots, current_bot_key)
+        out.append(_BOT_SELECT_NAVIGATE_JS)
+        out.append("</body></html>")
+        return "".join(out)
 
     # Bot filter sits BELOW the tabs (inside the section body, like the
     # main dashboard's Watchlist tab does it).
