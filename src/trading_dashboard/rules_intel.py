@@ -248,6 +248,22 @@ def fetch_watchlist(db_path: str, *, limit: int = 200) -> List[Dict[str, Any]]:
         cr.n_source         AS n_source,
         cr.n_deadline       AS n_deadline,
         cr.risk_weight      AS risk_weight,
+        -- Cancellation-news count for this ticker. The per-contract
+        -- searcher only stores cancellation-relevant items (others
+        -- get filtered out at scrape time), so any news linked to
+        -- this ticker is a candidate cancellation signal.
+        (SELECT COUNT(*) FROM news_items nx
+         WHERE nx.contract_ticker = c.ticker
+           AND nx.fetched_at >= datetime('now','-7 days')
+        )                   AS n_cancel_news,
+        (SELECT nx.title FROM news_items nx
+         WHERE nx.contract_ticker = c.ticker
+         ORDER BY nx.fetched_at DESC LIMIT 1
+        )                   AS latest_cancel_headline,
+        (SELECT nx.url FROM news_items nx
+         WHERE nx.contract_ticker = c.ticker
+         ORDER BY nx.fetched_at DESC LIMIT 1
+        )                   AS latest_cancel_url,
         ls.id               AS signal_id,
         ls.confidence       AS signal_confidence,
         ls.expected_resolution AS signal_expected,
@@ -275,14 +291,28 @@ def fetch_watchlist(db_path: str, *, limit: int = 200) -> List[Dict[str, Any]]:
       -- unflagged rows as event-based to avoid hiding the operator's
       -- existing watchlist mid-rollout.
       AND COALESCE(c.is_event_based, 1) = 1
-      -- "Meets arbitrage criteria" = at least one directionally
-      -- impactful clause (risk_weight >= 1) OR a live signal. Pure
-      -- settlement-source / deadline clauses alone don't qualify
-      -- since there is no event-surface for the rules-arb thesis.
-      AND (cr.risk_weight >= 1 OR ls.id IS NOT NULL)
+      -- "Meets arbitrage criteria" = a cancellation/postponement-style
+      -- news headline has been linked to this contract OR a directional
+      -- signal already fired OR the rules carry strong directional
+      -- impact (risk_weight ≥ 2). Bare risk-weight-1 contracts no
+      -- longer surface alone — too noisy without an actual triggering
+      -- news event.
+      AND ((SELECT COUNT(*) FROM news_items nx
+              WHERE nx.contract_ticker = c.ticker
+                AND nx.fetched_at >= datetime('now','-7 days')) > 0
+           OR ls.id IS NOT NULL
+           OR cr.risk_weight >= 2)
     ORDER BY
+        -- Contracts with cancellation news come first — that's the
+        -- bot's primary arb trigger.
+        CASE WHEN (SELECT COUNT(*) FROM news_items nx
+                     WHERE nx.contract_ticker = c.ticker
+                       AND nx.fetched_at >= datetime('now','-7 days')
+                  ) > 0 THEN 0 ELSE 1 END,
+        -- Then signal-bearing rows by recency,
         CASE WHEN ls.id IS NULL THEN 1 ELSE 0 END,
         ls.created_at DESC,
+        -- Then by structural risk weight as a tiebreaker.
         cr.risk_weight DESC,
         c.ticker
     LIMIT ?
@@ -394,7 +424,9 @@ _CLAUSE_TAGS = [
 
 def discrepancy(yes_ask: Optional[int], no_ask: Optional[int],
                 expected: Optional[str], confidence: Optional[float],
-                risk_weight: int, has_signal: bool
+                risk_weight: int, has_signal: bool,
+                cancel_news_count: int = 0,
+                latest_cancel_headline: Optional[str] = None,
                 ) -> Dict[str, Any]:
     """Return a small dict the renderer turns into a discrepancy cell.
 
@@ -420,6 +452,23 @@ def discrepancy(yes_ask: Optional[int], no_ask: Optional[int],
         "headline": "—",
         "detail": "",
     }
+    # Cancellation news, but no scored signal yet (or the scored
+    # signal hasn't beaten the gates). Surface this regardless — the
+    # operator should see the news + headline so they can manually
+    # trade it even before the scorer catches up.
+    if cancel_news_count > 0 and not has_signal:
+        out["edge_class"] = "edge-pos"
+        out["headline"] = (
+            f"Cancellation news detected — {cancel_news_count} item(s) "
+            f"in last 7 days; rules permit settlement flip"
+        )
+        if latest_cancel_headline:
+            out["detail"] = (
+                "Latest headline: "
+                + latest_cancel_headline.replace("\n", " ").strip()[:240]
+            )
+        return out
+
     if not has_signal or expected is None or confidence is None:
         if risk_weight >= 5:
             out["headline"] = (
@@ -649,13 +698,32 @@ def _render_rules_watchlist(out: List[str], db_path: str) -> None:
                 f"</span>"
             )
         else:
-            signal_cell = "<span class='small gray'>watching — no event yet</span>"
+            signal_cell = (
+                "<span class='small gray'>watching — no event yet</span>"
+            )
 
+        # If cancellation news was found for this contract — even
+        # without a fully-scored signal yet — overlay a CANCEL-NEWS
+        # badge on the signal cell. This is what the operator looks
+        # for at a glance.
+        if int(r.get("n_cancel_news") or 0) > 0:
+            n = int(r["n_cancel_news"])
+            signal_cell = (
+                f"<span class='pill pill-flagged' "
+                f"title='Cancellation/postponement news linked to this "
+                f"contract'>CANCEL NEWS · {n}</span> " + signal_cell
+            )
+
+        cancel_news_count = int(r.get("n_cancel_news") or 0)
+        latest_cancel_headline = r.get("latest_cancel_headline") or ""
+        latest_cancel_url      = r.get("latest_cancel_url") or ""
         disc = discrepancy(
             yes_ask=yes_ask, no_ask=no_ask,
             expected=expected, confidence=confidence,
             risk_weight=int(r.get("risk_weight") or 0),
             has_signal=has_signal,
+            cancel_news_count=cancel_news_count,
+            latest_cancel_headline=latest_cancel_headline,
         )
         edge_pp = disc.get("edge_pp")
         edge_cell: str
@@ -688,11 +756,19 @@ def _render_rules_watchlist(out: List[str], db_path: str) -> None:
             f"<td>{edge_cell}</td>"
             f"<td>{html.escape(_fmt_ago(r.get('last_seen_at')))}</td>"
             f"<td>"
-            f"<a href='{html.escape(kalshi_url)}' target='_blank' rel='noopener'>"
-            f"kalshi</a>"
-            f"</td>"
-            "</tr>"
+            f"<a href='{html.escape(kalshi_url)}' target='_blank' "
+            f"rel='noopener'>kalshi</a>"
         )
+        # Direct link to the most-recent cancellation headline so the
+        # operator can read the trigger article in one click.
+        if latest_cancel_url:
+            out.append(
+                f" · <a href='{html.escape(latest_cancel_url)}' "
+                f"target='_blank' rel='noopener' "
+                f"title='{html.escape(latest_cancel_headline[:200])}'>"
+                f"news</a>"
+            )
+        out.append("</td></tr>")
     out.append("</tbody></table>")
 
 
@@ -936,6 +1012,8 @@ def snapshot(db_path: str, *, status_filter: str = "all",
             confidence=r.get("signal_confidence"),
             risk_weight=int(r.get("risk_weight") or 0),
             has_signal=r.get("signal_id") is not None,
+            cancel_news_count=int(r.get("n_cancel_news") or 0),
+            latest_cancel_headline=r.get("latest_cancel_headline"),
         )
     return {
         "summary": fetch_summary(db_path),
