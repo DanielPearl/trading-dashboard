@@ -2805,26 +2805,6 @@ def _render_bot_cards(out: List[str], rollup: dict,
             out.append("<dl><dt class='gray'>Model</dt>"
                        "<dd class='gray' style='grid-column:span 3;text-align:left;'>"
                        "no snapshot yet</dd></dl>")
-        elif b.get("dashboard_type") == "tennis":
-            # Tennis card carries the metrics that actually fit a
-            # probability forecaster (accuracy + Brier + log-loss + the
-            # current actionable-signal count from the watchlist), not
-            # the Kalshi-bet-specific F1 / win-rate fields.
-            from . import tennis as _tennis
-            wl = _tennis.load_watchlist(b.get("watchlist_json_path"))
-            wl_stats = _tennis._summary_stats(wl.get("rows") or [])
-            features = int(m.get("feature_count") or 0)
-            out.append("<dl>")
-            out.append(f"<dt>Accuracy</dt><dd>{_fmt_pct(m.get('classifier_accuracy'), 1)}</dd>"
-                        f"<dt>Brier</dt><dd>{m.get('training_brier', 0):.3f}</dd>")
-            out.append(f"<dt>Log loss</dt><dd>{m.get('training_log_loss', 0):.3f}</dd>"
-                        f"<dt>Features</dt><dd>{features}</dd>")
-            out.append(f"<dt>Tracked</dt><dd>{wl_stats['total']}</dd>"
-                        f"<dt>Live</dt><dd>{wl_stats['live']}</dd>")
-            actionable_cls = "green" if wl_stats["actionable"] > 0 else "gray"
-            out.append(f"<dt>Actionable</dt><dd class='{actionable_cls}'>{wl_stats['actionable']}</dd>"
-                        f"<dt>Max edge</dt><dd>{wl_stats['max_edge_pp']:.1f}pp</dd>")
-            out.append("</dl>")
         else:
             a_wins = int(m.get("actual_wins") or 0)
             a_losses = int(m.get("actual_losses") or 0)
@@ -4142,7 +4122,10 @@ class Handler(BaseHTTPRequestHandler):
                     # alongside the Kalshi bots on the home page.
                     if b.get("dashboard_type") == "tennis":
                         from . import tennis as _tennis
-                        m = _tennis.model_summary_for_card(b.get("metrics_path"))
+                        m = _tennis.model_summary_for_card(
+                            b.get("metrics_path"),
+                            b.get("sim_state_path"),
+                        )
                         bot_models.append({
                             "bot": b,
                             "model": m,
