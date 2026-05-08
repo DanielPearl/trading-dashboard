@@ -4278,9 +4278,9 @@ def _svg_roc_curve(points: List[dict],
     )
     # Trapezoid AUC for the legend label.
     auc = 0.0
-    for (x1, y1), (x2, y2) in zip(points, points[1:]):
+    for p1, p2 in zip(points, points[1:]):
         # x = fpr, height = tpr; integrate.
-        auc += (x2["fpr"] - x1["fpr"]) * (x1["tpr"] + x2["tpr"]) / 2.0
+        auc += (p2["fpr"] - p1["fpr"]) * (p1["tpr"] + p2["tpr"]) / 2.0
     parts.append(
         f"<text x='{pad_l + inner_w - 6}' y='{pad_t + inner_h - 6}' "
         f"fill='#58a6ff' font-size='12' font-weight='600' "
