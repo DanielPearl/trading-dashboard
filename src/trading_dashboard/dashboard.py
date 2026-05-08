@@ -2918,13 +2918,12 @@ def _render_active_bets_table(out: List[str], bets: List[dict],
         return
     bot_th = "<th>Bot</th>" if show_bot else ""
     # Column layout: ``Title`` carries Kalshi's published contract title
-    # (e.g. "Will MIN win the SAS vs MIN game?"); ``Question`` describes
-    # the contract more concisely (the strike-band for non-sport bots,
-    # the matchup + bet-on-side for sport bots). ``Side`` carries the
-    # YES / NO badge. Last column is the per-row info button.
+    # (the YES question text). ``Side`` carries the YES / NO badge.
+    # No separate ``Question`` column — Title already names the
+    # contract, and on sport rows it would just restate the matchup.
     out.append("<table><thead><tr>"
                f"<th>Opened</th>{bot_th}<th>Ticker</th>"
-               "<th>Title</th><th>Question</th>"
+               "<th>Title</th>"
                "<th class='num'>Contracts</th><th>Side</th>"
                "<th class='num' title='Implied probability of our side at entry (= entry price in ¢).'>Entry prob</th>"
                "<th class='num' title='Implied probability of our side right now, taken from the market mid.'>Current prob</th>"
@@ -3063,25 +3062,22 @@ def _render_active_bets_table(out: List[str], bets: List[dict],
             criteria, separators=(",", ":"), default=str))
         # Title cell: Kalshi-published contract title (the exact YES
         # question text from the market page). Tennis bets carry it
-        # via ``_title``; Kalshi-bot bets via ``title`` — fall through
-        # to the question text when neither is recorded.
+        # via ``_title``; Kalshi-bot bets via ``title``. Falls through
+        # to a derived "matchup — bet on X" or the strike question
+        # text when no Kalshi title is recorded.
         title_text = b.get("_title") or b.get("title") or ""
-        # Question cell: non-sport bots show the Kalshi question text
-        # (e.g. "Above $3.50 / gal"). Sport bots show the matchup
-        # plus the side we're betting on (e.g. "MIN vs SAS — bet on MIN")
-        # so the trader sees who they're long without reading the ticker.
-        match_text = b.get("_match") or _match_text_from_ticker(b.get("ticker"))
-        side_player = b.get("_side_player")
-        if side_player:
-            question_text = f"{match_text} — bet on {side_player}" if match_text else side_player
-        elif match_text:
-            tri = _side_tricode_from_ticker(b.get("ticker"), side)
-            question_text = (f"{match_text} — bet on {tri}"
-                              if tri else match_text)
-        else:
-            question_text = question
         if not title_text:
-            title_text = question_text
+            match_text = b.get("_match") or _match_text_from_ticker(b.get("ticker"))
+            side_player = b.get("_side_player")
+            if side_player:
+                title_text = (f"{match_text} — bet on {side_player}"
+                               if match_text else side_player)
+            elif match_text:
+                tri = _side_tricode_from_ticker(b.get("ticker"), side)
+                title_text = (f"{match_text} — bet on {tri}"
+                               if tri else match_text)
+            else:
+                title_text = question
         # Closes in: for tennis paper bets, _minutes_to_close is provided
         # by the tennis adapter (derived from expected_expiration_time);
         # for Kalshi bots the simulator already supplies minutes_to_close.
@@ -3090,7 +3086,6 @@ def _render_active_bets_table(out: List[str], bets: List[dict],
             f"{bot_td}"
             f"<td class='mono'>{ticker_cell_html(b.get('ticker'))}</td>"
             f"<td>{html.escape(title_text)}</td>"
-            f"<td>{html.escape(question_text)}</td>"
             f"<td class='num'>{contracts}</td>"
             f"<td><span class='badge {badge_cls}'>{side}</span></td>"
             f"{entry_prob_cell}"
@@ -3132,7 +3127,7 @@ def _render_bet_history_block(out: List[str], history: List[dict],
     head = (
         "<table><thead><tr>"
         "<th>Closed</th><th>Bot</th><th>Ticker</th>"
-        "<th>Title</th><th>Question</th>"
+        "<th>Title</th>"
         "<th>Side</th>"
         "<th class='num'>Entry</th><th class='num'>Exit</th>"
         "<th class='num'>Contracts</th>"
@@ -3193,29 +3188,26 @@ def _render_bet_history_block(out: List[str], history: List[dict],
             ev_cls = "gray"
         else:
             ev_str, ev_cls = (f"${ev:+.3f}", _ev_status(ev)[0])
-        # Title cell: Kalshi-published contract title.
+        # Title cell: Kalshi-published contract title; falls back to a
+        # derived "matchup — bet on X" or the strike question text
+        # when no Kalshi title is recorded on this row.
         title_text = b.get("_title") or b.get("title") or ""
-        # Question cell: sport bots show the matchup + side ("MIN vs SAS
-        # — bet on MIN"); non-sport bots show the strike-band template
-        # ("Above $3.50 / gal").
-        match_text = b.get("_match") or _match_text_from_ticker(b.get("ticker"))
-        side_player = b.get("_side_player")
-        if side_player:
-            question_text = (f"{match_text} — bet on {side_player}"
-                              if match_text else side_player)
-        elif match_text:
-            tri = _side_tricode_from_ticker(b.get("ticker"), side)
-            question_text = (f"{match_text} — bet on {tri}"
-                              if tri else match_text)
-        else:
-            question_text = question
         if not title_text:
-            title_text = question_text
+            match_text = b.get("_match") or _match_text_from_ticker(b.get("ticker"))
+            side_player = b.get("_side_player")
+            if side_player:
+                title_text = (f"{match_text} — bet on {side_player}"
+                               if match_text else side_player)
+            elif match_text:
+                tri = _side_tricode_from_ticker(b.get("ticker"), side)
+                title_text = (f"{match_text} — bet on {tri}"
+                               if tri else match_text)
+            else:
+                title_text = question
         return (f"<tr><td>{html.escape(closed)}</td>"
                 f"<td>{html.escape(bot_name)}</td>"
                 f"<td class='mono'>{ticker_cell_html(b.get('ticker'))}</td>"
                 f"<td>{html.escape(title_text)}</td>"
-                f"<td>{html.escape(question_text)}</td>"
                 f"<td><span class='badge {badge_cls}'>{side}</span></td>"
                 f"<td class='num'>{entry}c</td>"
                 f"<td class='num'>{cents_or_dash(exit_c)}</td>"
