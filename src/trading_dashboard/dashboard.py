@@ -3819,15 +3819,17 @@ def _render_watchlist(out: List[str], watchlist: List[dict],
     # YES (same midpoint of the bid/ask); volume and closes-in live in
     # the hero header instead of being repeated per row.
     # Sport bots (NBA today; tennis runs through its own renderer)
-    # drop the Kalshi-title / question column entirely — the Side
-    # column already says who the bot is betting on, and the YES
-    # question text "Will MIN win the SAS vs MIN game?" is just a
-    # restatement of that. Non-sport bots (gas / CPI / jobless) keep
-    # Title | Question because the strike-band semantics there make
-    # both columns informative.
+    # show Title + Side: the Title carries Kalshi's published YES
+    # question ("Will MIN win the SAS vs MIN game?") and Side
+    # carries the team-being-bet-on stack. Non-sport bots (gas / CPI
+    # / jobless) keep the strike-band Question column too.
     is_sport_bot = current_bot in {"nba"}
     if is_sport_bot:
-        head_cols = "<th title='Who the bot is betting will win.'>Side</th>"
+        head_cols = (
+            "<th title='Kalshi-published contract title — the "
+            "YES question shown on the market page.'>Title</th>"
+            "<th title='Who the bot is betting will win.'>Side</th>"
+        )
     else:
         head_cols = (
             "<th title='Kalshi-published contract title — the "
@@ -4059,20 +4061,24 @@ def _render_watchlist(out: List[str], watchlist: List[dict],
             yes_attr = f" data-yes-prob='{int(ya_c) / 100.0:.4f}'" if ya_c is not None else ""
         except (TypeError, ValueError):
             yes_attr = ""
-        # Sport bots: only the Side cell. Non-sport: Title + Question.
+        # Sport bots: Title + Side. Non-sport: Title + Question.
+        title_text = v.get("title") or ""
         if is_sport_bot:
             yes_team = _side_tricode_from_ticker(ticker, "YES")
             opp_team = _side_tricode_from_ticker(ticker, "NO")
             if yes_team:
-                middle_cells = (
+                side_cell = (
                     f"<td><strong>{html.escape(yes_team)}</strong>"
                     f"<br><span class='small gray'>vs "
                     f"{html.escape(opp_team)}</span></td>"
                 )
             else:
-                middle_cells = f"<td>{html.escape(qstr)}</td>"
+                side_cell = f"<td>{html.escape(qstr)}</td>"
+            middle_cells = (
+                f"<td>{html.escape(title_text)}</td>"
+                f"{side_cell}"
+            )
         else:
-            title_text = v.get("title") or ""
             middle_cells = (
                 f"<td>{html.escape(title_text)}</td>"
                 f"<td>{html.escape(qstr)}</td>"
