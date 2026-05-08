@@ -2156,10 +2156,10 @@ def _live_update_script(current_bot: str, period_key: str = "all") -> str:
         if (!tr) return;  // server added a new row — page reload would catch
         const ya = r.kalshi_yes, na = r.kalshi_no;
         const kyes = (ya !== null && ya !== undefined) ? (ya + "%")
-                   : (na !== null && na !== undefined) ? ("~" + (100 - na) + "%")
+                   : (na !== null && na !== undefined) ? ((100 - na) + "%")
                    : "—";
         const kno  = (na !== null && na !== undefined) ? (na + "%")
-                   : (ya !== null && ya !== undefined) ? ("~" + (100 - ya) + "%")
+                   : (ya !== null && ya !== undefined) ? ((100 - ya) + "%")
                    : "—";
         const myYes = (r.model_prob_yes !== null && r.model_prob_yes !== undefined)
           ? (Math.round(r.model_prob_yes * 100) + "%") : "—";
@@ -3960,17 +3960,21 @@ def _render_watchlist(out: List[str], watchlist: List[dict],
         volume = v.get("volume")
         oi = v.get("open_interest")
         oi_str = f"{int(oi):,}" if oi is not None else "—"
-        # Derive missing side from the other when only one ask is quoted.
+        # Derive missing side from the other when only one ask is
+        # quoted — render as a plain number (no "~" prefix) so the
+        # cell parses as a real percentage. The derivation is exact
+        # for binary contracts (YES + NO must sum to 100¢), so the
+        # tilde was just adding noise.
         if ya_c is not None:
             kyes_str = f"{ya_c}%"
         elif na_c is not None:
-            kyes_str = f"~{100 - na_c}%"
+            kyes_str = f"{100 - na_c}%"
         else:
             kyes_str = "—"
         if na_c is not None:
             kno_str = f"{na_c}%"
         elif ya_c is not None:
-            kno_str = f"~{100 - ya_c}%"
+            kno_str = f"{100 - ya_c}%"
         else:
             kno_str = "—"
         p = v.get("model_prob_yes")
