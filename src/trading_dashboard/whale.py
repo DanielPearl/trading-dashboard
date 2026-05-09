@@ -1012,7 +1012,8 @@ def summarize(events: List[dict],
     n = len(events)
     if n == 0:
         return {
-            "n_signals": 0, "n_simulated_buys": 0,
+            "n_signals": 0, "n_with_fav": 0,
+            "n_simulated_buys": 0,
             "n_passed_all_validators": 0,
             "win_rate_30m": None, "mean_fav_30m": None,
             "first_ts": None, "last_ts": None, "verdict": "no signals yet",
@@ -1048,6 +1049,7 @@ def summarize(events: List[dict],
 
     return {
         "n_signals": n,
+        "n_with_fav": n_with_fav,
         "n_simulated_buys": n_sim_buys,
         "n_passed_all_validators": n_passed,
         "win_rate_30m": win_rate,
@@ -1137,6 +1139,59 @@ def _render_whale_models_tab(out: List[str], events: List[dict],
     out.append("<div class='section'><h2>Model</h2><div class='body'>")
     _render_bot_filter(out, available_bots, current_bot_key,
                         tab_key="models")
+
+    # ── Confidence banner ──────────────────────────────────────────
+    # Whale isn't a trained classifier so there's no holdout file —
+    # the closest analogue is the count of signals with +30min
+    # follow-through data, which is the denominator of the win-rate
+    # metric. Same tiering as the other bots so the page reads
+    # consistently.
+    n_fav = int(summary.get("n_with_fav") or 0)
+    if n_fav == 0:
+        conf = {"tier": "none", "color": "#8b949e",
+                "label": "No follow-through data",
+                "reason": ("No signals have collected +30min "
+                           "follow-through prices yet — the win-rate "
+                           "and mean-move stats below can't be "
+                           "trusted at this sample size.")}
+    elif n_fav < 30:
+        conf = {"tier": "low", "color": "#f85149",
+                "label": "Low confidence",
+                "reason": (f"Only {n_fav} signals with +30min "
+                           "follow-through data — win-rate and "
+                           "mean-move stats can swing 10+ points "
+                           "with the next batch of signals.")}
+    elif n_fav < 100:
+        conf = {"tier": "moderate", "color": "#d29922",
+                "label": "Moderate confidence",
+                "reason": (f"{n_fav} signals with follow-through — "
+                           "directionally meaningful, but each "
+                           "z-score band still has too few signals "
+                           "to read individually. Treat the headline "
+                           "win rate as ±5 pts.")}
+    elif n_fav < 500:
+        conf = {"tier": "good", "color": "#3fb950",
+                "label": "Good confidence",
+                "reason": (f"{n_fav} signals with +30min follow-"
+                           "through — sample size is large enough "
+                           "that the headline win rate is stable "
+                           "to ~2 pts.")}
+    else:
+        conf = {"tier": "high", "color": "#3fb950",
+                "label": "High confidence",
+                "reason": (f"{n_fav:,} signals with +30min follow-"
+                           "through — every z-score band carries "
+                           "enough signals to read at face value.")}
+    color = conf["color"]
+    out.append(
+        f"<div style='display:flex;align-items:flex-start;gap:14px;"
+        f"padding:12px 14px;margin:0 0 16px 0;border-radius:6px;"
+        f"border:1px solid {color};background:{color}15;'>"
+        f"<div style='font-weight:600;color:{color};white-space:nowrap;'>"
+        f"{html.escape(conf['label'])}</div>"
+        f"<div style='flex:1;color:#c9d1d9;font-size:13px;line-height:1.4;'>"
+        f"{html.escape(conf['reason'])}</div></div>"
+    )
 
     out.append("<p class='small gray' style='margin:0 0 10px 0;'>"
                 "The whale-watcher uses a heuristic signal detector "

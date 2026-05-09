@@ -1026,6 +1026,61 @@ def _render_model_card_section(metrics: dict, coefficients: dict) -> str:
 # Models tab                                                                  #
 # --------------------------------------------------------------------------- #
 
+def _tennis_confidence(rows_test: int) -> dict:
+    """Tennis-equivalent of dashboard._holdout_confidence — the same
+    sample-size tiering applied to the held-out match count the
+    trainer reports in metrics.json. Tennis ships a much larger
+    holdout than the macro bots (thousands of completed matches),
+    so this almost always lands in the high-confidence tier; the
+    card is here mainly to flag the rare case where a re-trained
+    model has shrunk its test horizon.
+    """
+    n = int(rows_test or 0)
+    if n == 0:
+        return {"tier": "none", "color": "#8b949e",
+                "label": "No held-out data",
+                "reason": ("metrics.json is missing or didn't record "
+                           "a test-set row count — confidence in the "
+                           "metrics on this page can't be quantified.")}
+    if n < 100:
+        return {"tier": "low", "color": "#f85149",
+                "label": "Low confidence",
+                "reason": (f"Only {n:,} held-out matches — the "
+                           "headline accuracy / ROC AUC are noisy "
+                           "and may swing several pts across "
+                           "retrains.")}
+    if n < 500:
+        return {"tier": "moderate", "color": "#d29922",
+                "label": "Moderate confidence",
+                "reason": (f"{n:,} held-out matches — directionally "
+                           "meaningful but per-decile calibration "
+                           "bins still carry wide error bars.")}
+    if n < 2000:
+        return {"tier": "good", "color": "#3fb950",
+                "label": "Good confidence",
+                "reason": (f"{n:,} held-out matches — sample size "
+                           "is large enough that the headline "
+                           "metrics are stable to within ~1 pt.")}
+    return {"tier": "high", "color": "#3fb950",
+            "label": "High confidence",
+            "reason": (f"{n:,} held-out matches — every calibration "
+                       "decile carries enough data to read at face "
+                       "value.")}
+
+
+def _render_tennis_confidence_card(out: List[str], conf: dict) -> None:
+    color = conf["color"]
+    out.append(
+        f"<div style='display:flex;align-items:flex-start;gap:14px;"
+        f"padding:12px 14px;margin:0 0 16px 0;border-radius:6px;"
+        f"border:1px solid {color};background:{color}15;'>"
+        f"<div style='font-weight:600;color:{color};white-space:nowrap;'>"
+        f"{html.escape(conf['label'])}</div>"
+        f"<div style='flex:1;color:#c9d1d9;font-size:13px;line-height:1.4;'>"
+        f"{html.escape(conf['reason'])}</div></div>"
+    )
+
+
 def _render_tennis_models_page(metrics: dict, coefficients: dict,
                                 sim_state: dict) -> str:
     """Tennis-flavoured deep-dive: held-out metrics for each blend
@@ -1034,6 +1089,11 @@ def _render_tennis_models_page(metrics: dict, coefficients: dict,
     paper-bet sim state.
     """
     out: List[str] = []
+
+    # ── Confidence banner ──────────────────────────────────────────
+    rows_test = int((metrics or {}).get("rows_test") or 0)
+    conf = _tennis_confidence(rows_test)
+    _render_tennis_confidence_card(out, conf)
 
     # Headline metrics — three rows (elo_only / ensemble / blended)
     # so the user can compare what each component contributes.

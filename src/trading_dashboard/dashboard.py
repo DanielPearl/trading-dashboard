@@ -3456,15 +3456,48 @@ def _render_bot_unavailable(out: List[str], bot_key: str) -> None:
 
 
 # ── Models page (per-bot deep-dive) ──────────────────────────────────────
+def _find_training_artifact(db_path: str, *names: str) -> Path:
+    """Locate a trainer-written file for a bot. Different bots stage
+    their training artifacts in different siblings of ``data/sim.db``:
+
+    - newer bots (nba, cpi, claims) land them next to sim.db (``data/``)
+    - retail-gas writes into ``artifacts/`` instead
+    - natural-gas / peak-load writes models into ``models/``
+
+    Returns the first existing path; falls back to the ``data/`` location
+    if nothing is found so that callers can pass it to readers that
+    handle missing files (they'll just return empty results).
+    """
+    base = Path(db_path).parent
+    candidates: List[Path] = []
+    for name in names:
+        candidates.extend([
+            base / name,
+            base.parent / "artifacts" / name,
+            base.parent / "models" / name,
+        ])
+    for p in candidates:
+        if p.exists():
+            return p
+    return Path(db_path).parent / names[0]
+
+
 def _read_feature_importance(csv_path: str) -> List[dict]:
     """Parse the bot's feature_importance.csv into a list of feature
     dicts: {feature, mean_importance, positive_folds, selected}.
 
     Tolerates missing/empty files by returning an empty list — the
     renderer shows an empty-state in that case rather than crashing.
-    All bots running the standard ensemble pipeline write this file
-    on every retrain; the column shape has been stable since the
-    walk-forward feature selector landed.
+
+    Two on-disk schemas exist in the wild:
+      • Newer bots (nba, cpi, claims, natural-gas): a clean
+        ``feature, mean_importance, positive_folds, selected`` header.
+      • Retail-gas (legacy): per-fold columns + a ``mean`` /
+        ``positive_folds`` / ``eligible`` triple, with an unnamed
+        first column carrying the feature name.
+
+    The reader picks whichever set of columns exists so every bot's
+    feature_importance.csv renders the same way on the dashboard.
     """
     p = Path(csv_path)
     if not p.exists():
@@ -3473,20 +3506,30 @@ def _read_feature_importance(csv_path: str) -> List[dict]:
     try:
         with p.open("r") as f:
             rd = csv.DictReader(f)
+            fields = list(rd.fieldnames or [])
+            name_key = ("feature" if "feature" in fields
+                        else ("" if "" in fields
+                              else (fields[0] if fields else None)))
+            imp_key = ("mean_importance" if "mean_importance" in fields
+                       else ("mean" if "mean" in fields else None))
+            sel_key = ("selected" if "selected" in fields
+                       else ("eligible" if "eligible" in fields else None))
             for row in rd:
+                feat_name = (row.get(name_key) or "") if name_key is not None else ""
                 try:
-                    imp = float(row.get("mean_importance") or 0.0)
+                    imp = float(row.get(imp_key) or 0.0) if imp_key else 0.0
                 except (TypeError, ValueError):
                     imp = 0.0
                 try:
                     pf = int(float(row.get("positive_folds") or 0))
                 except (TypeError, ValueError):
                     pf = 0
-                sel = (row.get("selected") or "").strip().lower() in (
+                sel_raw = row.get(sel_key) if sel_key else None
+                sel = str(sel_raw or "").strip().lower() in (
                     "true", "1", "yes",
                 )
                 out.append({
-                    "feature": row.get("feature") or "",
+                    "feature": feat_name,
                     "mean_importance": imp,
                     "positive_folds": pf,
                     "selected": sel,
@@ -3494,6 +3537,99 @@ def _read_feature_importance(csv_path: str) -> List[dict]:
     except (OSError, csv.Error):
         return []
     return out
+
+
+def _holdout_confidence(pairs: List[Tuple[float, int]]) -> dict:
+    """Translate the trainer's held-out predictions into a
+    sample-size-driven confidence tier for the metrics on the model
+    page. Returns a dict with ``tier`` (none/low/moderate/good/high),
+    a CSS colour, a one-word label, and a sentence-long ``reason``
+    that explains *why* the user should (or shouldn't) trust the
+    headline numbers.
+
+    The thresholds borrow standard rules-of-thumb for binary-classifier
+    holdout sample sizes:
+      • <30 predictions or minority class <5 → noisy, can flip 5+ pts
+      • <100 / minority <20 → directionally meaningful, ±2-3 pts
+      • <500 → stable to ~1 pt
+      • ≥500 → calibration deciles each carry enough data
+    """
+    n = len(pairs)
+    n_pos = sum(1 for _, y in pairs if y == 1)
+    n_neg = n - n_pos
+    minority = min(n_pos, n_neg) if n else 0
+    if n == 0:
+        return {
+            "tier": "none", "color": "#8b949e",
+            "label": "No held-out data",
+            "reason": ("This bot's trainer hasn't written a "
+                       "holdout_predictions.csv yet — the metrics on "
+                       "this page can't be confidence-graded."),
+            "n": 0, "n_pos": 0, "n_neg": 0,
+        }
+    if n < 30 or minority < 5:
+        return {
+            "tier": "low", "color": "#f85149",
+            "label": "Low confidence",
+            "reason": (f"Only {n} held-out predictions"
+                       + (f" (minority class = {minority})"
+                          if minority < 5 else "")
+                       + " — the accuracy / ROC / calibration figures "
+                       "below are noisy at this sample size and can "
+                       "swing 5+ percentage points across retrains."),
+            "n": n, "n_pos": n_pos, "n_neg": n_neg,
+        }
+    if n < 100 or minority < 20:
+        return {
+            "tier": "moderate", "color": "#d29922",
+            "label": "Moderate confidence",
+            "reason": (f"{n} held-out predictions ({n_pos} positives / "
+                       f"{n_neg} negatives) — directionally meaningful "
+                       "but the per-decile calibration bins still carry "
+                       "wide error bars. Treat headline metrics as "
+                       "±2-3 pts."),
+            "n": n, "n_pos": n_pos, "n_neg": n_neg,
+        }
+    if n < 500:
+        return {
+            "tier": "good", "color": "#3fb950",
+            "label": "Good confidence",
+            "reason": (f"{n} held-out predictions ({n_pos} positives / "
+                       f"{n_neg} negatives) — sample size is large "
+                       "enough that the headline accuracy / ROC AUC "
+                       "are stable to within ~1 pt across retrains."),
+            "n": n, "n_pos": n_pos, "n_neg": n_neg,
+        }
+    return {
+        "tier": "high", "color": "#3fb950",
+        "label": "High confidence",
+        "reason": (f"{n:,} held-out predictions ({n_pos:,} positives / "
+                   f"{n_neg:,} negatives) — enough data per "
+                   "calibration decile to read at face value."),
+        "n": n, "n_pos": n_pos, "n_neg": n_neg,
+    }
+
+
+def _render_confidence_card(out: List[str], conf: dict,
+                             extra_lines: List[str] | None = None) -> None:
+    """Render the model-page confidence banner. Sits at the top of
+    the Model panel for every bot type so the user always knows how
+    much weight to put on the metrics that follow.
+    """
+    color = conf["color"]
+    out.append(
+        f"<div style='display:flex;align-items:flex-start;gap:14px;"
+        f"padding:12px 14px;margin:0 0 16px 0;border-radius:6px;"
+        f"border:1px solid {color};background:{color}15;'>"
+        f"<div style='font-weight:600;color:{color};white-space:nowrap;'>"
+        f"{html.escape(conf['label'])}</div>"
+        f"<div style='flex:1;color:#c9d1d9;font-size:13px;line-height:1.4;'>"
+        f"{html.escape(conf['reason'])}"
+    )
+    for line in (extra_lines or []):
+        out.append(f"<div class='small gray' style='margin-top:4px;'>"
+                   f"{line}</div>")
+    out.append("</div></div>")
 
 
 def calibration_from_holdout(pairs: List[Tuple[float, int]],
@@ -3676,9 +3812,16 @@ def fetch_model_overview(db_path: str, fi_path: str,
         "snapshot_first": None,
         "snapshot_last": None,
     }
-    # Last retrain — the model.pkl mtime is the canonical signal
-    # since the trainer writes the file at the end of every retrain.
-    pkl = Path(db_path).parent / "model.pkl"
+    # Last retrain — the model artifact's mtime is the canonical
+    # signal since the trainer writes the file at the end of every
+    # retrain. Different bots ship the artifact under different names
+    # (model.pkl on the python-pickle bots, model.joblib on the
+    # legacy gas-prices stack) and stage it under data/ vs artifacts/
+    # vs models/ — fall through every plausible location.
+    pkl = _find_training_artifact(
+        db_path, "model.pkl", "model.joblib",
+        "natgas_price.pkl", "peak_load.pkl",
+    )
     if pkl.exists():
         try:
             mt = datetime.fromtimestamp(pkl.stat().st_mtime, tz=timezone.utc)
@@ -4316,8 +4459,21 @@ def _render_models_panel(out: List[str], bot: dict, model: dict | None,
         out.append("</div></div>")
         return
 
+    # ── Confidence banner ───────────────────────────────────────────
+    # Sample-size-driven trust signal for the metrics on this page,
+    # rendered before anything else so the user knows how much weight
+    # to put on the chart / table / matrix that follow. Sourced from
+    # the trainer's holdout_predictions.csv (same file the ROC and
+    # calibration plots below come from).
+    holdout_path = _find_training_artifact(
+        db_path, "holdout_predictions.csv")
+    pairs = _read_holdout_predictions(str(holdout_path))
+    conf = _holdout_confidence(pairs)
+    _render_confidence_card(out, conf)
+
     # ── Top features (chart first, sources below) ───────────────────
-    fi_path = Path(db_path).parent / "feature_importance.csv"
+    fi_path = _find_training_artifact(
+        db_path, "feature_importance.csv")
     feats = _read_feature_importance(str(fi_path))
     overview = fetch_model_overview(db_path, str(fi_path), feats)
     n_total = overview["n_considered"]
@@ -4330,16 +4486,27 @@ def _render_models_panel(out: List[str], bot: dict, model: dict | None,
                            key=lambda f: f.get("mean_importance") or 0.0,
                            reverse=True)
     feats_shown = feats_sorted[:TOP_N]
+    # Headline strip describing the historical training set the
+    # importance scores come from. "Top X of Y" makes the size of the
+    # candidate pool explicit so the user reads the chart as "of all
+    # the things the trainer tried, here's what mattered".
+    last_retrain_str = overview.get("last_retrained") or "unknown"
+    train_summary_lines = [
+        f"Walk-forward permutation importance on the historical "
+        f"training set · {n_kept}/{n_total} candidate features kept "
+        f"by the stability filter · last retrained {last_retrain_str}",
+    ]
     out.append(
         f"<h3 class='subhead'>Top features <span class='small gray'>"
-        f"({len(feats_shown)} of {n_total}, walk-forward permutation "
-        f"importance on the historical training set)</span></h3>"
+        f"(top {len(feats_shown)} of {n_total} candidate features)"
+        f"</span></h3>"
     )
-    out.append("<p class='small gray' style='margin:0 0 4px 0;'>"
-                "Bars colour-coded by data source; full opacity = kept "
-                "by the stability filter, muted = rejected. Importance "
-                "is averaged across walk-forward folds — held-out "
-                "historical data, not the current Kalshi book.</p>")
+    out.append(
+        "<p class='small gray' style='margin:0 0 4px 0;'>"
+        + train_summary_lines[0]
+        + ". Bars colour-coded by data source; full opacity = kept "
+        "by the stability filter, muted = rejected.</p>"
+    )
     out.append(_svg_feature_importance_vertical(feats_shown))
     # Sources legend + full-list table sit BELOW the chart so the
     # eye lands on the bars first and uses the legend to decode.
@@ -4422,8 +4589,8 @@ def _render_models_panel(out: List[str], bot: dict, model: dict | None,
     # the user sees as "the model's accuracy", separate from any
     # closed-bet noise.
     auc_scalar = (model or {}).get("training_roc_auc")
-    holdout_path = Path(db_path).parent / "holdout_predictions.csv"
-    pairs = _read_holdout_predictions(str(holdout_path))
+    # `pairs` was already loaded above for the confidence banner; reuse
+    # it here so the page only reads holdout_predictions.csv once.
     roc_points = roc_from_holdout(pairs)
     cm = confusion_from_holdout(pairs, threshold=0.5)
     out.append(
