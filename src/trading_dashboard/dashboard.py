@@ -4593,28 +4593,42 @@ def _render_models_panel(out: List[str], bot: dict, model: dict | None,
     # it here so the page only reads holdout_predictions.csv once.
     roc_points = roc_from_holdout(pairs)
     cm = confusion_from_holdout(pairs, threshold=0.5)
+    n_pairs = len(pairs)
+    holdout_blurb = (
+        f"Sourced from the trainer's held-out historical test set "
+        f"({n_pairs:,} predictions vs ground-truth outcomes). The "
+        "model never saw this slice during training, so the numbers "
+        "below are the model's honest evaluation against past reality "
+        "— not a re-run of the live closed-bet ledger."
+    )
+    out.append(
+        f"<p class='small gray' style='margin:0 0 6px 0;'>"
+        f"{html.escape(holdout_blurb)}</p>"
+    )
     out.append(
         "<div style='display:grid;grid-template-columns:1fr 1fr;"
         "gap:14px;align-items:start;'>"
     )
     out.append("<div>")
     out.append("<h3 class='subhead' style='margin-top:0;'>"
-                "ROC curve <span class='small gray'>(held-out "
-                f"test set, {len(pairs):,} predictions)</span></h3>")
+                "ROC curve <span class='small gray'>(historical "
+                f"held-out test set, {n_pairs:,} predictions)</span></h3>")
     out.append(_svg_roc_curve(roc_points, auc_scalar=auc_scalar))
     out.append("</div>")
     out.append("<div>")
     out.append("<h3 class='subhead' style='margin-top:0;'>"
                 "Confusion matrix <span class='small gray'>"
-                "(held-out test set, threshold = 0.5)</span></h3>")
+                "(historical held-out test set, threshold = 0.5)"
+                "</span></h3>")
     out.append(_svg_confusion(cm))
     out.append("</div>")
     out.append("</div>")
 
     # ── Calibration curve from the held-out predictions ─────────────
     out.append("<h3 class='subhead'>Calibration "
-                "<span class='small gray'>(held-out test set, "
-                "predicted prob vs observed positive rate)</span></h3>")
+                "<span class='small gray'>(historical held-out test "
+                "set, predicted prob vs observed positive rate)"
+                "</span></h3>")
     cal_bins = calibration_from_holdout(pairs, n_bins=10)
     out.append(_svg_calibration(cal_bins))
 
