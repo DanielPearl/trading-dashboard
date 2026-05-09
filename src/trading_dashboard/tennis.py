@@ -1082,21 +1082,193 @@ def _render_tennis_confidence_card(out: List[str], conf: dict) -> None:
 
 
 def _render_tennis_models_page(metrics: dict, coefficients: dict,
-                                sim_state: dict) -> str:
-    """Tennis-flavoured deep-dive: held-out metrics for each blend
-    component (elo-only, ensemble, blended), the full feature
-    coefficient table, and live-trade calibration drawn from the
-    paper-bet sim state.
+                                sim_state: dict,
+                                metrics_path: str | None = None) -> str:
+    """Tennis Models tab. Mirrors the standard sim.db-bot model page
+    section by section (confidence banner → top features → headline
+    cards → model overview → ROC + confusion → historical calibration
+    → live calibration), so a user navigating between bots sees the
+    same structure regardless of bot type.
     """
+    from pathlib import Path
+    from .dashboard import (  # type: ignore
+        _read_feature_importance, _read_holdout_predictions,
+        _holdout_confidence, _render_confidence_card,
+        _svg_feature_importance_vertical, _render_feature_source_legend,
+        _render_feature_source_table, _svg_roc_curve, _svg_confusion,
+        _svg_calibration, roc_from_holdout, confusion_from_holdout,
+        calibration_from_holdout,
+    )
     out: List[str] = []
 
     # ── Confidence banner ──────────────────────────────────────────
-    rows_test = int((metrics or {}).get("rows_test") or 0)
-    conf = _tennis_confidence(rows_test)
-    _render_tennis_confidence_card(out, conf)
+    # Tennis trainer dumps holdout_predictions.csv into the same
+    # artifacts dir as metrics.json. Source the confidence banner
+    # from that file when present so the tier matches the actual
+    # ROC + confusion sample below; fall back to the metrics.json
+    # rows_test count for older trainer outputs.
+    artifacts_dir = (Path(metrics_path).parent if metrics_path
+                     else None)
+    holdout_pairs: List = []
+    if artifacts_dir:
+        holdout_path = artifacts_dir / "holdout_predictions.csv"
+        if holdout_path.exists():
+            holdout_pairs = _read_holdout_predictions(str(holdout_path))
+    if holdout_pairs:
+        conf = _holdout_confidence(holdout_pairs)
+        _render_confidence_card(out, conf)
+    else:
+        rows_test = int((metrics or {}).get("rows_test") or 0)
+        conf = _tennis_confidence(rows_test)
+        _render_tennis_confidence_card(out, conf)
 
-    # Headline metrics — three rows (elo_only / ensemble / blended)
-    # so the user can compare what each component contributes.
+    # ── Top features (from feature_importance.csv) ─────────────────
+    feats: List[dict] = []
+    if artifacts_dir:
+        fi_path = artifacts_dir / "feature_importance.csv"
+        if fi_path.exists():
+            feats = _read_feature_importance(str(fi_path))
+    if feats:
+        TOP_N = 25
+        feats_sorted = sorted(
+            feats, key=lambda f: f.get("mean_importance") or 0.0,
+            reverse=True)
+        feats_shown = feats_sorted[:TOP_N]
+        out.append(
+            f"<h3 class='subhead'>Top features <span class='small gray'>"
+            f"(top {len(feats_shown)} of {len(feats)} candidate "
+            f"features)</span></h3>"
+        )
+        out.append(
+            "<p class='small gray' style='margin:0 0 4px 0;'>"
+            "Gradient-boost gain importance from the historical "
+            "training set, with the Elo-only logistic features "
+            "scaled in alongside. Bars colour-coded by data source."
+            "</p>"
+        )
+        out.append(_svg_feature_importance_vertical(feats_shown))
+        out.append(_render_feature_source_legend(feats))
+        out.append(_render_feature_source_table(feats))
+
+    # ── Headline metrics cards row (BLENDED, since that is the
+    # probability the live trader actually uses) ───────────────────
+    blended = (metrics or {}).get("blended") or {}
+    if blended:
+        out.append("<h3 class='subhead'>Headline metrics "
+                    "<span class='small gray'>(blended model, the "
+                    "probability the live trader uses)</span></h3>")
+        out.append(
+            "<div class='cards' "
+            "style='display:grid;grid-template-columns:repeat(6, 1fr);"
+            "gap:10px;width:100%;'>"
+        )
+
+        def _pct(v, decimals=0):
+            try:
+                return f"{float(v) * 100:.{decimals}f}%"
+            except (TypeError, ValueError):
+                return "—"
+
+        n_features = len(feats) if feats else "—"
+        cards = [
+            ("Accuracy", _pct(blended.get("accuracy"), 1)),
+            ("F1", _pct(blended.get("f1"), 0)),
+            ("Precision", _pct(blended.get("precision"), 0)),
+            ("Recall", _pct(blended.get("recall"), 0)),
+            ("ROC AUC", _pct(blended.get("roc_auc"), 0)),
+            ("Features", str(n_features)),
+        ]
+        for label, value in cards:
+            out.append(
+                f"<div class='card'><div class='label'>"
+                f"{html.escape(label)}</div>"
+                f"<div class='value'>{html.escape(str(value))}</div></div>"
+            )
+        out.append("</div>")
+
+    # ── Model overview (training-set provenance) ───────────────────
+    last_retrain = "—"
+    if artifacts_dir:
+        bundle_path = artifacts_dir / "prematch_model.joblib"
+        if bundle_path.exists():
+            try:
+                import datetime as _dt
+                mt = _dt.datetime.fromtimestamp(
+                    bundle_path.stat().st_mtime, tz=_dt.timezone.utc)
+                last_retrain = mt.strftime("%Y-%m-%d %H:%M UTC")
+            except (OSError, OverflowError):
+                pass
+    overview_items = [
+        ("Last retrained", last_retrain),
+        ("Training rows",
+            f"{int((metrics or {}).get('rows_train') or 0):,}"),
+        ("Held-out rows",
+            f"{int((metrics or {}).get('rows_test') or 0):,}"),
+        ("Train/test cutoff",
+            (metrics or {}).get("cutoff_date") or "—"),
+        ("Blend weights",
+            "70% calibrated GBT + 30% logistic (ELO-only)"),
+    ]
+    out.append("<h3 class='subhead'>Model overview "
+                "<span class='small gray'>(from training "
+                "artifacts)</span></h3>")
+    out.append(
+        "<dl class='model-overview-dl' "
+        "style='display:grid;grid-template-columns:auto 1fr;"
+        "gap:6px 18px;margin:0 0 12px 0;font-size:13px;'>"
+    )
+    for label, value in overview_items:
+        out.append(
+            f"<dt class='gray' style='margin:0;'>"
+            f"{html.escape(label)}</dt>"
+            f"<dd style='margin:0;color:#c9d1d9;'>"
+            f"{html.escape(str(value))}</dd>"
+        )
+    out.append("</dl>")
+
+    # ── ROC curve + confusion matrix from the historical holdout ───
+    if holdout_pairs:
+        roc_points = roc_from_holdout(holdout_pairs)
+        cm = confusion_from_holdout(holdout_pairs, threshold=0.5)
+        n_pairs = len(holdout_pairs)
+        auc_scalar = blended.get("roc_auc") if blended else None
+        out.append(
+            f"<p class='small gray' style='margin:0 0 6px 0;'>"
+            f"Sourced from the trainer's held-out historical test "
+            f"set ({n_pairs:,} match predictions vs ground-truth "
+            f"outcomes). The model never saw this slice during "
+            f"training.</p>"
+        )
+        out.append(
+            "<div style='display:grid;grid-template-columns:1fr 1fr;"
+            "gap:14px;align-items:start;'>"
+        )
+        out.append("<div>")
+        out.append("<h3 class='subhead' style='margin-top:0;'>"
+                    "ROC curve <span class='small gray'>(historical "
+                    f"held-out test set, {n_pairs:,} predictions)"
+                    "</span></h3>")
+        out.append(_svg_roc_curve(roc_points, auc_scalar=auc_scalar))
+        out.append("</div>")
+        out.append("<div>")
+        out.append("<h3 class='subhead' style='margin-top:0;'>"
+                    "Confusion matrix <span class='small gray'>"
+                    "(historical held-out test set, threshold = 0.5)"
+                    "</span></h3>")
+        out.append(_svg_confusion(cm))
+        out.append("</div>")
+        out.append("</div>")
+
+        out.append("<h3 class='subhead'>Calibration "
+                    "<span class='small gray'>(historical held-out "
+                    "test set, predicted prob vs observed positive "
+                    "rate)</span></h3>")
+        cal_bins = calibration_from_holdout(holdout_pairs, n_bins=10)
+        out.append(_svg_calibration(cal_bins))
+
+    # ── Held-out metrics by component (the existing tennis-only
+    # comparison row, kept underneath the standard sections so the
+    # user can still see what each blend component contributes). ──
     components = [
         ("elo_only", "ELO baseline"),
         ("ensemble", "Gradient-boost ensemble"),
@@ -1270,7 +1442,8 @@ def render_page(*, metrics_path: str | None, coefficients_path: str | None,
         out.append("<div class='section'><h2>Model</h2><div class='body'>")
         out.append(_render_bot_dropdown(available_bots, current_bot_key))
         out.append(_render_tennis_models_page(metrics, coefficients,
-                                                sim_state))
+                                                sim_state,
+                                                metrics_path=metrics_path))
         out.append("</div></div>")
     else:
         # ── Watchlist section ────────────────────────────────────────
