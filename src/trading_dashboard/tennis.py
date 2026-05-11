@@ -487,39 +487,125 @@ def _render_active_paper_bets(sim_state: dict) -> str:
     return "".join(out)
 
 
+def _render_top_buys(rows: List[dict], limit: int = 10) -> str:
+    """Top-N buy candidates ranked by edge × EV for the favoured side.
+
+    The exporter has already pre-evaluated each row against the shared
+    BUY gate (edge + EV + liquidity + spread + price band + volatility
+    + signal label). This section displays the highest-scoring eligible
+    rows so the user can see, at a glance, where the model wants to
+    fire right now. The simulator will open paper positions on these
+    same rows on its next tick.
+    """
+    eligible = [r for r in (rows or []) if r.get("buy_eligible")]
+    eligible.sort(key=lambda r: -float(r.get("buy_score") or 0))
+    top = eligible[:limit]
+    if not top:
+        return (
+            "<div class='empty' style='background:#0d1117;"
+            "border:1px solid #21262d;border-radius:6px;padding:14px 18px;"
+            "margin:6px 0 10px 0;'>"
+            "<div style='color:#8b949e;'>No matches currently clear every "
+            "BUY gate. Edge, EV, liquidity, spread and price band must "
+            "all be met simultaneously before the bot fires.</div>"
+            "</div>"
+        )
+
+    out: List[str] = [
+        "<table id='tennis-top-buys'>",
+        "<thead><tr>"
+        "<th class='num' title='Rank by edge × EV for the favoured side.'>#</th>"
+        "<th>Match</th>"
+        "<th>Side</th>"
+        "<th class='num' title='Kalshi market price for the favoured side.'>Mkt</th>"
+        "<th class='num' title='Bot model probability for the favoured side.'>Model</th>"
+        "<th class='num' title='Model − market for the favoured side.'>Edge</th>"
+        "<th class='num' title='Expected $ per $1 staked, slippage-adjusted.'>EV</th>"
+        "<th class='num' title='Edge × EV.'>Score</th>"
+        "<th>Ticker</th>"
+        "</tr></thead><tbody>",
+    ]
+    for i, r in enumerate(top, 1):
+        side_letter = r.get("buy_side") or "A"
+        player_a = str(r.get("player_a", ""))
+        player_b = str(r.get("player_b", ""))
+        favoured = player_a if side_letter == "A" else player_b
+        opponent = player_b if side_letter == "A" else player_a
+        edge_v = float(r.get("buy_side_edge") or 0)
+        ev_v = float(r.get("buy_side_ev") or 0)
+        score = float(r.get("buy_score") or 0)
+        mkt_v = (float(r.get("market_prob_a"))
+                  if side_letter == "A" and r.get("market_prob_a") is not None
+                  else (1.0 - float(r.get("market_prob_a")))
+                  if r.get("market_prob_a") is not None else None)
+        live_v = (float(r.get("live_prob_a"))
+                   if side_letter == "A" and r.get("live_prob_a") is not None
+                   else (1.0 - float(r.get("live_prob_a")))
+                   if r.get("live_prob_a") is not None else None)
+        mid = str(r.get("match_id") or "")
+        if mid.upper().startswith("KX"):
+            ticker_cell = (
+                f"<a href='https://kalshi.com/markets/{html.escape(mid.lower())}' "
+                f"target='_blank' rel='noopener noreferrer' class='ticker-link'>"
+                f"{html.escape(mid)}</a>"
+            )
+        else:
+            ticker_cell = html.escape(mid)
+        out.append(
+            f"<tr class='tennis-row tennis-row-buy' data-mid='{html.escape(mid)}' "
+            f"style='cursor:pointer'>"
+            f"<td class='num'><strong>{i}</strong></td>"
+            f"<td><strong>{html.escape(favoured)}</strong>"
+            f"<br><span class='small gray'>vs {html.escape(opponent)} · "
+            f"{html.escape(str(r.get('tournament', '')))}</span></td>"
+            f"<td>{html.escape('YES on ' + favoured)}</td>"
+            f"<td class='num'>{_fmt_pct(mkt_v, 0)}</td>"
+            f"<td class='num'>{_fmt_pct(live_v, 0)}</td>"
+            f"<td class='num green'>+{edge_v*100:.1f}pp</td>"
+            f"<td class='num green'>+${ev_v:.3f}</td>"
+            f"<td class='num'><strong>{score:.4f}</strong></td>"
+            f"<td class='mono small'>{ticker_cell}</td>"
+            "</tr>"
+        )
+    out.append("</tbody></table>")
+    out.append(
+        f"<div class='small gray' style='margin-top:6px;'>"
+        f"{len(eligible)} match{'es' if len(eligible) != 1 else ''} "
+        f"clear every BUY gate; top {len(top)} shown.</div>"
+    )
+    return "".join(out)
+
+
 def _render_watchlist_table(payload: dict) -> str:
     """Tennis matches table.
 
     Rows are clickable — the page's JS hook listens for clicks on the
-    table body and updates the projected-forecast graph above with
-    the row's probabilities. Each row carries a ``data-mid`` attribute
-    so the JS can look up the match in the embedded forecast payload.
+    table body and updates the projected-forecast graph above with the
+    row's probabilities. Each row carries a ``data-mid`` attribute so
+    the JS can look up the match in the embedded forecast payload.
 
-    Only tradeable rows are rendered: a ticker is shown only when the
-    underlying Kalshi market is active *and* has at least one
-    published quote (yes_ask or no_ask). Most upcoming-day tennis
-    books sit unquoted until close to tipoff; surfacing them here
-    would dilute the watchlist with rows the user can't actually
-    place a bet on.
+    EVERY Kalshi match in the configured series is rendered (both
+    quoted and unquoted): the bot's pre-match model probability still
+    shows for unquoted rows, with a clear "no quote yet" marker in the
+    market columns so the user can see what's coming up before Kalshi
+    has opened a book. BUY-eligible rows (edge + EV + liquidity +
+    spread + price band all pass) are highlighted in green.
     """
     rows_all = payload.get("rows") or []
-    rows = [r for r in rows_all if r.get("market_prob_a") is not None]
-    rows_sorted = sorted(
-        rows,
-        key=lambda r: (
-            -1 if r.get("recommended_action") in
-            ("STRONG_EDGE", "MARKET_OVERREACTION") else
-            -0.5 if r.get("recommended_action") == "SMALL_EDGE" else 0,
-            -abs(float(r.get("edge_a") or 0)),
-        ),
-    )
-    if not rows_sorted:
-        unquoted = len(rows_all)
-        if unquoted:
-            return (f"<div class='empty'>No tradeable tennis markets right "
-                    f"now — {unquoted} match{'es' if unquoted != 1 else ''} "
-                    f"awaiting a Kalshi quote.</div>")
+    if not rows_all:
         return "<div class='empty'>No active tennis markets.</div>"
+    # Sort: BUY-eligible first (by buy_score desc), then quoted rows by
+    # |edge|, then unquoted upcoming matches.
+    def _sort_key(r):
+        eligible = bool(r.get("buy_eligible"))
+        quoted = r.get("market_prob_a") is not None
+        score = float(r.get("buy_score") or 0)
+        edge_mag = abs(float(r.get("edge_a") or 0))
+        return (
+            0 if eligible else (1 if quoted else 2),
+            -score, -edge_mag,
+        )
+    rows_sorted = sorted(rows_all, key=_sort_key)
 
     # Sport-table column shape (mirrors the NBA watchlist):
     #
@@ -612,6 +698,24 @@ def _render_watchlist_table(payload: dict) -> str:
         edge_no_str, edge_no_cls = _edge_fmt(edge_no_v)
 
         verdict_pill = _label_pill(str(r.get("recommended_action", "NO_TRADE")))
+        # BUY badge: the row has cleared every gate (edge + EV + price
+        # band + liquidity + spread + volatility). This is what the
+        # simulator would actually open a paper position on.
+        if r.get("buy_eligible"):
+            verdict_pill += (
+                "<br><span class='pill' "
+                "style='background:#3fb95022;color:#3fb950;"
+                "border:1px solid #3fb95055;margin-top:3px;'>✓ BUY</span>"
+            )
+        elif r.get("buy_blockers"):
+            blockers = r.get("buy_blockers") or []
+            if blockers and blockers != ["no quoted market"]:
+                blocker_summary = ", ".join(blockers[:3])
+                verdict_pill += (
+                    f"<br><span class='small gray' "
+                    f"title='Gate(s) failed: {html.escape(blocker_summary)}'>"
+                    f"blocked: {html.escape(blockers[0])}</span>"
+                )
 
         # Combined cells: yes / no per side, each span coloured to
         # preserve the per-side cue after the merge. Slash uses the
@@ -640,8 +744,11 @@ def _render_watchlist_table(payload: dict) -> str:
             f"<span class='cell-sep'> | </span>"
             f"<span class='{ev_no_cls}'>{ev_no_str}</span></td>"
         )
+        # Buy-eligible rows get a soft green tint so they jump out of
+        # the table at a glance.
+        row_cls = "tennis-row tennis-row-buy" if r.get("buy_eligible") else "tennis-row"
         out.append(
-            f"<tr class='tennis-row' data-mid='{html.escape(mid)}' "
+            f"<tr class='{row_cls}' data-mid='{html.escape(mid)}' "
             f"style='cursor:pointer'>"
             f"<td class='mono small'>{ticker_cell}</td>"
             f"<td>{side_html}</td>"
@@ -919,6 +1026,8 @@ _FORECAST_GRAPH_JS = """
 tr.tennis-row { cursor: pointer; }
 tr.tennis-row-selected td { background: #1f2630 !important; }
 tr.tennis-row:hover td { background: #1c222b; }
+tr.tennis-row-buy td { background: rgba(63, 185, 80, 0.08); }
+tr.tennis-row-buy:hover td { background: rgba(63, 185, 80, 0.16); }
 </style>
 """
 
@@ -1475,16 +1584,25 @@ def render_page(*, metrics_path: str | None, coefficients_path: str | None,
         out.append("<h3 class='subhead'>Active paper bets</h3>")
         out.append(_render_active_paper_bets(sim_state))
 
-        # Filter to tradeable rows for the forecast graph. A row is
-        # tradeable when Kalshi has published a quote (market_prob_a
-        # not None). The watchlist table does its own filter.
-        tradeable = [r for r in rows if r.get("market_prob_a") is not None]
+        # Top 10 BUY candidates — ranked by edge × EV for the favoured
+        # side. Only rows that have cleared every BUY gate
+        # (edge + EV + liquidity + spread + price band + volatility +
+        # tradeable signal label) are listed; the simulator will fire
+        # on these same rows on its next tick.
+        out.append(
+            "<h3 class='subhead' "
+            "title='Top 10 by edge × EV among rows that cleared every "
+            "BUY gate.'>Top 10 BUY candidates</h3>"
+        )
+        out.append(_render_top_buys(rows, limit=10))
 
-        out.append(_render_forecast_graph(tradeable))
+        # Forecast graph + full watchlist table show ALL matches in the
+        # configured Kalshi series — quoted + unquoted (upcoming).
+        out.append(_render_forecast_graph(rows))
 
         age = _last_updated_age(payload.get("generated_at"))
         out.append(
-            f"<h3 class='subhead'>Tennis matches · {len(tradeable)} "
+            f"<h3 class='subhead'>All Kalshi matches · {len(rows)} "
             f"<span class='small gray'>(generated {html.escape(age)})"
             f"</span></h3>"
         )
