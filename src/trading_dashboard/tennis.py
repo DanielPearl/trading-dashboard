@@ -534,7 +534,12 @@ def _render_watchlist_table(payload: dict,
     # Side | Contracts | Kalshi % | My % | Edge | EV | Verdict. Title
     # carries the Kalshi-published YES question (same field the NBA
     # watchlist surfaces), Side carries the favoured player + opponent.
-    out = ["<table id='tennis-watchlist-table'>",
+    #
+    # Wrapped in a ``.watchlist-scroll`` container — same scroll
+    # behaviour as the standard watchlist so the 300+ ITF / Challenger
+    # rows don't push the rest of the page down.
+    out = ["<div class='watchlist-scroll'>",
+           "<table id='tennis-watchlist-table'>",
            "<thead><tr>"
            "<th>Ticker</th>"
            "<th title='Kalshi-published contract title — the YES question shown on the market page.'>Title</th>"
@@ -691,7 +696,7 @@ def _render_watchlist_table(payload: dict,
             f"<td>{verdict_pill}</td>"
             "</tr>"
         )
-    out.append("</tbody></table>")
+    out.append("</tbody></table></div>")
     return "".join(out)
 
 
