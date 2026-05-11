@@ -430,63 +430,6 @@ def _render_current_prediction(metrics: dict, sim_state: dict) -> str:
     return "".join(out)
 
 
-def _render_active_paper_bets(sim_state: dict) -> str:
-    """Tennis equivalent of the standard 'Active bet' table.
-
-    Columns (sport idiom): Ticker | Match | Side | Entry | Mark |
-    Live model | Unrealized | Label | Opened. The Match cell shows
-    "Player A vs Player B" with tournament + surface underneath; the
-    Kalshi YES question text would be redundant on a sport bet so
-    the Title column is dropped here too.
-    """
-    open_positions = sim_state.get("open_positions") or []
-    if not open_positions:
-        return "<div class='empty'>No active bets right now.</div>"
-    out = ["<table>",
-           "<thead><tr>"
-           "<th>Ticker</th>"
-           "<th>Match</th><th>Side</th><th>Entry</th>"
-           "<th>Mark</th><th>Live model</th>"
-           "<th>Unrealized</th><th>Label</th><th>Opened</th>"
-           "</tr></thead><tbody>"]
-    for p in sorted(open_positions, key=lambda r: r.get("opened_at", ""),
-                    reverse=True):
-        unr = float(p.get("unrealized_pnl") or 0.0)
-        unr_cls = "green" if unr > 0 else ("red" if unr < 0 else "gray")
-        mid = str(p.get("match_id") or "")
-        if mid.upper().startswith("KX"):
-            kalshi_url = f"https://kalshi.com/markets/{mid.lower()}"
-            ticker_cell = (
-                f"<a href='{html.escape(kalshi_url)}' target='_blank' "
-                f"rel='noopener noreferrer' class='ticker-link'>"
-                f"{html.escape(mid)}</a>"
-            )
-        else:
-            ticker_cell = html.escape(mid)
-        out.append(
-            # Reuse the watchlist row's class + data-mid so the
-            # forecast-graph click handler picks active-bet rows up
-            # as readily as ticker-table rows. Clicking either swaps
-            # the chart to that match's projection.
-            f"<tr class='tennis-row' data-mid='{html.escape(mid)}'>"
-            f"<td class='mono small'>{ticker_cell}</td>"
-            f"<td><strong>{html.escape(str(p.get('player_a','')))}</strong>"
-            f" vs {html.escape(str(p.get('player_b','')))}<br>"
-            f"<span class='small gray'>{html.escape(str(p.get('tournament','')))} · "
-            f"{html.escape(str(p.get('surface','')))}</span></td>"
-            f"<td><strong>{html.escape(str(p.get('side_player','')))}</strong></td>"
-            f"<td>{_fmt_pct(p.get('entry_market_prob'), 1)}</td>"
-            f"<td>{_fmt_pct(p.get('current_market_prob'), 1)}</td>"
-            f"<td>{_fmt_pct(p.get('current_model_prob'), 1)}</td>"
-            f"<td class='{unr_cls}'>{unr:+.3f}</td>"
-            f"<td>{_label_pill(str(p.get('label_at_open', '')))}</td>"
-            f"<td class='small gray'>{html.escape(str(p.get('opened_at',''))[:19])}</td>"
-            "</tr>"
-        )
-    out.append("</tbody></table>")
-    return "".join(out)
-
-
 def _tennis_verdict_badge(row: dict, held_side: str | None) -> str:
     """Verdict badge in the standard dashboard vocabulary.
 
@@ -1567,8 +1510,23 @@ def render_page(*, metrics_path: str | None, coefficients_path: str | None,
         out.append(_render_bot_dropdown(available_bots, current_bot_key))
         out.append(_render_current_prediction(metrics, sim_state))
 
+        # Active paper bets — render via the standard shared renderer
+        # so the column shape (Opened | Ticker | Title | Contracts |
+        # Side | Entry prob | Current prob | Entry cost | Potential
+        # gain | Closes in) and styling match NBA / gas-prices /
+        # cpi / claims exactly. The tennis adapter
+        # ``active_bets_for_rollup`` already reshapes sim_state into
+        # the standard row schema.
         out.append("<h3 class='subhead'>Active paper bets</h3>")
-        out.append(_render_active_paper_bets(sim_state))
+        from .dashboard import _render_active_bets_table  # type: ignore
+        bets = active_bets_for_rollup(sim_state_path, watchlist_path)
+        _active_buf: List[str] = []
+        _render_active_bets_table(
+            _active_buf, bets,
+            empty_msg="No active paper bets right now.",
+            show_bot=False,
+        )
+        out.append("".join(_active_buf))
 
         # Forecast graph + full watchlist table show ALL matches in the
         # configured Kalshi series. Rows are sorted with BUY-eligible
