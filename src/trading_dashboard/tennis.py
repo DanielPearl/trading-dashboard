@@ -965,13 +965,28 @@ def _render_model_card_section(metrics: dict, coefficients: dict) -> str:
     ens = metrics.get("ensemble") or {}
 
     out: List[str] = []
-    out.append("<p class='small gray'>Pre-match probability blends a "
-               "logistic regression on Elo (overall + surface) with a "
-               "calibrated boosted ensemble. Live adjustment is a "
-               "transparent rules layer (score-state, serve %, momentum, "
-               "tiebreak / decider / medical flags). Signals only fire "
-               "when model and market disagree by more than the configured "
-               "edge floor.</p>")
+    # The tennis renderer is reused by the table-tennis bot. Detect the
+    # sport from the elo-only feature names in the coefficients file and
+    # swap a few sport-specific phrases so the narrative reads correctly
+    # regardless of which bot the page is being rendered for.
+    elo_feats = ((coefficients.get("logistic") or {}).get("features") or [])
+    is_table_tennis = "diff_style_elo_pre" in elo_feats
+    elo_blurb = ("Elo (overall + style)" if is_table_tennis
+                  else "Elo (overall + surface)")
+    live_blurb = (
+        "transparent rules layer (score-state momentum, point streaks, "
+        "deuce / game-point / match-point volatility, closing-game flags)"
+        if is_table_tennis else
+        "transparent rules layer (score-state, serve %, momentum, "
+        "tiebreak / decider / medical flags)"
+    )
+    out.append(
+        "<p class='small gray'>Pre-match probability blends a "
+        f"logistic regression on {elo_blurb} with a calibrated boosted "
+        f"ensemble. Live adjustment is a {live_blurb}. Signals only fire "
+        "when model and market disagree by more than the configured "
+        "edge floor.</p>"
+    )
     out.append("<h3 class='subhead'>Component breakdown</h3>")
     out.append("<table><thead><tr>"
                "<th>Component</th><th>Accuracy</th><th>Brier</th>"
@@ -1005,6 +1020,8 @@ def _render_model_card_section(metrics: dict, coefficients: dict) -> str:
                 interp = f"+1 Elo point on player_a {sign} P(A wins) marginally"
             elif n == "diff_surface_elo_pre":
                 interp = f"+1 surface-Elo point on player_a {sign} P(A wins) marginally"
+            elif n == "diff_style_elo_pre":
+                interp = f"+1 style-Elo point on player_a {sign} P(A wins) marginally"
             else:
                 interp = f"{sign} P(A wins) per +1 unit"
             out.append(

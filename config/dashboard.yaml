@@ -119,12 +119,26 @@ bots:
     # directly. db_path/decisions_path are unused but kept set so the
     # generic "available" check has somewhere to look.
     dashboard_type: tennis
+    series_ticker: BASELINEBREAK
     db_path: /root/tennis-forecast/data/outputs/watchlist.json
     decisions_path: /root/tennis-forecast/data/outputs/watchlist.json
     watchlist_json_path: /root/tennis-forecast/data/outputs/watchlist.json
     metrics_path: /root/tennis-forecast/data/processed/artifacts/metrics.json
     coefficients_path: /root/tennis-forecast/data/processed/artifacts/model_coefficients.json
     sim_state_path: /root/tennis-forecast/data/outputs/sim_state.json
+  - key: table-tennis
+    name: Table Tennis Forecast
+    # Table-tennis bot writes the same JSON output schema as tennis, so
+    # it routes through the same ``dashboard_type: tennis`` adapter. The
+    # series_ticker meta label distinguishes the cards on the home grid.
+    dashboard_type: tennis
+    series_ticker: TABLETENNIS
+    db_path: /root/table-tennis-forecast/data/outputs/watchlist.json
+    decisions_path: /root/table-tennis-forecast/data/outputs/watchlist.json
+    watchlist_json_path: /root/table-tennis-forecast/data/outputs/watchlist.json
+    metrics_path: /root/table-tennis-forecast/data/processed/artifacts/metrics.json
+    coefficients_path: /root/table-tennis-forecast/data/processed/artifacts/model_coefficients.json
+    sim_state_path: /root/table-tennis-forecast/data/outputs/sim_state.json
 
 # ---------------------------------------------------------------------------
 # Display thresholds. Mirror the gas-bot's gates so the buy-criteria panel

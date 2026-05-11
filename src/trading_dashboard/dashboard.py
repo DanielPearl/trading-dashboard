@@ -2901,14 +2901,12 @@ def _render_bot_cards(out: List[str], rollup: dict,
         m = entry.get("model") or {}
         name = b.get("name", "—")
         bot_key = b.get("key", "")
-        # Upper-right meta slot. For Kalshi bots this is the series_ticker
-        # prefix (e.g. "KXNBAGAME"). For tennis we show the ticker
-        # prefix the bot's matches use ("BASELINEBREAK") so the card
-        # has the same shape and reads "first part of the tickers".
-        if b.get("dashboard_type") == "tennis":
-            series_ticker = "BASELINEBREAK"
-        else:
-            series_ticker = b.get("series_ticker") or "—"
+        # Upper-right meta slot. For Kalshi sim.db bots this is the
+        # series_ticker prefix (e.g. "KXNBAGAME"). JSON-source sport bots
+        # (tennis, table-tennis) read the same series_ticker field from
+        # config — set it to the bot's label of choice (e.g.
+        # "BASELINEBREAK" for tennis, "TABLETENNIS" for table-tennis).
+        series_ticker = b.get("series_ticker") or "—"
         # Period-scoped net P&L from this bot's per-bot summary row.
         perf = perf_by_name.get(name, {})
         gain_loss = perf.get("period_net_pnl_cents", 0) or 0
