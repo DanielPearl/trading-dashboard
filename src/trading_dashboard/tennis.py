@@ -487,7 +487,69 @@ def _render_active_paper_bets(sim_state: dict) -> str:
     return "".join(out)
 
 
-def _render_watchlist_table(payload: dict) -> str:
+def _tennis_verdict_badge(row: dict, held_side: str | None) -> str:
+    """Verdict badge in the standard dashboard vocabulary.
+
+    Mirrors the sim.db-bot watchlist renderer in ``dashboard.py``:
+
+      HOLDING YES / HOLDING NO  — sim_state has an open paper position
+                                   on this match (side = PLAYER_A/B)
+      BUY YES / BUY NO          — every BUY gate has cleared; the
+                                   simulator will fire on this row
+      SKIP                      — no positive EV (or no quote and the
+                                   model is on the wrong side)
+      WATCH                     — positive EV but a gate failed (thin
+                                   book, wide spread, volatility), OR
+                                   the row has no Kalshi quote yet.
+
+    On a tennis match the two Kalshi YES sides correspond to the two
+    players: YES on player_a = bet that A wins; NO (= YES on the other
+    ticker) = bet that B wins. We map buy_side accordingly so the
+    column reads the same way as NBA — BUY YES means "buy the YES
+    contract on the ticker we display", BUY NO means "buy the NO
+    side of that same ticker (= YES on the opponent)".
+    """
+    if held_side == "PLAYER_A":
+        return ("<span class='badge badge-yes' "
+                "title='You are holding YES on player_a'>HOLDING YES</span>")
+    if held_side == "PLAYER_B":
+        return ("<span class='badge badge-no' "
+                "title='You are holding NO on player_a (YES on player_b)'>"
+                "HOLDING NO</span>")
+    eligible = bool(row.get("buy_eligible"))
+    side = row.get("buy_side")  # "A" / "B" / None
+    ev = row.get("buy_side_ev")
+    blockers = row.get("buy_blockers") or []
+
+    if eligible and side in ("A", "B"):
+        cls = "badge-yes" if side == "A" else "badge-no"
+        label = "BUY YES" if side == "A" else "BUY NO"
+        return f"<span class='badge {cls}'>{label}</span>"
+
+    # No quote yet → watching for entry, but model-only forecast.
+    if not blockers or blockers == ["no quoted market"]:
+        if row.get("market_prob_a") is None:
+            return ("<span class='badge badge-hedge' "
+                    "title='No Kalshi quote yet — model-only forecast'>"
+                    "WATCH</span>")
+        # Quoted but no blockers AND not eligible — shouldn't happen,
+        # but fall through to SKIP.
+        return "<span class='badge badge-skip'>SKIP</span>"
+
+    # Quoted + at least one gate failed. If EV is non-positive on the
+    # model's favoured side, this is a SKIP (no edge to chase). If EV
+    # is positive but a gate (thin book / wide spread / volatility)
+    # blocks the trade, this is a WATCH — keep an eye on it.
+    tip = "Blocked by gate(s): " + ", ".join(blockers)
+    if ev is None or ev <= 0:
+        return (f"<span class='badge badge-skip' "
+                f"title='{html.escape(tip)}'>SKIP</span>")
+    return (f"<span class='badge badge-hedge' "
+            f"title='{html.escape(tip)}'>WATCH</span>")
+
+
+def _render_watchlist_table(payload: dict,
+                              sim_state: dict | None = None) -> str:
     """Tennis matches table.
 
     Rows are clickable — the page's JS hook listens for clicks on the
@@ -505,6 +567,13 @@ def _render_watchlist_table(payload: dict) -> str:
     rows_all = payload.get("rows") or []
     if not rows_all:
         return "<div class='empty'>No active tennis markets.</div>"
+    # Map of match_id → "PLAYER_A"/"PLAYER_B" for rows we already hold
+    # paper positions on. Feeds the HOLDING YES / HOLDING NO verdict.
+    held_sides: dict[str, str] = {}
+    for p in ((sim_state or {}).get("open_positions") or []):
+        mid = str(p.get("match_id") or "")
+        if mid:
+            held_sides[mid] = str(p.get("side") or "")
     # Sort: BUY-eligible first (by buy_score desc), then quoted rows by
     # |edge|, then unquoted upcoming matches.
     def _sort_key(r):
@@ -604,25 +673,11 @@ def _render_watchlist_table(payload: dict) -> str:
         edge_yes_str, edge_yes_cls = _edge_fmt(edge_yes_v)
         edge_no_str, edge_no_cls = _edge_fmt(edge_no_v)
 
-        verdict_pill = _label_pill(str(r.get("recommended_action", "NO_TRADE")))
-        # BUY badge: the row has cleared every gate (edge + EV + price
-        # band + liquidity + spread + volatility). This is what the
-        # simulator would actually open a paper position on.
-        if r.get("buy_eligible"):
-            verdict_pill += (
-                "<br><span class='pill' "
-                "style='background:#3fb95022;color:#3fb950;"
-                "border:1px solid #3fb95055;margin-top:3px;'>✓ BUY</span>"
-            )
-        elif r.get("buy_blockers"):
-            blockers = r.get("buy_blockers") or []
-            if blockers and blockers != ["no quoted market"]:
-                blocker_summary = ", ".join(blockers[:3])
-                verdict_pill += (
-                    f"<br><span class='small gray' "
-                    f"title='Gate(s) failed: {html.escape(blocker_summary)}'>"
-                    f"blocked: {html.escape(blockers[0])}</span>"
-                )
+        # Standard verdict vocabulary — BUY YES / BUY NO / HOLDING YES /
+        # HOLDING NO / SKIP / WATCH — using the same badge classes the
+        # sim.db-bot watchlist uses.
+        held_side = held_sides.get(str(r.get("match_id") or ""))
+        verdict_pill = _tennis_verdict_badge(r, held_side)
 
         # Combined cells: yes / no per side, each span coloured to
         # preserve the per-side cue after the merge. Slash uses the
@@ -662,12 +717,26 @@ def _render_watchlist_table(payload: dict) -> str:
             f"text-overflow:ellipsis;white-space:nowrap;'>"
             f"{html.escape(str(title_text))}</span></td>"
         )
-        # Buy-eligible rows get a soft green tint so they jump out of
-        # the table at a glance.
-        row_cls = "tennis-row tennis-row-buy" if r.get("buy_eligible") else "tennis-row"
+        # Row classes match the standard sim.db-bot watchlist:
+        #   row-bought bought-yes/no  → we already own this match
+        #   row-suspect              → quoted but a gate failed (SKIP/WATCH)
+        #   no special class          → BUY-eligible OR unquoted upcoming
+        row_classes = ["tennis-row"]
+        row_title = ""
+        if held_side == "PLAYER_A":
+            row_classes += ["row-bought", "bought-yes"]
+        elif held_side == "PLAYER_B":
+            row_classes += ["row-bought", "bought-no"]
+        elif not r.get("buy_eligible") and r.get("market_prob_a") is not None:
+            row_classes.append("row-suspect")
+            blockers = r.get("buy_blockers") or []
+            if blockers:
+                row_title = (" title='Blocked by gate(s): "
+                              + html.escape(", ".join(blockers)) + "'")
+        row_cls = " ".join(row_classes)
         out.append(
             f"<tr class='{row_cls}' data-mid='{html.escape(mid)}' "
-            f"style='cursor:pointer'>"
+            f"style='cursor:pointer'{row_title}>"
             f"<td class='mono small'>{ticker_cell}</td>"
             f"{title_cell}"
             f"<td>{side_html}</td>"
@@ -945,8 +1014,6 @@ _FORECAST_GRAPH_JS = """
 tr.tennis-row { cursor: pointer; }
 tr.tennis-row-selected td { background: #1f2630 !important; }
 tr.tennis-row:hover td { background: #1c222b; }
-tr.tennis-row-buy td { background: rgba(63, 185, 80, 0.08); }
-tr.tennis-row-buy:hover td { background: rgba(63, 185, 80, 0.16); }
 </style>
 """
 
@@ -1517,7 +1584,7 @@ def render_page(*, metrics_path: str | None, coefficients_path: str | None,
             f"<span class='small gray'>(generated {html.escape(age)})"
             f"</span></h3>"
         )
-        out.append(_render_watchlist_table(payload))
+        out.append(_render_watchlist_table(payload, sim_state=sim_state))
 
         out.append("</div></div>")  # /body /section
 
