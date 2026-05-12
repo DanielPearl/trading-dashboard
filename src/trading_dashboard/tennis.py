@@ -1190,42 +1190,19 @@ def _render_tennis_models_page(metrics: dict, coefficients: dict,
         conf = _tennis_confidence(rows_test)
         _render_tennis_confidence_card(out, conf)
 
-    # ── Top features (from feature_importance.csv) ─────────────────
+    # Feature artifacts are loaded once here so both the headline
+    # metrics (above the fold) and the feature chart / table below
+    # share the same ``feats`` list.
     feats: List[dict] = []
     if artifacts_dir:
         fi_path = artifacts_dir / "feature_importance.csv"
         if fi_path.exists():
             feats = _read_feature_importance(str(fi_path))
-    if feats:
-        TOP_N = 25
-        # Chart shows ONLY features the model actually uses — same
-        # filter the table below applies — sorted by importance
-        # descending so the bar order matches the table row order.
-        kept_sorted = sorted(
-            (f for f in feats if f.get("selected")),
-            key=lambda f: f.get("mean_importance") or 0.0,
-            reverse=True,
-        )
-        feats_shown = kept_sorted[:TOP_N]
-        n_kept = len(kept_sorted)
-        out.append(
-            f"<h3 class='subhead'>Top features <span class='small gray'>"
-            f"(top {len(feats_shown)} of {n_kept} kept "
-            f"features)</span></h3>"
-        )
-        out.append(
-            "<p class='small gray' style='margin:0 0 4px 0;'>"
-            "Gradient-boost gain importance from the historical "
-            "training set, with the Elo-only logistic features "
-            "scaled in alongside. Bars colour-coded by data source."
-            "</p>"
-        )
-        out.append(_svg_feature_importance_vertical(feats_shown))
-        out.append(_render_feature_source_legend(feats))
-        out.append(_render_feature_source_table(feats))
 
-    # ── Headline metrics cards row (BLENDED, since that is the
-    # probability the live trader actually uses) ───────────────────
+    # ── Headline metrics cards row — at the top, matching the Home /
+    # Watchlist tabs. Surfaces the bottom-line numbers (accuracy / F1
+    # / precision / recall / ROC AUC / feature count) up front before
+    # the deep-dive chart and table.
     blended = (metrics or {}).get("blended") or {}
     if blended:
         out.append("<h3 class='subhead'>Headline metrics "
@@ -1259,6 +1236,35 @@ def _render_tennis_models_page(metrics: dict, coefficients: dict,
                 f"<div class='value'>{html.escape(str(value))}</div></div>"
             )
         out.append("</div>")
+
+    # ── Top features (from feature_importance.csv) ─────────────────
+    if feats:
+        TOP_N = 25
+        # Chart shows ONLY features the model actually uses — same
+        # filter the table below applies — sorted by importance
+        # descending so the bar order matches the table row order.
+        kept_sorted = sorted(
+            (f for f in feats if f.get("selected")),
+            key=lambda f: f.get("mean_importance") or 0.0,
+            reverse=True,
+        )
+        feats_shown = kept_sorted[:TOP_N]
+        n_kept = len(kept_sorted)
+        out.append(
+            f"<h3 class='subhead'>Top features <span class='small gray'>"
+            f"(top {len(feats_shown)} of {n_kept} kept "
+            f"features)</span></h3>"
+        )
+        out.append(
+            "<p class='small gray' style='margin:0 0 4px 0;'>"
+            "Gradient-boost gain importance from the historical "
+            "training set, with the Elo-only logistic features "
+            "scaled in alongside. Bars colour-coded by data source."
+            "</p>"
+        )
+        out.append(_svg_feature_importance_vertical(feats_shown))
+        out.append(_render_feature_source_legend(feats))
+        out.append(_render_feature_source_table(feats))
 
     # ── Model overview (training-set provenance) ───────────────────
     last_retrain = "—"

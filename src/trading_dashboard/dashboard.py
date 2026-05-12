@@ -5405,7 +5405,9 @@ def _render_models_panel(out: List[str], bot: dict, model: dict | None,
     conf = _holdout_confidence(pairs)
     _render_confidence_card(out, conf)
 
-    # ── Top features (chart first, sources below) ───────────────────
+    # Training artifacts are loaded once here so both the headline
+    # metrics (above the fold) and the feature chart / table below
+    # share the same `feats` + `overview` data.
     fi_path = _find_training_artifact(
         db_path, "feature_importance.csv")
     feats = _read_feature_importance(str(fi_path))
@@ -5415,40 +5417,12 @@ def _render_models_panel(out: List[str], bot: dict, model: dict | None,
     top_imp = overview.get("top_importance")
     top_imp_str = (f"{top_imp:.4f}" if isinstance(top_imp, (int, float))
                     else "—")
-    TOP_N = 25
-    # Chart shows ONLY features the model actually uses — same filter
-    # the table below applies — and sorts them by mean importance
-    # descending, so the bar order matches the table row order
-    # one-to-one.
-    kept_sorted = sorted(
-        (f for f in feats if f.get("selected")),
-        key=lambda f: f.get("mean_importance") or 0.0,
-        reverse=True,
-    )
-    feats_shown = kept_sorted[:TOP_N]
-    last_retrain_str = overview.get("last_retrained") or "unknown"
-    train_summary_lines = [
-        f"Walk-forward permutation importance on the historical "
-        f"training set · {n_kept}/{n_total} candidate features kept "
-        f"by the stability filter · last retrained {last_retrain_str}",
-    ]
-    out.append(
-        f"<h3 class='subhead'>Top features <span class='small gray'>"
-        f"(top {len(feats_shown)} of {n_kept} kept features)"
-        f"</span></h3>"
-    )
-    out.append(
-        "<p class='small gray' style='margin:0 0 4px 0;'>"
-        + train_summary_lines[0]
-        + ". Bars colour-coded by data source.</p>"
-    )
-    out.append(_svg_feature_importance_vertical(feats_shown))
-    # Sources legend + full-list table sit BELOW the chart so the
-    # eye lands on the bars first and uses the legend to decode.
-    out.append(_render_feature_source_legend(feats))
-    out.append(_render_feature_source_table(feats))
 
-    # ── Headline metrics — full-width row underneath the chart ──────
+    # ── Headline metrics — top of the page, matching the cards layout
+    # the Home / Watchlist tabs lead with. Surfaces accuracy / F1 /
+    # precision / recall / ROC AUC / feature count up front so the
+    # user lands on the bottom-line numbers before the deep-dive
+    # chart and table.
     out.append("<h3 class='subhead'>Headline metrics</h3>")
     if not model:
         out.append("<div class='empty'>No model snapshot yet.</div>")
@@ -5481,6 +5455,40 @@ def _render_models_panel(out: List[str], bot: dict, model: dict | None,
                         f"{html.escape(label)}</div>"
                         f"<div class='value'>{shown}</div></div>")
         out.append("</div>")
+
+    # ── Top features (chart first, sources below) ───────────────────
+    TOP_N = 25
+    # Chart shows ONLY features the model actually uses — same filter
+    # the table below applies — and sorts them by mean importance
+    # descending, so the bar order matches the table row order
+    # one-to-one.
+    kept_sorted = sorted(
+        (f for f in feats if f.get("selected")),
+        key=lambda f: f.get("mean_importance") or 0.0,
+        reverse=True,
+    )
+    feats_shown = kept_sorted[:TOP_N]
+    last_retrain_str = overview.get("last_retrained") or "unknown"
+    train_summary_lines = [
+        f"Walk-forward permutation importance on the historical "
+        f"training set · {n_kept}/{n_total} candidate features kept "
+        f"by the stability filter · last retrained {last_retrain_str}",
+    ]
+    out.append(
+        f"<h3 class='subhead'>Top features <span class='small gray'>"
+        f"(top {len(feats_shown)} of {n_kept} kept features)"
+        f"</span></h3>"
+    )
+    out.append(
+        "<p class='small gray' style='margin:0 0 4px 0;'>"
+        + train_summary_lines[0]
+        + ". Bars colour-coded by data source.</p>"
+    )
+    out.append(_svg_feature_importance_vertical(feats_shown))
+    # Sources legend + full-list table sit BELOW the chart so the
+    # eye lands on the bars first and uses the legend to decode.
+    out.append(_render_feature_source_legend(feats))
+    out.append(_render_feature_source_table(feats))
 
     # ── Model overview — compact definition list (no card chrome). ──
     out.append("<h3 class='subhead'>Model overview "
