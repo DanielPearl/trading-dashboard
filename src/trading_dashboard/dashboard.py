@@ -23,6 +23,7 @@ import html
 import json
 import logging
 import math
+import re
 import sqlite3
 import sys
 import time
@@ -4436,26 +4437,418 @@ FEATURE_RULES: List[dict] = [
 ]
 
 
+# Per-base feature descriptions. Maps the un-transformed feature root
+# (e.g. ``rbob_gasoline_futures_last``) to a plain-English sentence
+# describing what the raw data series is. The transform suffix (lag,
+# return, volatility, rolling, etc.) is parsed off and appended at
+# render time, so each fully-named feature ends up with a unique
+# description even when several share a base.
+#
+# Order matters: more specific keys first (e.g.
+# ``rbob_gasoline_futures_last`` before ``rbob_``). Lookup is by
+# longest matching prefix.
+_FEATURE_BASES: List[Tuple[str, str]] = [
+    # ── Tennis / Table-tennis match-level features ──────────────────
+    ("diff_surface_elo_pre",  "Pre-match Elo rating gap between the two players on this specific court surface — accounts for surface specialists."),
+    ("diff_style_elo_pre",    "Pre-match Elo rating gap between the two players against opponents of this play style."),
+    ("diff_elo_pre",          "Pre-match Elo rating gap between the two players. Higher = player A is more likely to win."),
+    ("diff_days_rest",        "Gap in days since each player's last match. Positive = player A has had more rest."),
+    ("diff_avg_serve_pts_won_10",  "Difference between the two players in % of points won on serve, averaged over each player's last 10 matches."),
+    ("diff_avg_return_pts_won_10", "Difference in % of points won on return, averaged over each player's last 10 matches."),
+    ("diff_avg_bp_saved_10",  "Difference in % of break points saved (when serving from behind), averaged over each player's last 10 matches."),
+    ("diff_avg_game_margin_10",  "Difference in average game margin (how decisively each player wins) over their last 10 matches."),
+    ("diff_avg_point_win_pct_10","Difference in overall point-win % between the two players over their last 10 matches."),
+    ("diff_std_game_margin_10",  "Difference in how consistent each player's game margins have been over their last 10 matches. Lower = steadier."),
+    ("diff_std_point_win_pct_10","Difference in how consistent each player's point-win rates have been over their last 10 matches."),
+    ("diff_closing_win_pct_10",  "Difference in clutch factor: % of close games each player has won over their last 10 matches."),
+    ("diff_deuce_win_pct_10",    "Difference in % of deuce points each player has won over their last 10 matches."),
+    ("diff_comeback_rate_20",    "Difference in how often each player comes back from behind to win, over their last 20 matches."),
+    ("diff_form_last5",  "Difference in win rate over each player's most recent 5 matches."),
+    ("diff_form_last10", "Difference in win rate over each player's most recent 10 matches."),
+    ("diff_form_last20", "Difference in win rate over each player's most recent 20 matches."),
+    ("diff_matches_last_7d", "Difference in how many matches each player has played in the past 7 days. Heavy recent schedule = potential fatigue."),
+    ("diff_hand_left", "Whether the two players' handedness pairing includes a leftie (lefties play differently)."),
+    ("h2h_a_wins_last5",  "How many of their last 5 meetings player A has won against player B."),
+    ("h2h_a_wins_minus_b_wins", "Net head-to-head record across all past meetings (A's wins minus B's wins)."),
+    ("hand_matchup_lr", "Whether this is a lefty-vs-righty matchup. Lefties have a small structural advantage on tour."),
+    ("is_bo7", "Whether the match is best-of-7 games (vs the standard best-of-5). Longer formats favour the more consistent player."),
+    ("rank_diff",   "Gap between the two players' official world rankings (ATP/WTA)."),
+    ("level_rank",  "How prestigious the tournament is (e.g. Grand Slam > Masters > 250). Bigger events draw stronger fields and play more conservatively."),
+    ("round_rank",  "How deep in the bracket the match sits (1st round = early, final = late). Later rounds tend to be tighter."),
+
+    # ── NBA matchup features ────────────────────────────────────────
+    ("home_elo_pre", "Pre-game Elo rating of the home team."),
+    ("away_elo_pre", "Pre-game Elo rating of the away team."),
+    ("diff_elo",     "Home minus away Elo rating before the game."),
+    ("home_b2b",     "Whether the home team is playing on the second night of a back-to-back."),
+    ("away_b2b",     "Whether the away team is playing on the second night of a back-to-back."),
+    ("diff_off_rating", "Difference between home and away in offensive efficiency (points scored per 100 possessions)."),
+    ("diff_def_rating", "Difference between home and away in defensive efficiency (points allowed per 100 possessions)."),
+    ("diff_net_rating", "Difference between home and away in net rating (offense minus defense per 100 possessions)."),
+    ("diff_pace",       "Difference between home and away in pace of play (possessions per 48 minutes)."),
+    ("diff_efg_pct",    "Difference in effective field-goal % (gives extra credit for 3-pointers)."),
+    ("diff_oreb_pct",   "Difference in offensive rebounding rate."),
+    ("diff_tov_pct",    "Difference in turnover rate."),
+    ("diff_ft_per_fga", "Difference in how often the team gets to the free-throw line per shot attempt."),
+    ("diff_fg3m",       "Difference in 3-pointers made per game."),
+    ("diff_margin",     "Difference in average scoring margin in recent games."),
+    ("diff_team_win",   "Difference in recent win rate between the two teams."),
+
+    # ── Natural-gas-specific raw series ─────────────────────────────
+    ("ng_storage_bcf",     "Total natural gas held in US underground storage tanks (billions of cubic feet). Low = supply is tight."),
+    ("ng_production_bcfd", "Total US natural gas production, in billions of cubic feet per day."),
+    ("region_gulf_temp_f",      "Average temperature in the Gulf region (Fahrenheit)."),
+    ("region_midwest_temp_f",   "Average temperature in the Midwest region (Fahrenheit)."),
+    ("region_northeast_temp_f", "Average temperature in the Northeast region (Fahrenheit)."),
+    ("region_south_temp_f",     "Average temperature in the southern region (Fahrenheit)."),
+    ("region_west_temp_f",      "Average temperature in the western region (Fahrenheit)."),
+    ("region_gulf_cdd",      "Cooling-degree-days in the Gulf region — how warm it's been there."),
+    ("region_midwest_cdd",   "Cooling-degree-days in the Midwest — how warm it's been there."),
+    ("region_northeast_cdd", "Cooling-degree-days in the Northeast — how warm it's been there."),
+    ("region_south_cdd",     "Cooling-degree-days in the southern region — how warm it's been there."),
+    ("region_west_cdd",      "Cooling-degree-days in the western region — how warm it's been there."),
+    ("region_gulf_hdd",      "Heating-degree-days in the Gulf region — how cold it's been there."),
+    ("region_midwest_hdd",   "Heating-degree-days in the Midwest — how cold it's been there."),
+    ("region_northeast_hdd", "Heating-degree-days in the Northeast — how cold it's been there."),
+    ("region_south_hdd",     "Heating-degree-days in the southern region — how cold it's been there."),
+    ("region_west_hdd",      "Heating-degree-days in the western region — how cold it's been there."),
+    ("gulf_wind",       "Wind speed over the Gulf of Mexico — high winds disrupt offshore oil and gas operations."),
+    ("gulf_storm",      "Whether a named storm is currently active in the Gulf of Mexico."),
+    ("gulf_max_wind",   "Peak wind gust recorded over the Gulf of Mexico."),
+    ("lng_wind",        "Wind speed at US LNG export terminals — high winds halt tanker loading."),
+    ("lng_storm",       "Whether a storm is currently affecting US LNG export terminals."),
+    ("lng_temp",        "Temperature at US LNG export terminals."),
+    ("lng_terminal_avg",   "Average operating conditions across US LNG export terminals."),
+    ("lng_terminal_storm", "Whether any storm has touched a US LNG terminal."),
+    ("lng_terminal_wind",  "Wind speed at US LNG export terminals."),
+    ("national_avg_temp",     "Average US temperature, weighted so heavily-populated areas count more."),
+    ("national_cdd",          "US-wide cooling-degree-days, population-weighted."),
+    ("national_hdd",          "US-wide heating-degree-days, population-weighted."),
+    ("national_humidity_pct", "Average US humidity, population-weighted."),
+    ("national_wind_mph",     "Average US wind speed (mph), population-weighted."),
+    ("cdd_sum_3d",     "Total cooling-degree-days over the past 3 days."),
+    ("hdd_sum_3d",     "Total heating-degree-days over the past 3 days."),
+    ("cold_wave_days", "Number of recent consecutive days flagged as a cold wave (extreme cold)."),
+    ("heat_wave_days", "Number of recent consecutive days flagged as a heat wave (extreme heat)."),
+    ("gulf_storm_count",   "Number of named storms currently active in the Gulf of Mexico."),
+    ("gulf_storm_active",  "1 if any named storm is active in the Gulf, else 0."),
+    ("lng_storm_count",    "Number of storms currently affecting US LNG export terminals."),
+    ("cdd",      "Cooling-degree-days — a measure of how warm the day was (how far the average temperature sat above 65°F). Predicts AC / power demand."),
+    ("hdd",      "Heating-degree-days — a measure of how cold the day was (how far the average temperature sat below 65°F). Predicts heating demand."),
+    ("humidity", "Local humidity."),
+    ("temp",     "Local temperature."),
+    ("wind",     "Local wind speed."),
+    ("is_winter",   "Whether it's currently winter (drives natural-gas heating demand)."),
+    ("is_summer",   "Whether it's currently summer (drives cooling / electricity demand)."),
+    ("is_shoulder", "Whether we're in the shoulder season between winter and summer (mild weather, low energy demand)."),
+    ("is_thursday", "Whether today is Thursday — the day EIA releases its weekly natural-gas storage report. Markets often move ahead of the print."),
+    ("is_weekend",  "Whether today is Saturday or Sunday."),
+    ("is_holiday",  "Whether today is a US federal holiday."),
+    ("holiday",     "Whether today is a US federal holiday."),
+    ("day_of_week", "Day of the week (0 = Monday … 6 = Sunday)."),
+    ("day_of_year", "Day of the year (1–366)."),
+    ("week_of_year","Week of the year (1–52)."),
+    ("dow_sin",   "Day-of-week encoded as a sine wave so the model can pick up weekly cycles."),
+    ("dow_cos",   "Day-of-week encoded as a cosine wave (paired with dow_sin to mark position in the week)."),
+    ("week_sin",  "Week-of-year encoded as a sine wave so the model can pick up seasonal patterns."),
+    ("week_cos",  "Week-of-year encoded as a cosine wave (paired with week_sin to mark position in the year)."),
+    ("month_sin", "Month-of-year encoded as a sine wave for seasonality."),
+    ("month_cos", "Month-of-year encoded as a cosine wave for seasonality."),
+    ("quarter",   "What quarter of the year it is (1–4)."),
+    ("month",     "What month it is (1 = January … 12 = December)."),
+    ("winter",         "Whether it's currently winter."),
+    ("summer_driving", "Whether we're in the US summer driving season (Memorial Day → Labor Day). Gasoline demand peaks here."),
+    ("memorial_july4", "Whether we're near Memorial Day or July 4th — major holiday weekends spike gasoline demand."),
+    ("hurricane",      "Whether a hurricane is currently active in the Atlantic basin."),
+    ("log_return_abs",   "Absolute size of the most recent daily price moves (regardless of direction)."),
+    ("log_return_accel", "Whether the rate-of-change in price is speeding up or slowing down."),
+    ("log_return_std",   "How spread-out recent daily returns have been."),
+    ("log_return_vol",   "Realized volatility of recent daily price returns."),
+    ("log_return",       "Daily log return of the price (a smoother measure than % change)."),
+    ("roc_7",  "Rate of change over the past 7 days (% change over a week)."),
+    ("roc_30", "Rate of change over the past 30 days (% change over a month)."),
+    ("roc_90", "Rate of change over the past 90 days (% change over a quarter)."),
+    ("trend_dev_30", "How far the price has drifted away from its 30-day moving average."),
+    ("trend_dev_90", "How far the price has drifted away from its 90-day moving average."),
+    ("trend_sma7_minus_sma30",  "7-day moving average minus the 30-day moving average. Positive = short-term uptrend."),
+    ("trend_sma30_minus_sma90", "30-day moving average minus the 90-day moving average. Positive = medium-term uptrend."),
+    ("target_rolling_90_std",  "Standard deviation of natural-gas price over the past 90 days — a measure of recent volatility."),
+    ("target",      "Natural-gas closing price."),
+    ("storage_change_wow", "Week-over-week change in US natural-gas storage levels."),
+    ("storage",     "US natural-gas storage level."),
+    ("production",  "US natural-gas production (billions of cubic feet per day)."),
+
+    # ── Retail-gas / energy raw series ──────────────────────────────
+    ("rbob_gasoline_futures_last",  "Wholesale gasoline price — RBOB futures close. What gas stations pay to buy gasoline; moves before pump prices do."),
+    ("rbob_gasoline_futures_mean",  "Average wholesale gasoline price (RBOB futures) over the trading week."),
+    ("rbob_minus_brent_per_gallon", "Gap (per gallon) between US wholesale gasoline and Brent crude. Widens when refining margins are healthy."),
+    ("rbob_minus_wti_per_gallon",   "Gap (per gallon) between US wholesale gasoline and WTI crude — essentially the gasoline refining margin."),
+    ("rbob_to_wti_per_gallon_ratio","Ratio of wholesale gasoline to WTI crude (per gallon). Indicates the relative profit margin for refining."),
+    ("brent_spot",         "Brent crude oil spot price — the international benchmark for oil."),
+    ("brent_futures_last", "Brent crude oil futures closing price."),
+    ("brent_wti_spread",   "Price gap between Brent and WTI crude. Widens when it's harder to export US oil."),
+    ("wti_spot",            "West Texas Intermediate (WTI) crude oil spot price — the US benchmark."),
+    ("wti_futures_last",    "WTI crude oil futures closing price."),
+    ("wti_term_structure",  "Shape of the WTI futures curve — whether near-term oil is cheaper or pricier than longer-dated. Reveals supply tightness."),
+    ("crude_imports",        "Volume of crude oil imported into the US."),
+    ("crude_stocks_ex_spr",  "US crude oil inventories, excluding the Strategic Petroleum Reserve."),
+    ("gasoline_imports",     "Volume of gasoline imported into the US."),
+    ("gasoline_stocks_total","Total US gasoline inventories held by refiners and distributors."),
+    ("gasoline_product_supplied", "How much gasoline US refiners delivered to the market this week — a proxy for consumer demand."),
+    ("distillate_crack",     "Profit margin from refining crude oil into distillates (diesel, heating oil)."),
+    ("heating_oil_futures_last", "Heating oil futures closing price (also used to price diesel)."),
+    ("natural_gas_futures_last", "Natural gas futures closing price."),
+    ("dxy_dollar_index_last",   "US Dollar Index (DXY) close — how strong the dollar is against major currencies. Stronger dollar tends to push oil down."),
+    ("trade_weighted_dollar",   "Broad measure of the US dollar against many trading-partner currencies."),
+    ("ovx_level",               "Oil VIX — how volatile traders expect oil prices to be over the next month."),
+    ("energy_sector_etf_last",  "XLE ETF closing price — tracks the big US energy companies (Exxon, Chevron, etc)."),
+    ("uga_gasoline_etf_last",   "UGA ETF closing price — directly tracks gasoline futures."),
+    ("uso_oil_etf_last",        "USO ETF closing price — directly tracks oil futures."),
+    ("usl_12mo_oil_etf_last",   "USL ETF closing price — tracks oil at 12 future delivery dates (smoother than just front-month)."),
+    ("refinery_utilization",    "Percentage of US refinery capacity currently in use."),
+    ("industrial_production",   "US industrial production index — how busy factories, mines and utilities are."),
+    ("natgas_to_oil_ratio",     "Ratio of natural-gas to crude-oil prices. Reveals which energy source is cheap relative to the other."),
+    ("gas_pct_above_26w_high",  "How far today's retail gas price sits above its 26-week high (% above)."),
+    ("gas_pct_above_13w_high",  "How far today's retail gas price sits above its 13-week high (% above)."),
+    ("gas_pct_above_4w_high",   "How far today's retail gas price sits above its 4-week high (% above)."),
+    ("gas_pct_below_26w_high",  "How far today's retail gas price sits below its 26-week high (% below)."),
+    ("gas_pct_below_13w_high",  "How far today's retail gas price sits below its 13-week high (% below)."),
+    ("gas_pct_below_4w_high",   "How far today's retail gas price sits below its 4-week high (% below)."),
+    ("gas_pct_below_26w_low",   "How far today's retail gas price sits below its 26-week low (% below)."),
+    ("gas_pct_below_13w_low",   "How far today's retail gas price sits below its 13-week low (% below)."),
+    ("gas_pct_above_26w_low",   "How far today's retail gas price sits above its 26-week low (% above)."),
+    ("gas_pct_above_13w_low",   "How far today's retail gas price sits above its 13-week low (% above)."),
+    ("gas_pct_above_4w_low",    "How far today's retail gas price sits above its 4-week low (% above)."),
+    ("gas_range_4w",            "Spread (high minus low) of retail gas price over the past 4 weeks."),
+    ("gas_range_13w",           "Spread of retail gas price over the past 13 weeks."),
+    ("gas_zscore_13w",          "How many standard deviations today's gas price sits from its 13-week average."),
+    ("gas_zscore_26w",          "How many standard deviations today's gas price sits from its 26-week average."),
+    ("gas_zscore_52w",          "How many standard deviations today's gas price sits from its 52-week average."),
+    ("gas_price_anchor",        "Recent retail gas price used as the starting point for projecting future prices."),
+    ("gas_change_consistency",  "Whether recent week-over-week gas-price moves have all gone the same direction (consistent trend) or zig-zagged."),
+
+    # ── Unemployment alt-data ───────────────────────────────────────
+    ("google_trends_filed_for_unemployment", "How often Americans Google 'filed for unemployment' — a real-time read on new claimants."),
+    ("google_trends_unemployment_benefits",  "How often Americans Google 'unemployment benefits' — signals would-be filers."),
+    ("google_trends_how_to_file_unemployment", "How often Americans Google 'how to file unemployment' — likely first-time filers."),
+    ("google_trends_laid_off",   "How often Americans Google 'laid off'."),
+    ("google_trends_lost_my_job","How often Americans Google 'lost my job'."),
+    ("google_trends",            "Volume of unemployment-related Google searches across the US."),
+    ("layoffs_fyi",  "Number of tech-industry layoffs tracked on layoffs.fyi this week."),
+    ("challenger",   "Total job-cut announcements in the latest Challenger, Gray & Christmas monthly report."),
+    ("warn",         "Mass-layoff notices US employers have officially filed with their state."),
+    ("reddit",       "Number of posts about losing a job submitted to r/layoffs."),
+
+    # ── Unemployment / macro raw series (FRED friendly names) ──────
+    ("nonfarm_payrolls",  "Total US employment (excluding farm workers) — the headline jobs number."),
+    ("treasury_10y",      "Interest rate on a 10-year US government bond."),
+    ("treasury_2y",       "Interest rate on a 2-year US government bond."),
+    ("wti_oil",           "WTI crude oil price — the US benchmark."),
+    ("henry_hub",         "Henry Hub natural-gas benchmark price."),
+    ("vix",               "Stock-market expected volatility over the next month — the 'fear gauge'."),
+    ("unemployment_rate", "% of Americans who want a job but don't have one."),
+    ("continuing_claims", "Number of people still receiving unemployment benefits."),
+    ("initial_claims",    "Number of people who filed for unemployment for the first time this week."),
+    ("ppi",               "Producer Price Index — what wholesalers charge stores."),
+    ("headline_cpi",      "Headline consumer price level (everything in the basket)."),
+    ("core_mom",          "Month-over-month change in core inflation (excluding food and energy)."),
+    ("core_cpi",          "Consumer price level excluding food and gas."),
+    ("used_cars_cpi",     "Consumer-price-index sub-component for used cars and trucks."),
+    ("fed_funds_rate",    "The Federal Reserve's target interest rate."),
+    ("industrial_prod",   "US industrial production index."),
+    ("umich_inflation",   "1-year inflation expectations from the U-Michigan consumer survey."),
+    ("consumer_sentiment","U-Michigan consumer sentiment index — how Americans feel about the economy."),
+    ("cleveland_expinf",  "Cleveland Fed model's expectation for inflation 1 year out."),
+    ("m2_yoy",            "Year-over-year change in M2 money supply."),
+    ("retail_gas",        "US average pump price for regular gasoline."),
+    ("jolts_layoffs",     "How many workers were laid off across the US in the latest month."),
+    ("jolts_hires",       "How many workers were hired across the US in the latest month."),
+    ("jolts_quits",       "How many workers quit their job in the latest month."),
+    ("jolts_openings",    "How many job openings are posted across the US."),
+    ("unemp_5_14_weeks",  "Number of Americans who have been unemployed for 5–14 weeks."),
+    ("unemp_27plus_weeks","Number of Americans who have been unemployed for 27+ weeks (long-term unemployed)."),
+    ("durable_orders",    "Orders for big-ticket items expected to last 3+ years."),
+    ("policy_uncertainty","Measure of US economic-policy uncertainty from news coverage of policy disputes."),
+]
+
+
+def _period_unit(base: str, plural: bool = True) -> str:
+    """Pick the right time-unit (day vs week) for transforms attached
+    to this base.
+
+    Daily-cadence bots (natural-gas) lag and roll in DAYS. Weekly
+    bots (retail-gas, unemployment, CPI) lag and roll in WEEKS. We
+    detect the cadence from the base's vocabulary using EXACT or
+    PREFIX matching — substring matching would mis-classify retail-
+    gas's ``industrial_production`` as daily because it contains
+    "production".
+    """
+    daily_exact = {
+        "target", "production", "storage", "log_return",
+        "log_return_abs", "log_return_accel", "log_return_std",
+        "log_return_vol", "temp", "wind", "humidity",
+        "cdd", "hdd",
+    }
+    daily_prefixes = (
+        "target_", "production_", "storage_", "log_return_",
+        "roc_", "roc", "trend_dev", "trend_sma",
+        "region_", "gulf_", "lng_", "national_", "ng_",
+        "cdd_", "hdd_", "humidity_", "temp_", "wind_",
+        "cold_wave", "heat_wave",
+    )
+    is_daily = base in daily_exact or any(
+        base.startswith(p) for p in daily_prefixes
+    )
+    if is_daily:
+        return "days" if plural else "day"
+    return "weeks" if plural else "week"
+
+
+def _strip_transform_suffix(name: str) -> Tuple[str, str]:
+    """Peel off the transform suffix and return (base, transform_text).
+
+    Recognised suffixes (in the order they're stripped off the right
+    end of the name):
+
+      * ``_lag_N``                       →  "lagged N {unit}"
+      * ``_surprise_vs_Nw_avg``          →  "vs its N-week average"
+      * ``_anomaly_30d``                 →  "anomaly vs the 30-day norm"
+      * ``_rolling_N``                   →  "N-{unit} rolling average"
+      * ``_return_Nw`` / ``_volatility_Nw`` /
+        ``_change_Nw``                   →  "{N}-week return / volatility / change"
+      * ``_yoy``                         →  "year-over-year change"
+    """
+    transforms: List[Any] = []
+    PLACEHOLDER_LAG = "<lag>"
+    PLACEHOLDER_ROLL = "<roll>"
+
+    # _lag_N — the outermost transform. Unit is resolved later once
+    # we know the base.
+    m = re.search(r"_lag_(\d+)$", name)
+    if m:
+        transforms.append((PLACEHOLDER_LAG, int(m.group(1))))
+        name = name[: m.start()]
+
+    # _surprise_vs_Nw_avg — sits between the base and the lag.
+    m = re.search(r"_surprise_vs_(\d+)w_avg$", name)
+    if m:
+        transforms.append(f"surprise vs the {m.group(1)}-week average")
+        name = name[: m.start()]
+
+    # _anomaly_30d
+    m = re.search(r"_anomaly_30d$", name)
+    if m:
+        transforms.append("anomaly vs the 30-day norm")
+        name = name[: m.start()]
+
+    # _rolling_N — unit is also resolved against the base.
+    m = re.search(r"_rolling_(\d+)$", name)
+    if m:
+        transforms.append((PLACEHOLDER_ROLL, int(m.group(1))))
+        name = name[: m.start()]
+
+    # _return_Nw / _volatility_Nw / _change_Nw (units explicit in name)
+    for pat, fmt in (
+        (r"_return_(\d+)w$",     "{n}-week log return"),
+        (r"_volatility_(\d+)w$", "{n}-week realized volatility"),
+        (r"_change_(\d+)w$",     "{n}-week % change"),
+    ):
+        m = re.search(pat, name)
+        if m:
+            transforms.append(fmt.format(n=m.group(1)))
+            name = name[: m.start()]
+            break
+
+    # _yoy
+    m = re.search(r"_yoy$", name)
+    if m:
+        transforms.append("year-over-year change")
+        name = name[: m.start()]
+
+    base = name
+
+    # Resolve placeholders now that we know the base.
+    resolved: List[str] = []
+    for t in transforms:
+        if isinstance(t, tuple) and t[0] == PLACEHOLDER_LAG:
+            n = t[1]
+            unit = _period_unit(base, plural=(n != 1))
+            resolved.append(f"lagged {n} {unit}")
+        elif isinstance(t, tuple) and t[0] == PLACEHOLDER_ROLL:
+            n = t[1]
+            unit = _period_unit(base, plural=True)
+            resolved.append(f"{n}-{unit.rstrip('s')} rolling average")
+        else:
+            resolved.append(t)
+
+    # Reverse so the inner-most transform reads first.
+    resolved.reverse()
+    if not resolved:
+        return base, ""
+    return base, " — " + ", ".join(resolved) + "."
+
+
+def _base_description(base: str) -> str:
+    """Look up the plain-English description for a feature's base.
+
+    Tries longest prefix matches first so e.g.
+    ``rbob_gasoline_futures_last`` resolves before ``rbob_``. Returns
+    an empty string if no match — caller falls back to the rule's
+    description.
+    """
+    for prefix, desc in _FEATURE_BASES:
+        if base == prefix or base.startswith(prefix + "_"):
+            return desc
+    return ""
+
+
+def _describe_feature(name: str) -> str:
+    """Produce a unique, feature-specific description.
+
+    The base-prefix description + the parsed transform suffix combine
+    to a sentence like: "Wholesale gasoline price (RBOB futures
+    close) ... — 4-week log return, lagged 1 week."
+    """
+    lower = (name or "").lower()
+    base, transform = _strip_transform_suffix(lower)
+    desc = _base_description(base)
+    if not desc:
+        # No specific base match — return empty so feature_metadata
+        # falls back to the rule's generic description.
+        return ""
+    # Trim the trailing period on the base before appending the
+    # transform fragment so the punctuation reads cleanly.
+    if transform:
+        if desc.endswith("."):
+            desc = desc[:-1]
+        return desc + transform
+    return desc
+
+
 def feature_metadata(name: str) -> dict:
     """Map a feature name to its source label, colour, plain-English
     description, and link to where the raw data comes from.
 
-    Returns a dict with ``label``, ``color``, ``description``,
-    ``link``. Falls through to a generic "Other" entry when no rule
-    matches so this never blows up.
+    The description comes from ``_describe_feature`` first (unique
+    per-feature, composed from base + transform suffix). If no base
+    match is found, falls back to the matching rule's generic
+    description so we never render a blank cell.
     """
     n = (name or "").lower()
     for rule in FEATURE_RULES:
         for pat in rule["patterns"]:
             if pat in n:
+                specific = _describe_feature(name)
                 return {
                     "label": rule["label"],
                     "color": rule["color"],
-                    "description": rule["description"],
+                    "description": specific or rule["description"],
                     "link": rule["link"],
                 }
+    specific = _describe_feature(name)
     return {"label": "Other", "color": "#6e7681",
-            "description": "Source for this feature hasn't been documented yet.",
+            "description": specific or
+                "Source for this feature hasn't been documented yet.",
             "link": ""}
 
 
