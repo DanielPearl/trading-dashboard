@@ -4083,86 +4083,388 @@ def _svg_confusion(cm: dict) -> str:
     return "".join(parts)
 
 
-# Source mapping for ML features. Maps each feature name (after a
-# couple of normalisations) to a human-readable data source. Used
-# both in tooltip text and as the colour-coded legend on the
-# feature-importance chart so the user can see at a glance which
-# data dependencies the model leans on.
-def feature_source(name: str) -> Tuple[str, str]:
-    """Best-effort source lookup. Returns (label, css_color).
+# Rich feature metadata: source label + colour + plain-English
+# description + canonical source URL. Drives both the legend / chart
+# colour-coding AND the "all features and their sources" table on
+# every bot's Models tab, so the user can audit not just *what* a
+# feature is but *where it came from* in one place.
+#
+# Each rule is a substring matcher. Order matters: more specific keys
+# (tennis "form_last", "h2h_") sit above more generic ones (NBA
+# "diff_") so e.g. ``diff_form_last5`` lands in the tennis bucket
+# rather than the NBA bucket. FRED ids and ETF tickers sit above the
+# catch-all "derived transform" bucket for the same reason.
+FEATURE_RULES: List[dict] = [
+    # ── Tennis / Table tennis: Jeff Sackmann dataset + bot-computed Elo
+    {"patterns": ("surface_elo", "style_elo"),
+     "label": "Elo (bot-computed)", "color": "#bc8cff",
+     "description": "Surface- or style-specific Elo rating that updates after each match.",
+     "link": "https://en.wikipedia.org/wiki/Elo_rating_system"},
+    {"patterns": ("h2h_",),
+     "label": "Head-to-head (Sackmann)", "color": "#58a6ff",
+     "description": "Historical head-to-head record between the two players.",
+     "link": "https://github.com/JeffSackmann/tennis_atp"},
+    {"patterns": ("form_last",),
+     "label": "Form (Sackmann)", "color": "#58a6ff",
+     "description": "Rolling win rate over the player's last N matches.",
+     "link": "https://github.com/JeffSackmann/tennis_atp"},
+    {"patterns": ("serve_pts", "return_pts", "bp_saved",
+                   "deuce_win_pct", "closing_win_pct",
+                   "point_win_pct", "game_margin",
+                   "comeback_rate"),
+     "label": "Match stats (Sackmann)", "color": "#58a6ff",
+     "description": "Rolling per-match serve / return / clutch stat over the player's last 10–20 matches.",
+     "link": "https://github.com/JeffSackmann/tennis_atp"},
+    {"patterns": ("days_rest", "matches_last_7d"),
+     "label": "Schedule (Sackmann)", "color": "#58a6ff",
+     "description": "Days since last match / matches played in the last 7 days.",
+     "link": "https://github.com/JeffSackmann/tennis_atp"},
+    {"patterns": ("hand_matchup", "diff_hand"),
+     "label": "Player profile (Sackmann)", "color": "#58a6ff",
+     "description": "Handedness matchup flag (left- vs right-handed pairing).",
+     "link": "https://github.com/JeffSackmann/tennis_atp"},
+    {"patterns": ("rank_diff",),
+     "label": "ATP/WTA rankings", "color": "#58a6ff",
+     "description": "Live world-ranking differential between the two players.",
+     "link": "https://github.com/JeffSackmann/tennis_atp"},
+    {"patterns": ("round_rank", "level_rank", "is_bo7"),
+     "label": "Tournament metadata", "color": "#58a6ff",
+     "description": "Round / tour-level / best-of-7 flag for the match.",
+     "link": "https://github.com/JeffSackmann/tennis_atp"},
+    # ── NBA / generic Elo: pattern is "_elo" or "elo_" (not plain
+    # "elo") so it doesn't false-match the substring inside words
+    # like "below" / "above" / "develop".
+    {"patterns": ("_elo", "elo_"),
+     "label": "Elo (bot-computed)", "color": "#bc8cff",
+     "description": "Pre-match Elo rating, updated game-by-game from the final score margin.",
+     "link": "https://en.wikipedia.org/wiki/Elo_rating_system"},
+    {"patterns": ("_b2b", "b2b_"),
+     "label": "Schedule (bot-computed)", "color": "#bc8cff",
+     "description": "Back-to-back game / rest-days flag derived from the NBA schedule.",
+     "link": "https://github.com/swar/nba_api"},
+    # ── NBA: nba_api advanced box-score stats ───────────────────────
+    {"patterns": ("_off_rating", "_def_rating", "_net_rating",
+                   "_efg_pct", "_oreb_pct", "_tov_pct", "_ft_per_fga",
+                   "_fg3m", "_pace", "_win_r", "_team_win",
+                   "_team_"),
+     "label": "nba_api advanced stats", "color": "#58a6ff",
+     "description": "Team-level advanced box-score stat from the official NBA Stats endpoints.",
+     "link": "https://github.com/swar/nba_api"},
+    # ── FRED macro series — one entry per series so the link points at
+    # the exact series page. Narrow patterns first.
+    {"patterns": ("nonfarm_payrolls", "payems"),
+     "label": "FRED PAYEMS", "color": "#3fb950",
+     "description": "Total nonfarm payroll employment, monthly (BLS via FRED).",
+     "link": "https://fred.stlouisfed.org/series/PAYEMS"},
+    {"patterns": ("treasury_10y", "dgs10"),
+     "label": "FRED DGS10", "color": "#3fb950",
+     "description": "10-year Treasury constant-maturity yield, daily.",
+     "link": "https://fred.stlouisfed.org/series/DGS10"},
+    {"patterns": ("treasury_2y", "dgs2"),
+     "label": "FRED DGS2", "color": "#3fb950",
+     "description": "2-year Treasury constant-maturity yield, daily.",
+     "link": "https://fred.stlouisfed.org/series/DGS2"},
+    {"patterns": ("wti_oil", "dcoilwtico"),
+     "label": "FRED DCOILWTICO", "color": "#3fb950",
+     "description": "WTI crude oil spot price (Cushing, OK), daily.",
+     "link": "https://fred.stlouisfed.org/series/DCOILWTICO"},
+    {"patterns": ("henry_hub", "mhhngsp"),
+     "label": "FRED MHHNGSP", "color": "#3fb950",
+     "description": "Henry Hub natural gas spot price, monthly.",
+     "link": "https://fred.stlouisfed.org/series/MHHNGSP"},
+    {"patterns": ("vix", "vixcls"),
+     "label": "FRED VIXCLS", "color": "#3fb950",
+     "description": "CBOE Volatility Index (VIX) close, daily.",
+     "link": "https://fred.stlouisfed.org/series/VIXCLS"},
+    {"patterns": ("unemployment_rate", "unrate"),
+     "label": "FRED UNRATE", "color": "#3fb950",
+     "description": "Civilian unemployment rate, monthly (BLS).",
+     "link": "https://fred.stlouisfed.org/series/UNRATE"},
+    {"patterns": ("continuing_claims", "ccsa"),
+     "label": "FRED CCSA", "color": "#3fb950",
+     "description": "Continued unemployment-insurance claims (SA, weekly).",
+     "link": "https://fred.stlouisfed.org/series/CCSA"},
+    {"patterns": ("initial_claims", "icsa"),
+     "label": "FRED ICSA", "color": "#3fb950",
+     "description": "Initial unemployment-insurance claims (SA, weekly).",
+     "link": "https://fred.stlouisfed.org/series/ICSA"},
+    {"patterns": ("ppi", "ppiaco"),
+     "label": "FRED PPIACO", "color": "#3fb950",
+     "description": "Producer Price Index, all commodities, monthly.",
+     "link": "https://fred.stlouisfed.org/series/PPIACO"},
+    {"patterns": ("headline_cpi", "cpiaucsl"),
+     "label": "FRED CPIAUCSL", "color": "#3fb950",
+     "description": "Headline CPI, all urban consumers (SA, monthly).",
+     "link": "https://fred.stlouisfed.org/series/CPIAUCSL"},
+    {"patterns": ("core_cpi", "core_mom", "cpilfesl"),
+     "label": "FRED CPILFESL", "color": "#3fb950",
+     "description": "Core CPI (all items less food & energy), SA, monthly.",
+     "link": "https://fred.stlouisfed.org/series/CPILFESL"},
+    {"patterns": ("used_cars_cpi", "cuur0000seta02"),
+     "label": "FRED CUUR0000SETA02", "color": "#3fb950",
+     "description": "CPI: used cars and trucks, monthly.",
+     "link": "https://fred.stlouisfed.org/series/CUUR0000SETA02"},
+    {"patterns": ("fed_funds_rate", "fedfunds"),
+     "label": "FRED FEDFUNDS", "color": "#3fb950",
+     "description": "Effective federal funds rate, monthly average.",
+     "link": "https://fred.stlouisfed.org/series/FEDFUNDS"},
+    {"patterns": ("industrial_production", "industrial_prod", "indpro"),
+     "label": "FRED INDPRO", "color": "#3fb950",
+     "description": "Industrial Production Index, monthly.",
+     "link": "https://fred.stlouisfed.org/series/INDPRO"},
+    {"patterns": ("umich_inflation", "mich"),
+     "label": "FRED MICH", "color": "#3fb950",
+     "description": "U Michigan 1-year inflation expectations, monthly.",
+     "link": "https://fred.stlouisfed.org/series/MICH"},
+    {"patterns": ("consumer_sentiment", "umcsent"),
+     "label": "FRED UMCSENT", "color": "#3fb950",
+     "description": "U Michigan Consumer Sentiment Index, monthly.",
+     "link": "https://fred.stlouisfed.org/series/UMCSENT"},
+    {"patterns": ("cleveland_expinf", "expinf1yr"),
+     "label": "FRED EXPINF1YR", "color": "#3fb950",
+     "description": "Cleveland Fed 1-year-ahead expected inflation.",
+     "link": "https://fred.stlouisfed.org/series/EXPINF1YR"},
+    {"patterns": ("m2_yoy", "m2sl"),
+     "label": "FRED M2SL", "color": "#3fb950",
+     "description": "M2 money stock (SA), monthly.",
+     "link": "https://fred.stlouisfed.org/series/M2SL"},
+    {"patterns": ("retail_gas", "gasregw"),
+     "label": "FRED GASREGW", "color": "#3fb950",
+     "description": "US regular conventional retail gas price, weekly.",
+     "link": "https://fred.stlouisfed.org/series/GASREGW"},
+    {"patterns": ("jolts_layoffs", "jtsldl"),
+     "label": "FRED JTSLDL (JOLTS)", "color": "#3fb950",
+     "description": "JOLTS: layoffs and discharges, monthly.",
+     "link": "https://fred.stlouisfed.org/series/JTSLDL"},
+    {"patterns": ("jolts_hires", "jtshil"),
+     "label": "FRED JTSHIL (JOLTS)", "color": "#3fb950",
+     "description": "JOLTS: hires, monthly.",
+     "link": "https://fred.stlouisfed.org/series/JTSHIL"},
+    {"patterns": ("jolts_quits", "jtsqul"),
+     "label": "FRED JTSQUL (JOLTS)", "color": "#3fb950",
+     "description": "JOLTS: quits, monthly.",
+     "link": "https://fred.stlouisfed.org/series/JTSQUL"},
+    {"patterns": ("jolts_openings", "jtsjol"),
+     "label": "FRED JTSJOL (JOLTS)", "color": "#3fb950",
+     "description": "JOLTS: total job openings, monthly.",
+     "link": "https://fred.stlouisfed.org/series/JTSJOL"},
+    {"patterns": ("unemp_5_14", "uemp5to14"),
+     "label": "FRED UEMP5TO14", "color": "#3fb950",
+     "description": "Number unemployed for 5–14 weeks, monthly.",
+     "link": "https://fred.stlouisfed.org/series/UEMP5TO14"},
+    {"patterns": ("unemp_27plus", "uemp27ov"),
+     "label": "FRED UEMP27OV", "color": "#3fb950",
+     "description": "Number unemployed for 27 weeks or more, monthly.",
+     "link": "https://fred.stlouisfed.org/series/UEMP27OV"},
+    # NOTE: pattern requires the trailing underscore so "unemployment"
+    # in the Google Trends search-term "filed_for_unemployment" doesn't
+    # get misattributed to a duration bucket.
+    {"patterns": ("uemp_", "unemp_"),
+     "label": "FRED UEMP* (duration buckets)", "color": "#3fb950",
+     "description": "Unemployment-duration bucket series (BLS via FRED).",
+     "link": "https://fred.stlouisfed.org/categories/12"},
+    {"patterns": ("durable_orders", "dgorder"),
+     "label": "FRED DGORDER", "color": "#3fb950",
+     "description": "New durable-goods orders, monthly.",
+     "link": "https://fred.stlouisfed.org/series/DGORDER"},
+    {"patterns": ("policy_uncertainty", "usepuindxd"),
+     "label": "FRED USEPUINDXD", "color": "#3fb950",
+     "description": "US Economic Policy Uncertainty index, daily.",
+     "link": "https://fred.stlouisfed.org/series/USEPUINDXD"},
+    {"patterns": ("trade_weighted_dollar", "dtwexbgs"),
+     "label": "FRED DTWEXBGS", "color": "#3fb950",
+     "description": "Broad trade-weighted US dollar index (goods & services).",
+     "link": "https://fred.stlouisfed.org/series/DTWEXBGS"},
+    # ── Alt-data / non-FRED sources ─────────────────────────────────
+    {"patterns": ("google_trends",),
+     "label": "Google Trends", "color": "#d29922",
+     "description": "Weekly search-volume index for unemployment-related queries.",
+     "link": "https://trends.google.com/trends/"},
+    {"patterns": ("layoffs_fyi",),
+     "label": "layoffs.fyi", "color": "#d29922",
+     "description": "Crowdsourced tech-sector layoff tracker.",
+     "link": "https://layoffs.fyi/"},
+    {"patterns": ("challenger",),
+     "label": "Challenger Gray & Christmas", "color": "#d29922",
+     "description": "Monthly job-cut announcement report.",
+     "link": "https://www.challengergray.com/blog/category/job-cuts-report/"},
+    {"patterns": ("warn",),
+     "label": "WARN notices", "color": "#d29922",
+     "description": "State-DOL Worker Adjustment & Retraining Notification filings.",
+     "link": "https://www.dol.gov/agencies/eta/layoffs/warn"},
+    {"patterns": ("reddit",),
+     "label": "Reddit r/layoffs", "color": "#d29922",
+     "description": "Post-volume signal scraped from r/layoffs.",
+     "link": "https://reddit.com/r/layoffs"},
+    # ── Retail-gas / energy: futures, ETFs, EIA Weekly Status ───────
+    {"patterns": ("rbob_gasoline_futures", "rbob_"),
+     "label": "CME RBOB futures", "color": "#58a6ff",
+     "description": "RBOB (gasoline blendstock) front-month futures, NYMEX/CME.",
+     "link": "https://www.cmegroup.com/markets/energy/refined-products/rbob-gasoline-physical.html"},
+    {"patterns": ("brent_futures", "brent_spot", "brent_wti_spread"),
+     "label": "ICE Brent crude", "color": "#58a6ff",
+     "description": "Brent crude oil futures / spot price.",
+     "link": "https://www.theice.com/products/219/Brent-Crude-Futures"},
+    {"patterns": ("wti_futures", "wti_spot", "wti_term_structure"),
+     "label": "NYMEX WTI crude", "color": "#58a6ff",
+     "description": "WTI crude oil futures / spot price.",
+     "link": "https://www.cmegroup.com/markets/energy/crude-oil/light-sweet-crude.html"},
+    {"patterns": ("natural_gas_futures",),
+     "label": "CME Henry Hub NG futures", "color": "#58a6ff",
+     "description": "Henry Hub natural gas front-month futures, NYMEX/CME.",
+     "link": "https://www.cmegroup.com/markets/energy/natural-gas/natural-gas.html"},
+    {"patterns": ("heating_oil_futures",),
+     "label": "NYMEX heating-oil futures", "color": "#58a6ff",
+     "description": "ULSD (heating-oil) front-month futures.",
+     "link": "https://www.cmegroup.com/markets/energy/refined-products/heating-oil.html"},
+    {"patterns": ("dxy_dollar_index",),
+     "label": "ICE Dollar Index (DXY)", "color": "#58a6ff",
+     "description": "ICE US Dollar Index futures.",
+     "link": "https://www.theice.com/products/194/US-Dollar-Index-Futures"},
+    {"patterns": ("ovx",),
+     "label": "CBOE Oil VIX (OVX)", "color": "#58a6ff",
+     "description": "CBOE crude-oil implied-volatility index.",
+     "link": "https://www.cboe.com/tradable_products/vix/oil_volatility/"},
+    {"patterns": ("energy_sector_etf", "xle"),
+     "label": "XLE ETF", "color": "#58a6ff",
+     "description": "Energy Select Sector SPDR — US oil & gas equity proxy.",
+     "link": "https://finance.yahoo.com/quote/XLE"},
+    {"patterns": ("uga_gasoline_etf", "uga_"),
+     "label": "UGA ETF", "color": "#58a6ff",
+     "description": "United States Gasoline Fund — direct gasoline-futures ETF.",
+     "link": "https://finance.yahoo.com/quote/UGA"},
+    {"patterns": ("uso_oil_etf",),
+     "label": "USO ETF", "color": "#58a6ff",
+     "description": "United States Oil Fund — direct WTI-futures ETF.",
+     "link": "https://finance.yahoo.com/quote/USO"},
+    {"patterns": ("usl_12mo_oil",),
+     "label": "USL ETF", "color": "#58a6ff",
+     "description": "United States 12-Month Oil Fund — laddered WTI futures.",
+     "link": "https://finance.yahoo.com/quote/USL"},
+    {"patterns": ("refinery_utilization", "crude_imports",
+                   "crude_stocks", "gasoline_imports",
+                   "gasoline_stocks", "gasoline_product_supplied",
+                   "distillate_crack"),
+     "label": "EIA Weekly Petroleum Status Report", "color": "#3fb950",
+     "description": "Refinery / inventory / imports / product-supplied line from the EIA weekly report.",
+     "link": "https://www.eia.gov/petroleum/supply/weekly/"},
+    {"patterns": ("natgas_to_oil", "rbob_minus_brent",
+                   "rbob_minus_wti", "rbob_to_wti"),
+     "label": "Energy spread (bot-computed)", "color": "#bc8cff",
+     "description": "Crack/spread/ratio between two energy benchmarks.",
+     "link": "https://www.cmegroup.com/markets/energy/refined-products/rbob-gasoline-physical.html"},
+    {"patterns": ("hurricane",),
+     "label": "NOAA / NHC hurricane data", "color": "#3fb950",
+     "description": "Atlantic hurricane activity flag from the National Hurricane Center.",
+     "link": "https://www.nhc.noaa.gov/"},
+    {"patterns": ("summer_driving", "memorial_july4"),
+     "label": "Seasonal / calendar", "color": "#d29922",
+     "description": "US driving-season / holiday-weekend flag.",
+     "link": ""},
+    {"patterns": ("gas_price_anchor", "gas_pct_above", "gas_pct_below",
+                   "gas_range", "gas_zscore", "gas_change_consistency"),
+     "label": "Retail-gas target derivative (bot-computed)", "color": "#8b949e",
+     "description": "Statistic (anchor, percentile, range, z-score) computed from the EIA retail-gas price itself.",
+     "link": "https://fred.stlouisfed.org/series/GASREGW"},
+    # ── Natural-gas-specific data ───────────────────────────────────
+    {"patterns": ("ng_storage_bcf", "storage_change_wow", "storage_lag"),
+     "label": "EIA NG Weekly Storage Report", "color": "#3fb950",
+     "description": "Working natural-gas in underground storage (Bcf), EIA weekly report.",
+     "link": "https://www.eia.gov/dnav/ng/ng_stor_wkly_s1_w.htm"},
+    {"patterns": ("ng_production", "production_lag", "production_yoy"),
+     "label": "EIA NG production", "color": "#3fb950",
+     "description": "US dry natural-gas production (EIA-914 monthly survey).",
+     "link": "https://www.eia.gov/naturalgas/production/"},
+    {"patterns": ("region_gulf", "region_midwest", "region_northeast",
+                   "region_south", "region_west"),
+     "label": "NOAA regional weather", "color": "#3fb950",
+     "description": "Regional temperature / HDD / CDD from NOAA NWS reanalysis.",
+     "link": "https://www.ncei.noaa.gov/access/monitoring/dyk/heating-cooling-degree-information"},
+    {"patterns": ("gulf_wind", "gulf_storm", "gulf_max_wind"),
+     "label": "NOAA Gulf-of-Mexico weather", "color": "#3fb950",
+     "description": "Gulf-of-Mexico wind speed / storm activity from NOAA / NHC.",
+     "link": "https://www.nhc.noaa.gov/"},
+    {"patterns": ("lng_wind", "lng_storm", "lng_temp", "lng_terminal"),
+     "label": "NOAA LNG-terminal weather", "color": "#3fb950",
+     "description": "Wind / temperature near US LNG export terminals.",
+     "link": "https://www.eia.gov/naturalgas/storage/dashboard/"},
+    {"patterns": ("national_avg_temp", "national_cdd", "national_hdd",
+                   "national_humidity", "national_wind"),
+     "label": "NOAA national weather", "color": "#3fb950",
+     "description": "Population-weighted national temperature / HDD / CDD / wind / humidity.",
+     "link": "https://www.ncei.noaa.gov/access/monitoring/dyk/heating-cooling-degree-information"},
+    {"patterns": ("cdd", "hdd"),
+     "label": "NOAA HDD/CDD", "color": "#3fb950",
+     "description": "Heating- / Cooling-Degree-Days from NOAA NCEI.",
+     "link": "https://www.ncei.noaa.gov/access/monitoring/dyk/heating-cooling-degree-information"},
+    {"patterns": ("humidity", "temp_lag", "wind_lag", "wind_rolling",
+                   "heat_wave_days", "cold_wave_days"),
+     "label": "NOAA weather", "color": "#3fb950",
+     "description": "Local temperature / humidity / wind / extreme-weather flag from NOAA.",
+     "link": "https://www.ncei.noaa.gov/access/monitoring/dyk/heating-cooling-degree-information"},
+    # ── Time-of-period / seasonal flags ─────────────────────────────
+    {"patterns": ("week_sin", "week_cos", "week_of_year",
+                   "month_sin", "month_cos", "month", "quarter",
+                   "day_of_year", "dow_sin", "dow_cos", "day_of_week",
+                   "holiday", "is_holiday", "is_weekend", "is_thursday",
+                   "is_winter", "is_summer", "is_shoulder", "winter"),
+     "label": "Seasonal / calendar", "color": "#d29922",
+     "description": "Cyclical-time encoding (sin/cos of week or month), weekday / holiday / season flag.",
+     "link": ""},
+    # ── Bot-computed transforms of the target itself ────────────────
+    {"patterns": ("target_lag", "target_rolling"),
+     "label": "Target derivative (bot-computed)", "color": "#8b949e",
+     "description": "Lagged value or rolling statistic of the target series itself.",
+     "link": ""},
+    {"patterns": ("log_return", "roc_", "trend_dev", "trend_sma"),
+     "label": "Derived transform (bot-computed)", "color": "#8b949e",
+     "description": "Rate-of-change, log-return, or trend-deviation transform computed from the target.",
+     "link": ""},
+    {"patterns": ("_lag_", "rolling_", "ma13_", "ma52_",
+                   "_change_", "_zscore", "_mean_", "_std_",
+                   "rolling_mean", "_diff", "_surprise"),
+     "label": "Derived transform (bot-computed)", "color": "#8b949e",
+     "description": "Generic lagged / rolling / surprise / z-score transform of an upstream series.",
+     "link": ""},
+    # ── NBA: catch-all for derived diff / home / away features. Sits
+    # AFTER the tennis-specific rules so ``diff_form_last5`` already
+    # got bucketed into "Form (Sackmann)" by then.
+    {"patterns": ("diff_", "home_", "away_"),
+     "label": "nba_api derived (diff)", "color": "#58a6ff",
+     "description": "Home minus away differential of an nba_api advanced stat.",
+     "link": "https://github.com/swar/nba_api"},
+]
 
-    Prefers specific matches (jolts → FRED JOLTS) over the catch-all
-    macro/derived buckets. Unknown names fall through to a generic
-    "Derived / other" bucket so we never blow up.
+
+def feature_metadata(name: str) -> dict:
+    """Map a feature name to its source label, colour, plain-English
+    description, and link to where the raw data comes from.
+
+    Returns a dict with ``label``, ``color``, ``description``,
+    ``link``. Falls through to a generic "Other" entry when no rule
+    matches so this never blows up.
     """
     n = (name or "").lower()
-    # NBA bot — Elo + nba_api advanced stats. Keep tests cheap by
-    # checking the most-frequent prefixes first.
-    if "elo" in n:
-        return ("Elo (bot-computed)", "#bc8cff")
-    if "_b2b" in n or n.startswith("b2b"):
-        return ("Schedule (bot-computed)", "#bc8cff")
-    if any(k in n for k in (
-        "_team_", "_off_rating", "_def_rating", "_net_rating",
-        "_efg_pct", "_oreb_pct", "_tov_pct", "_ft_per_fga",
-        "_fg3m", "_margin", "_pace", "_win_r", "_team_win",
-    )):
-        return ("nba_api advanced stats", "#58a6ff")
-    if n.startswith("diff_") or n.startswith("home_") or n.startswith("away_"):
-        return ("nba_api derived (diff)", "#58a6ff")
-    # FRED macro series — most numerous on the macro bots.
-    fred_keys = {
-        "nonfarm_payrolls": "FRED PAYEMS",
-        "treasury_10y": "FRED DGS10",
-        "wti_oil": "FRED DCOILWTICO",
-        "henry_hub": "FRED MHHNGSP",
-        "vix": "FRED VIXCLS",
-        "unemployment_rate": "FRED UNRATE",
-        "continuing_claims": "FRED CCSA",
-        "claims": "FRED ICSA",
-        "ppi": "FRED PPIACO",
-        "headline_cpi": "FRED CPIAUCSL",
-        "core_mom": "FRED CPILFESL",
-        "core_cpi": "FRED CPILFESL",
-        "used_cars_cpi": "FRED CUUR0000SETA02",
-        "fed_funds_rate": "FRED FEDFUNDS",
-        "industrial_prod": "FRED INDPRO",
-        "umich_inflation": "FRED MICH",
-        "cleveland_expinf": "FRED EXPINF1YR",
-        "m2_yoy": "FRED M2SL",
-        "retail_gas": "FRED GASREGW",
-        "jolts_layoffs": "FRED JTSLDL (JOLTS)",
-        "jolts_hires": "FRED JTSHIL (JOLTS)",
-        "jolts_quits": "FRED JTSQUL (JOLTS)",
-        "jolts_openings": "FRED JTSJOL (JOLTS)",
-        "uemp": "FRED UEMP* (duration buckets)",
-        "google_trends": "Google Trends",
-        "layoffs_fyi": "layoffs.fyi",
-        "challenger": "Challenger Gray & Christmas",
-        "warn": "WARN notices",
-        "reddit": "Reddit r/layoffs",
-    }
-    for key, src in fred_keys.items():
-        if key in n:
-            color = ("#3fb950" if "FRED" in src
-                     else "#d29922" if any(k in src.lower()
-                                            for k in ("layoffs", "warn",
-                                                      "reddit", "google",
-                                                      "challenger"))
-                     else "#58a6ff")
-            return (src, color)
-    # Time-of-period / seasonal flags.
-    if any(k in n for k in ("week_sin", "week_cos", "week_of_year",
-                              "month", "day_of_year", "holiday",
-                              "is_holiday")):
-        return ("Seasonal / calendar", "#d29922")
-    # Bot-computed transforms (lags, rolling stats, z-scores derived
-    # from the target itself when the prefix isn't matched above).
-    if any(k in n for k in ("_lag_", "rolling_", "ma13_", "ma52_",
-                              "_change_", "_zscore", "_mean_",
-                              "_std_", "rolling_mean", "_diff")):
-        return ("Derived transform", "#8b949e")
-    return ("Other", "#6e7681")
+    for rule in FEATURE_RULES:
+        for pat in rule["patterns"]:
+            if pat in n:
+                return {
+                    "label": rule["label"],
+                    "color": rule["color"],
+                    "description": rule["description"],
+                    "link": rule["link"],
+                }
+    return {"label": "Other", "color": "#6e7681",
+            "description": "Unmapped feature — source not yet documented.",
+            "link": ""}
+
+
+def feature_source(name: str) -> Tuple[str, str]:
+    """Backwards-compatible (label, color) lookup. Thin wrapper over
+    feature_metadata so attribution lives in exactly one place.
+    """
+    md = feature_metadata(name)
+    return (md["label"], md["color"])
 
 
 def _svg_feature_importance_vertical(features: List[dict]) -> str:
@@ -4303,22 +4605,30 @@ def _render_feature_source_legend(features: List[dict]) -> str:
 
 
 def _render_feature_source_table(features: List[dict]) -> str:
-    """Compact table listing every feature the trainer looked at,
-    with its source attribution. Sits below the chart so the user
-    can audit the full source dependency list — not just the top 25
-    that fit on the chart.
+    """Table listing every feature the trainer looked at, with its
+    plain-English description, the data source, and a link to where
+    the raw data lives. Sits below the chart so the user can audit
+    the full source-dependency list — not just the top 25 bars on
+    the chart.
+
+    Expanded by default (``<details open>``) since this *is* the
+    per-bot feature audit; collapsible so a user who's already read
+    it can fold it away without losing the rest of the page.
     """
     if not features:
         return ""
     feats = sorted(features,
                     key=lambda f: f.get("mean_importance") or 0.0,
                     reverse=True)
-    parts = ["<details style='margin-top:12px;'>"
+    parts = ["<details open style='margin-top:12px;'>"
              "<summary class='small gray' style='cursor:pointer;'>"
-             f"Show all {len(feats)} features and their sources</summary>",
+             f"All {len(feats)} features — name, description, source, link"
+             "</summary>",
              "<table><thead><tr>"
              "<th>Feature</th>"
+             "<th>Description</th>"
              "<th>Source</th>"
+             "<th>Link</th>"
              "<th class='num'>Importance</th>"
              "<th class='num'>Folds</th>"
              "<th>Status</th>"
@@ -4328,13 +4638,23 @@ def _render_feature_source_table(features: List[dict]) -> str:
         imp = float(f.get("mean_importance") or 0.0)
         pf = int(f.get("positive_folds") or 0)
         sel = bool(f.get("selected"))
-        src_label, src_color = feature_source(name)
+        md = feature_metadata(name)
         status_cls = "green" if sel else "gray"
         status_txt = "Kept" if sel else "Rejected"
+        link_url = md.get("link") or ""
+        if link_url:
+            link_cell = (
+                f"<a href='{html.escape(link_url)}' target='_blank' "
+                f"rel='noopener noreferrer' class='small'>source ↗</a>"
+            )
+        else:
+            link_cell = "<span class='small gray'>—</span>"
         parts.append(
             f"<tr><td class='mono small'>{html.escape(name)}</td>"
-            f"<td><span style='color:{src_color};'>● </span>"
-            f"{html.escape(src_label)}</td>"
+            f"<td class='small'>{html.escape(md['description'])}</td>"
+            f"<td><span style='color:{md['color']};'>● </span>"
+            f"{html.escape(md['label'])}</td>"
+            f"<td>{link_cell}</td>"
             f"<td class='num'>{imp:.4f}</td>"
             f"<td class='num'>{pf}/5</td>"
             f"<td class='{status_cls}'>{status_txt}</td></tr>"
