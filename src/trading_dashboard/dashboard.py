@@ -4605,42 +4605,46 @@ def _render_feature_source_legend(features: List[dict]) -> str:
 
 
 def _render_feature_source_table(features: List[dict]) -> str:
-    """Table listing every feature the trainer looked at, with its
-    plain-English description, the data source, and a link to where
-    the raw data lives. Sits below the chart so the user can audit
-    the full source-dependency list — not just the top 25 bars on
-    the chart.
+    """Table listing the features the model *actually uses* to make
+    predictions — i.e. those the walk-forward stability filter kept.
+    Rejected candidates are excluded; they live in the chart's muted
+    bars and the source legend's "kept/considered" counts.
 
-    Expanded by default (``<details open>``) since this *is* the
-    per-bot feature audit; collapsible so a user who's already read
-    it can fold it away without losing the rest of the page.
+    Wrapped in a fixed-height scrollable container with a sticky
+    header so it never grows past ~420px tall regardless of how many
+    features survived.
     """
     if not features:
         return ""
-    feats = sorted(features,
-                    key=lambda f: f.get("mean_importance") or 0.0,
-                    reverse=True)
-    parts = ["<details open style='margin-top:12px;'>"
-             "<summary class='small gray' style='cursor:pointer;'>"
-             f"All {len(feats)} features — name, description, source, link"
-             "</summary>",
-             "<table><thead><tr>"
-             "<th>Feature</th>"
-             "<th>Description</th>"
-             "<th>Source</th>"
-             "<th>Link</th>"
-             "<th class='num'>Importance</th>"
-             "<th class='num'>Folds</th>"
-             "<th>Status</th>"
-             "</tr></thead><tbody>"]
-    for f in feats:
+    kept = [f for f in features if f.get("selected")]
+    if not kept:
+        return ("<div class='empty' style='margin-top:12px;'>"
+                "No features survived the stability filter on the "
+                "last retrain — the model is in degenerate state.</div>")
+    kept.sort(key=lambda f: f.get("mean_importance") or 0.0, reverse=True)
+    parts = [
+        f"<h3 class='subhead'>Features used by the model "
+        f"<span class='small gray'>({len(kept)} kept by the "
+        f"stability filter)</span></h3>",
+        # Fixed-height scroll container — sticky thead keeps the
+        # column titles visible as the user scrolls the long list.
+        "<div class='feature-table-scroll' "
+        "style='max-height:420px;overflow-y:auto;"
+        "border:1px solid #21262d;border-radius:6px;'>",
+        "<table style='margin:0;'>"
+        "<thead style='position:sticky;top:0;z-index:1;"
+        "background:#0d1117;'><tr>"
+        "<th>Feature</th>"
+        "<th>Description</th>"
+        "<th>Source</th>"
+        "<th>Link</th>"
+        "<th class='num'>Importance</th>"
+        "</tr></thead><tbody>",
+    ]
+    for f in kept:
         name = f.get("feature") or ""
         imp = float(f.get("mean_importance") or 0.0)
-        pf = int(f.get("positive_folds") or 0)
-        sel = bool(f.get("selected"))
         md = feature_metadata(name)
-        status_cls = "green" if sel else "gray"
-        status_txt = "Kept" if sel else "Rejected"
         link_url = md.get("link") or ""
         if link_url:
             link_cell = (
@@ -4655,11 +4659,9 @@ def _render_feature_source_table(features: List[dict]) -> str:
             f"<td><span style='color:{md['color']};'>● </span>"
             f"{html.escape(md['label'])}</td>"
             f"<td>{link_cell}</td>"
-            f"<td class='num'>{imp:.4f}</td>"
-            f"<td class='num'>{pf}/5</td>"
-            f"<td class='{status_cls}'>{status_txt}</td></tr>"
+            f"<td class='num'>{imp:.4f}</td></tr>"
         )
-    parts.append("</tbody></table></details>")
+    parts.append("</tbody></table></div>")
     return "".join(parts)
 
 
