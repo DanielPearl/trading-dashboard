@@ -4891,7 +4891,9 @@ def _svg_feature_importance_vertical(features: List[dict]) -> str:
     # cos(45°) = sin(45°) ≈ 0.707; round up + buffer.
     label_extent = int(label_text_px * 0.72) + 20
     width = 1180
-    pad_l = 56
+    # Wider left pad so the rotated y-axis title sits clear of the
+    # numeric tick labels.
+    pad_l = 76
     pad_r = max(60, label_extent + 18)
     pad_t = 18
     pad_b = max(160, label_extent + 32)
@@ -4909,6 +4911,14 @@ def _svg_feature_importance_vertical(features: List[dict]) -> str:
         f"<svg viewBox='0 0 {width} {height}' "
         f"style='width:100%;height:auto;display:block;"
         f"background:#0d1117;border:1px solid #21262d;border-radius:6px;'>"
+    )
+    # Y-axis title — rotated 90° CCW, sits in the wider left pad so
+    # the user can always tell what the bar heights represent.
+    parts.append(
+        f"<text x='16' y='{pad_t + inner_h/2}' fill='#8b949e' "
+        f"font-size='11' text-anchor='middle' "
+        f"transform='rotate(-90 16 {pad_t + inner_h/2})'>"
+        f"Mean permutation importance</text>"
     )
     # Y-axis gridlines + labels.
     for k in range(5):
