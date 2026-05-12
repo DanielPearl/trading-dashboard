@@ -4576,6 +4576,7 @@ _FEATURE_BASES: List[Tuple[str, str]] = [
     ("target",      "Natural-gas closing price."),
     ("storage_change_wow", "Week-over-week change in US natural-gas storage levels."),
     ("storage",     "US natural-gas storage level."),
+    ("production_yoy", "Year-over-year change in US natural-gas production."),
     ("production",  "US natural-gas production (billions of cubic feet per day)."),
 
     # ── Retail-gas / energy raw series ──────────────────────────────
@@ -4659,7 +4660,7 @@ _FEATURE_BASES: List[Tuple[str, str]] = [
     ("umich_inflation",   "1-year inflation expectations from the U-Michigan consumer survey."),
     ("consumer_sentiment","U-Michigan consumer sentiment index — how Americans feel about the economy."),
     ("cleveland_expinf",  "Cleveland Fed model's expectation for inflation 1 year out."),
-    ("m2_yoy",            "Year-over-year change in M2 money supply."),
+    ("m2_yoy",            "Year-over-year change in M2 money supply (cash, checking, savings accounts circulating in the US economy)."),
     ("retail_gas",        "US average pump price for regular gasoline."),
     ("jolts_layoffs",     "How many workers were laid off across the US in the latest month."),
     ("jolts_hires",       "How many workers were hired across the US in the latest month."),
@@ -4669,20 +4670,115 @@ _FEATURE_BASES: List[Tuple[str, str]] = [
     ("unemp_27plus_weeks","Number of Americans who have been unemployed for 27+ weeks (long-term unemployed)."),
     ("durable_orders",    "Orders for big-ticket items expected to last 3+ years."),
     ("policy_uncertainty","Measure of US economic-policy uncertainty from news coverage of policy disputes."),
+
+    # ── Unemployment-bot base names not covered elsewhere ───────────
+    ("yield_curve_spread", "Gap between long-term and short-term Treasury yields. An inverted (negative) spread has historically preceded recessions."),
+    ("claims",   "Number of new unemployment filings this week (the thing we're predicting)."),
+    ("change",   "Week-over-week change in the target (initial-claims count)."),
+    ("jolts_layoffs_to_hires", "Ratio of layoffs to hires from the JOLTS report — how loose vs tight the job market is."),
+
+    # ── CPI-bot raw-series base names ───────────────────────────────
+    ("cleveland_expinf_1y", "Cleveland Fed model's 1-year-ahead expected inflation."),
+    ("umich_inflation_1y",  "1-year-ahead inflation expectations from the U-Michigan consumer survey."),
+    ("headline_cpi_mom",    "Month-over-month change in the overall consumer price level (the thing we're predicting on the headline CPI bot)."),
+    ("core_mom",            "Month-over-month change in core inflation (excluding food and energy) — the thing we're predicting on the core-CPI bot."),
+    ("retail_gas_mom",      "Month-over-month change in US average pump prices for regular gasoline."),
+    ("used_cars_cpi_mom",   "Month-over-month change in the used-car CPI sub-component."),
+    ("wti_oil_mom",         "Month-over-month change in WTI crude oil price."),
+    ("ppi_mom",             "Month-over-month change in the Producer Price Index."),
+
+    # ── NBA non-rolling features ────────────────────────────────────
+    ("h2h_wins_before", "Number of times these two teams have met before this season — head-to-head sample size."),
+    ("elo_win_prob_home", "Pre-game probability the home team wins, implied by the Elo ratings and home-court bonus."),
+    ("elo_diff",        "Pre-game Elo rating gap between the two teams (home minus away), plus the home-court bonus."),
+    ("rest_diff",       "Home team's days of rest minus the away team's."),
+    ("b2b_diff",        "Home team's back-to-back flag minus the away team's. ±1 = one team is on a back-to-back, the other isn't."),
+    ("home_elo_pre",    "Pre-game Elo rating of the home team."),
+    ("away_elo_pre",    "Pre-game Elo rating of the away team."),
+    ("home_days_rest",  "Days since the home team's last game."),
+    ("away_days_rest",  "Days since the away team's last game."),
+    ("home_b2b",        "1 if the home team is on the second night of a back-to-back, else 0."),
+    ("away_b2b",        "1 if the away team is on the second night of a back-to-back, else 0."),
+    ("home_long_rest",  "1 if the home team has had 4+ days of rest, else 0."),
+    ("away_long_rest",  "1 if the away team has had 4+ days of rest, else 0."),
+    ("home_games_into_season", "How many games the home team has played this season so far."),
+    ("away_games_into_season", "How many games the away team has played this season so far."),
 ]
 
 
-def _period_unit(base: str, plural: bool = True) -> str:
-    """Pick the right time-unit (day vs week) for transforms attached
-    to this base.
+# Per-stat NBA descriptions. Keys are the lowercased stat names
+# (matches whatever sits between HOME_TEAM_ / AWAY_TEAM_ / DIFF_ and
+# the rolling-window suffix). Values are the human-readable name for
+# the stat, ready to drop into a sentence like
+# "Home team's <stat>, averaged over their last 10 games."
+_NBA_STAT_DESCRIPTIONS: dict = {
+    "off_rating":  "offensive efficiency (points scored per 100 possessions)",
+    "def_rating":  "defensive efficiency (points allowed per 100 possessions)",
+    "net_rating":  "net rating (offense minus defense per 100 possessions)",
+    "pace":        "pace of play (possessions per 48 minutes)",
+    "efg_pct":     "effective field-goal percentage (gives extra credit for made 3-pointers)",
+    "tov_pct":     "turnover rate (turnovers per possession)",
+    "oreb_pct":    "offensive-rebound rate (% of own missed shots rebounded)",
+    "ft_per_fga":  "free-throw trips per field-goal attempt (how often the team draws fouls)",
+    "margin":      "scoring margin (points scored minus points allowed)",
+    "win":         "win rate",
+    "fg3m":        "3-pointers made per game",
+    "fg3a":        "3-point attempts per game",
+}
 
-    Daily-cadence bots (natural-gas) lag and roll in DAYS. Weekly
-    bots (retail-gas, unemployment, CPI) lag and roll in WEEKS. We
-    detect the cadence from the base's vocabulary using EXACT or
-    PREFIX matching — substring matching would mis-classify retail-
-    gas's ``industrial_production`` as daily because it contains
-    "production".
+
+def _describe_nba_rolling(name: str) -> str:
+    """If ``name`` is an NBA rolling-stat feature
+    (``HOME_TEAM_<stat>_R<N>``, ``AWAY_TEAM_<stat>_R<N>``, or
+    ``DIFF_<stat>_R<N>``), return a feature-specific description.
+    Returns "" otherwise so the caller can fall through.
     """
+    n = (name or "").lower()
+    m = re.match(
+        r"^(home_team_|away_team_|diff_)(.+?)_r(\d+)$", n
+    )
+    if not m:
+        return ""
+    prefix, stat, window = m.group(1), m.group(2), int(m.group(3))
+    stat_desc = _NBA_STAT_DESCRIPTIONS.get(stat)
+    if not stat_desc:
+        return ""
+    if prefix == "home_team_":
+        return (f"Home team's {stat_desc}, averaged over "
+                f"their last {window} games.")
+    if prefix == "away_team_":
+        return (f"Away team's {stat_desc}, averaged over "
+                f"their last {window} games.")
+    # diff_
+    return (f"Home minus away differential in {stat_desc}, "
+            f"averaged over each team's last {window} games.")
+
+
+def _period_unit(base: str, plural: bool = True,
+                  full_name: str = "",
+                  cadence: str = "") -> str:
+    """Pick the right time-unit (day / week / month) for transforms
+    attached to this base.
+
+    Daily-cadence bots (natural-gas) lag and roll in DAYS. Monthly-
+    cadence bot (CPI) lags and rolls in MONTHS. Weekly bots (retail-
+    gas, unemployment) lag and roll in WEEKS.
+
+    Resolution order:
+      1. ``cadence`` argument (e.g. "months") — most reliable when
+         the caller has scanned the whole feature list.
+      2. Per-feature monthly markers (``_mom`` / ``_1y_`` / etc.)
+      3. Daily vocabulary in the base.
+      4. Default to weekly.
+    """
+    if cadence:
+        if cadence.startswith("month"):
+            return "months" if plural else "month"
+        if cadence.startswith("day"):
+            return "days" if plural else "day"
+        if cadence.startswith("week"):
+            return "weeks" if plural else "week"
+
     daily_exact = {
         "target", "production", "storage", "log_return",
         "log_return_abs", "log_return_accel", "log_return_std",
@@ -4696,6 +4792,14 @@ def _period_unit(base: str, plural: bool = True) -> str:
         "cdd_", "hdd_", "humidity_", "temp_", "wind_",
         "cold_wave", "heat_wave",
     )
+    # CPI features carry a ``_mom`` / ``_1y_`` tag in their full
+    # name — fall back to that when the batch cadence isn't passed.
+    if full_name and any(t in full_name for t in (
+        "_mom", "_1y_", "headline_cpi", "core_mom",
+        "cleveland_expinf", "umich_inflation_1y",
+    )):
+        return "months" if plural else "month"
+
     is_daily = base in daily_exact or any(
         base.startswith(p) for p in daily_prefixes
     )
@@ -4704,29 +4808,71 @@ def _period_unit(base: str, plural: bool = True) -> str:
     return "weeks" if plural else "week"
 
 
-def _strip_transform_suffix(name: str) -> Tuple[str, str]:
+def _detect_bot_cadence(features: List[dict]) -> str:
+    """Detect the bot's cadence by scanning the whole feature list.
+
+    Returns one of ``"days"``, ``"weeks"``, ``"months"``. This is
+    far more reliable than per-feature detection because shared
+    bases (e.g. ``vix_zscore_N``) appear in both monthly (CPI) and
+    weekly (unemployment) bots — only the surrounding feature set
+    tells you which.
+    """
+    names = " ".join((f.get("feature") or "").lower() for f in features)
+    if any(t in names for t in (
+        "_mom", "headline_cpi_mom", "core_mom",
+        "cleveland_expinf", "umich_inflation_1y",
+    )):
+        return "months"
+    if any(t in names for t in (
+        "target_lag", "target_rolling", "ng_storage",
+        "ng_production", "region_", "log_return", "trend_dev",
+    )):
+        return "days"
+    return "weeks"
+
+
+def _strip_transform_suffix(name: str, cadence: str = "") -> Tuple[str, str]:
     """Peel off the transform suffix and return (base, transform_text).
 
     Recognised suffixes (in the order they're stripped off the right
     end of the name):
 
       * ``_lag_N``                       →  "lagged N {unit}"
+      * ``_change_lag_N``                →  "week-/month-over-period change, lagged N"
       * ``_surprise_vs_Nw_avg``          →  "vs its N-week average"
       * ``_anomaly_30d``                 →  "anomaly vs the 30-day norm"
+      * ``_zscore_N``                    →  "z-scored vs the past N-{unit} window"
+      * ``_dev_ma_N`` / ``_dev_N``       →  "deviation from N-{unit} moving average"
       * ``_rolling_N``                   →  "N-{unit} rolling average"
+      * ``_mean_N``                      →  "N-{unit} mean"
       * ``_return_Nw`` / ``_volatility_Nw`` /
-        ``_change_Nw``                   →  "{N}-week return / volatility / change"
+        ``_change_Nw`` / ``_change_Nm``  →  "{N}-week / month return etc"
       * ``_yoy``                         →  "year-over-year change"
     """
     transforms: List[Any] = []
     PLACEHOLDER_LAG = "<lag>"
     PLACEHOLDER_ROLL = "<roll>"
+    PLACEHOLDER_ZSCORE = "<zscore>"
+    PLACEHOLDER_DEVMA = "<devma>"
+    PLACEHOLDER_MEAN = "<mean>"
+    PLACEHOLDER_CHANGE_LAG = "<changelag>"
+    original = name
 
     # _lag_N — the outermost transform. Unit is resolved later once
     # we know the base.
     m = re.search(r"_lag_(\d+)$", name)
     if m:
         transforms.append((PLACEHOLDER_LAG, int(m.group(1))))
+        name = name[: m.start()]
+
+    # _change_lag_N is sometimes written ``_change_lag_N`` (no week
+    # qualifier) — interpret as "1-period change, lagged N".
+    m = re.search(r"_change$", name)
+    if m and transforms and isinstance(transforms[-1], tuple) and transforms[-1][0] == PLACEHOLDER_LAG:
+        # We just stripped a _lag_N off; if what remains ends in
+        # _change, treat the pair as a single change-then-lag transform.
+        lag_n = transforms.pop()[1]
+        transforms.append((PLACEHOLDER_CHANGE_LAG, lag_n))
         name = name[: m.start()]
 
     # _surprise_vs_Nw_avg — sits between the base and the lag.
@@ -4741,17 +4887,40 @@ def _strip_transform_suffix(name: str) -> Tuple[str, str]:
         transforms.append("anomaly vs the 30-day norm")
         name = name[: m.start()]
 
-    # _rolling_N — unit is also resolved against the base.
+    # _zscore_N — z-scored vs an N-period look-back window.
+    m = re.search(r"_zscore_(\d+)$", name)
+    if m:
+        transforms.append((PLACEHOLDER_ZSCORE, int(m.group(1))))
+        name = name[: m.start()]
+
+    # _dev_ma_N — deviation from N-period moving average. NB: we do
+    # NOT match a bare ``_dev_N`` here, because some bases end in
+    # ``trend_dev_30`` / ``trend_dev_90`` and the literal ``_30``
+    # suffix is part of the base, not a transform.
+    m = re.search(r"_dev_ma(\d+)$", name)
+    if m:
+        transforms.append((PLACEHOLDER_DEVMA, int(m.group(1))))
+        name = name[: m.start()]
+
+    # _rolling_N — unit is resolved against the base.
     m = re.search(r"_rolling_(\d+)$", name)
     if m:
         transforms.append((PLACEHOLDER_ROLL, int(m.group(1))))
         name = name[: m.start()]
 
-    # _return_Nw / _volatility_Nw / _change_Nw (units explicit in name)
+    # _mean_N — N-period rolling mean (no explicit unit in name).
+    m = re.search(r"_mean_(\d+)$", name)
+    if m:
+        transforms.append((PLACEHOLDER_MEAN, int(m.group(1))))
+        name = name[: m.start()]
+
+    # _return_Nw / _volatility_Nw / _change_Nw / _change_Nm
+    # (units explicit in name — no period-unit resolution needed).
     for pat, fmt in (
         (r"_return_(\d+)w$",     "{n}-week log return"),
         (r"_volatility_(\d+)w$", "{n}-week realized volatility"),
         (r"_change_(\d+)w$",     "{n}-week % change"),
+        (r"_change_(\d+)m$",     "{n}-month % change"),
     ):
         m = re.search(pat, name)
         if m:
@@ -4759,25 +4928,48 @@ def _strip_transform_suffix(name: str) -> Tuple[str, str]:
             name = name[: m.start()]
             break
 
-    # _yoy
-    m = re.search(r"_yoy$", name)
-    if m:
-        transforms.append("year-over-year change")
-        name = name[: m.start()]
+    # NB: ``_yoy`` is intentionally NOT stripped here. It's usually
+    # baked into the BASE name (``m2_yoy``, ``production_yoy``) — the
+    # underlying series is already a year-over-year measure — so
+    # stripping it would lose the "_yoy" suffix from the base lookup.
 
     base = name
 
-    # Resolve placeholders now that we know the base.
+    # Resolve placeholders now that we know the base + original name.
+    def _unit(plural):
+        return _period_unit(base, plural=plural, full_name=original,
+                             cadence=cadence)
     resolved: List[str] = []
     for t in transforms:
         if isinstance(t, tuple) and t[0] == PLACEHOLDER_LAG:
             n = t[1]
-            unit = _period_unit(base, plural=(n != 1))
+            unit = _unit(plural=(n != 1))
             resolved.append(f"lagged {n} {unit}")
+        elif isinstance(t, tuple) and t[0] == PLACEHOLDER_CHANGE_LAG:
+            n = t[1]
+            unit = _unit(plural=(n != 1))
+            resolved.append(f"1-{unit.rstrip('s')} change, lagged {n} {unit}")
         elif isinstance(t, tuple) and t[0] == PLACEHOLDER_ROLL:
             n = t[1]
-            unit = _period_unit(base, plural=True)
+            unit = _unit(plural=True)
             resolved.append(f"{n}-{unit.rstrip('s')} rolling average")
+        elif isinstance(t, tuple) and t[0] == PLACEHOLDER_MEAN:
+            n = t[1]
+            unit = _unit(plural=True)
+            resolved.append(f"{n}-{unit.rstrip('s')} rolling mean")
+        elif isinstance(t, tuple) and t[0] == PLACEHOLDER_ZSCORE:
+            n = t[1]
+            unit = _unit(plural=True)
+            resolved.append(
+                f"z-scored against its past {n}-{unit.rstrip('s')} "
+                f"window (how many standard deviations from the mean)"
+            )
+        elif isinstance(t, tuple) and t[0] == PLACEHOLDER_DEVMA:
+            n = t[1]
+            unit = _unit(plural=True)
+            resolved.append(
+                f"deviation from its {n}-{unit.rstrip('s')} moving average"
+            )
         else:
             resolved.append(t)
 
@@ -4791,26 +4983,40 @@ def _strip_transform_suffix(name: str) -> Tuple[str, str]:
 def _base_description(base: str) -> str:
     """Look up the plain-English description for a feature's base.
 
-    Tries longest prefix matches first so e.g.
-    ``rbob_gasoline_futures_last`` resolves before ``rbob_``. Returns
-    an empty string if no match — caller falls back to the rule's
-    description.
+    Picks the LONGEST matching prefix so e.g. ``headline_cpi_mom``
+    resolves to the ``headline_cpi_mom`` entry (not the shorter
+    ``headline_cpi`` one), independent of declaration order. Returns
+    an empty string when nothing matches — caller falls back to the
+    rule's generic description.
     """
+    best_prefix = ""
+    best_desc = ""
     for prefix, desc in _FEATURE_BASES:
         if base == prefix or base.startswith(prefix + "_"):
-            return desc
-    return ""
+            if len(prefix) > len(best_prefix):
+                best_prefix, best_desc = prefix, desc
+    return best_desc
 
 
-def _describe_feature(name: str) -> str:
+def _describe_feature(name: str, cadence: str = "") -> str:
     """Produce a unique, feature-specific description.
 
     The base-prefix description + the parsed transform suffix combine
     to a sentence like: "Wholesale gasoline price (RBOB futures
     close) ... — 4-week log return, lagged 1 week."
+
+    NBA rolling-stat features (``HOME_TEAM_OFF_RATING_R10`` and
+    friends) are handled by a dedicated parser first, since their
+    naming convention doesn't fit the base-prefix model.
     """
+    # NBA rolling stats — try the dedicated parser before falling
+    # through to the generic base + transform pipeline.
+    nba = _describe_nba_rolling(name)
+    if nba:
+        return nba
+
     lower = (name or "").lower()
-    base, transform = _strip_transform_suffix(lower)
+    base, transform = _strip_transform_suffix(lower, cadence=cadence)
     desc = _base_description(base)
     if not desc:
         # No specific base match — return empty so feature_metadata
@@ -4825,27 +5031,28 @@ def _describe_feature(name: str) -> str:
     return desc
 
 
-def feature_metadata(name: str) -> dict:
+def feature_metadata(name: str, cadence: str = "") -> dict:
     """Map a feature name to its source label, colour, plain-English
     description, and link to where the raw data comes from.
 
-    The description comes from ``_describe_feature`` first (unique
-    per-feature, composed from base + transform suffix). If no base
-    match is found, falls back to the matching rule's generic
-    description so we never render a blank cell.
+    ``cadence`` is an optional hint ("days" / "weeks" / "months")
+    derived from the surrounding feature set — pass it when a
+    feature's name alone is ambiguous (e.g. ``vix_zscore_3`` could
+    be monthly in CPI's panel or weekly in unemployment's). When
+    omitted, the function falls back to per-feature heuristics.
     """
     n = (name or "").lower()
     for rule in FEATURE_RULES:
         for pat in rule["patterns"]:
             if pat in n:
-                specific = _describe_feature(name)
+                specific = _describe_feature(name, cadence=cadence)
                 return {
                     "label": rule["label"],
                     "color": rule["color"],
                     "description": specific or rule["description"],
                     "link": rule["link"],
                 }
-    specific = _describe_feature(name)
+    specific = _describe_feature(name, cadence=cadence)
     return {"label": "Other", "color": "#6e7681",
             "description": specific or
                 "Source for this feature hasn't been documented yet.",
@@ -5025,6 +5232,10 @@ def _render_feature_source_table(features: List[dict]) -> str:
                 "No features survived the stability filter on the "
                 "last retrain — the model is in degenerate state.</div>")
     kept.sort(key=lambda f: f.get("mean_importance") or 0.0, reverse=True)
+    # Detect cadence once from the whole feature set so ambiguous
+    # shared bases (e.g. ``vix_zscore_3``) resolve correctly even
+    # when their own name doesn't say "monthly" or "weekly".
+    cadence = _detect_bot_cadence(features)
     parts = [
         f"<h3 class='subhead'>Features used by the model "
         f"<span class='small gray'>({len(kept)} kept by the "
@@ -5047,7 +5258,7 @@ def _render_feature_source_table(features: List[dict]) -> str:
     for f in kept:
         name = f.get("feature") or ""
         imp = float(f.get("mean_importance") or 0.0)
-        md = feature_metadata(name)
+        md = feature_metadata(name, cadence=cadence)
         link_url = md.get("link") or ""
         if link_url:
             link_cell = (
