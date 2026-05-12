@@ -500,16 +500,24 @@ def _render_watchlist_table(payload: dict,
     row's probabilities. Each row carries a ``data-mid`` attribute so
     the JS can look up the match in the embedded forecast payload.
 
-    EVERY Kalshi match in the configured series is rendered (both
-    quoted and unquoted): the bot's pre-match model probability still
-    shows for unquoted rows, with a clear "no quote yet" marker in the
-    market columns so the user can see what's coming up before Kalshi
-    has opened a book. BUY-eligible rows (edge + EV + liquidity +
-    spread + price band all pass) are highlighted in green.
+    Only rows with at least one open contract (``open_interest > 0``)
+    are rendered — matches with no tradeable depth would clutter the
+    table without giving the user anything to act on. Unquoted upcoming
+    matches and zero-OI rows are filtered out.
     """
-    rows_all = payload.get("rows") or []
-    if not rows_all:
+    raw_rows = payload.get("rows") or []
+    if not raw_rows:
         return "<div class='empty'>No active tennis markets.</div>"
+    rows_all = [
+        r for r in raw_rows
+        if r.get("open_interest") is not None
+        and float(r.get("open_interest") or 0) > 0
+    ]
+    if not rows_all:
+        return (f"<div class='empty'>No tennis matches with open "
+                f"contracts right now — {len(raw_rows)} match"
+                f"{'es' if len(raw_rows) != 1 else ''} pulled from Kalshi, "
+                f"none with depth on the book.</div>")
     # Map of match_id → "PLAYER_A"/"PLAYER_B" for rows we already hold
     # paper positions on. Feeds the HOLDING YES / HOLDING NO verdict.
     held_sides: dict[str, str] = {}
@@ -1542,10 +1550,15 @@ def render_page(*, metrics_path: str | None, coefficients_path: str | None,
         out.append(_render_forecast_graph(rows))
 
         age = _last_updated_age(payload.get("generated_at"))
+        with_contracts = sum(
+            1 for r in rows
+            if r.get("open_interest") is not None
+            and float(r.get("open_interest") or 0) > 0
+        )
         out.append(
-            f"<h3 class='subhead'>All Kalshi matches · {len(rows)} "
-            f"<span class='small gray'>(generated {html.escape(age)})"
-            f"</span></h3>"
+            f"<h3 class='subhead'>Tradeable matches · {with_contracts} "
+            f"<span class='small gray'>of {len(rows)} pulled from Kalshi · "
+            f"generated {html.escape(age)}</span></h3>"
         )
         out.append(_render_watchlist_table(payload, sim_state=sim_state))
 
