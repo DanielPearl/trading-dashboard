@@ -2047,9 +2047,11 @@ def _live_update_script(current_bot: str, period_key: str = "all") -> str:
     return Math.round(p * 100) + "%";
   }}
   function fmtEv(ev) {{
-    if (ev === null || ev === undefined) return "—";
-    const sign = ev >= 0 ? "+" : "−";
-    return "$" + sign + Math.abs(ev).toFixed(3);
+    if (ev === null || ev === undefined) return "0";
+    const rounded = Math.round(ev * 1000) / 1000;
+    if (rounded === 0) return "0";
+    const sign = rounded >= 0 ? "+" : "−";
+    return "$" + sign + Math.abs(rounded).toFixed(3);
   }}
   function evClass(ev, minEv) {{
     if (ev === null || ev === undefined) return "gray";
@@ -2159,9 +2161,10 @@ def _live_update_script(current_bot: str, period_key: str = "all") -> str:
         }}
       }}
       function fmtPctEdge(e) {{
-        if (e === null || e === undefined) return "—";
-        const pp = e * 100;
-        return (pp >= 0 ? "+" : "") + pp.toFixed(0) + "%";
+        if (e === null || e === undefined) return "0";
+        const pp = Math.round(e * 100);
+        if (pp === 0) return "0";
+        return (pp >= 0 ? "+" : "") + pp + "%";
       }}
       function edgeClass(e) {{
         if (e === null || e === undefined) return "gray";
@@ -3331,8 +3334,8 @@ def _render_bet_history_block(out: List[str], history: List[dict],
         else:
             mp_str = "—"
         ev = b.get("expected_ev_at_entry")
-        if ev is None:
-            ev_str = "—"
+        if ev is None or round(float(ev), 3) == 0:
+            ev_str = "0"
             ev_cls = "gray"
         else:
             ev_str, ev_cls = (f"${ev:+.3f}", _ev_status(ev)[0])
@@ -6292,11 +6295,15 @@ def _render_watchlist(out: List[str], watchlist: List[dict],
             title_attr = (" title='" + html.escape(reason) + "'")
         row_cls = (f" class='{' '.join(classes)}'" if classes else "") + title_attr
 
-        # Pre-format EV cells (BE YES + Best columns removed — EV cells
-        # already convey the same information without the real-estate).
+        # Pre-format EV cells. Zero or missing values render as a plain
+        # "0" instead of the sign-prefixed "$+0.000" or "—" dash —
+        # both convey the same thing ("no actionable edge") and "0"
+        # reads cleaner across a dense table.
         def _ev_cell(ev: float | None) -> tuple[str, str]:
             if ev is None:
-                return "—", "gray"
+                return "0", "gray"
+            if round(float(ev), 3) == 0:
+                return "0", "gray"
             cls_, _ = _ev_status(ev)
             return f"${ev:+.3f}", cls_
         ev_yes_str, ev_yes_cls = _ev_cell(ev_yes_v)
@@ -6317,8 +6324,10 @@ def _render_watchlist(out: List[str], watchlist: List[dict],
                            na_c)
         def _edge_cell(e: float | None) -> tuple[str, str]:
             if e is None:
-                return "—", "gray"
+                return "0", "gray"
             pp = e * 100.0
+            if round(pp) == 0:
+                return "0", "gray"
             cls_ = ("green" if e >= 0.05 else
                     "yellow" if e > 0 else
                     "red" if e <= -0.02 else "gray")

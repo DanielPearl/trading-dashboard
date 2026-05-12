@@ -286,15 +286,25 @@ def _fmt_pct(v, decimals: int = 1) -> str:
 
 
 def _fmt_signed_pp(v) -> str:
-    if v is None: return "—"
-    try: return f"{float(v) * 100:+.1f}pp"
-    except (TypeError, ValueError): return "—"
+    """Edge in percentage points. Zero / missing → plain "0" so dense
+    tables don't render a sea of "—" for low-edge strikes."""
+    if v is None: return "0"
+    try:
+        pp = float(v) * 100
+        if round(pp, 1) == 0: return "0"
+        return f"{pp:+.1f}pp"
+    except (TypeError, ValueError):
+        return "0"
 
 
 def _fmt_signed_ev(v) -> str:
-    if v is None: return "—"
-    try: return f"{float(v):+.3f}"
-    except (TypeError, ValueError): return "—"
+    if v is None: return "0"
+    try:
+        x = float(v)
+        if round(x, 3) == 0: return "0"
+        return f"{x:+.3f}"
+    except (TypeError, ValueError):
+        return "0"
 
 
 def _fmt_signed_dollars(cents: float | int) -> str:
