@@ -1198,13 +1198,19 @@ def _render_tennis_models_page(metrics: dict, coefficients: dict,
             feats = _read_feature_importance(str(fi_path))
     if feats:
         TOP_N = 25
-        feats_sorted = sorted(
-            feats, key=lambda f: f.get("mean_importance") or 0.0,
-            reverse=True)
-        feats_shown = feats_sorted[:TOP_N]
+        # Chart shows ONLY features the model actually uses — same
+        # filter the table below applies — sorted by importance
+        # descending so the bar order matches the table row order.
+        kept_sorted = sorted(
+            (f for f in feats if f.get("selected")),
+            key=lambda f: f.get("mean_importance") or 0.0,
+            reverse=True,
+        )
+        feats_shown = kept_sorted[:TOP_N]
+        n_kept = len(kept_sorted)
         out.append(
             f"<h3 class='subhead'>Top features <span class='small gray'>"
-            f"(top {len(feats_shown)} of {len(feats)} candidate "
+            f"(top {len(feats_shown)} of {n_kept} kept "
             f"features)</span></h3>"
         )
         out.append(

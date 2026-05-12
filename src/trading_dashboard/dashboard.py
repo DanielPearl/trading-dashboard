@@ -5195,14 +5195,16 @@ def _render_models_panel(out: List[str], bot: dict, model: dict | None,
     top_imp_str = (f"{top_imp:.4f}" if isinstance(top_imp, (int, float))
                     else "—")
     TOP_N = 25
-    feats_sorted = sorted(feats,
-                           key=lambda f: f.get("mean_importance") or 0.0,
-                           reverse=True)
-    feats_shown = feats_sorted[:TOP_N]
-    # Headline strip describing the historical training set the
-    # importance scores come from. "Top X of Y" makes the size of the
-    # candidate pool explicit so the user reads the chart as "of all
-    # the things the trainer tried, here's what mattered".
+    # Chart shows ONLY features the model actually uses — same filter
+    # the table below applies — and sorts them by mean importance
+    # descending, so the bar order matches the table row order
+    # one-to-one.
+    kept_sorted = sorted(
+        (f for f in feats if f.get("selected")),
+        key=lambda f: f.get("mean_importance") or 0.0,
+        reverse=True,
+    )
+    feats_shown = kept_sorted[:TOP_N]
     last_retrain_str = overview.get("last_retrained") or "unknown"
     train_summary_lines = [
         f"Walk-forward permutation importance on the historical "
@@ -5211,14 +5213,13 @@ def _render_models_panel(out: List[str], bot: dict, model: dict | None,
     ]
     out.append(
         f"<h3 class='subhead'>Top features <span class='small gray'>"
-        f"(top {len(feats_shown)} of {n_total} candidate features)"
+        f"(top {len(feats_shown)} of {n_kept} kept features)"
         f"</span></h3>"
     )
     out.append(
         "<p class='small gray' style='margin:0 0 4px 0;'>"
         + train_summary_lines[0]
-        + ". Bars colour-coded by data source; full opacity = kept "
-        "by the stability filter, muted = rejected.</p>"
+        + ". Bars colour-coded by data source.</p>"
     )
     out.append(_svg_feature_importance_vertical(feats_shown))
     # Sources legend + full-list table sit BELOW the chart so the
