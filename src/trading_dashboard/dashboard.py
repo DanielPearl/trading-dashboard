@@ -1978,7 +1978,7 @@ def render_page(
     # Same 6 headline cards as Home, scoped to whatever period the
     # filter above selected. id_suffix='-history' keeps the snapshot
     # poller (which targets the Home-tab ids) from double-patching.
-    _render_summary_cards(out, rollup, id_suffix="-history")
+    _render_summary_cards(out, global_summary, id_suffix="-history")
     # Pass heading="" so the table renders without a duplicate
     # subhead — the section title above already carries the period.
     _render_bet_history_block(
