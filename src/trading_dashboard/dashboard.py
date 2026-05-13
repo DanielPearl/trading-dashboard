@@ -1975,6 +1975,10 @@ def render_page(
     # on the History tab and just narrows the rows.
     _render_period_filter(out, period_key, current_bot=current_bot,
                             tab_key="history")
+    # Same 6 headline cards as Home, scoped to whatever period the
+    # filter above selected. id_suffix='-history' keeps the snapshot
+    # poller (which targets the Home-tab ids) from double-patching.
+    _render_summary_cards(out, rollup, id_suffix="-history")
     # Pass heading="" so the table renders without a duplicate
     # subhead — the section title above already carries the period.
     _render_bet_history_block(
@@ -2772,6 +2776,69 @@ def _render_period_filter(out: List[str], period_key: str,
     out.append("</div>")
 
 
+def _render_summary_cards(out: List[str], rollup: dict,
+                           id_suffix: str = "") -> None:
+    """Emit the 6-card headline row used on Home and History tabs.
+
+    All values come from ``rollup`` (period-scoped) except
+    ``active_bets``, which is always the live cross-bot open count.
+
+    ``id_suffix`` is appended to each card's DOM id so the same row
+    can render twice on one page without colliding. The empty default
+    matches the existing snapshot-poller selectors on Home; the
+    History instance uses ``"-history"`` so the poller skips it and
+    the cards refresh only on full-page reload (which is fine since
+    closed-bet rollups change rarely).
+    """
+    net = rollup.get("period_net_pnl_cents", 0)
+    pnl_cls = "green" if net > 0 else ("red" if net < 0 else "gray")
+    win_pct = rollup.get("period_win_pct", 0.0)
+    has_closed = (rollup.get("period_wins", 0)
+                  + rollup.get("period_losses", 0)) > 0
+    win_cls = ("green" if win_pct > 0.5
+               else ("red" if has_closed and win_pct < 0.5 else "gray"))
+    win_pct_str = f"{win_pct*100:.0f}%" if has_closed else "—"
+    closed_bets = (rollup.get("period_wins", 0)
+                   + rollup.get("period_losses", 0))
+    money_spent = rollup.get("period_money_spent_cents", 0)
+    money_gained = rollup.get("period_money_gained_cents", 0)
+    out.append("<div class='row'>")
+    out.append(f"<div class='card'><div class='label' "
+               f"title='Live count of currently-open positions across "
+               f"all bots. Not affected by the period filter.'>"
+               f"Active bets</div>"
+               f"<div class='value' id='card-active-bets{id_suffix}'>"
+               f"{rollup['active_bets']}</div></div>")
+    out.append(f"<div class='card'><div class='label'>"
+               f"Closed bets</div>"
+               f"<div class='value' id='card-closed-bets{id_suffix}'>"
+               f"{closed_bets}</div></div>")
+    out.append(f"<div class='card'><div class='label' "
+               f"title='Total cost basis of every position opened in "
+               f"the period (entry × contracts).'>"
+               f"Money spent</div>"
+               f"<div class='value' id='card-money-spent{id_suffix}'>"
+               f"{fmt_signed_cents(-money_spent)}</div></div>")
+    out.append(f"<div class='card'><div class='label' "
+               f"title='Total payout received from positions closed in "
+               f"the period (entry × contracts + realized P&amp;L).'>"
+               f"Money gained</div>"
+               f"<div class='value green' id='card-money-gained{id_suffix}'>"
+               f"+{fmt_signed_cents(money_gained).lstrip('+')}</div></div>")
+    out.append(f"<div class='card'><div class='label'>"
+               f"Net gain / loss</div>"
+               f"<div class='value {pnl_cls}' id='card-net-pnl{id_suffix}'>"
+               f"{fmt_signed_cents(net)}</div></div>")
+    out.append(f"<div class='card'><div class='label' "
+               f"title='Wins divided by closed bets in the selected "
+               f"period. 0-100%; above 50% means winning more than "
+               f"losing.'>"
+               f"Total win %</div>"
+               f"<div class='value {win_cls}' id='card-win-pct{id_suffix}'>"
+               f"{win_pct_str}</div></div>")
+    out.append("</div>")
+
+
 def _render_summary(out: List[str], rollup: dict, active_bets: List[dict],
                     history: List[dict],
                     period_key: str = "all",
@@ -2814,49 +2881,7 @@ def _render_summary(out: List[str], rollup: dict, active_bets: List[dict],
                             include_all_option=True)
 
     # ── Headline cards ────────────────────────────────────────────────
-    # 6 cards (Potential gains was dropped per user request). Card
-    # labels carry no "(period)" tag — the dropdown above scopes
-    # everything visible on the page already, so the parenthetical
-    # was redundant.
-    closed_bets = (rollup.get("period_wins", 0)
-                   + rollup.get("period_losses", 0))
-    money_spent = rollup.get("period_money_spent_cents", 0)
-    money_gained = rollup.get("period_money_gained_cents", 0)
-    out.append("<div class='row'>")
-    out.append(f"<div class='card'><div class='label' "
-               f"title='Live count of currently-open positions across "
-               f"all bots. Not affected by the period filter.'>"
-               f"Active bets</div>"
-               f"<div class='value' id='card-active-bets'>"
-               f"{rollup['active_bets']}</div></div>")
-    out.append(f"<div class='card'><div class='label'>"
-               f"Closed bets</div>"
-               f"<div class='value' id='card-closed-bets'>"
-               f"{closed_bets}</div></div>")
-    out.append(f"<div class='card'><div class='label' "
-               f"title='Total cost basis of every position opened in "
-               f"the period (entry × contracts).'>"
-               f"Money spent</div>"
-               f"<div class='value' id='card-money-spent'>"
-               f"{fmt_signed_cents(-money_spent)}</div></div>")
-    out.append(f"<div class='card'><div class='label' "
-               f"title='Total payout received from positions closed in "
-               f"the period (entry × contracts + realized P&amp;L).'>"
-               f"Money gained</div>"
-               f"<div class='value green' id='card-money-gained'>"
-               f"+{fmt_signed_cents(money_gained).lstrip('+')}</div></div>")
-    out.append(f"<div class='card'><div class='label'>"
-               f"Net gain / loss</div>"
-               f"<div class='value {pnl_cls}' id='card-net-pnl'>"
-               f"{fmt_signed_cents(net)}</div></div>")
-    out.append(f"<div class='card'><div class='label' "
-               f"title='Wins divided by closed bets in the selected "
-               f"period. 0-100%; above 50% means winning more than "
-               f"losing.'>"
-               f"Total win %</div>"
-               f"<div class='value {win_cls}' id='card-win-pct'>"
-               f"{win_pct_str}</div></div>")
-    out.append("</div>")
+    _render_summary_cards(out, rollup)
 
     # Active bets list — same table used in the per-bot view below.
     # Same circle-i info button as on the Watchlist tab — opens the
@@ -3277,7 +3302,9 @@ def _render_bet_history_block(out: List[str], history: List[dict],
 
     head = (
         "<table><thead><tr>"
-        "<th>Closed</th><th>Bot</th><th>Ticker</th>"
+        "<th title='Date the contract was opened (UTC).'>Opened</th>"
+        "<th title='Date the contract was closed (UTC).'>Closed</th>"
+        "<th>Bot</th><th>Ticker</th>"
         "<th>Title</th>"
         "<th>Side</th>"
         "<th class='num'>Entry</th><th class='num'>Exit</th>"
@@ -3292,6 +3319,9 @@ def _render_bet_history_block(out: List[str], history: List[dict],
     )
 
     def render_row(b):
+        # Both timestamps to ISO YYYY-MM-DD HH:MM:SS (UTC). Slicing at
+        # 19 chops the fractional seconds + tz offset for compactness.
+        opened = (b.get("opened_at") or "")[:19].replace("T", " ")
         closed = (b.get("exited_at") or "")[:19].replace("T", " ")
         side = (b.get("side") or "").upper()
         badge_cls = "badge-yes" if side == "YES" else "badge-no"
@@ -3368,7 +3398,8 @@ def _render_bet_history_block(out: List[str], history: List[dict],
                          f"{html.escape(bot_name)}</a></td>")
         else:
             bot_cell = f"<td>{html.escape(bot_name)}</td>"
-        return (f"<tr><td>{html.escape(closed)}</td>"
+        return (f"<tr><td>{html.escape(opened)}</td>"
+                f"<td>{html.escape(closed)}</td>"
                 f"{bot_cell}"
                 f"<td class='mono'>{ticker_cell_html(b.get('ticker'))}</td>"
                 f"<td>{html.escape(title_text)}</td>"
