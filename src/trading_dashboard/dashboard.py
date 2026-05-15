@@ -3122,13 +3122,30 @@ def _render_summary(out: List[str], rollup: dict, active_bets: List[dict],
         "title=\"What does the bot need before it'll buy?\">i</button>"
         "</h3>"
     )
+    # Drop already-settled positions from the Summary view. Tennis
+    # paper bets on matches that finished days ago can linger as
+    # ``status='open'`` if the bot's settle path missed them — the
+    # user doesn't want to see those on the home page. The
+    # ticker-date parser is the universal "this match is over"
+    # signal (negative minutes = past). Per-bot Watchlist tabs keep
+    # showing them so the user can still investigate stuck rows.
+    filtered_active = []
+    for b in active_bets:
+        mtc = b.get("minutes_to_close")
+        if mtc is None:
+            mtc = minutes_to_close_from_ticker(b.get("ticker"))
+        # Allow a 1-hour grace window for in-progress settlements.
+        if mtc is not None and mtc < -60:
+            continue
+        filtered_active.append(b)
+
     # Scroll container — keeps the Summary's active-bets table from
     # pushing the bot-card grid off-screen when many bots have
     # positions open at once. Max-height was picked so ~6 rows are
     # visible before the user has to scroll; matches the watchlist
     # scroll idiom used elsewhere on the page.
     out.append("<div class='summary-active-scroll'>")
-    _render_active_bets_table(out, active_bets,
+    _render_active_bets_table(out, filtered_active,
                                 empty_msg="No active bets right now.",
                                 hedge_cfg=hedge_cfg)
     out.append("</div>")
