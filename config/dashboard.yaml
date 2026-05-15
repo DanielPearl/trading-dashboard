@@ -112,6 +112,13 @@ bots:
     decisions_path: /root/whale-watcher/data/signal_tracking.jsonl
     signals_path: /root/whale-watcher/data/signal_tracking.jsonl
     orders_path: /root/whale-watcher/data/orders.jsonl
+    # Whale recorder's sqlite store. A separate service (the whale
+    # recorder) scans Kalshi's last-24h trade feed once a minute and
+    # upserts every ≥$10k bet on an event-based market, then prunes
+    # rows whose market has closed. The dashboard's whale page reads
+    # from this file so big bets persist past their 24h API window
+    # for as long as the underlying contract is still active.
+    whales_db_path: /root/whale-watcher/data/whales.db
   - key: rules-parser
     name: Rules Parser
     # Rules-arb bot — parses each watched contract's settlement rules

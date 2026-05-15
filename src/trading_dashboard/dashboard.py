@@ -7217,6 +7217,7 @@ class Handler(BaseHTTPRequestHandler):
                         sort_by=sort_by,
                         tab_key=whale_tab,
                         min_notional_dollars=min_dollars,
+                        whales_db_path=bot.get("whales_db_path"),
                     )
                     payload = body.encode("utf-8")
                     self.send_response(200)

@@ -407,14 +407,13 @@ VALIDATOR_MAX_PRICE_DRIFT    = 10         # cents
 LIVE_MIN_NOTIONAL_CENTS = 1_000_000      # $10,000+ trades surface by default
 LIVE_LOOKBACK_HOURS     = 24             # recent activity window (legacy path)
 
-# Active-markets scan: walks every currently-open event market and pulls
-# its full trade history so a $10k bet placed weeks ago on a still-open
-# contract still shows up. Per-market lookback is generous; volume
-# prefilter keeps the work bounded (a market with < 10k lifetime
-# contracts couldn't have hosted a $10k single trade).
-ACTIVE_MARKET_LOOKBACK_DAYS = 90
-ACTIVE_MIN_MARKET_VOLUME    = 10_000
-ACTIVE_MAX_MARKETS_SCANNED  = 400        # cap by lifetime volume desc
+# Path to the whale recorder's sqlite database. The whale-watcher bot
+# scans Kalshi's last-24h trade feed every minute and persists every
+# ≥$10k bet on an event-based market here. Rows are pruned when the
+# underlying market closes — so reads see every whale on a still-open
+# contract, regardless of trade age. Override per-bot via
+# `whales_db_path` in dashboard.yaml.
+DEFAULT_WHALES_DB_PATH = "/root/whale-watcher/data/whales.db"
 
 
 def validate_whale(event: dict,
@@ -1013,142 +1012,89 @@ def _emit_event(out: List[dict], seen_trade_ids: set, t: dict, ticker: str,
     })
 
 
-def fetch_active_big_bets(min_notional_cents: int = LIVE_MIN_NOTIONAL_CENTS,
-                            lookback_days: int = ACTIVE_MARKET_LOOKBACK_DAYS,
-                            max_markets: int = ACTIVE_MAX_MARKETS_SCANNED,
-                            min_market_volume: int = ACTIVE_MIN_MARKET_VOLUME,
-                            ) -> List[dict]:
-    """Walk every currently-open event market and surface every trade
-    in its full history (up to ``lookback_days``) that clears
-    ``min_notional_cents``.
+def load_whales_from_db(db_path: str,
+                          min_notional_cents: int = LIVE_MIN_NOTIONAL_CENTS,
+                          ) -> List[dict]:
+    """Read every whale row from the recorder's sqlite store.
 
-    Different from ``fetch_live_big_bets`` which is bounded by a 24h
-    global trades window — that approach misses big bets placed days
-    or weeks ago on still-active long-running contracts. This one
-    iterates markets directly, so as long as the contract is still
-    open the bet shows up regardless of trade age.
+    The whale-watcher recorder (``kalshi_whale_bot.whale_recorder``)
+    scans Kalshi's last-24h trade feed once a minute and upserts every
+    big bet on an event-based market into ``whales.db``. It then
+    prunes rows whose market has closed/settled — so every row in the
+    table is a bet on a still-active contract, no matter when the
+    trade itself happened.
 
-    Bounded by two filters so the request stays tractable:
-      * ``min_market_volume`` — markets with fewer than this many
-        lifetime contracts traded can't have hosted a $10k single
-        trade at any reasonable price.
-      * ``max_markets`` — after the volume cut, keep the top N by
-        lifetime volume. Whales cluster on the most-traded contracts.
+    Returns event-shaped dicts ready for the existing scorer +
+    validator pipeline. Missing db / table is treated as "no whales
+    yet" (returns []), so the dashboard renders the empty-state
+    instead of erroring out.
     """
-    from . import kalshi_client
-    client = kalshi_client.get_client()
-    if not client.available:
+    import sqlite3
+    p = Path(db_path)
+    if not p.exists():
         return []
-
     try:
-        all_open = client.list_markets()  # status="open" default
-    except Exception:  # noqa: BLE001
-        log.exception("whale: list_markets (all open) failed")
+        conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
+        conn.row_factory = sqlite3.Row
+    except sqlite3.Error:
         return []
-
-    candidates: List[dict] = []
-    for m in all_open or []:
-        ticker = m.get("ticker") or ""
-        if not ticker or not _is_event_ticker(ticker):
-            continue
+    try:
         try:
-            vol = int(m.get("volume") or 0)
-        except (TypeError, ValueError):
-            vol = 0
-        if vol < min_market_volume:
-            continue
-        candidates.append(m)
-    candidates.sort(key=lambda m: int(m.get("volume") or 0), reverse=True)
-    candidates = candidates[:max_markets]
+            rows = conn.execute(
+                "SELECT * FROM whales WHERE notional_cents >= ? "
+                "ORDER BY signal_ts DESC",
+                (int(min_notional_cents),),
+            ).fetchall()
+        except sqlite3.Error:
+            return []
+    finally:
+        conn.close()
 
-    seen_trade_ids: set = set()
     out: List[dict] = []
-
-    def _trade_count(t):
-        c = t.get("count_fp")
-        if c is None:
-            c = t.get("count")
-        try:
-            return int(round(float(c))) if c is not None else 0
-        except (TypeError, ValueError):
-            return 0
-
-    def _trade_price_cents(t, side: str):
-        key = f"{side}_price_dollars"
-        v = t.get(key)
-        if v is None:
-            v = t.get(f"{side}_price")
-        if v is None:
-            return 0
-        try:
-            f = float(v)
-        except (TypeError, ValueError):
-            return 0
-        return int(round(f * 100)) if f < 5 else int(f)
-
-    lookback_hours = lookback_days * 24
-    for m in candidates:
-        ticker = m["ticker"]
-        try:
-            trades = client.fetch_trades(
-                market_ticker=ticker,
-                lookback_hours=lookback_hours,
-                limit=2000,
-            )
-        except Exception:  # noqa: BLE001
-            log.exception("whale: fetch_trades failed for %s", ticker)
+    now_ts = time.time()
+    for r in rows:
+        ticker = r["ticker"]
+        # Belt-and-braces: even though the recorder filters at write
+        # time, re-check here so an exclusion-list update is honored
+        # without waiting for the recorder to re-evaluate every row.
+        if not _is_event_ticker(ticker):
             continue
-        if not trades:
-            continue
-
-        # Skip markets whose biggest trade can't clear the floor —
-        # cheaper than building event dicts and discarding them.
-        has_big = False
-        for t in trades:
-            count = _trade_count(t)
-            yes_p = _trade_price_cents(t, "yes")
-            no_p = _trade_price_cents(t, "no")
-            price = yes_p if yes_p > 0 else no_p
-            if count * price >= min_notional_cents:
-                has_big = True
-                break
-        if not has_big:
-            continue
-
-        close_time = m.get("close_time")
+        close_time = r["close_time"]
         mtc: Optional[float] = None
         if close_time:
             try:
                 ct = datetime.fromisoformat(
                     close_time.replace("Z", "+00:00")
                 ).timestamp()
-                mtc = max(0.0, (ct - time.time()) / 60.0)
+                mtc = max(0.0, (ct - now_ts) / 60.0)
             except (TypeError, ValueError):
                 mtc = None
-
-        event_title: Optional[str] = None
-        preview = _market_question(m)
-        if preview == "—" and m.get("event_ticker"):
-            try:
-                event = client.get_event(m["event_ticker"])
-                event_title = (event or {}).get("title") or None
-            except Exception:  # noqa: BLE001
-                event_title = None
-        question = _market_question(m, event_title=event_title)
-
-        mean_c, std_c, cluster_size, current_mid_cents = (
-            _per_ticker_stats(trades, _trade_count, _trade_price_cents)
-        )
-        for t in trades:
-            _emit_event(
-                out, seen_trade_ids, t, ticker,
-                _trade_count, _trade_price_cents,
-                mean_c=mean_c, std_c=std_c,
-                cluster_size=cluster_size,
-                current_mid_cents=current_mid_cents,
-                mtc=mtc, question=question,
-                min_notional_cents=min_notional_cents,
-            )
+        yes_price = int(r["yes_price_cents"] or 0)
+        no_price = int(r["no_price_cents"] or 0)
+        mid = yes_price if yes_price > 0 else (100 - no_price)
+        direction = (r["direction"] or "").lower()
+        dir_conf = 0.8 if (r["taker_side"] or "").lower() in {"yes", "no"} else 0.4
+        out.append({
+            "ticker": ticker,
+            "question": r["question"] or "",
+            "signal_ts": float(r["signal_ts"] or 0.0),
+            "zscore": 0.0,  # recorder doesn't compute z-score
+            "minutes_to_close": mtc,
+            "cluster_size": 0,
+            "current_mid_cents": None,
+            "direction": direction or "yes",
+            "direction_confidence": dir_conf,
+            "whale_count": int(r["count"] or 0),
+            "whale_notional_cents": int(r["notional_cents"] or 0),
+            "taker_side": r["taker_side"] or "",
+            "entry_mid_cents": mid,
+            "entry_spread_cents": None,
+            "entry_depth_within_3c": 0,
+            "entered": False,
+            "rejection_reason": None,
+            "checkpoints": [],
+            "_source": "db",
+        })
     return out
 
 
@@ -1540,6 +1486,7 @@ def render_page(
     sort_by: str = "recent",
     tab_key: str = "watchlist",  # ignored, kept for backwards-compat
     min_notional_dollars: int | None = None,
+    whales_db_path: str | None = None,
 ) -> str:
     """Whole HTML page for the whale-watcher view.
 
@@ -1572,13 +1519,15 @@ def render_page(
     else:
         effective_min_cents = LIVE_MIN_NOTIONAL_CENTS
         floor_was_explicit = False
-    # Whale watcher scans every currently-open event market across
-    # the whole Kalshi exchange and surfaces every trade in each
-    # market's history that clears the floor. Unlike the legacy
-    # global-trades feed (24h cap), this catches a $10k bet placed
-    # weeks ago on a still-active long-running contract.
-    live_events = fetch_active_big_bets(
-        min_notional_cents=effective_min_cents,
+    # Whale rows are read from the recorder's sqlite db. The recorder
+    # (a separate systemd service running alongside the trading bot)
+    # scans Kalshi's last-24h trade feed once a minute and upserts
+    # every ≥$10k bet on an event-based market, then prunes rows whose
+    # market has closed/settled. So a $10k bet placed days ago still
+    # shows up here as long as the underlying contract is still open.
+    db_path = whales_db_path or DEFAULT_WHALES_DB_PATH
+    live_events = load_whales_from_db(
+        db_path, min_notional_cents=effective_min_cents,
     )
 
     # Combine: tracked signals (from JSONL, with checkpoints) + live
