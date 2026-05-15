@@ -3724,19 +3724,17 @@ def _render_bet_history_block(out: List[str], history: List[dict],
                 f"<td class='num {pnl_cls_}'>{fmt_signed_cents(pnl)}</td>"
                 f"<td class='{pnl_cls_}'>{outcome}</td></tr>")
 
+    # All rows go into a single table — the History tab's
+    # max-height: 640px scroll container handles overflow. The old
+    # ``Show N more`` collapsible details was confusing when the
+    # scroll already implies "everything's in here".
+    # ``shown_initially`` is retained on the function signature for
+    # back-compat with callers (Section 5 / Home use a smaller
+    # window) but the History tab passes the full list through.
     out.append(head)
-    for b in history[:shown_initially]:
+    for b in history:
         out.append(render_row(b))
     out.append("</tbody></table>")
-
-    if len(history) > shown_initially:
-        out.append(f"<details style='margin-top:8px;'>"
-                   f"<summary style='cursor:pointer; padding:10px 0; "
-                   f"color:#58a6ff;'>Show {len(history) - shown_initially} more</summary>")
-        out.append(head)
-        for b in history[shown_initially:]:
-            out.append(render_row(b))
-        out.append("</tbody></table></details>")
 
 
 def _render_bot_filter(out: List[str], available_bots: List[dict],
