@@ -3268,18 +3268,17 @@ def _render_active_bets_table(out: List[str], bets: List[dict],
     """Shared renderer used by both Section 1 (cross-bot summary) and
     the per-bot view inside the Watchlist tab. Columns:
         Opened | [Bot] | Ticker | Question | Contracts | Side
-        | Entry cost | Current | Potential gain | Closes in | Hedge
+        | Entry cost | Current | Potential gain | Closes in
     The Bot column is skipped when ``show_bot`` is False (per-bot view
     where the bot is implied by the surrounding section). Entry cost /
     Current / Potential gain are in dollars (per-position totals).
 
-    ``hedge_cfg`` carries the global hedge thresholds (profit-lock /
-    stop-loss cents). When a position's unrealized P&L per contract
-    crosses either threshold, the Hedge column renders a LOCK PROFIT
-    or STOP LOSS pill — the user can see at a glance which bets the
-    bot would hedge if hedging were active. Pass ``None`` to suppress
-    the column entirely (e.g. on tables where the hedge view doesn't
-    apply).
+    ``hedge_cfg`` is accepted for parity with callers but the table no
+    longer renders a per-row hedge column — the actual hedge
+    execution lives in ``hedge_monitor.py`` which closes any position
+    that crosses the configured profit-lock / stop-loss thresholds.
+    Once closed, the position drops out of this table and shows up
+    on the History tab with ``exit_reason='hedge'``.
 
     ``chart_link=True`` makes each row clickable and stamps the
     chart-overlay attributes (``data-ticker``, ``data-strike``,
@@ -3296,16 +3295,6 @@ def _render_active_bets_table(out: List[str], bets: List[dict],
     # No separate ``Question`` column — Title already names the
     # contract, and on sport rows it would just restate the matchup.
     tbody_attrs = " id='wl-active-tbody' data-chart-link='1'" if chart_link else ""
-    hedge_enabled = bool((hedge_cfg or {}).get("enabled"))
-    hedge_th = (
-        "<th title='Hedge signal — fires when unrealized P&L per "
-        "contract crosses the profit-lock or stop-loss threshold "
-        f"({(hedge_cfg or {}).get('profit_lock_cents', 0)}¢ / "
-        f"−{(hedge_cfg or {}).get('stop_loss_cents', 0)}¢). The bot "
-        "would partially close at hedge_size_fraction when this "
-        "fires.'>Hedge</th>"
-        if hedge_enabled else ""
-    )
     out.append("<table><thead><tr>"
                f"<th>Opened</th>{bot_th}<th>Ticker</th>"
                "<th>Title</th>"
@@ -3315,7 +3304,6 @@ def _render_active_bets_table(out: List[str], bets: List[dict],
                "<th class='num' title='Entry prob × contracts + Kalshi entry fee — total cash out at open'>Entry cost</th>"
                "<th class='num' title='(100¢ − entry) × contracts − entry fee — gross profit if our side wins'>Potential gain</th>"
                "<th class='num' title='Time until the contract resolves'>Closes in</th>"
-               f"{hedge_th}"
                "<th></th>"
                f"</tr></thead><tbody{tbody_attrs}>")
     for b in bets:
@@ -3512,40 +3500,6 @@ def _render_active_bets_table(out: List[str], bets: List[dict],
                 pass
         else:
             tr_attrs = ""
-        # Hedge signal — unrealized P&L in cents per contract vs the
-        # configured thresholds. ``current_prob_pct`` is the implied
-        # probability of our side right now (cents == probability for
-        # binaries); profit per contract = current − entry; loss is
-        # the negation. Only emitted when the column is on.
-        hedge_cell = ""
-        if hedge_enabled:
-            hedge_html = ""
-            if current_prob_pct is not None and entry is not None:
-                profit_cents = float(current_prob_pct) - float(entry)
-                pl_lock = float((hedge_cfg or {}).get(
-                    "profit_lock_cents", 0) or 0)
-                sl_cents = float((hedge_cfg or {}).get(
-                    "stop_loss_cents", 0) or 0)
-                if pl_lock > 0 and profit_cents >= pl_lock:
-                    hedge_html = (
-                        f"<span class='badge badge-hedge' "
-                        f"title='Unrealized +{profit_cents:.0f}¢ ≥ "
-                        f"profit-lock {pl_lock:.0f}¢. Bot would "
-                        f"hedge {(hedge_cfg or {}).get('hedge_size_fraction', 0):.0%} "
-                        f"of the position.'>LOCK PROFIT</span>"
-                    )
-                elif sl_cents > 0 and profit_cents <= -sl_cents:
-                    hedge_html = (
-                        f"<span class='badge badge-no' "
-                        f"title='Unrealized {profit_cents:.0f}¢ ≤ "
-                        f"−{sl_cents:.0f}¢ stop-loss. Bot would "
-                        f"close / hedge the position.'>STOP LOSS</span>"
-                    )
-                else:
-                    hedge_html = "<span class='small gray'>—</span>"
-            else:
-                hedge_html = "<span class='small gray'>—</span>"
-            hedge_cell = f"<td>{hedge_html}</td>"
         out.append(
             f"<tr{tr_attrs}><td>{html.escape(opened)}</td>"
             f"{bot_td}"
@@ -3563,7 +3517,6 @@ def _render_active_bets_table(out: List[str], bets: List[dict],
             f"at 100¢ or 0¢ has zero exit fee.'>"
             f"{pg_sign}${abs(potential_gain):.2f}</td>"
             f"<td class='num'>{time_to_close_str(mtc)}</td>"
-            f"{hedge_cell}"
             f"<td><button type='button' class='criteria-btn' "
             f"title='Why was this bet chosen?' "
             f"data-criteria='{criteria_json}'>i</button></td>"
@@ -7490,6 +7443,12 @@ def serve(host: str, port: int, bots: List[dict], risk_caps: dict,
     Handler.edge_cfg = edge_cfg
     Handler.validator_cfg = validator_cfg
     Handler.hedge_cfg = hedge_cfg
+    # Auto-hedge daemon. Reads each sim.db bot's positions table on a
+    # 30s interval and closes any position whose unrealized P&L per
+    # contract has crossed the configured profit-lock or stop-loss
+    # thresholds. No-op when hedge.enabled is false in config.
+    from . import hedge_monitor
+    hedge_monitor.start_daemon(bots, hedge_cfg)
     server = ThreadingHTTPServer((host, port), Handler)
     log.info("dashboard listening on http://%s:%d", host, port)
     log.info("registered bots: %s",
