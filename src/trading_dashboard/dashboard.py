@@ -1321,8 +1321,23 @@ def question_str(direction: str, low: float | None, high: float | None,
 
 
 def time_to_close_str(minutes: float | None) -> str:
+    """Compact "1.7d / 9.2h / 45m" rendering for the Closes-in cell.
+
+    Negative inputs mean the contract's published close time is
+    already in the past — typical for tennis paper bets whose match
+    settled days ago but whose simulator hasn't received a settle
+    signal yet. We surface those as "settled" + how long ago, so
+    the user can see the bet is stuck open rather than just a dash.
+    """
     if minutes is None:
         return "—"
+    if minutes < 0:
+        ago = -minutes
+        if ago > 1440:
+            return f"settled {ago/1440:.0f}d ago"
+        if ago > 60:
+            return f"settled {ago/60:.0f}h ago"
+        return f"settled {int(ago)}m ago"
     if minutes > 1440:
         return f"{minutes/1440:.1f}d"
     if minutes > 60:
@@ -1347,14 +1362,17 @@ def minutes_to_close_from_ticker(ticker: str | None,
                                     assumed_close_hour_utc: int = 23,
                                     ) -> float | None:
     """Parse the settlement date out of a Kalshi ticker and return the
-    minutes from now until that day's close window. Settlement happens
-    after the event ends, so we anchor at the LAST hour of the encoded
-    date (23:59 UTC by default) — close enough for the "Closes in"
-    column which lives next to the dollar P&L cells.
+    signed minutes from now until that day's close window. Settlement
+    happens after the event ends, so we anchor at the LAST hour of
+    the encoded date (23:59 UTC by default).
 
-    Returns None when the ticker doesn't match the expected
-    ``-YYMMMDD`` pattern or when the encoded date is in the past
-    (e.g. a settled position the simulator hasn't closed yet).
+    Positive return = minutes remaining until close.
+    Negative return = minutes since the contract already settled.
+    None = ticker doesn't match the ``-YYMMMDD`` pattern at all.
+
+    The caller's display ``time_to_close_str`` knows how to format
+    negative values as "settled Nd ago" so stuck-open paper positions
+    on long-finished matches show meaningful state instead of "—".
     """
     if not ticker:
         return None
@@ -1371,8 +1389,7 @@ def minutes_to_close_from_ticker(ticker: str | None,
                        tzinfo=timezone.utc)
     except (TypeError, ValueError):
         return None
-    delta = (ts - datetime.now(timezone.utc)).total_seconds() / 60.0
-    return max(0.0, delta) if delta > -60 else None
+    return (ts - datetime.now(timezone.utc)).total_seconds() / 60.0
 
 
 def ticker_cell_html(ticker: str | None) -> str:
@@ -3575,7 +3592,6 @@ def _render_bet_history_block(out: List[str], history: List[dict],
         "<th class='num' title='Model probability for the side we bet on, recorded at entry.'>Model p</th>"
         "<th class='num' title='Net EV per contract at entry: (model_p − entry_price) − half-spread. "
         "Positive = +EV trade.'>Entry EV</th>"
-        "<th class='num' title='Underlying value at the moment this bet closed (in the bot’s native units).'>Value at close</th>"
         "<th class='num'>P&amp;L</th>"
         "<th>Outcome</th>"
         "</tr></thead><tbody>"
@@ -3672,7 +3688,6 @@ def _render_bet_history_block(out: List[str], history: List[dict],
                 f"<td class='num'>{contracts}</td>"
                 f"<td class='num'>{mp_str}</td>"
                 f"<td class='num {ev_cls}'>{ev_str}</td>"
-                f"<td class='num'>{value_str}</td>"
                 f"<td class='num {pnl_cls_}'>{fmt_signed_cents(pnl)}</td>"
                 f"<td class='{pnl_cls_}'>{outcome}</td></tr>")
 
