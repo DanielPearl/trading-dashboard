@@ -1330,6 +1330,51 @@ def time_to_close_str(minutes: float | None) -> str:
     return f"{int(minutes)}m"
 
 
+# Kalshi tickers encode the settlement date as ``YYMMMDD`` after the
+# series prefix. ``KXATPMATCH-26MAY12TIRMED`` → 2026-05-12. Tennis
+# sim positions don't carry an explicit expected_expiration_time so
+# this regex is the universal fallback for the "Closes in" column.
+_TICKER_DATE_RE = re.compile(
+    r"-(?P<yy>\d{2})(?P<mon>[A-Z]{3})(?P<dd>\d{2})", re.IGNORECASE,
+)
+_MONTH_MAP = {m: i + 1 for i, m in enumerate(
+    ["JAN", "FEB", "MAR", "APR", "MAY", "JUN",
+     "JUL", "AUG", "SEP", "OCT", "NOV", "DEC"]
+)}
+
+
+def minutes_to_close_from_ticker(ticker: str | None,
+                                    assumed_close_hour_utc: int = 23,
+                                    ) -> float | None:
+    """Parse the settlement date out of a Kalshi ticker and return the
+    minutes from now until that day's close window. Settlement happens
+    after the event ends, so we anchor at the LAST hour of the encoded
+    date (23:59 UTC by default) — close enough for the "Closes in"
+    column which lives next to the dollar P&L cells.
+
+    Returns None when the ticker doesn't match the expected
+    ``-YYMMMDD`` pattern or when the encoded date is in the past
+    (e.g. a settled position the simulator hasn't closed yet).
+    """
+    if not ticker:
+        return None
+    m = _TICKER_DATE_RE.search(ticker)
+    if not m:
+        return None
+    mon = _MONTH_MAP.get(m.group("mon").upper())
+    if mon is None:
+        return None
+    try:
+        year = 2000 + int(m.group("yy"))
+        day = int(m.group("dd"))
+        ts = datetime(year, mon, day, assumed_close_hour_utc, 59,
+                       tzinfo=timezone.utc)
+    except (TypeError, ValueError):
+        return None
+    delta = (ts - datetime.now(timezone.utc)).total_seconds() / 60.0
+    return max(0.0, delta) if delta > -60 else None
+
+
 def ticker_cell_html(ticker: str | None) -> str:
     """Render a ticker as a Kalshi market-page link.
 
@@ -1974,7 +2019,8 @@ def render_page(
     _open_panel("home")
     _render_summary(out, global_summary, global_active_bets, global_history,
                      period_key=period_key, current_bot=current_bot,
-                     available_bots=available_bots)
+                     available_bots=available_bots,
+                     hedge_cfg=hedge_cfg)
     out.append("<div class='section'><h2>Model performance</h2>"
                "<div class='body'>")
     _render_bot_cards(out, global_summary, bot_models, period_label)
@@ -2956,7 +3002,8 @@ def _render_summary(out: List[str], rollup: dict, active_bets: List[dict],
                     history: List[dict],
                     period_key: str = "all",
                     current_bot: str = "",
-                    available_bots: List[dict] | None = None) -> None:
+                    available_bots: List[dict] | None = None,
+                    hedge_cfg: dict | None = None) -> None:
     """Section 1 — global cross-bot summary. The dropdown above the
     headline cards is a Bot navigator: selecting any bot jumps to its
     Watchlist tab so the user can dive into per-bot detail without
@@ -3005,7 +3052,9 @@ def _render_summary(out: List[str], rollup: dict, active_bets: List[dict],
     # visible before the user has to scroll; matches the watchlist
     # scroll idiom used elsewhere on the page.
     out.append("<div class='summary-active-scroll'>")
-    _render_active_bets_table(out, active_bets, empty_msg="No active bets right now.")
+    _render_active_bets_table(out, active_bets,
+                                empty_msg="No active bets right now.",
+                                hedge_cfg=hedge_cfg)
     out.append("</div>")
 
     out.append("</div></div>")
@@ -3214,14 +3263,23 @@ def _render_bot_cards(out: List[str], rollup: dict,
 def _render_active_bets_table(out: List[str], bets: List[dict],
                               empty_msg: str = "No active bets.",
                               show_bot: bool = True,
-                              chart_link: bool = False) -> None:
+                              chart_link: bool = False,
+                              hedge_cfg: dict | None = None) -> None:
     """Shared renderer used by both Section 1 (cross-bot summary) and
     the per-bot view inside the Watchlist tab. Columns:
         Opened | [Bot] | Ticker | Question | Contracts | Side
-        | Entry cost | Current | Potential gain | Closes in
+        | Entry cost | Current | Potential gain | Closes in | Hedge
     The Bot column is skipped when ``show_bot`` is False (per-bot view
     where the bot is implied by the surrounding section). Entry cost /
     Current / Potential gain are in dollars (per-position totals).
+
+    ``hedge_cfg`` carries the global hedge thresholds (profit-lock /
+    stop-loss cents). When a position's unrealized P&L per contract
+    crosses either threshold, the Hedge column renders a LOCK PROFIT
+    or STOP LOSS pill — the user can see at a glance which bets the
+    bot would hedge if hedging were active. Pass ``None`` to suppress
+    the column entirely (e.g. on tables where the hedge view doesn't
+    apply).
 
     ``chart_link=True`` makes each row clickable and stamps the
     chart-overlay attributes (``data-ticker``, ``data-strike``,
@@ -3238,6 +3296,16 @@ def _render_active_bets_table(out: List[str], bets: List[dict],
     # No separate ``Question`` column — Title already names the
     # contract, and on sport rows it would just restate the matchup.
     tbody_attrs = " id='wl-active-tbody' data-chart-link='1'" if chart_link else ""
+    hedge_enabled = bool((hedge_cfg or {}).get("enabled"))
+    hedge_th = (
+        "<th title='Hedge signal — fires when unrealized P&L per "
+        "contract crosses the profit-lock or stop-loss threshold "
+        f"({(hedge_cfg or {}).get('profit_lock_cents', 0)}¢ / "
+        f"−{(hedge_cfg or {}).get('stop_loss_cents', 0)}¢). The bot "
+        "would partially close at hedge_size_fraction when this "
+        "fires.'>Hedge</th>"
+        if hedge_enabled else ""
+    )
     out.append("<table><thead><tr>"
                f"<th>Opened</th>{bot_th}<th>Ticker</th>"
                "<th>Title</th>"
@@ -3247,6 +3315,7 @@ def _render_active_bets_table(out: List[str], bets: List[dict],
                "<th class='num' title='Entry prob × contracts + Kalshi entry fee — total cash out at open'>Entry cost</th>"
                "<th class='num' title='(100¢ − entry) × contracts − entry fee — gross profit if our side wins'>Potential gain</th>"
                "<th class='num' title='Time until the contract resolves'>Closes in</th>"
+               f"{hedge_th}"
                "<th></th>"
                f"</tr></thead><tbody{tbody_attrs}>")
     for b in bets:
@@ -3329,6 +3398,14 @@ def _render_active_bets_table(out: List[str], bets: List[dict],
                 f"moved.'>{current_prob_pct:.0f}%</td>"
             )
         mtc = b.get("minutes_to_close")
+        # Universal fallback: parse the settlement date out of the
+        # ticker (Kalshi encodes ``YYMMMDD`` after the series prefix).
+        # Catches tennis paper bets — those sim positions don't record
+        # an expected_expiration_time, so the previous tennis-adapter
+        # lookup against live_state.json missed them once the match
+        # rolled off the live state.
+        if mtc is None:
+            mtc = minutes_to_close_from_ticker(b.get("ticker"))
         # Sign / color logic for potential gain — usually positive
         # (winning side pays $1 minus entry minus fees), but very
         # high entry prices on extreme strikes can flip negative.
@@ -3435,6 +3512,40 @@ def _render_active_bets_table(out: List[str], bets: List[dict],
                 pass
         else:
             tr_attrs = ""
+        # Hedge signal — unrealized P&L in cents per contract vs the
+        # configured thresholds. ``current_prob_pct`` is the implied
+        # probability of our side right now (cents == probability for
+        # binaries); profit per contract = current − entry; loss is
+        # the negation. Only emitted when the column is on.
+        hedge_cell = ""
+        if hedge_enabled:
+            hedge_html = ""
+            if current_prob_pct is not None and entry is not None:
+                profit_cents = float(current_prob_pct) - float(entry)
+                pl_lock = float((hedge_cfg or {}).get(
+                    "profit_lock_cents", 0) or 0)
+                sl_cents = float((hedge_cfg or {}).get(
+                    "stop_loss_cents", 0) or 0)
+                if pl_lock > 0 and profit_cents >= pl_lock:
+                    hedge_html = (
+                        f"<span class='badge badge-hedge' "
+                        f"title='Unrealized +{profit_cents:.0f}¢ ≥ "
+                        f"profit-lock {pl_lock:.0f}¢. Bot would "
+                        f"hedge {(hedge_cfg or {}).get('hedge_size_fraction', 0):.0%} "
+                        f"of the position.'>LOCK PROFIT</span>"
+                    )
+                elif sl_cents > 0 and profit_cents <= -sl_cents:
+                    hedge_html = (
+                        f"<span class='badge badge-no' "
+                        f"title='Unrealized {profit_cents:.0f}¢ ≤ "
+                        f"−{sl_cents:.0f}¢ stop-loss. Bot would "
+                        f"close / hedge the position.'>STOP LOSS</span>"
+                    )
+                else:
+                    hedge_html = "<span class='small gray'>—</span>"
+            else:
+                hedge_html = "<span class='small gray'>—</span>"
+            hedge_cell = f"<td>{hedge_html}</td>"
         out.append(
             f"<tr{tr_attrs}><td>{html.escape(opened)}</td>"
             f"{bot_td}"
@@ -3452,6 +3563,7 @@ def _render_active_bets_table(out: List[str], bets: List[dict],
             f"at 100¢ or 0¢ has zero exit fee.'>"
             f"{pg_sign}${abs(potential_gain):.2f}</td>"
             f"<td class='num'>{time_to_close_str(mtc)}</td>"
+            f"{hedge_cell}"
             f"<td><button type='button' class='criteria-btn' "
             f"title='Why was this bet chosen?' "
             f"data-criteria='{criteria_json}'>i</button></td>"
@@ -6231,7 +6343,7 @@ def _render_watchlist(out: List[str], watchlist: List[dict],
         # Most-recently opened first (consistent with the home table).
         enriched_rows.sort(key=lambda r: r.get("opened_at", ""), reverse=True)
         _render_active_bets_table(out, enriched_rows, show_bot=False,
-                                   chart_link=True)
+                                   chart_link=True, hedge_cfg=hedge_cfg)
     else:
         out.append("<div class='empty'>No active bets right now.</div>")
 
