@@ -366,6 +366,15 @@ def fetch_bet_history(db_path: str, limit: int = 100) -> List[dict]:
                 "break_even_probability",
                 "expected_ev_at_entry",
                 "error_type",
+                # decision_json is the catch-all entry-time payload
+                # every bot writes. Natural-gas (and any older bot
+                # schema that doesn't have dedicated model_yes_prob_
+                # at_entry / kalshi_yes_prob_at_entry columns)
+                # stashes ``model_prob`` + ``kalshi_implied_prob``
+                # in here — we parse them out below so the History
+                # tab's Model-p cell is populated regardless of which
+                # schema the bot ships with.
+                "decision_json",
             ) if c_ in cols]
             select_cols = base_cols + (", " + ", ".join(extras) if extras else "")
             rows = c.execute(
@@ -381,7 +390,35 @@ def fetch_bet_history(db_path: str, limit: int = 100) -> List[dict]:
             ).fetchall()
     except (sqlite3.OperationalError, sqlite3.DatabaseError):
         return []
-    return [dict(r) for r in rows]
+    out = [dict(r) for r in rows]
+    # Backfill model_yes_prob_at_entry / kalshi_yes_prob_at_entry from
+    # decision_json for bots that don't have dedicated columns (the
+    # natural-gas bot's older schema is the case in production).
+    for h in out:
+        if h.get("model_yes_prob_at_entry") is not None:
+            continue
+        raw = h.get("decision_json")
+        if not raw:
+            continue
+        try:
+            payload = json.loads(raw) if isinstance(raw, str) else raw
+        except (TypeError, ValueError, json.JSONDecodeError):
+            continue
+        if not isinstance(payload, dict):
+            continue
+        mp = payload.get("model_prob")
+        kp = payload.get("kalshi_implied_prob")
+        if mp is not None and h.get("model_yes_prob_at_entry") is None:
+            try:
+                h["model_yes_prob_at_entry"] = float(mp)
+            except (TypeError, ValueError):
+                pass
+        if kp is not None and h.get("kalshi_yes_prob_at_entry") is None:
+            try:
+                h["kalshi_yes_prob_at_entry"] = float(kp)
+            except (TypeError, ValueError):
+                pass
+    return out
 
 
 def fetch_global_summary(bots: List[dict],
@@ -2199,8 +2236,6 @@ function toggleBotState(ev, btn) {
       const enabled = !!data.enabled;
       btn.dataset.enabled = enabled ? '1' : '0';
       btn.setAttribute('aria-pressed', enabled ? 'true' : 'false');
-      const label = btn.querySelector('.bot-toggle-label');
-      if (label) label.textContent = enabled ? 'ON' : 'OFF';
       const card = btn.closest('.bot-card');
       if (card) {
         card.classList.toggle('bot-card-paused', !enabled);
@@ -3249,8 +3284,6 @@ def _render_bot_cards(out: List[str], rollup: dict,
             f"<span class='bot-toggle-track'>"
             f"<span class='bot-toggle-knob'></span>"
             f"</span>"
-            f"<span class='bot-toggle-label'>"
-            f"{'ON' if bot_enabled else 'OFF'}</span>"
             f"</button>"
         )
         out.append("</div>")
