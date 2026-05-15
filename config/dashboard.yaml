@@ -167,6 +167,23 @@ bots:
     coefficients_path: /root/table-tennis-forecast/data/processed/artifacts/model_coefficients.json
     sim_state_path: /root/table-tennis-forecast/data/outputs/sim_state.json
 
+  - key: darts
+    name: Darts Forecast
+    # Darts bot writes the same JSON output schema as tennis (one row
+    # per upcoming-or-live match with model + live + market probs and
+    # edge/EV/confidence), so it routes through the ``dashboard_type:
+    # tennis`` adapter. The series_ticker meta label is a generic
+    # KXDARTS prefix; the bot polls every configured darts series
+    # (Premier League, Worlds, PDC tour) under that umbrella.
+    dashboard_type: tennis
+    series_ticker: KXDARTS
+    db_path: /root/darts-forecast/data/outputs/watchlist.json
+    decisions_path: /root/darts-forecast/data/outputs/watchlist.json
+    watchlist_json_path: /root/darts-forecast/data/outputs/watchlist.json
+    metrics_path: /root/darts-forecast/data/processed/artifacts/metrics.json
+    coefficients_path: /root/darts-forecast/data/processed/artifacts/model_coefficients.json
+    sim_state_path: /root/darts-forecast/data/outputs/sim_state.json
+
 # ---------------------------------------------------------------------------
 # Display thresholds. Mirror the gas-bot's gates so the buy-criteria panel
 # shows the actual bar each market must clear.
