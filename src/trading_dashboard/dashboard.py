@@ -1776,15 +1776,19 @@ td.num.red, td.num.green { white-space: nowrap; }
 .bot-card-head { display: flex; align-items: flex-start;
     justify-content: space-between; gap: 12px;
     border-bottom: 1px solid #21262d; padding-bottom: 10px;
-    margin-bottom: 10px; }
+    margin-bottom: 10px;
+    /* Reserve a fixed height for the name + ticker block. Without
+       this, adding / removing the PAUSED badge bumps the card by
+       ~18px when the toggle flips. */
+    min-height: 48px; }
 .bot-card-head-left { display: flex; flex-direction: column;
     gap: 2px; min-width: 0; }
 .bot-card-head .bot-name { font-size: 14px; font-weight: 700;
     color: #f0f6fc; letter-spacing: -0.2px;
-    display: inline-flex; align-items: center; gap: 6px; }
-.bot-card-head .bot-price { font-size: 18px; font-weight: 600;
-    color: #f0f6fc; font-variant-numeric: tabular-nums;
-    margin-top: 2px; }
+    display: inline-flex; align-items: center; gap: 6px;
+    /* PAUSED badge inserts/removes inline next to the name — line
+       height clamp keeps the row a constant height regardless. */
+    line-height: 22px; }
 .bot-card-head .bot-meta { font-size: 10px; color: #8b949e;
     text-transform: uppercase; letter-spacing: 0.04em;
     margin-top: 2px; }
@@ -3136,7 +3140,13 @@ def _render_bot_cards(out: List[str], rollup: dict,
         ACTUAL_WIN_MIN_N = 10
         DRIFT_PP_THRESHOLD = 0.10
         drift_html = ""
-        if m and b.get("dashboard_type") not in ("tennis", "survivor"):
+        # Natural-gas is also exempt per user request — the bot's
+        # "training accuracy" is a per-strike grid average that doesn't
+        # line up apples-to-apples with the live actual-win-%, so the
+        # drift badge fires spuriously on every load.
+        _drift_exempt = b.get("dashboard_type") in ("tennis", "survivor") \
+            or bot_key == "natural-gas"
+        if m and not _drift_exempt:
             a_wins_pre = int(m.get("actual_wins") or 0)
             a_losses_pre = int(m.get("actual_losses") or 0)
             a_total_pre = a_wins_pre + a_losses_pre
@@ -3162,20 +3172,13 @@ def _render_bot_cards(out: List[str], rollup: dict,
         card_classes = ["bot-card"]
         if not bot_enabled:
             card_classes.append("bot-card-paused")
-        # Resolve the underlying value for the left column. Standard
-        # sim.db bots write it as ``current_gas_price`` (legacy column
-        # name, used as the generic "underlying value"). Tennis /
-        # survivor / whale don't have a single scalar underlying, so
-        # the price line collapses to a dash.
-        display = b.get("display") or {}
-        underlying_value = (m or {}).get("current_gas_price")
-        if underlying_value is not None:
-            try:
-                price_str = fmt_underlying(float(underlying_value), display)
-            except (TypeError, ValueError):
-                price_str = "—"
-        else:
-            price_str = "—"
+        # Card header layout per user spec: bot name on top, ticker
+        # directly below. The previous underlying-value "price" line
+        # was dropped — surfacing $4.50 / 211K / 0.38pp on a model-
+        # performance card was confusing (it's not the bot's *score*,
+        # it's the upstream market value), and the bots that don't
+        # track a scalar (tennis / survivor / whale) were forced to
+        # render "—" there anyway.
         paused_badge = (
             "<span class='paused-badge' title='Bot is paused — toggle "
             "on to resume taking bets.'>PAUSED</span>"
@@ -3190,9 +3193,6 @@ def _render_bot_cards(out: List[str], rollup: dict,
         out.append(
             f"<div class='bot-name'>{html.escape(name)}{drift_html}"
             f"{paused_badge}</div>"
-        )
-        out.append(
-            f"<div class='bot-price'>{html.escape(price_str)}</div>"
         )
         out.append(
             f"<div class='bot-meta'>{html.escape(series_ticker)}</div>"
