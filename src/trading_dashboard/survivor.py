@@ -248,11 +248,13 @@ def _render_watchlist_table(payload: Dict[str, Any]) -> str:
            "<thead><tr>",
            "<th>Ticker</th>",
            "<th>Contestant</th>",
-           "<th class='num' title='Kalshi YES price (implied probability of elimination this episode).'>Kalshi %</th>",
-           "<th class='num' title='Model probability of elimination this episode.'>Model %</th>",
+           "<th title='Kalshi market type. elimination = per-episode boot market (YES = eliminated this episode). season_win = win the whole season (YES = takes the title).'>Type</th>",
+           "<th class='num' title='Kalshi YES price for the contestant on the displayed market type.'>Kalshi %</th>",
+           "<th class='num' title='Model probability for the same side: for elimination markets this is P(eliminated this episode); for season-winner markets it is a chained P(wins season) derived from the per-episode model.'>Model %</th>",
+           "<th class='num' title='Per-episode P(eliminated) from the model — the headline elimination forecast regardless of which Kalshi market type is active.'>Boot P</th>",
            "<th class='num' title='Gap between model and Kalshi (model − market) in percentage points.'>Gap</th>",
-           "<th class='num' title='Expected value per $1 contract for YES (= will be eliminated) net of slippage.'>EV YES</th>",
-           "<th class='num' title='Expected value per $1 contract for NO (= will survive).'>EV NO</th>",
+           "<th class='num' title='Expected value per $1 contract for YES on the displayed market.'>EV YES</th>",
+           "<th class='num' title='Expected value per $1 contract for NO on the displayed market.'>EV NO</th>",
            "<th class='num' title='Model confidence on this row (0..1) — combines edge magnitude with distance from a coin-flip price.'>Confidence</th>",
            "<th>Verdict</th>",
            "</tr></thead><tbody>"]
@@ -271,9 +273,16 @@ def _render_watchlist_table(payload: Dict[str, Any]) -> str:
                             f"<br><span class='small gray' title='"
                             f"{html.escape(str(title))}'>"
                             f"{html.escape(str(title)[:80])}</span>")
+        market_type = r.get("market_type") or "elimination"
+        mt_short = "elim" if market_type == "elimination" else \
+                   "season" if market_type == "season_win" else "?"
+        mt_cell = (f"<span class='small gray' title='"
+                    f"{html.escape(market_type)}'>{html.escape(mt_short)}</span>")
 
-        mkt = r.get("market_prob_eliminated")
-        mdl = r.get("model_prob_eliminated")
+        mkt = r.get("market_prob") if r.get("market_prob") is not None \
+              else r.get("market_prob_eliminated")
+        mdl = r.get("model_prob") if r.get("model_prob") is not None \
+              else r.get("model_prob_eliminated")
         edge = r.get("edge")
         ev_yes = r.get("ev_yes")
         ev_no = r.get("ev_no")
@@ -301,12 +310,17 @@ def _render_watchlist_table(payload: Dict[str, Any]) -> str:
         elif verdict == "WATCH":
             row_cls += " row-suspect"
 
+        # "Boot P" — the headline per-episode P(eliminated) from the
+        # model, regardless of which Kalshi market type is active.
+        boot_p = r.get("model_prob_eliminated")
         out.append(
             f"<tr class='{row_cls}'>"
             f"<td class='mono small'>{ticker_cell}</td>"
             f"<td>{contestant_cell}</td>"
+            f"<td>{mt_cell}</td>"
             f"<td class='num'>{_fmt_pct(mkt, 0)}</td>"
             f"<td class='num'>{_fmt_pct(mdl, 0)}</td>"
+            f"<td class='num'>{_fmt_pct(boot_p, 0)}</td>"
             f"<td class='num {edge_cls}'>{_fmt_signed_pp(edge)}</td>"
             f"<td class='num {ev_yes_cls}'>{_fmt_signed_ev(ev_yes)}</td>"
             f"<td class='num {ev_no_cls}'>{_fmt_signed_ev(ev_no)}</td>"
