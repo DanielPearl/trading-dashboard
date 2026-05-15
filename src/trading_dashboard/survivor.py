@@ -112,6 +112,16 @@ def summary_for_rollup(sim_state_path: str | None) -> Dict[str, Any]:
     }
 
 
+def closed_positions_for_rollup(sim_state_path: str | None,
+                                  limit: int = 100) -> List[Dict[str, Any]]:
+    """Survivor sim_state shares the tennis schema (open_positions /
+    closed_positions). Delegating to the tennis adapter avoids
+    duplicating the projection logic.
+    """
+    from . import tennis as _tennis  # local import — no circular dep
+    return _tennis.closed_positions_for_rollup(sim_state_path, limit=limit)
+
+
 # --------------------------------------------------------------------------- #
 # Formatters                                                                  #
 # --------------------------------------------------------------------------- #

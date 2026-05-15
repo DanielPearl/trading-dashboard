@@ -1930,6 +1930,21 @@ tr.row-bought.bought-no:hover  td { background: rgba(248, 81, 73, 0.26); }
 .summary-active-scroll table { margin: 0; }
 .summary-active-scroll thead th { position: sticky; top: 0;
     background: #161b22; z-index: 1; }
+/* History tab scroll container — taller than the Summary's active
+   bets scroll since the History tab is dedicated to this table.
+   ~14 rows visible before the user scrolls. */
+.history-scroll { max-height: 640px; overflow-y: auto;
+    border: 1px solid #30363d; border-radius: 6px;
+    background: #0d1117; margin-top: 10px; }
+.history-scroll table { margin: 0; }
+.history-scroll thead th { position: sticky; top: 0;
+    background: #161b22; z-index: 1; }
+/* HTML <details> wrappers inside the scroll container — the
+   collapsed "show more" rows are invisible until expanded; keep the
+   summary line sticky so it stays accessible when scrolled. */
+.history-scroll details > summary { position: sticky; bottom: 0;
+    background: #161b22; padding: 6px 10px; cursor: pointer;
+    border-top: 1px solid #30363d; }
 """
 
 
@@ -2098,11 +2113,16 @@ def render_page(
     _render_summary_cards(out, global_summary, id_suffix="-history")
     # Pass heading="" so the table renders without a duplicate
     # subhead — the section title above already carries the period.
+    # Scroll container clamps the table to a sensible viewport
+    # height so long histories don't push the rest of the page off
+    # screen — same idiom as the Summary's active-bets scroll.
+    out.append("<div class='history-scroll'>")
     _render_bet_history_block(
         out, global_history,
         heading="",
         shown_initially=20,
     )
+    out.append("</div>")
     out.append("</div></div>")
     out.append("</div>")  # /history panel
 
@@ -7182,21 +7202,20 @@ class Handler(BaseHTTPRequestHandler):
                     # metrics.json / coefficients.json. Synthesize a model
                     # dict for the card grid so the tennis bot shows up
                     # alongside the Kalshi bots on the home page.
-                    if b.get("dashboard_type") == "survivor":
-                        from . import survivor as _survivor
-                        m = _survivor.model_summary_for_card(
-                            b.get("metrics_path"),
-                            b.get("sim_state_path"),
-                        )
-                        bot_models.append({
-                            "bot": b, "model": m,
-                            "rules_text": "", "strike_count": 0,
-                            "strike_lo": None, "strike_hi": None,
-                        })
-                        continue
-                    if b.get("dashboard_type") == "tennis":
+                    if b.get("dashboard_type") in ("tennis", "survivor"):
+                        # Tennis and survivor share the sim_state.json
+                        # shape — the survivor adapter's
+                        # closed_positions_for_rollup delegates to the
+                        # tennis adapter under the hood. The tennis-
+                        # specific model_summary_for_card path is fine
+                        # for both (survivor's adapter has the same
+                        # signature).
                         from . import tennis as _tennis
-                        m = _tennis.model_summary_for_card(
+                        from . import survivor as _survivor
+                        adapter = (_survivor
+                                    if b.get("dashboard_type") == "survivor"
+                                    else _tennis)
+                        m = adapter.model_summary_for_card(
                             b.get("metrics_path"),
                             b.get("sim_state_path"),
                         )
@@ -7207,21 +7226,30 @@ class Handler(BaseHTTPRequestHandler):
                             "strike_count": 0,
                             "strike_lo": None, "strike_hi": None,
                         })
-                        # Pull tennis open paper bets into the cross-bot
-                        # active-bets table so the user sees them in the
-                        # home summary alongside the Kalshi bots' bets.
-                        # Pass the watchlist path so the adapter can
-                        # populate Closes in from the matching live
-                        # record's expected_expiration_time.
-                        for ab in _tennis.active_bets_for_rollup(
-                            b.get("sim_state_path"),
-                            watchlist_path=b.get("watchlist_json_path"),
+                        # Pull open paper bets into the cross-bot
+                        # active-bets table.
+                        if b.get("dashboard_type") == "tennis":
+                            for ab in _tennis.active_bets_for_rollup(
+                                b.get("sim_state_path"),
+                                watchlist_path=b.get("watchlist_json_path"),
+                            ):
+                                ab["_bot_name"] = b["name"]
+                                ab["_bot_key"] = b["key"]
+                                ab["_dashboard_type"] = b.get("dashboard_type") or "standard"
+                                ab["_display"] = b.get("display") or {}
+                                global_active_bets.append(ab)
+                        # Closed paper bets into the cross-bot history
+                        # so hedge exits + natural settles surface on
+                        # the History tab. Same row shape the standard
+                        # ``fetch_bet_history`` produces.
+                        for h in adapter.closed_positions_for_rollup(
+                            b.get("sim_state_path"), limit=50,
                         ):
-                            ab["_bot_name"] = b["name"]
-                            ab["_bot_key"] = b["key"]
-                            ab["_dashboard_type"] = b.get("dashboard_type") or "standard"
-                            ab["_display"] = b.get("display") or {}
-                            global_active_bets.append(ab)
+                            h["_bot_name"] = b["name"]
+                            h["_bot_key"] = b["key"]
+                            h["_dashboard_type"] = b.get("dashboard_type") or "standard"
+                            h["_display"] = b.get("display") or {}
+                            global_history.append(h)
                         continue
                     if b.get("dashboard_type") and b["dashboard_type"] != "standard":
                         continue

@@ -238,6 +238,71 @@ def active_bets_for_rollup(sim_state_path: str | None,
     return out
 
 
+def closed_positions_for_rollup(sim_state_path: str | None,
+                                  limit: int = 100) -> List[Dict[str, Any]]:
+    """Project tennis ``closed_positions`` into the shape the standard
+    ``_render_bet_history_block`` expects.
+
+    Mapping:
+      ticker             ← match_id (= real Kalshi event_ticker)
+      side               ← "YES" (tennis always buys YES on the
+                            favoured side; the dashboard's outcome
+                            badge keys off realized_pnl sign anyway)
+      entry_price_cents  ← entry_market_prob × 100
+      exit_price_cents   ← exit_market_prob × 100 (hedge exit) or
+                            settle_market_prob × 100 (natural settle)
+      contracts          ← 1 (tennis uses 1-contract = $1 face value)
+      realized_pnl_cents ← realized_pnl × 100
+      opened_at / exited_at ← as recorded
+      _title             ← the Kalshi-published YES question
+      error_type         ← exit_reason from the hedge engine
+                            (hedge_pl / hedge_sl) — surfaces on the
+                            Outcome column tooltip when present.
+    """
+    s = load_sim_state(sim_state_path)
+    closed = list(s.get("closed_positions") or [])
+    # Most recently closed first; honour the caller's limit so the
+    # cross-bot history loop doesn't pull thousands of rows from a
+    # long-running paper-trade ledger.
+    closed.sort(key=lambda c: c.get("closed_at", ""), reverse=True)
+    out: List[Dict[str, Any]] = []
+    for c in closed[:limit]:
+        entry = c.get("entry_market_prob")
+        exit_p = (c.get("exit_market_prob")
+                    or c.get("settle_market_prob"))
+        try:
+            entry_cents = (int(round(float(entry) * 100))
+                            if entry is not None else None)
+        except (TypeError, ValueError):
+            entry_cents = None
+        try:
+            exit_cents = (int(round(float(exit_p) * 100))
+                           if exit_p is not None else None)
+        except (TypeError, ValueError):
+            exit_cents = None
+        try:
+            realized_cents = int(round(float(c.get("realized_pnl", 0)) * 100))
+        except (TypeError, ValueError):
+            realized_cents = 0
+        out.append({
+            "ticker": c.get("match_id"),
+            "_title": c.get("title", ""),
+            "side": "YES",
+            "entry_price_cents": entry_cents,
+            "exit_price_cents": exit_cents,
+            "contracts": 1,
+            "realized_pnl_cents": realized_cents,
+            "opened_at": c.get("opened_at", ""),
+            "exited_at": c.get("closed_at", ""),
+            "error_type": c.get("exit_reason"),
+            "model_yes_prob_at_entry": c.get("entry_model_prob"),
+            "kalshi_yes_prob_at_entry": entry,
+            "expected_ev_at_entry": None,
+            "break_even_probability": entry,
+        })
+    return out
+
+
 def summary_for_rollup(sim_state_path: str | None) -> Dict[str, Any]:
     """Tennis summary in the shape the cross-bot rollup expects.
     Cents conversion: tennis stake is dollars (1.0 = $1) → ×100 for cents.
