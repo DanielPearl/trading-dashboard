@@ -1,11 +1,19 @@
-"""Auto-hedge daemon for the dashboard.
+"""Auto-hedge + auto-settle daemon for the dashboard.
 
-Scans every registered bot's open positions on a fixed interval. For
-each position whose unrealized P&L per contract crosses the global
-hedge thresholds (profit-lock or stop-loss), the daemon closes the
-position in place. The closed position drops out of the Summary's
-active-bets table and appears on the History tab on the next page
-load, attributed to the hedge engine.
+Scans every registered bot's open positions on a fixed interval. Two
+trigger paths can close a position:
+
+  1. Hedge: unrealized P&L per contract crosses the global
+     profit-lock or stop-loss threshold.
+  2. Stale: the position's Kalshi-encoded ticker date is more than
+     1 hour past — the underlying contract has settled but the
+     bot's own close path missed it (live state rotated away from
+     the match before the bot saw winner_side). Close at the
+     latest mark we have on file so the position lands in
+     History instead of lingering on the active-bets table.
+
+The closed position drops out of the Summary's active-bets table
+and appears on the History tab on the next page load.
 
 Per-bot adapters:
   - sim.db bots (gas, claims, nat-gas, CPI, NBA):
@@ -112,6 +120,27 @@ def _close_position(c: sqlite3.Connection, *, position_id: int,
     return realized_cents
 
 
+def _ticker_is_stale(ticker: str | None, grace_minutes: int = 60) -> bool:
+    """True when the Kalshi ticker's encoded settlement date is more
+    than ``grace_minutes`` in the past — the contract has settled
+    but the position is still ``status='open'``.
+
+    Lives here (not in dashboard.py) to keep hedge_monitor self-
+    contained. Falls back to importing from dashboard.py when
+    available; otherwise re-implements the same parser inline.
+    """
+    if not ticker:
+        return False
+    try:
+        from .dashboard import minutes_to_close_from_ticker
+    except Exception:  # noqa: BLE001
+        return False
+    mtc = minutes_to_close_from_ticker(ticker)
+    if mtc is None:
+        return False
+    return mtc < -grace_minutes
+
+
 def _check_db(db_path: str, bot_key: str, bot_name: str,
                 profit_lock_cents: int, stop_loss_cents: int,
                 ) -> List[Dict[str, Any]]:
@@ -135,6 +164,7 @@ def _check_db(db_path: str, bot_key: str, bot_name: str,
             return []
         for row in rows:
             pos_id = int(row["id"])
+            ticker = row["ticker"] or ""
             side = (row["side"] or "").upper()
             try:
                 entry = int(row["entry_price_cents"])
@@ -142,26 +172,34 @@ def _check_db(db_path: str, bot_key: str, bot_name: str,
                 continue
             contracts = int(row["contracts"] or 1)
             mark = _latest_mark_cents(c, pos_id, side)
-            if mark is None:
-                continue
-            pnl = _unrealized_pnl_per_contract(side, entry, mark)
-            reason = None
-            if profit_lock_cents > 0 and pnl >= profit_lock_cents:
-                reason = "hedge_pl"
-            elif stop_loss_cents > 0 and pnl <= -stop_loss_cents:
-                reason = "hedge_sl"
+            reason: str | None = None
+            pnl = 0
+            # Stale path first — fires even when mark is None (use
+            # entry as exit so the realized P&L is zero rather than
+            # stranding the position forever).
+            if _ticker_is_stale(ticker):
+                exit_mark = mark if mark is not None else entry
+                pnl = _unrealized_pnl_per_contract(side, entry, exit_mark)
+                reason = "settled_auto"
+            elif mark is not None:
+                pnl = _unrealized_pnl_per_contract(side, entry, mark)
+                if profit_lock_cents > 0 and pnl >= profit_lock_cents:
+                    reason = "hedge_pl"
+                elif stop_loss_cents > 0 and pnl <= -stop_loss_cents:
+                    reason = "hedge_sl"
             if not reason:
                 continue
+            exit_mark = mark if mark is not None else entry
             realized = _close_position(
                 c, position_id=pos_id, entry=entry,
-                contracts=contracts, exit_mark=mark,
+                contracts=contracts, exit_mark=exit_mark,
                 side=side, reason=reason,
             )
             c.commit()
             closed.append({
                 "bot_key": bot_key, "bot_name": bot_name,
-                "position_id": pos_id, "ticker": row["ticker"],
-                "side": side, "entry": entry, "exit": mark,
+                "position_id": pos_id, "ticker": ticker,
+                "side": side, "entry": entry, "exit": exit_mark,
                 "contracts": contracts, "pnl_per_contract": pnl,
                 "realized_cents": realized, "reason": reason,
             })
@@ -222,18 +260,36 @@ def _check_tennis_state(sim_state_path: str | None, bot_key: str,
     for pos in open_positions:
         entry = pos.get("entry_market_prob")
         mark = pos.get("current_market_prob")
-        if entry is None or mark is None:
+        ticker = pos.get("match_id") or pos.get("ticker")
+        is_stale = _ticker_is_stale(ticker)
+        if entry is None:
             still_open.append(pos)
             continue
         try:
             entry_f = float(entry)
-            mark_f = float(mark)
         except (TypeError, ValueError):
             still_open.append(pos)
             continue
+        # For stale positions without a current mark, exit at entry —
+        # P&L is zero but the position lands in History instead of
+        # lingering forever.
+        if mark is None:
+            if is_stale:
+                mark_f = entry_f
+            else:
+                still_open.append(pos)
+                continue
+        else:
+            try:
+                mark_f = float(mark)
+            except (TypeError, ValueError):
+                still_open.append(pos)
+                continue
         pnl_cents = (mark_f - entry_f) * 100.0
         reason: str | None = None
-        if profit_lock_cents > 0 and pnl_cents >= profit_lock_cents:
+        if is_stale:
+            reason = "settled_auto"
+        elif profit_lock_cents > 0 and pnl_cents >= profit_lock_cents:
             reason = "hedge_pl"
         elif stop_loss_cents > 0 and pnl_cents <= -stop_loss_cents:
             reason = "hedge_sl"

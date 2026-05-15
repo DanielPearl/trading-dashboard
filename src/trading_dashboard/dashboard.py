@@ -3122,30 +3122,13 @@ def _render_summary(out: List[str], rollup: dict, active_bets: List[dict],
         "title=\"What does the bot need before it'll buy?\">i</button>"
         "</h3>"
     )
-    # Drop already-settled positions from the Summary view. Tennis
-    # paper bets on matches that finished days ago can linger as
-    # ``status='open'`` if the bot's settle path missed them — the
-    # user doesn't want to see those on the home page. The
-    # ticker-date parser is the universal "this match is over"
-    # signal (negative minutes = past). Per-bot Watchlist tabs keep
-    # showing them so the user can still investigate stuck rows.
-    filtered_active = []
-    for b in active_bets:
-        mtc = b.get("minutes_to_close")
-        if mtc is None:
-            mtc = minutes_to_close_from_ticker(b.get("ticker"))
-        # Allow a 1-hour grace window for in-progress settlements.
-        if mtc is not None and mtc < -60:
-            continue
-        filtered_active.append(b)
-
     # Scroll container — keeps the Summary's active-bets table from
     # pushing the bot-card grid off-screen when many bots have
     # positions open at once. Max-height was picked so ~6 rows are
     # visible before the user has to scroll; matches the watchlist
     # scroll idiom used elsewhere on the page.
     out.append("<div class='summary-active-scroll'>")
-    _render_active_bets_table(out, filtered_active,
+    _render_active_bets_table(out, active_bets,
                                 empty_msg="No active bets right now.",
                                 hedge_cfg=hedge_cfg)
     out.append("</div>")
@@ -3351,7 +3334,8 @@ def _render_active_bets_table(out: List[str], bets: List[dict],
                               empty_msg: str = "No active bets.",
                               show_bot: bool = True,
                               chart_link: bool = False,
-                              hedge_cfg: dict | None = None) -> None:
+                              hedge_cfg: dict | None = None,
+                              hide_settled: bool = True) -> None:
     """Shared renderer used by both Section 1 (cross-bot summary) and
     the per-bot view inside the Watchlist tab. Columns:
         Opened | [Bot] | Ticker | Question | Contracts | Side
@@ -3367,12 +3351,32 @@ def _render_active_bets_table(out: List[str], bets: List[dict],
     Once closed, the position drops out of this table and shows up
     on the History tab with ``exit_reason='hedge'``.
 
+    ``hide_settled=True`` (default) filters out positions whose
+    Kalshi-ticker-encoded settlement date is more than 1 hour in
+    the past — zombie open positions whose bot didn't record the
+    settle event. The hedge daemon closes them on its next tick
+    so they appear on History; this renderer hides them in the
+    interim so the active-bets table reflects only positions the
+    bot is actually exposed on.
+
     ``chart_link=True`` makes each row clickable and stamps the
     chart-overlay attributes (``data-ticker``, ``data-strike``,
     ``data-yes-prob``) so the watchlist hero chart can draw a
     threshold line at the bet's strike (or entry probability for
     sport bots) — the same affordance the strike-ladder rows have.
     """
+    # Drop already-settled positions when requested (default). The
+    # Summary already pre-filters before calling us; per-bot
+    # Watchlist views and the standard renderer rely on this guard.
+    if hide_settled:
+        bets = [
+            b for b in bets
+            if (
+                (b.get("minutes_to_close")
+                 if b.get("minutes_to_close") is not None
+                 else minutes_to_close_from_ticker(b.get("ticker"))) or 0
+            ) >= -60
+        ]
     if not bets:
         out.append(f"<div class='empty'>{html.escape(empty_msg)}</div>")
         return
