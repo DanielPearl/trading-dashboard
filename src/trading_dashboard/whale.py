@@ -632,16 +632,53 @@ _EXCLUDED_SERIES_PREFIXES = (
 )
 
 
+# Series-name substring tokens that imply a sport / esport / crypto
+# market regardless of the exact prefix. Catches Kalshi naming drift
+# (KXCS2GAME, KXNBASERIES, KXMVESPORTSMULTIGAMEEXTENDED, …) the
+# prefix list can't keep up with.
+_EXCLUDED_SUBSTRINGS = (
+    # Sports + esports markers
+    "GAME", "SERIES", "MATCH",
+    "ESPORTS", "CSGO", "CS2", "DOTA", "LEAGUEOFLEGENDS",
+    "VALORANT", "OVERWATCH", "RAINBOWSIX",
+    "NBA", "NFL", "MLB", "NHL", "MLS", "EPL",
+    "UFC", "MMA", "BOXING",
+    "TENNIS", "ATP", "WTA", "ITF",
+    "GOLF", "PGA", "LPGA",
+    "CRICKET", "IPL", "BBL", "PSL",
+    "RUGBY", "AFL", "CFL",
+    "OLYMPICS", "WORLDCUP", "FIFA", "CHAMPIONSLG", "EUROPALG",
+    "BUNDESLIGA", "LALIGA", "SERIEA", "LIGUE1",
+    "F1", "NASCAR", "INDYCAR", "MOTOGP",
+    # Crypto markers
+    "BTC", "BITCOIN", "ETH", "ETHEREUM",
+    "SOL", "XRP", "DOGE", "LTC", "LITECOIN",
+    "ADA", "MATIC", "CRYPTO",
+)
+
+
 def _is_event_ticker(ticker: str | None) -> bool:
     """True when ``ticker`` looks like a real-world event market
     (politics, economics, weather, climate, etc.) — i.e. NOT in the
-    excluded sports or crypto families. Used to short-circuit the
-    whale pipeline so the screen surfaces only event flow."""
+    excluded sports / esports / crypto families.
+
+    Two-stage check:
+      1. Hard prefix match against ``_EXCLUDED_SERIES_PREFIXES``
+         (canonical Kalshi series names we know about).
+      2. Substring fallback against ``_EXCLUDED_SUBSTRINGS`` so new
+         series like KXCS2GAME / KXNBASERIES are caught even before
+         we list them explicitly. False-positive risk: a legit event
+         series that contains one of these tokens (none observed
+         today in the politics / econ / weather / climate / show
+         families).
+    """
     if not ticker:
         return False
     t = ticker.upper()
     series = t.split("-", 1)[0]  # everything before the first hyphen
     if any(series.startswith(p) for p in _EXCLUDED_SERIES_PREFIXES):
+        return False
+    if any(tok in series for tok in _EXCLUDED_SUBSTRINGS):
         return False
     return True
 
