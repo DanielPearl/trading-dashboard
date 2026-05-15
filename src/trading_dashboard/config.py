@@ -75,6 +75,11 @@ class BotEntry:
     dashboard_type: str = "standard"
     signals_path: str | None = None
     orders_path: str | None = None
+    # Whale recorder's sqlite store. Used by the whale dashboard
+    # type instead of (or in addition to) the JSONL signals feed —
+    # the recorder service writes every ≥$10k bet on an open
+    # event market and prunes rows when the market closes.
+    whales_db_path: str | None = None
     # Tennis bot inputs — the tennis-forecast project writes these to
     # data/outputs/ + data/processed/artifacts/ on its own cadence;
     # the dashboard just reads them.

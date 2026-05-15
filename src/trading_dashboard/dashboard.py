@@ -7738,6 +7738,7 @@ def main(argv: list[str] | None = None) -> int:
             "dashboard_type": b.dashboard_type,
             "signals_path": b.signals_path,
             "orders_path": b.orders_path,
+            "whales_db_path": b.whales_db_path,
             "watchlist_json_path": b.watchlist_json_path,
             "metrics_path": b.metrics_path,
             "coefficients_path": b.coefficients_path,
