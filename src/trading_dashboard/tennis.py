@@ -141,6 +141,76 @@ def model_summary_for_card(metrics_path: str | None,
     }
 
 
+def build_standard_watchlist_rows(
+    payload: Dict[str, Any],
+) -> List[Dict[str, Any]]:
+    """Translate tennis watchlist.json rows into the row shape that the
+    standard sport-bot ``_render_watchlist`` consumes. One row per match,
+    with player A mapped to the YES side and player B to NO.
+
+    Kalshi's ``yes_ask_cents_a`` and ``yes_ask_cents_b`` are the per-side
+    market prices — the "NO" cents column is just the other player's
+    YES contract price (the pair sums to ~100¢ minus the spread).
+
+    Rows with zero open interest are dropped so the standard renderer
+    surfaces only tradeable matches, matching the old tennis-specific
+    table's filter.
+    """
+    raw_rows = payload.get("rows") or []
+    out: List[Dict[str, Any]] = []
+    for r in raw_rows:
+        match_id = str(r.get("match_id") or "")
+        if not match_id:
+            continue
+        oi = r.get("open_interest")
+        try:
+            if oi is None or float(oi) <= 0:
+                continue
+        except (TypeError, ValueError):
+            continue
+        # Prefer the live (in-play adjusted) probability since that's what
+        # the bot actually trades on; fall back to the pre-match prior.
+        p_a = r.get("live_prob_a")
+        if p_a is None:
+            p_a = r.get("pre_match_prob_a")
+        buy_eligible = bool(r.get("buy_eligible"))
+        buy_side = (r.get("buy_side") or "").upper()
+        if buy_eligible and buy_side == "A":
+            verdict = "BUY_YES"
+        elif buy_eligible and buy_side == "B":
+            verdict = "BUY_NO"
+        else:
+            verdict = "SKIP"
+        blockers = r.get("buy_blockers") or []
+        if blockers:
+            rej_reason = ", ".join(str(b) for b in blockers)
+        else:
+            rej_reason = str(r.get("reason_for_signal") or "")
+        out.append({
+            "ticker": match_id,
+            "direction": "yes",
+            "strike_low": None,
+            "strike_high": None,
+            "yes_ask_cents": r.get("yes_ask_cents_a"),
+            "no_ask_cents": r.get("yes_ask_cents_b"),
+            "spread_cents": r.get("spread_cents"),
+            "volume": r.get("volume"),
+            "open_interest": oi,
+            "model_prob_yes": p_a,
+            "raw_model_prob_yes": r.get("pre_match_prob_a"),
+            "bot_verdict": verdict,
+            "rejection_reason": rej_reason,
+            "title": r.get("title") or r.get("title_a") or "",
+            "minutes_to_close": None,
+            # Pre-formatted player names so the standard sport-row
+            # renderer surfaces "Brancaccio / Zink" instead of trying
+            # to parse an NBA-style tricode out of the ticker.
+            "_yes_label": r.get("player_a"),
+            "_no_label": r.get("player_b"),
+        })
+    return out
+
+
 def active_bets_for_rollup(sim_state_path: str | None,
                              watchlist_path: str | None = None
                              ) -> List[Dict[str, Any]]:

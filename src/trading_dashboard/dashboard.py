@@ -860,6 +860,81 @@ def build_snapshot(db_path: str, bots: List[dict],
     }
 
 
+def _tennis_like_snapshot(
+    watchlist_rows: List[dict], active_bets: List[dict],
+    bots: List[dict], *, edge_cfg: dict,
+    period_days: int | None,
+) -> dict:
+    """Shape a snapshot for tennis-shape (JSON-source) bots.
+
+    The watchlist + active bets come pre-adapted via
+    ``tennis.build_standard_watchlist_rows`` and
+    ``tennis.active_bets_for_rollup`` — both already produce the
+    standard row schema. Cross-bot summary fields come from the same
+    rollup the sim.db bots use so the Home tab cards stay live.
+    """
+    summary = fetch_global_summary(bots, period_days=period_days)
+    rows = []
+    for v in watchlist_rows:
+        ya = v.get("yes_ask_cents")
+        na = v.get("no_ask_cents")
+        sp = v.get("spread_cents") or 0
+        p = v.get("model_prob_yes")
+        ev_yes = None
+        ev_no = None
+        if p is not None and ya is not None:
+            ev_yes = float(p) - (ya / 100.0) - (sp / 200.0)
+        if p is not None and na is not None:
+            ev_no = (1.0 - float(p)) - (na / 100.0) - (sp / 200.0)
+        rows.append({
+            "ticker": v.get("ticker"),
+            "kalshi_yes": ya, "kalshi_no": na,
+            "spread": v.get("spread_cents"),
+            "volume": v.get("volume"),
+            "open_interest": v.get("open_interest"),
+            "minutes_to_close": v.get("minutes_to_close"),
+            "model_prob_yes": p,
+            "raw_model_prob_yes": v.get("raw_model_prob_yes"),
+            "ev_yes": ev_yes, "ev_no": ev_no,
+            "bot_verdict": v.get("bot_verdict"),
+            "rejection_reason": v.get("rejection_reason"),
+        })
+    actives = []
+    for ab in active_bets:
+        actives.append({
+            "id": ab.get("id"),
+            "ticker": ab.get("ticker"),
+            "side": ab.get("side"),
+            "entry": ab.get("entry_price_cents"),
+            "contracts": ab.get("contracts"),
+            "mark_yes_ask": ab.get("mark_yes_ask"),
+            "mark_no_ask": ab.get("mark_no_ask"),
+            "mark_mid": ab.get("mark_mid"),
+            "unreal_pnl_cents": unrealized_pnl_cents(ab) if
+                ab.get("entry_price_cents") is not None
+                and ab.get("contracts") is not None
+                and ab.get("side") else None,
+        })
+    period_closed = (summary.get("period_wins", 0)
+                     + summary.get("period_losses", 0))
+    return {
+        "summary": {
+            "active_bets": summary.get("active_bets"),
+            "period_closed_bets": period_closed,
+            "period_money_spent_cents": summary.get("period_money_spent_cents"),
+            "period_money_gained_cents": summary.get("period_money_gained_cents"),
+            "potential_gain_cents": summary.get("potential_gain_cents"),
+            "period_net_pnl_cents": summary.get("period_net_pnl_cents"),
+            "period_win_pct": summary.get("period_win_pct"),
+            "period_has_closed": period_closed > 0,
+        },
+        "watchlist": rows,
+        "active_bets": actives,
+        "min_ev": edge_cfg.get("min_ev_per_contract", 0.03),
+        "captured_at": datetime.now(timezone.utc).isoformat(),
+    }
+
+
 # --------------------------------------------------------------------------- #
 # Computations
 # --------------------------------------------------------------------------- #
@@ -5836,6 +5911,21 @@ def _render_models_panel(out: List[str], bot: dict, model: dict | None,
         out.append("<div class='empty'>Bot not found.</div>")
         out.append("</div></div>")
         return
+    # Tennis-shape bots (tennis / table-tennis / darts) don't have a
+    # sim.db — they keep their model artifacts in metrics.json +
+    # coefficients.json. Delegate to the tennis renderer; Phase 2b
+    # will replace this with a unified section-by-section layout.
+    if bot.get("dashboard_type") == "tennis":
+        from . import tennis as _tennis
+        metrics = _tennis.load_metrics(bot.get("metrics_path"))
+        coefficients = _tennis.load_coefficients(bot.get("coefficients_path"))
+        sim_state = _tennis.load_sim_state(bot.get("sim_state_path"))
+        out.append(_tennis._render_tennis_models_page(
+            metrics, coefficients, sim_state,
+            metrics_path=bot.get("metrics_path"),
+        ))
+        out.append("</div></div>")
+        return
     db_path = bot.get("db_path") or ""
     if not db_path or not Path(db_path).exists():
         _render_bot_unavailable(out, bot.get("key", ""))
@@ -6471,12 +6561,14 @@ def _render_watchlist(out: List[str], watchlist: List[dict],
         # Pass the watchlist + event title + sport-bot flag through so
         # the active-bets row mirrors the title and side text of the
         # ticker table directly underneath.
-        _render_active_bets_table(out, enriched_rows, show_bot=False,
-                                   chart_link=True, hedge_cfg=hedge_cfg,
-                                   watchlist=watchlist,
-                                   event_title=event_title,
-                                   is_sport_bot=(current_bot in {"nba"}),
-                                   display=display)
+        _render_active_bets_table(
+            out, enriched_rows, show_bot=False,
+            chart_link=True, hedge_cfg=hedge_cfg,
+            watchlist=watchlist,
+            event_title=event_title,
+            is_sport_bot=(current_bot in
+                          {"nba", "tennis", "table-tennis", "darts"}),
+            display=display)
     else:
         out.append("<div class='empty'>No active bets right now.</div>")
 
@@ -6530,27 +6622,42 @@ def _render_watchlist(out: List[str], watchlist: List[dict],
     # zero open interest aren't tradeable and clutter the table.
     watchlist = [r for r in watchlist
                  if (r.get("open_interest") or 0) > 0]
-    # Sort by strike ascending — natural order ($4.00, $4.02, $4.04 ...).
-    # Falls back to ticker for rows missing a strike (shouldn't happen for
-    # KXAAAGASW but defends against partial parses).
-    watchlist = sorted(
-        watchlist,
-        key=lambda r: (r.get("strike_low")
-                       if r.get("strike_low") is not None else 9_999.0,
-                       r.get("ticker") or ""),
-    )
+    # Sort: sport bots (one row per game / match) have no strike axis,
+    # so order by actionability — BUY-eligible verdicts first, then by
+    # |best EV| descending — mirroring the tennis-specific table the
+    # standard renderer is replacing. Non-sport bots keep the strike
+    # ascending sort that drives the natural ladder layout.
+    is_sport_bot = current_bot in {"nba", "tennis", "table-tennis", "darts"}
+    if is_sport_bot:
+        def _sport_sort_key(r: dict) -> Tuple[int, float]:
+            v = r.get("bot_verdict") or "SKIP"
+            actionable = 0 if v in ("BUY_YES", "BUY_NO") else 1
+            ev = r.get("_best_ev")
+            try:
+                ev_mag = -abs(float(ev)) if ev is not None else 0.0
+            except (TypeError, ValueError):
+                ev_mag = 0.0
+            return (actionable, ev_mag)
+        watchlist = sorted(watchlist, key=_sport_sort_key)
+    else:
+        watchlist = sorted(
+            watchlist,
+            key=lambda r: (r.get("strike_low")
+                           if r.get("strike_low") is not None else 9_999.0,
+                           r.get("ticker") or ""),
+        )
 
     # Column layout (per user spec): Ticker | Question | Contracts |
     # Kalshi YES + NO grouped | My YES + NO grouped | EV YES + NO
     # grouped | Verdict (rightmost). Chance was redundant with Kalshi
     # YES (same midpoint of the bid/ask); volume and closes-in live in
     # the hero header instead of being repeated per row.
-    # Sport bots (NBA today; tennis runs through its own renderer)
-    # show Title + Side: the Title carries Kalshi's published YES
-    # question ("Will MIN win the SAS vs MIN game?") and Side
-    # carries the team-being-bet-on stack. Non-sport bots (gas / CPI
-    # / jobless) keep the strike-band Question column too.
-    is_sport_bot = current_bot in {"nba"}
+    # Sport bots (NBA + tennis-shape) show Title + Side: the Title
+    # carries Kalshi's published YES question ("Will MIN win the
+    # SAS vs MIN game?") and Side carries the team / player being
+    # bet on. Non-sport bots (gas / CPI / jobless) keep the
+    # strike-band Question column too. is_sport_bot was already
+    # computed above to drive the sport-specific row sort.
     if is_sport_bot:
         head_cols = (
             "<th title='Kalshi-published contract title — the "
@@ -6832,13 +6939,19 @@ def _render_watchlist(out: List[str], watchlist: List[dict],
         else:
             title_text = v.get("title") or ""
         if is_sport_bot:
-            yes_team = _side_tricode_from_ticker(ticker, "YES")
-            opp_team = _side_tricode_from_ticker(ticker, "NO")
+            # Tennis-shape rows pre-fill _yes_label / _no_label with the
+            # player names (the ticker doesn't carry a parseable tricode
+            # the way KXNBAGAME does). Prefer those when set; fall back
+            # to the NBA tricode parser for KXNBAGAME tickers.
+            yes_team = v.get("_yes_label") or _side_tricode_from_ticker(
+                ticker, "YES")
+            opp_team = v.get("_no_label") or _side_tricode_from_ticker(
+                ticker, "NO")
             if yes_team:
                 side_cell = (
-                    f"<td><strong>{html.escape(yes_team)}</strong>"
+                    f"<td><strong>{html.escape(str(yes_team))}</strong>"
                     f"<br><span class='small gray'>vs "
-                    f"{html.escape(opp_team)}</span></td>"
+                    f"{html.escape(str(opp_team))}</span></td>"
                 )
             else:
                 side_cell = f"<td>{html.escape(qstr)}</td>"
@@ -7195,33 +7308,15 @@ class Handler(BaseHTTPRequestHandler):
                     self.wfile.write(payload)
                     return
 
-                # Tennis-forecast uses a different page entirely — JSON
-                # source (watchlist.json + metrics.json + coefficients.json),
-                # tennis-shaped watchlist rendering. Dispatch early so the
-                # standard render path stays focused on Kalshi event-bots.
-                if bot.get("dashboard_type") == "tennis":
-                    # Tennis renderer covers Watchlist + Models tabs;
-                    # Home and History fall through to the standard
-                    # renderer at /?... URLs since they're cross-bot.
-                    tennis_tab = "models" if tab_key == "models" else "watchlist"
-                    from . import tennis
-                    body = tennis.render_page(
-                        metrics_path=bot.get("metrics_path"),
-                        coefficients_path=bot.get("coefficients_path"),
-                        watchlist_path=bot.get("watchlist_json_path"),
-                        sim_state_path=bot.get("sim_state_path"),
-                        available_bots=self.bots,
-                        current_bot_key=bot["key"],
-                        tab_key=tennis_tab,
-                    )
-                    payload = body.encode("utf-8")
-                    self.send_response(200)
-                    self.send_header("Content-Type", "text/html; charset=utf-8")
-                    self.send_header("Cache-Control", "no-store")
-                    self.send_header("Content-Length", str(len(payload)))
-                    self.end_headers()
-                    self.wfile.write(payload)
-                    return
+                # Tennis-shape bots (tennis / table-tennis / darts) used
+                # to dispatch into their own ``tennis.render_page`` here.
+                # Phase 2a routes them through the standard render path
+                # so every page is generated by ``render_page`` with the
+                # same chrome and tab structure — only the data source
+                # adapter differs. The branch below builds the
+                # render_page args from watchlist.json + sim_state.json
+                # and falls through to the cross-bot rollup + final
+                # render at the bottom of this method.
 
                 # Rules Parser also uses a custom renderer — same
                 # SQLite-backed pattern as the standard bots, but the
@@ -7291,20 +7386,42 @@ class Handler(BaseHTTPRequestHandler):
                     self.wfile.write(payload)
                     return
 
-                db_path = bot["db_path"]
+                db_path = bot.get("db_path") or ""
 
-                # Bot-scoped fetches.
-                model = fetch_latest_model(db_path)
-                latest_active = fetch_latest_open_position(db_path)
-                watchlist = fetch_watchlist(db_path)
+                # Tennis-shape bots write JSON, not sim.db. Adapt their
+                # watchlist + open positions into the standard row
+                # schema so the shared ``render_page`` consumes them
+                # exactly the way it consumes Kalshi event-bot data.
+                if bot.get("dashboard_type") == "tennis":
+                    from . import tennis as _tennis
+                    payload_wl = _tennis.load_watchlist(
+                        bot.get("watchlist_json_path"))
+                    watchlist = _tennis.build_standard_watchlist_rows(payload_wl)
+                    bot_active_bets = _tennis.active_bets_for_rollup(
+                        bot.get("sim_state_path"),
+                        watchlist_path=bot.get("watchlist_json_path"),
+                    )
+                    for ab in bot_active_bets:
+                        ab.setdefault("_display", bot.get("display") or {})
+                    # Sport bots have no per-bot "latest open position"
+                    # singleton concept — the rollup is the source of
+                    # truth.
+                    latest_active = (bot_active_bets[0]
+                                      if bot_active_bets else None)
+                    model = None
+                else:
+                    # Bot-scoped fetches for standard sim.db bots.
+                    model = fetch_latest_model(db_path)
+                    latest_active = fetch_latest_open_position(db_path)
+                    watchlist = fetch_watchlist(db_path)
+                    bot_active_bets = fetch_active_bets_with_marks(db_path)
+                    for ab in bot_active_bets:
+                        ab.setdefault("_display", bot.get("display") or {})
                 # Open positions — fetched here (instead of just before
                 # render) so we can pass their tickers into the Kalshi
                 # fetch and force their parent events into the watchlist
                 # ladder, even if they're on a different event than the
                 # most-imminent one.
-                bot_active_bets = fetch_active_bets_with_marks(db_path)
-                for ab in bot_active_bets:
-                    ab.setdefault("_display", bot.get("display") or {})
                 open_position_tickers = {
                     ab.get("ticker") for ab in bot_active_bets
                     if ab.get("ticker")
@@ -7315,10 +7432,14 @@ class Handler(BaseHTTPRequestHandler):
                 # the Kalshi fetch since both share the cache.
                 # Local snapshots — kept around as the secondary source
                 # for the hero current-value (used as a final fallback
-                # if Kalshi creds are missing).
-                underlying_history = fetch_underlying_history(
-                    db_path, hours=7 * 24, max_points=5000,
-                )
+                # if Kalshi creds are missing).  Tennis-shape bots have
+                # no underlying time series.
+                if db_path and Path(db_path).exists():
+                    underlying_history = fetch_underlying_history(
+                        db_path, hours=7 * 24, max_points=5000,
+                    )
+                else:
+                    underlying_history = []
                 # Chart source: Kalshi's implied-underlying forecast,
                 # derived from the strike ladder. Same series Kalshi
                 # itself plots on every market page — for each
@@ -7335,7 +7456,11 @@ class Handler(BaseHTTPRequestHandler):
                 series_ticker = bot.get("series_ticker")
                 chart_period = int(((bot.get("display") or {}).get(
                     "chart_period_minutes")) or 60)
-                if series_ticker:
+                # Tennis-shape bots don't have an underlying price
+                # series — the watchlist is per-match. Skip the Kalshi
+                # candlestick fetch entirely so the hero renders an
+                # empty chart frame rather than 500ing.
+                if series_ticker and bot.get("dashboard_type") != "tennis":
                     from . import kalshi_client
                     try:
                         (kalshi_history, atm_market, kalshi_markets,
@@ -7538,8 +7663,16 @@ class Handler(BaseHTTPRequestHandler):
                     global_history = [h for h in global_history if _within(h)]
 
                 # Bot-scoped closed positions — used in Section 5 underneath
-                # the active-bet table per request.
-                bot_closed_positions = fetch_bet_history(db_path, limit=100)
+                # the active-bet table per request. Tennis-shape bots
+                # have no sim.db; pull their closed paper-bet rollup
+                # from the tennis adapter instead.
+                if bot.get("dashboard_type") == "tennis":
+                    from . import tennis as _tennis
+                    bot_closed_positions = _tennis.closed_positions_for_rollup(
+                        bot.get("sim_state_path"), limit=100,
+                    )
+                else:
+                    bot_closed_positions = fetch_bet_history(db_path, limit=100)
 
                 # Open positions were fetched above so their tickers
                 # could be merged into the Kalshi watchlist scope.
@@ -7608,11 +7741,26 @@ class Handler(BaseHTTPRequestHandler):
                     # Same story — Rules Parser uses meta-refresh.
                     payload_dict = {"bot": bot["key"], "type": "rules-parser"}
                 elif bot.get("dashboard_type") == "tennis":
-                    # Tennis page also uses simple page reloads to pick
-                    # up the latest watchlist file — no JS poller. Stub
-                    # the snapshot endpoint so client navigation past
-                    # the tennis tab doesn't 500 on /api/snapshot.
-                    payload_dict = {"bot": bot["key"], "type": "tennis"}
+                    # Tennis bots now render through the standard
+                    # ``render_page`` — feed the JS poller a real
+                    # snapshot built from the JSON watchlist + sim_state
+                    # so live cells (Kalshi % / EV / verdict / etc.)
+                    # patch in place the same way they do for sim.db
+                    # bots.
+                    from . import tennis as _tennis
+                    payload_wl_snap = _tennis.load_watchlist(
+                        bot.get("watchlist_json_path"))
+                    snap_rows = _tennis.build_standard_watchlist_rows(
+                        payload_wl_snap)
+                    snap_actives = _tennis.active_bets_for_rollup(
+                        bot.get("sim_state_path"),
+                        watchlist_path=bot.get("watchlist_json_path"),
+                    )
+                    payload_dict = _tennis_like_snapshot(
+                        snap_rows, snap_actives, self.bots,
+                        edge_cfg=self.edge_cfg,
+                        period_days=snap_period_days,
+                    )
                 elif bot.get("dashboard_type") == "survivor":
                     # Survivor page also uses page reloads; the live
                     # monitor rewrites watchlist.json every few minutes.
