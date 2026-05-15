@@ -5982,17 +5982,14 @@ def _render_models_panel(out: List[str], bot: dict, model: dict | None,
         out.append("</div></div>")
         return
 
-    # ── Confidence banner ───────────────────────────────────────────
-    # Sample-size-driven trust signal for the metrics on this page,
-    # rendered before anything else so the user knows how much weight
-    # to put on the chart / table / matrix that follow. Sourced from
-    # the trainer's holdout_predictions.csv (same file the ROC and
-    # calibration plots below come from).
+    # Holdout predictions drive the confidence tier (rendered down
+    # next to the ROC + Confusion + Calibration block, where the user
+    # naturally looks for held-out context) and the chart data. Load
+    # once here so the page only reads the file a single time.
     holdout_path = _find_training_artifact(
         db_path, "holdout_predictions.csv")
     pairs = _read_holdout_predictions(str(holdout_path))
     conf = _holdout_confidence(pairs)
-    _render_confidence_card(out, conf)
 
     # Training artifacts are loaded once here so both the headline
     # metrics (above the fold) and the feature chart / table below
@@ -6121,22 +6118,25 @@ def _render_models_panel(out: List[str], bot: dict, model: dict | None,
     # the user sees as "the model's accuracy", separate from any
     # closed-bet noise.
     auc_scalar = (model or {}).get("training_roc_auc")
-    # `pairs` was already loaded above for the confidence banner; reuse
-    # it here so the page only reads holdout_predictions.csv once.
+    # `pairs` was already loaded up top; reuse it here so the page only
+    # reads holdout_predictions.csv once.
     roc_points = roc_from_holdout(pairs)
     cm = confusion_from_holdout(pairs, threshold=0.5)
     n_pairs = len(pairs)
     holdout_blurb = (
-        f"Sourced from the trainer's held-out historical test set "
-        f"({n_pairs:,} predictions vs ground-truth outcomes). The "
-        "model never saw this slice during training, so the numbers "
-        "below are the model's honest evaluation against past reality "
-        "— not a re-run of the live closed-bet ledger."
+        "Sourced from the trainer's held-out historical test set — "
+        "predictions the model never saw during training, so the "
+        "numbers below are its honest evaluation against past reality, "
+        "not a re-run of the live closed-bet ledger."
     )
     out.append(
         f"<p class='small gray' style='margin:0 0 6px 0;'>"
         f"{html.escape(holdout_blurb)}</p>"
     )
+    # Held-out row count + confidence tier — same data the section
+    # headers below quote, surfaced once here as a compact one-liner
+    # so the trust signal lives next to the held-out plots it grades.
+    _render_confidence_card(out, conf)
     out.append(
         "<div style='display:grid;grid-template-columns:1fr 1fr;"
         "gap:14px;align-items:start;'>"

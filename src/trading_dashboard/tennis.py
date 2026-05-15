@@ -1254,44 +1254,65 @@ def _tennis_confidence(rows_test: int) -> dict:
                 "label": "No held-out data",
                 "reason": ("metrics.json is missing or didn't record "
                            "a test-set row count — confidence in the "
-                           "metrics on this page can't be quantified.")}
+                           "metrics on this page can't be quantified."),
+                "n": 0}
     if n < 100:
         return {"tier": "low", "color": "#f85149",
                 "label": "Low confidence",
                 "reason": (f"Only {n:,} held-out matches — the "
                            "headline accuracy / ROC AUC are noisy "
                            "and may swing several pts across "
-                           "retrains.")}
+                           "retrains."),
+                "n": n}
     if n < 500:
         return {"tier": "moderate", "color": "#d29922",
                 "label": "Moderate confidence",
                 "reason": (f"{n:,} held-out matches — directionally "
                            "meaningful but per-decile calibration "
-                           "bins still carry wide error bars.")}
+                           "bins still carry wide error bars."),
+                "n": n}
     if n < 2000:
         return {"tier": "good", "color": "#3fb950",
                 "label": "Good confidence",
                 "reason": (f"{n:,} held-out matches — sample size "
                            "is large enough that the headline "
-                           "metrics are stable to within ~1 pt.")}
+                           "metrics are stable to within ~1 pt."),
+                "n": n}
     return {"tier": "high", "color": "#3fb950",
             "label": "High confidence",
             "reason": (f"{n:,} held-out matches — every calibration "
                        "decile carries enough data to read at face "
-                       "value.")}
+                       "value."),
+            "n": n}
 
 
 def _render_tennis_confidence_card(out: List[str], conf: dict) -> None:
+    """Compact tennis-fallback confidence line — used when the trainer
+    hasn't written a holdout_predictions.csv yet. The standard
+    holdout-CSV path uses ``dashboard._render_confidence_card``;
+    this is structurally identical but reads ``conf['n']`` from the
+    tennis tier dict (which counts held-out matches via rows_test).
+    """
     color = conf["color"]
-    out.append(
-        f"<div style='display:flex;align-items:flex-start;gap:14px;"
-        f"padding:12px 14px;margin:0 0 16px 0;border-radius:6px;"
-        f"border:1px solid {color};background:{color}15;'>"
-        f"<div style='font-weight:600;color:{color};white-space:nowrap;'>"
-        f"{html.escape(conf['label'])}</div>"
-        f"<div style='flex:1;color:#c9d1d9;font-size:13px;line-height:1.4;'>"
-        f"{html.escape(conf['reason'])}</div></div>"
-    )
+    n = int(conf.get("n") or 0)
+    label = html.escape(conf.get("label", ""))
+    reason = html.escape(conf.get("reason", ""))
+    if n <= 0:
+        out.append(
+            f"<p class='small gray' "
+            f"style='margin:0 0 12px 0;' title='{reason}'>"
+            f"Held-out test set: <span style='color:{color};"
+            f"font-weight:600;'>{label}</span></p>"
+        )
+    else:
+        out.append(
+            f"<p class='small gray' "
+            f"style='margin:0 0 12px 0;' title='{reason}'>"
+            f"Held-out test set: <b style='color:#c9d1d9;'>"
+            f"{n:,} matches</b> · "
+            f"<span style='color:{color};font-weight:600;'>{label}</span>"
+            f"</p>"
+        )
 
 
 def _render_tennis_models_page(metrics: dict, coefficients: dict,
@@ -1314,12 +1335,12 @@ def _render_tennis_models_page(metrics: dict, coefficients: dict,
     )
     out: List[str] = []
 
-    # ── Confidence banner ──────────────────────────────────────────
-    # Tennis trainer dumps holdout_predictions.csv into the same
-    # artifacts dir as metrics.json. Source the confidence banner
-    # from that file when present so the tier matches the actual
-    # ROC + confusion sample below; fall back to the metrics.json
-    # rows_test count for older trainer outputs.
+    # Holdout predictions drive the confidence tier (rendered next to
+    # the ROC + Confusion grid below where the user looks for held-out
+    # context) and the chart data. Tennis trainer dumps
+    # holdout_predictions.csv into the same artifacts dir as
+    # metrics.json — fall back to the metrics.json rows_test count for
+    # older trainer outputs that don't write the CSV.
     artifacts_dir = (Path(metrics_path).parent if metrics_path
                      else None)
     holdout_pairs: List = []
@@ -1329,11 +1350,9 @@ def _render_tennis_models_page(metrics: dict, coefficients: dict,
             holdout_pairs = _read_holdout_predictions(str(holdout_path))
     if holdout_pairs:
         conf = _holdout_confidence(holdout_pairs)
-        _render_confidence_card(out, conf)
     else:
         rows_test = int((metrics or {}).get("rows_test") or 0)
         conf = _tennis_confidence(rows_test)
-        _render_tennis_confidence_card(out, conf)
 
     # Feature artifacts are loaded once here so both the headline
     # metrics (above the fold) and the feature chart / table below
@@ -1464,6 +1483,14 @@ def _render_tennis_models_page(metrics: dict, coefficients: dict,
             f"outcomes). The model never saw this slice during "
             f"training.</p>"
         )
+        # Compact held-out row count + confidence tier, surfaced next
+        # to the plots it grades (moved out of the top-of-page banner).
+        _render_confidence_card(out, conf)
+    elif conf:
+        # No held-out CSV but the tennis fallback tier is still
+        # meaningful; show the same one-liner so the user sees the
+        # data confidence even without an ROC plot.
+        _render_tennis_confidence_card(out, conf)
         out.append(
             "<div style='display:grid;grid-template-columns:1fr 1fr;"
             "gap:14px;align-items:start;'>"
