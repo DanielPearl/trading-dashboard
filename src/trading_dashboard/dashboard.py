@@ -7160,6 +7160,31 @@ class Handler(BaseHTTPRequestHandler):
                     self.wfile.write(payload)
                     return
 
+                # Rules Parser also uses a custom renderer — same
+                # SQLite-backed pattern as the standard bots, but the
+                # tables it reads are rules-arb specific (signals,
+                # simulated_positions, sources, rule_clauses) so the
+                # generic strike-ladder render path isn't applicable.
+                if bot.get("dashboard_type") == "rules-parser":
+                    from . import rules_parser as _rules_parser
+                    rp_tab = tab_key if tab_key in {
+                        k for k, _ in _rules_parser.RULES_PARSER_TABS
+                    } else "watchlist"
+                    body = _rules_parser.render_page(
+                        db_path=bot.get("db_path"),
+                        available_bots=self.bots,
+                        current_bot_key=bot["key"],
+                        tab_key=rp_tab,
+                    )
+                    payload = body.encode("utf-8")
+                    self.send_response(200)
+                    self.send_header("Content-Type", "text/html; charset=utf-8")
+                    self.send_header("Cache-Control", "no-store")
+                    self.send_header("Content-Length", str(len(payload)))
+                    self.end_headers()
+                    self.wfile.write(payload)
+                    return
+
                 # Whale-watcher uses a different page entirely — JSONL
                 # source, signal-analysis-style render. Dispatch early so
                 # the standard render path stays focused on sim.db bots.
@@ -7348,6 +7373,36 @@ class Handler(BaseHTTPRequestHandler):
                             h["_display"] = b.get("display") or {}
                             global_history.append(h)
                         continue
+                    if b.get("dashboard_type") == "rules-parser":
+                        # Rules Parser does its own SQLite-backed
+                        # bookkeeping (simulated_positions). Surface
+                        # actual_wins / actual_losses on the homepage
+                        # card and pull open + closed sim positions
+                        # into the cross-bot rollup tables.
+                        from . import rules_parser as _rules_parser
+                        m = _rules_parser.model_summary_for_card(b.get("db_path"))
+                        bot_models.append({
+                            "bot": b,
+                            "model": m,
+                            "rules_text": "",
+                            "strike_count": 0,
+                            "strike_lo": None, "strike_hi": None,
+                        })
+                        for ab in _rules_parser.active_bets_for_rollup(
+                                b.get("db_path")):
+                            ab["_bot_name"] = b["name"]
+                            ab["_bot_key"] = b["key"]
+                            ab["_dashboard_type"] = b.get("dashboard_type") or "standard"
+                            ab["_display"] = b.get("display") or {}
+                            global_active_bets.append(ab)
+                        for h in _rules_parser.closed_positions_for_rollup(
+                                b.get("db_path"), limit=50):
+                            h["_bot_name"] = b["name"]
+                            h["_bot_key"] = b["key"]
+                            h["_dashboard_type"] = b.get("dashboard_type") or "standard"
+                            h["_display"] = b.get("display") or {}
+                            global_history.append(h)
+                        continue
                     if b.get("dashboard_type") and b["dashboard_type"] != "standard":
                         continue
                     for ab in fetch_active_bets_with_marks(b["db_path"]):
@@ -7485,6 +7540,9 @@ class Handler(BaseHTTPRequestHandler):
                     # Return a minimal stub so any client polling this
                     # endpoint gets a clean 200.
                     payload_dict = {"bot": bot["key"], "type": "whale"}
+                elif bot.get("dashboard_type") == "rules-parser":
+                    # Same story — Rules Parser uses meta-refresh.
+                    payload_dict = {"bot": bot["key"], "type": "rules-parser"}
                 elif bot.get("dashboard_type") == "tennis":
                     # Tennis page also uses simple page reloads to pick
                     # up the latest watchlist file — no JS poller. Stub
@@ -7648,6 +7706,11 @@ def main(argv: list[str] | None = None) -> int:
         # to the dropdown name is misleading; the page itself renders
         # a clear empty-state when there are zero events.
         if b.dashboard_type == "whale":
+            available = True
+        elif b.dashboard_type == "rules-parser":
+            # Rules Parser is "always available" — the bot may not have
+            # produced any signals yet but the watchlist page renders
+            # a clean empty state in that case.
             available = True
         elif b.dashboard_type == "tennis":
             # Tennis bot is "available" if the watchlist JSON exists. The

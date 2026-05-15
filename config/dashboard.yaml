@@ -112,6 +112,15 @@ bots:
     decisions_path: /root/whale-watcher/data/signal_tracking.jsonl
     signals_path: /root/whale-watcher/data/signal_tracking.jsonl
     orders_path: /root/whale-watcher/data/orders.jsonl
+  - key: rules-parser
+    name: Rules Parser
+    # Rules-arb bot — parses each watched contract's settlement rules
+    # into typed clauses, monitors news for events that match those
+    # clauses, and simulates trades on misprices. The dashboard reads
+    # rules_intel.db read-only.
+    dashboard_type: rules-parser
+    db_path: /root/rules-parser/data/rules_intel.db
+    decisions_path: /root/rules-parser/data/rules_intel.db
   - key: tennis
     name: Tennis Forecast
     # Tennis bot (Baseline Break) writes a JSON watchlist + metrics +
