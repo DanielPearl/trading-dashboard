@@ -398,13 +398,13 @@ VALIDATOR_MAX_PRICE_DRIFT    = 10         # cents
 # the dashboard wants to *show* every big bet, not just the
 # z-score-anomalous ones.
 # Default minimum notional for a trade to surface as a "big bet". The
-# whale page is for genuinely large flow only — anything below $1000
-# is retail noise on this dashboard's series. When Kalshi is quiet
-# the table will be empty; that's the honest signal that no whales
-# are active right now. Users can dial the floor down via the
-# ?min=<dollars> query parameter (see render_page) if they want to
-# inspect smaller flow.
-LIVE_MIN_NOTIONAL_CENTS = 100_000        # $1000+ trades surface by default
+# whale page is for genuinely large flow only — anything below $10,000
+# is noise relative to the size that hints at informed flow. When
+# Kalshi is quiet the table will be empty; that's the honest signal
+# that no whales are active right now. Users can dial the floor down
+# via the ?min=<dollars> query parameter (see render_page) if they
+# want to inspect smaller flow.
+LIVE_MIN_NOTIONAL_CENTS = 1_000_000      # $10,000+ trades surface by default
 LIVE_LOOKBACK_HOURS     = 24             # recent activity window
 
 
@@ -794,6 +794,12 @@ def fetch_live_big_bets(series_tickers: List[str],
             except Exception:  # noqa: BLE001
                 log.warning("whale: get_market failed for %s", ticker)
                 market = None
+            # Only surface bets on currently-active contracts — a big
+            # trade on a market that has since closed/settled isn't
+            # actionable insider flow. Skip markets that aren't open.
+            status = (market or {}).get("status") or ""
+            if status and status.lower() != "open":
+                continue
             close_time = (market or {}).get("close_time")
             mtc: Optional[float] = None
             if close_time:
@@ -1431,7 +1437,7 @@ def render_page(
     # the bar so the user sees only the truly notable ones. Skipped
     # when the user explicitly set ?min= — they asked for that bar.
     AUTO_BUMP_THRESHOLD = 30
-    AUTO_BUMP_FLOOR_CENTS = 500_000  # $5000
+    AUTO_BUMP_FLOOR_CENTS = 2_500_000  # $25,000
     auto_bumped = False
     if (not floor_was_explicit
             and effective_min_cents < AUTO_BUMP_FLOOR_CENTS
@@ -1907,10 +1913,10 @@ def _render_empty_state(out: List[str], min_dollars: int = 0,
         msg = (
             f"No bets ≥ ${min_dollars:,} in the last "
             f"{lookback_hours}h. Try "
-            f"<a href='?bot=whale-watcher&min=10'>$10</a> · "
-            f"<a href='?bot=whale-watcher&min=50'>$50</a> · "
-            f"<a href='?bot=whale-watcher&min=100'>$100</a> · "
-            f"<a href='?bot=whale-watcher&min=1000'>$1000</a>."
+            f"<a href='?bot=whale-watcher&min=1000'>$1,000</a> · "
+            f"<a href='?bot=whale-watcher&min=5000'>$5,000</a> · "
+            f"<a href='?bot=whale-watcher&min=10000'>$10,000</a> · "
+            f"<a href='?bot=whale-watcher&min=25000'>$25,000</a>."
         )
     else:
         msg = "No whale signals captured yet."

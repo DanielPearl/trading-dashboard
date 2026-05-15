@@ -7195,9 +7195,9 @@ class Handler(BaseHTTPRequestHandler):
                     whale_tab = qs.get("tab", ["home"])[0]
                     if whale_tab not in {k for k, _ in whale.WHALE_TABS}:
                         whale_tab = "home"
-                    # ?min=<dollars> overrides the default $100 floor for
-                    # which trades count as "big bets". Lets the user
-                    # crank it up to $1000+ when flow is heavy without a
+                    # ?min=<dollars> overrides the default $10,000 floor
+                    # for which trades count as "big bets". Lets the user
+                    # dial it down to inspect smaller flow without a
                     # redeploy. Anything non-numeric falls through to
                     # the default.
                     min_dollars: int | None = None
