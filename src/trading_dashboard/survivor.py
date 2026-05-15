@@ -636,18 +636,19 @@ def render_page(*, metrics_path: str | None, coefficients_path: str | None,
         f" · live updates every 60s · DRY-RUN mode (no real orders)</div>"
     )
     active_tab = tab_key if tab_key in ("watchlist", "models") else "watchlist"
+    # Bot dropdown sits above the tab bar (matches the standard +
+    # tennis page layout — single filter applies to every tab).
+    out.append(_render_bot_dropdown(available_bots, current_bot_key))
     out.append(_render_tab_bar(current_bot_key, active=active_tab))
 
     if active_tab == "models":
         out.append("<div class='section'><h2>Model</h2><div class='body'>")
-        out.append(_render_bot_dropdown(available_bots, current_bot_key))
         out.append(_render_models_section(metrics, coefficients))
         out.append("</div></div>")
     else:
         # Watchlist tab.
         out.append("<div class='section'><h2>Watchlist — model vs market</h2>"
                     "<div class='body'>")
-        out.append(_render_bot_dropdown(available_bots, current_bot_key))
 
         if not has_active:
             out.append(

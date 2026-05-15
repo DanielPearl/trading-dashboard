@@ -1832,6 +1832,17 @@ tr.row-bought.bought-no:hover  td { background: rgba(248, 81, 73, 0.26); }
 .wl-chart-tooltip .wl-chart-tip-time { color: #8b949e; font-size: 10px; }
 .wl-chart-tooltip .wl-chart-tip-value { color: #f0f6fc; font-size: 13px;
     font-weight: 600; }
+/* Scroll container around the Summary's "Active bets" table. The
+   per-bot active-bets list lower on the Watchlist tab keeps its
+   natural height — only the global aggregate at the top of Home
+   gets clamped. Matches the .watchlist-scroll idiom used for the
+   strike-ladder table. */
+.summary-active-scroll { max-height: 280px; overflow-y: auto;
+    border: 1px solid #30363d; border-radius: 6px;
+    background: #0d1117; }
+.summary-active-scroll table { margin: 0; }
+.summary-active-scroll thead th { position: sticky; top: 0;
+    background: #161b22; z-index: 1; }
 """
 
 
@@ -1885,6 +1896,21 @@ def render_page(
     ]
     valid_tabs = {k for k, _ in tabs}
     active_tab = tab_key if tab_key in valid_tabs else "home"
+
+    # Bot filter sits above the tab bar (per user request) so it
+    # applies uniformly across every tab and doesn't reflow when
+    # panels swap. Selecting a bot navigates to that bot's URL on
+    # the current tab — the per-tab filters that previously lived
+    # inside Summary / Watchlist / Models sections were removed to
+    # avoid duplication.
+    if available_bots:
+        _render_bot_filter(out, available_bots,
+                            current_bot=current_bot,
+                            period_key=period_key,
+                            select_id="bot-select-top",
+                            include_all_option=True,
+                            tab_key=active_tab)
+
     out.append("<div class='tab-bar'>")
     for k, label in tabs:
         cls = "tab-pill" + (" tab-pill-active" if k == active_tab else "")
@@ -2871,17 +2897,8 @@ def _render_summary(out: List[str], rollup: dict, active_bets: List[dict],
     out.append("<div class='section'><h2>1 · Summary — across all bots</h2>"
                "<div class='body summary-body'>")
 
-    # ── Bot-jump dropdown ─────────────────────────────────────────────
-    # Replaces the prior period filter that lived here. Selecting a
-    # bot navigates to that bot's Watchlist tab so the user can drill
-    # into per-bot detail in one click instead of scrolling to the
-    # bot-card grid below. The leading "All bots" entry returns to
-    # this Home view.
-    if available_bots:
-        _render_bot_filter(out, available_bots, current_bot=current_bot,
-                            period_key=period_key,
-                            select_id="bot-select-home",
-                            include_all_option=True)
+    # Bot-jump dropdown moved above the tab bar (per user request) so
+    # it applies to every tab in one place.
 
     # ── Headline cards ────────────────────────────────────────────────
     _render_summary_cards(out, rollup)
@@ -2898,7 +2915,14 @@ def _render_summary(out: List[str], rollup: dict, active_bets: List[dict],
         "title=\"What does the bot need before it'll buy?\">i</button>"
         "</h3>"
     )
+    # Scroll container — keeps the Summary's active-bets table from
+    # pushing the bot-card grid off-screen when many bots have
+    # positions open at once. Max-height was picked so ~6 rows are
+    # visible before the user has to scroll; matches the watchlist
+    # scroll idiom used elsewhere on the page.
+    out.append("<div class='summary-active-scroll'>")
     _render_active_bets_table(out, active_bets, empty_msg="No active bets right now.")
+    out.append("</div>")
 
     out.append("</div></div>")
 
@@ -5418,8 +5442,7 @@ def _render_models_panel(out: List[str], bot: dict, model: dict | None,
     Tennis and whale dispatch into their own renderers.
     """
     out.append("<div class='section'><h2>Model</h2><div class='body'>")
-    _render_bot_filter(out, available_bots, current_bot=current_bot,
-                        tab_key="models")
+    # Bot filter moved above the tab bar (per user request).
     if not bot:
         out.append("<div class='empty'>Bot not found.</div>")
         out.append("</div></div>")
@@ -5963,12 +5986,8 @@ def _render_watchlist(out: List[str], watchlist: List[dict],
     out.append("<div class='section'><h2>"
                "Watchlist — model vs market</h2>"
                "<div class='body'>")
-    # Bot dropdown sits between the watchlist title and the current
-    # prediction so the active bot is clearly tied to the section it
-    # scopes (per user request).
-    if available_bots:
-        _render_bot_filter(out, available_bots, current_bot,
-                            period_key=period_key)
+    # Bot dropdown moved above the tab bar (per user request) so it
+    # applies uniformly across tabs.
 
     # Current-prediction card row (Current price, Predicted next week,
     # etc.) sits between the bot dropdown and the Active bet so the

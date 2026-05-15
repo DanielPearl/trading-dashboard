@@ -1135,10 +1135,8 @@ def _render_whale_models_tab(out: List[str], events: List[dict],
     follow-through win rate at +30min) instead of the feature
     importance / coefficient list a classical model would have.
     """
-    from .dashboard import _render_bot_filter  # type: ignore
     out.append("<div class='section'><h2>Model</h2><div class='body'>")
-    _render_bot_filter(out, available_bots, current_bot_key,
-                        tab_key="models")
+    # Bot filter moved above the tab bar (per user request).
 
     # ── Confidence banner ──────────────────────────────────────────
     # Whale isn't a trained classifier so there's no holdout file —
@@ -1421,6 +1419,13 @@ def render_page(
         ("models",    "Models",    f"?tab=models&bot={html.escape(current_bot_key)}"),
         ("history",   "History",   "?tab=history"),
     ]
+    # Bot filter sits ABOVE the tab bar so it applies to every tab
+    # (matches the standard / tennis / survivor page layout).
+    _render_bot_filter(out, available_bots, current_bot_key,
+                        select_id="bot-select-top",
+                        include_all_option=True,
+                        tab_key=active_tab)
+
     out.append("<div class='tab-bar'>")
     for key, label, href in main_tabs:
         cls = "tab-pill" + (" tab-pill-active" if key == active_tab else "")
@@ -1434,12 +1439,9 @@ def render_page(
         out.append("</body></html>")
         return "".join(out)
 
-    # Bot filter sits BELOW the tabs (inside the section body, like the
-    # main dashboard's Watchlist tab does it).
     out.append("<div class='section'><h2>"
                "Watchlist — model vs market</h2>"
                "<div class='body'>")
-    _render_bot_filter(out, available_bots, current_bot_key)
 
     if summary["n_signals"] == 0:
         _render_empty_state(

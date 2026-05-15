@@ -1525,12 +1525,14 @@ def render_page(*, metrics_path: str | None, coefficients_path: str | None,
         f" · live updates every 60s · DRY-RUN mode (no real orders)</div>"
     )
     active_tab = tab_key if tab_key in ("watchlist", "models") else "watchlist"
+    # Bot dropdown sits above the tab bar so it applies uniformly
+    # across tabs (matches the standard renderer's layout).
+    out.append(_render_bot_dropdown(available_bots, current_bot_key))
     out.append(_render_tab_bar(active=active_tab))
 
     if active_tab == "models":
         # ── Models section ───────────────────────────────────────────
         out.append("<div class='section'><h2>Model</h2><div class='body'>")
-        out.append(_render_bot_dropdown(available_bots, current_bot_key))
         out.append(_render_tennis_models_page(metrics, coefficients,
                                                 sim_state,
                                                 metrics_path=metrics_path))
@@ -1542,7 +1544,6 @@ def render_page(*, metrics_path: str | None, coefficients_path: str | None,
         # ticker table at the bottom.
         out.append("<div class='section'><h2>Watchlist — model vs market</h2>"
                     "<div class='body'>")
-        out.append(_render_bot_dropdown(available_bots, current_bot_key))
         out.append(_render_current_prediction(metrics, sim_state))
 
         # Active paper bets — render via the standard shared renderer
