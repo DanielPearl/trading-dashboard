@@ -79,7 +79,13 @@ def model_summary_for_card(metrics_path: str | None,
                             ) -> Dict[str, Any]:
     """Project metrics.json into the shape the cross-bot card grid
     expects. Same eight cells every other card shows (Accuracy, F1,
-    Precision, ROC AUC, Recall, Features, Actual win %, Gain / loss)."""
+    Precision, ROC AUC, Recall, Features, Actual win %, Gain / loss).
+
+    Precision/recall/F1 come from the trainer's tuned threshold (sweeps
+    [0.05, 0.95] on the train set and picks the F1 maximiser subject
+    to recall ≥ 30%). Without that tuning the calibrated GBT never
+    crosses 0.5 on this ~9%-positive panel and every metric reads 0%.
+    """
     metrics = load_metrics(metrics_path)
     if not metrics:
         return {}
@@ -92,6 +98,7 @@ def model_summary_for_card(metrics_path: str | None,
         "training_precision": blended.get("precision"),
         "training_recall": blended.get("recall"),
         "training_roc_auc": blended.get("roc_auc"),
+        "threshold": blended.get("threshold"),
         "feature_count": int(metrics.get("feature_count", 0) or 0),
         "actual_wins": 0,
         "actual_losses": 0,
@@ -415,8 +422,11 @@ def _render_validators_panel(payload: Dict[str, Any]) -> str:
 def _render_models_section(metrics: Dict[str, Any],
                             coefficients: Dict[str, Any]) -> str:
     blended = metrics.get("blended") or {}
+    blended_train = metrics.get("blended_train") or {}
     logistic = metrics.get("logistic") or {}
+    logistic_train = metrics.get("logistic_train") or {}
     gbt = metrics.get("calibrated_gbt") or {}
+    gbt_train = metrics.get("calibrated_gbt_train") or {}
     out: List[str] = []
     out.append(
         "<p class='small gray'>The elimination model is trained on "
@@ -432,7 +442,24 @@ def _render_models_section(metrics: Dict[str, Any],
         "(interpretable) and a calibrated HistGradientBoosting "
         "ensemble. The lower-Brier model is used in production.</p>"
     )
-    out.append("<h3 class='subhead'>Component breakdown</h3>")
+    threshold = blended.get("threshold")
+    pos_rate_train = metrics.get("train_positive_rate")
+    pos_rate_test = metrics.get("test_positive_rate")
+    if threshold is not None:
+        out.append(
+            f"<p class='small gray'>Class balance is heavily skewed — "
+            f"about <strong>{_fmt_pct(pos_rate_train, 1)}</strong> of "
+            f"training rows and "
+            f"<strong>{_fmt_pct(pos_rate_test, 1)}</strong> of holdout "
+            f"rows are boots, so the trainer sweeps the prediction "
+            f"threshold on the training-set probabilities and locks in "
+            f"the F1-maximising value (≥ 30% recall floor). The blended "
+            f"model is using threshold <code>{threshold:.2f}</code> for "
+            f"every precision / recall / F1 number below.</p>"
+        )
+
+    # ── Brier / log-loss / ROC AUC (threshold-independent) ──────────
+    out.append("<h3 class='subhead'>Probabilistic quality (threshold-independent)</h3>")
     out.append("<table><thead><tr>"
                "<th>Component</th><th>Accuracy</th><th>Brier</th>"
                "<th>Log loss</th><th>ROC AUC</th></tr></thead><tbody>")
@@ -451,12 +478,48 @@ def _render_models_section(metrics: Dict[str, Any],
             f"<td>{_fmt_pct(mm.get('roc_auc'), 1)}</td></tr>"
         )
     out.append("</tbody></table>")
+
+    # ── Train vs Test P/R/F1 at the tuned threshold ─────────────────
+    out.append(
+        "<h3 class='subhead'>Predicted vs actual (P / R / F1 at tuned threshold)</h3>"
+    )
+    out.append("<table><thead><tr>"
+               "<th>Component</th><th>Split</th>"
+               "<th>Precision</th><th>Recall</th><th>F1</th>"
+               "<th>Accuracy</th></tr></thead><tbody>")
+    rows = [
+        ("Logistic regression", "Train", logistic_train),
+        ("Logistic regression", "Test",  logistic),
+        ("Calibrated GBT",      "Train", gbt_train),
+        ("Calibrated GBT",      "Test",  gbt),
+        ("Blended (live)",      "Train", blended_train),
+        ("Blended (live)",      "Test",  blended),
+    ]
+    for name, split, mm in rows:
+        if not mm:
+            out.append(f"<tr><td>{html.escape(name)}</td>"
+                        f"<td>{split}</td><td>—</td><td>—</td>"
+                        f"<td>—</td><td>—</td></tr>")
+            continue
+        out.append(
+            f"<tr><td>{html.escape(name)}</td>"
+            f"<td><span class='small gray'>{split}</span></td>"
+            f"<td>{_fmt_pct(mm.get('precision'), 1)}</td>"
+            f"<td>{_fmt_pct(mm.get('recall'), 1)}</td>"
+            f"<td>{_fmt_pct(mm.get('f1'), 1)}</td>"
+            f"<td>{_fmt_pct(mm.get('accuracy'), 1)}</td></tr>"
+        )
+    out.append("</tbody></table>")
+
     out.append(
         f"<p class='small gray'>Train seasons: "
         f"{html.escape(str(metrics.get('train_seasons') or '—'))} · "
         f"Test seasons: "
         f"{html.escape(str(metrics.get('test_seasons') or '—'))} · "
-        f"Best model: <code>{html.escape(str(metrics.get('best_model') or '—'))}</code></p>"
+        f"Best model: <code>{html.escape(str(metrics.get('best_model') or '—'))}</code> · "
+        f"Rows train/test: "
+        f"{metrics.get('rows_train', '—')} / "
+        f"{metrics.get('rows_test', '—')}</p>"
     )
 
     log_coefs = (coefficients.get("logistic") or {})
