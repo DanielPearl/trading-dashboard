@@ -472,6 +472,12 @@ def tick(bots: List[dict], hedge_cfg: dict) -> List[Dict[str, Any]]:
                     bot_key, bot_name,
                     profit_lock_cents=pl, stop_loss_cents=sl,
                 )
+            elif dt == "rules-parser":
+                # Rules Parser books its own simulated P&L on settlement
+                # via settle_simulated_positions in the bot service.
+                # Its DB has no `positions` table — the hedge monitor
+                # has nothing to do here.
+                continue
             else:
                 db = b.get("db_path") or ""
                 if not db:
