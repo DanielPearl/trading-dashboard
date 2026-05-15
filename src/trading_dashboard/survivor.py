@@ -1,24 +1,18 @@
 """Survivor-elimination dashboard view.
 
 Reads watchlist.json + metrics.json + model_coefficients.json written
-by the survivor-elimination bot (one row per active contestant per
-open Kalshi market). Renders a Survivor-shaped watchlist + Models
-page using the same page chrome as the tennis bot.
+by the survivor-elimination bot (one row per active "Will X be
+eliminated …" Kalshi market). Renders the watchlist + Models tabs
+using the same CSS / section / body chrome the tennis bot uses, so
+the page is visually indistinguishable from the other JSON-source
+bot pages.
 
-Bot-config shape (from dashboard.yaml):
-
-    - key: survivor
-      name: Survivor Elimination
-      dashboard_type: survivor
-      series_ticker: KXSURVIVOR
-      watchlist_json_path: /root/survivor-elimination/data/outputs/watchlist.json
-      metrics_path:        /root/survivor-elimination/data/processed/artifacts/metrics.json
-      coefficients_path:   /root/survivor-elimination/data/processed/artifacts/model_coefficients.json
-      sim_state_path:      /root/survivor-elimination/data/outputs/sim_state.json
-
-The sim_state file is optional (the bot doesn't currently paper-trade
-elimination markets) — the renderer degrades gracefully when it's
-missing.
+Only per-episode elimination markets are surfaced — season-winner
+markets are filtered out by the bot's exporter (see
+``survivor.dashboard.export_watchlist.build_watchlist``). When no
+elimination markets are active, ``is_available`` returns False so
+the dashboard hides the bot card + redirects ``?bot=survivor`` to a
+friendly "not yet" stub.
 """
 from __future__ import annotations
 
@@ -30,14 +24,6 @@ from pathlib import Path
 from typing import Any, Dict, List
 
 log = logging.getLogger("dashboard.survivor")
-
-
-_VERDICT_COLORS = {
-    "BUY YES": "#3fb950",
-    "BUY NO":  "#f85149",
-    "WATCH":   "#e3b341",
-    "SKIP":    "#8b949e",
-}
 
 
 # --------------------------------------------------------------------------- #
@@ -74,18 +60,29 @@ def load_coefficients(path: str | None) -> Dict[str, Any]:
     return load_metrics(path)  # same json-loader shape
 
 
+def is_available(watchlist_path: str | None) -> bool:
+    """The bot is "available" only when the watchlist file lists at
+    least one active elimination market. Used by the dashboard's bot
+    registry to hide the homepage card and the bot dropdown entry
+    when nothing's tradeable today.
+    """
+    payload = load_watchlist(watchlist_path)
+    rows = payload.get("rows") or []
+    if not rows:
+        return False
+    for r in rows:
+        if (r.get("market_type") or "") == "elimination" \
+                and (r.get("status") or "").lower() not in {"closed", "settled",
+                                                              "finalized", "cancelled"}:
+            return True
+    return False
+
+
 def model_summary_for_card(metrics_path: str | None,
                             sim_state_path: str | None = None
                             ) -> Dict[str, Any]:
     """Project metrics.json into the shape the cross-bot card grid
-    expects. Same eight cells every other card shows (Accuracy, F1,
-    Precision, ROC AUC, Recall, Features, Actual win %, Gain / loss).
-
-    Precision/recall/F1 come from the trainer's tuned threshold (sweeps
-    [0.05, 0.95] on the train set and picks the F1 maximiser subject
-    to recall ≥ 30%). Without that tuning the calibrated GBT never
-    crosses 0.5 on this ~9%-positive panel and every metric reads 0%.
-    """
+    expects. P/R/F1 come from the trainer's tuned threshold."""
     metrics = load_metrics(metrics_path)
     if not metrics:
         return {}
@@ -106,8 +103,6 @@ def model_summary_for_card(metrics_path: str | None,
 
 
 def summary_for_rollup(sim_state_path: str | None) -> Dict[str, Any]:
-    """Stub — no paper-trade ledger today, so every count is zero.
-    Keeps the cross-bot rollup symmetric without special-casing."""
     return {
         "open_count": 0, "period_bets_made": 0, "period_net_pnl_cents": 0,
         "period_wins": 0, "period_losses": 0, "period_money_spent_cents": 0,
@@ -128,23 +123,23 @@ def _fmt_pct(v, decimals: int = 1) -> str:
 
 
 def _fmt_signed_pp(v) -> str:
-    if v is None: return "—"
+    if v is None: return "0"
     try:
         pp = float(v) * 100
         if round(pp, 1) == 0: return "0"
         return f"{pp:+.1f}pp"
     except (TypeError, ValueError):
-        return "—"
+        return "0"
 
 
 def _fmt_signed_ev(v) -> str:
-    if v is None: return "—"
+    if v is None: return "0"
     try:
         x = float(v)
         if round(x, 3) == 0: return "0"
         return f"{x:+.3f}"
     except (TypeError, ValueError):
-        return "—"
+        return "0"
 
 
 def _last_updated_age(generated_at: str | None) -> str:
@@ -161,25 +156,31 @@ def _last_updated_age(generated_at: str | None) -> str:
 
 
 def _verdict_badge(verdict: str, blockers: List[str]) -> str:
-    color = _VERDICT_COLORS.get(verdict, "#8b949e")
+    """Map verdict -> the same .badge-* / .status-pill classes the
+    other watchlist pages use, so the colour vocabulary matches."""
     tip = ""
     if blockers:
         tip = f" title='Blockers: {html.escape(', '.join(blockers))}'"
     cls = "badge-yes" if verdict == "BUY YES" else \
           "badge-no" if verdict == "BUY NO" else \
           "badge-hedge" if verdict == "WATCH" else "badge-skip"
-    return (f"<span class='badge {cls}'{tip}>{html.escape(verdict)}</span>")
+    return f"<span class='badge {cls}'{tip}>{html.escape(verdict)}</span>"
 
 
 # --------------------------------------------------------------------------- #
-# Sections                                                                    #
+# Sections (rendered inside section/body wrappers identical to tennis)        #
 # --------------------------------------------------------------------------- #
 
-def _render_tab_bar(bot_key: str, active: str = "watchlist") -> str:
+def _render_tab_bar(current_bot_key: str, active: str = "watchlist") -> str:
+    """Three-tab bar matching the tennis renderer's chrome.
+
+    Home → / (cross-bot home), Watchlist → ?bot=…&tab=watchlist,
+    Models → ?bot=…&tab=models, History → /?tab=history.
+    """
     tabs = [
         ("home", "Home", "/"),
-        ("watchlist", "Watchlist", f"?bot={bot_key}&tab=watchlist"),
-        ("models", "Models", f"?bot={bot_key}&tab=models"),
+        ("watchlist", "Watchlist", f"?bot={current_bot_key}&tab=watchlist"),
+        ("models", "Models", f"?bot={current_bot_key}&tab=models"),
         ("history", "History", "/?tab=history"),
     ]
     out = ["<div class='tab-bar'>"]
@@ -194,6 +195,8 @@ def _render_tab_bar(bot_key: str, active: str = "watchlist") -> str:
 
 
 def _render_bot_dropdown(available_bots: List[dict], current_key: str) -> str:
+    """Same bot-filter dropdown the standard renderer uses, scoped to
+    bots currently available."""
     if not available_bots:
         return ""
     out = ["<div class='bot-filter-bar'>",
@@ -214,8 +217,11 @@ def _render_bot_dropdown(available_bots: List[dict], current_key: str) -> str:
 
 def _render_current_prediction(payload: Dict[str, Any],
                                 metrics: Dict[str, Any]) -> str:
-    """Six-card row at the top of the page: season / episode / active
-    contestants / model accuracy / brier / generated-at."""
+    """Six-card row at the top of the watchlist tab.
+
+    Same .row / .card structure every other watchlist page uses, so
+    the spacing + typography line up.
+    """
     blended = metrics.get("blended") or {}
     cards = [
         ("Season",            str(payload.get("season") or "—"), ""),
@@ -223,12 +229,10 @@ def _render_current_prediction(payload: Dict[str, Any],
         ("Active contestants", str(payload.get("active_contestants") or
                                     len(payload.get("rows", []))), ""),
         ("Holdout accuracy",  _fmt_pct(blended.get("accuracy"), 1), ""),
-        ("Holdout Brier",     (f"{blended.get('brier'):.3f}"
-                                 if blended.get("brier") is not None else "—"),
-                              "lower better"),
+        ("Holdout F1",        _fmt_pct(blended.get("f1"), 1), "tuned threshold"),
         ("Updated",           _last_updated_age(payload.get("generated_at")), ""),
     ]
-    out = ["<div class='row compact'>"]
+    out = ["<div class='row'>"]
     for label, value, sub in cards:
         sub_html = (f"<div class='small gray'>{html.escape(sub)}</div>"
                     if sub else "")
@@ -241,51 +245,62 @@ def _render_current_prediction(payload: Dict[str, Any],
     return "".join(out)
 
 
+def _ticker_cell(ticker: str | None) -> str:
+    """Render the Kalshi ticker as a real, clickable link to the
+    actual market page on kalshi.com (same idiom the tennis +
+    standard watchlist pages use)."""
+    if not ticker:
+        return "—"
+    ticker = str(ticker)
+    if ticker.upper().startswith("KX") or ticker.upper().startswith("SURVIVOR"):
+        url = f"https://kalshi.com/markets/{ticker.lower()}"
+        return (f"<a href='{html.escape(url)}' target='_blank' "
+                f"rel='noopener noreferrer' class='ticker-link'>"
+                f"{html.escape(ticker)}</a>")
+    return html.escape(ticker)
+
+
 def _render_watchlist_table(payload: Dict[str, Any]) -> str:
-    """Per-contestant table: Ticker | Contestant | Kalshi % | Model % |
-    Edge | EV YES | EV NO | Confidence | Verdict.
+    """Contestants table.
+
+    Column shape mirrors the tennis watchlist: Ticker | Title | Side |
+    Contracts | Kalshi % | Model % | Edge | EV | Verdict — adapted to
+    the per-episode elimination question.
     """
     rows = payload.get("rows") or []
+    # Only "Will X be eliminated" markets that are still open.
+    rows = [
+        r for r in rows
+        if (r.get("market_type") or "") == "elimination"
+        and (r.get("status") or "").lower() not in {"closed", "settled",
+                                                       "finalized", "cancelled"}
+    ]
     if not rows:
-        return ("<div class='empty'>No active Survivor markets right now — "
-                "the live monitor will pick up the next episode's markets "
-                "as soon as Kalshi opens them.</div>")
+        return ("<div class='empty'>No active elimination markets right "
+                "now.</div>")
+
     out = ["<div class='watchlist-scroll'>",
            "<table id='survivor-watchlist-table'>",
-           "<thead><tr>",
-           "<th>Ticker</th>",
-           "<th>Contestant</th>",
-           "<th title='Kalshi market type. elimination = per-episode boot market (YES = eliminated this episode). season_win = win the whole season (YES = takes the title).'>Type</th>",
-           "<th class='num' title='Kalshi YES price for the contestant on the displayed market type.'>Kalshi %</th>",
-           "<th class='num' title='Model probability for the same side: for elimination markets this is P(eliminated this episode); for season-winner markets it is a chained P(wins season) derived from the per-episode model.'>Model %</th>",
-           "<th class='num' title='Per-episode P(eliminated) from the model — the headline elimination forecast regardless of which Kalshi market type is active.'>Boot P</th>",
-           "<th class='num' title='Gap between model and Kalshi (model − market) in percentage points.'>Gap</th>",
-           "<th class='num' title='Expected value per $1 contract for YES on the displayed market.'>EV YES</th>",
-           "<th class='num' title='Expected value per $1 contract for NO on the displayed market.'>EV NO</th>",
-           "<th class='num' title='Model confidence on this row (0..1) — combines edge magnitude with distance from a coin-flip price.'>Confidence</th>",
-           "<th>Verdict</th>",
+           "<thead><tr>"
+           "<th>Ticker</th>"
+           "<th>Title</th>"
+           "<th>Contestant</th>"
+           "<th class='num' title='Open interest — number of YES contracts open on this market.'>Contracts</th>"
+           "<th class='num' title='Kalshi YES implied probability of elimination this episode.'>Kalshi %</th>"
+           "<th class='num' title='Model probability of elimination this episode.'>Model %</th>"
+           "<th class='num' title='Gap between model and Kalshi (model − market) in percentage points.'>Gap</th>"
+           "<th class='num' title='Expected value per $1 contract for YES (= will be eliminated) net of slippage.'>EV YES</th>"
+           "<th class='num' title='Expected value per $1 contract for NO (= will survive this episode).'>EV NO</th>"
+           "<th class='num' title='Model confidence on this row (0..1).'>Conf</th>"
+           "<th>Verdict</th>"
            "</tr></thead><tbody>"]
+
     for r in rows:
         ticker = r.get("ticker") or r.get("match_id") or ""
-        if ticker.upper().startswith("KX"):
-            kalshi_url = f"https://kalshi.com/markets/{ticker.lower()}"
-            ticker_cell = (f"<a href='{html.escape(kalshi_url)}' "
-                            f"target='_blank' rel='noopener noreferrer' "
-                            f"class='ticker-link'>{html.escape(ticker)}</a>")
-        else:
-            ticker_cell = html.escape(str(ticker))
+        title_text = r.get("title") or ""
         contestant = r.get("contestant") or "—"
-        title = r.get("title") or ""
-        contestant_cell = (f"<strong>{html.escape(str(contestant))}</strong>"
-                            f"<br><span class='small gray' title='"
-                            f"{html.escape(str(title))}'>"
-                            f"{html.escape(str(title)[:80])}</span>")
-        market_type = r.get("market_type") or "elimination"
-        mt_short = "elim" if market_type == "elimination" else \
-                   "season" if market_type == "season_win" else "?"
-        mt_cell = (f"<span class='small gray' title='"
-                    f"{html.escape(market_type)}'>{html.escape(mt_short)}</span>")
-
+        oi = r.get("open_interest")
+        oi_str = f"{int(oi):,}" if oi is not None else "—"
         mkt = r.get("market_prob") if r.get("market_prob") is not None \
               else r.get("market_prob_eliminated")
         mdl = r.get("model_prob") if r.get("model_prob") is not None \
@@ -306,28 +321,34 @@ def _render_watchlist_table(payload: Dict[str, Any]) -> str:
                       "yellow" if ev_no is not None else "gray")
 
         verdict = r.get("verdict") or "SKIP"
-        blockers = r.get("buy_blockers") or []
-        verdict_pill = _verdict_badge(verdict, blockers)
+        verdict_pill = _verdict_badge(verdict, r.get("buy_blockers") or [])
 
-        row_cls = "survivor-row"
+        # Row classes match the standard watchlist's row idiom so the
+        # green/red tinting + hover behave the same as tennis/NBA.
+        row_classes = []
         if verdict == "BUY YES":
-            row_cls += " row-bought bought-yes"
+            row_classes += ["row-bought", "bought-yes"]
         elif verdict == "BUY NO":
-            row_cls += " row-bought bought-no"
+            row_classes += ["row-bought", "bought-no"]
         elif verdict == "WATCH":
-            row_cls += " row-suspect"
+            row_classes += ["row-suspect"]
+        row_cls = " ".join(row_classes)
 
-        # "Boot P" — the headline per-episode P(eliminated) from the
-        # model, regardless of which Kalshi market type is active.
-        boot_p = r.get("model_prob_eliminated")
+        title_cell = (
+            f"<td title='{html.escape(str(title_text))}' "
+            f"style='max-width:320px;'>"
+            f"<span class='small gray' style='display:block;overflow:hidden;"
+            f"text-overflow:ellipsis;white-space:nowrap;'>"
+            f"{html.escape(str(title_text))}</span></td>"
+        )
         out.append(
             f"<tr class='{row_cls}'>"
-            f"<td class='mono small'>{ticker_cell}</td>"
-            f"<td>{contestant_cell}</td>"
-            f"<td>{mt_cell}</td>"
+            f"<td class='mono small'>{_ticker_cell(ticker)}</td>"
+            f"{title_cell}"
+            f"<td><strong>{html.escape(str(contestant))}</strong></td>"
+            f"<td class='num'>{oi_str}</td>"
             f"<td class='num'>{_fmt_pct(mkt, 0)}</td>"
             f"<td class='num'>{_fmt_pct(mdl, 0)}</td>"
-            f"<td class='num'>{_fmt_pct(boot_p, 0)}</td>"
             f"<td class='num {edge_cls}'>{_fmt_signed_pp(edge)}</td>"
             f"<td class='num {ev_yes_cls}'>{_fmt_signed_ev(ev_yes)}</td>"
             f"<td class='num {ev_no_cls}'>{_fmt_signed_ev(ev_no)}</td>"
@@ -340,20 +361,16 @@ def _render_watchlist_table(payload: Dict[str, Any]) -> str:
 
 
 def _render_reddit_panel(payload: Dict[str, Any]) -> str:
-    """Compact panel showing the per-contestant Reddit signals
-    embedded in the watchlist rows. Useful for QA — confirms the
-    Reddit ingestion is firing and the boot-prediction regex is
-    catching mentions."""
     rows = payload.get("rows") or []
+    rows = [r for r in rows if (r.get("market_type") or "") == "elimination"]
     if not rows:
         return ""
     interesting = sorted(rows,
                           key=lambda r: -(r.get("reddit_boot_pick_count") or 0))[:8]
     if not any((r.get("reddit_boot_pick_count") or 0) for r in interesting):
-        return ("<div class='empty small gray'>No Reddit boot-prediction "
-                "signal yet — either creds aren't configured or no "
-                "post-episode discussion has named a contestant as the "
-                "next boot.</div>")
+        return ("<div class='empty'>No Reddit boot-prediction signal yet — "
+                "either creds aren't configured or no post-episode "
+                "discussion has named a contestant as the next boot.</div>")
     out = ["<table>",
            "<thead><tr>"
            "<th>Contestant</th>"
@@ -380,37 +397,32 @@ def _render_reddit_panel(payload: Dict[str, Any]) -> str:
 
 
 def _render_validators_panel(payload: Dict[str, Any]) -> str:
-    """Surface validator stats for the current watchlist so the user
-    can audit what's blocking buys at a glance."""
     rows = payload.get("rows") or []
+    rows = [r for r in rows if (r.get("market_type") or "") == "elimination"]
     if not rows:
         return ""
     total = len(rows)
-    buys = sum(1 for r in rows if r.get("verdict") == "BUY YES"
-                                  or r.get("verdict") == "BUY NO")
+    buys = sum(1 for r in rows if r.get("verdict") in ("BUY YES", "BUY NO"))
     watches = sum(1 for r in rows if r.get("verdict") == "WATCH")
     skips = sum(1 for r in rows if r.get("verdict") == "SKIP")
     blocker_counts: Dict[str, int] = {}
     for r in rows:
         for b in (r.get("buy_blockers") or []):
             blocker_counts[b] = blocker_counts.get(b, 0) + 1
-    out = [
-        "<div class='row compact'>",
-        f"<div class='card'><div class='label'>Total rows</div>"
-        f"<div class='value'>{total}</div></div>",
-        f"<div class='card'><div class='label'>BUY rows</div>"
-        f"<div class='value green'>{buys}</div></div>",
-        f"<div class='card'><div class='label'>WATCH</div>"
-        f"<div class='value yellow'>{watches}</div></div>",
-        f"<div class='card'><div class='label'>SKIP</div>"
-        f"<div class='value gray'>{skips}</div></div>",
-        "</div>",
-    ]
+    out = ["<div class='row'>",
+           f"<div class='card'><div class='label'>Total rows</div>"
+           f"<div class='value'>{total}</div></div>",
+           f"<div class='card'><div class='label'>BUY rows</div>"
+           f"<div class='value green'>{buys}</div></div>",
+           f"<div class='card'><div class='label'>WATCH</div>"
+           f"<div class='value yellow'>{watches}</div></div>",
+           f"<div class='card'><div class='label'>SKIP</div>"
+           f"<div class='value gray'>{skips}</div></div>",
+           "</div>"]
     if blocker_counts:
         out.append("<table><thead><tr><th>Validator blocker</th>"
                     "<th class='num'>Rows</th></tr></thead><tbody>")
-        for reason, n in sorted(blocker_counts.items(),
-                                  key=lambda kv: -kv[1]):
+        for reason, n in sorted(blocker_counts.items(), key=lambda kv: -kv[1]):
             out.append(
                 f"<tr><td>{html.escape(reason)}</td>"
                 f"<td class='num'>{n}</td></tr>"
@@ -430,7 +442,7 @@ def _render_models_section(metrics: Dict[str, Any],
     out: List[str] = []
     out.append(
         "<p class='small gray'>The elimination model is trained on "
-        "every modern-era Survivor boot (seasons 41–49) one row per "
+        "every modern-era Survivor boot (seasons 41–49), one row per "
         "active contestant per episode. The dependent variable is "
         "<code>eliminated_this_episode</code>. Features include "
         "season + episode structure, tribe state, on-show signal "
@@ -454,12 +466,11 @@ def _render_models_section(metrics: Dict[str, Any],
             f"rows are boots, so the trainer sweeps the prediction "
             f"threshold on the training-set probabilities and locks in "
             f"the F1-maximising value (≥ 30% recall floor). The blended "
-            f"model is using threshold <code>{threshold:.2f}</code> for "
-            f"every precision / recall / F1 number below.</p>"
+            f"model is using threshold <code>{threshold:.2f}</code>.</p>"
         )
 
-    # ── Brier / log-loss / ROC AUC (threshold-independent) ──────────
-    out.append("<h3 class='subhead'>Probabilistic quality (threshold-independent)</h3>")
+    out.append("<h3 class='subhead'>Probabilistic quality "
+                "<span class='small gray'>(threshold-independent)</span></h3>")
     out.append("<table><thead><tr>"
                "<th>Component</th><th>Accuracy</th><th>Brier</th>"
                "<th>Log loss</th><th>ROC AUC</th></tr></thead><tbody>")
@@ -479,10 +490,9 @@ def _render_models_section(metrics: Dict[str, Any],
         )
     out.append("</tbody></table>")
 
-    # ── Train vs Test P/R/F1 at the tuned threshold ─────────────────
-    out.append(
-        "<h3 class='subhead'>Predicted vs actual (P / R / F1 at tuned threshold)</h3>"
-    )
+    out.append("<h3 class='subhead'>Predicted vs actual "
+                "<span class='small gray'>(P / R / F1 at tuned threshold)"
+                "</span></h3>")
     out.append("<table><thead><tr>"
                "<th>Component</th><th>Split</th>"
                "<th>Precision</th><th>Recall</th><th>F1</th>"
@@ -527,191 +537,110 @@ def _render_models_section(metrics: Dict[str, Any],
     coefs = log_coefs.get("coefficients") or []
     intercept = log_coefs.get("intercept")
     if feats and coefs:
-        out.append("<h3 class='subhead'>Model coefficients · logistic regression</h3>")
+        out.append("<h3 class='subhead'>Model coefficients · "
+                    "logistic regression</h3>")
         out.append("<table><thead><tr>"
-                    "<th>Feature</th><th>Coefficient</th><th>Interpretation</th>"
+                    "<th>Feature</th><th>Coefficient</th>"
                     "</tr></thead><tbody>")
         ranked = sorted(zip(feats, coefs),
                          key=lambda fc: -abs(fc[1]))
         for n, c in ranked:
-            sign = "raises" if c > 0 else "lowers"
-            interp = _coef_interpretation(n, sign)
             out.append(
                 f"<tr><td><code>{html.escape(n)}</code></td>"
-                f"<td>{c:+.4f}</td>"
-                f"<td class='small gray'>{html.escape(interp)}</td></tr>"
+                f"<td>{c:+.4f}</td></tr>"
             )
         if intercept is not None:
             out.append(
                 f"<tr><td><code>(intercept)</code></td>"
-                f"<td>{intercept:+.4f}</td>"
-                f"<td class='small gray'>baseline log-odds of elimination per episode</td></tr>"
+                f"<td>{intercept:+.4f}</td></tr>"
             )
         out.append("</tbody></table>")
     return "".join(out)
 
 
-def _coef_interpretation(name: str, sign: str) -> str:
-    table = {
-        "season": f"more recent seasons {sign} elimination probability per episode",
-        "episode": f"later episodes {sign} elimination probability",
-        "remaining": f"more contestants remaining {sign} per-contestant elimination probability",
-        "tribe_size": f"larger tribe size {sign} per-contestant elimination probability",
-        "starting_tribe_size": f"larger starting tribe {sign} per-contestant elimination probability",
-        "merged": f"post-merge episodes {sign} per-contestant elimination probability",
-        "swap_phase": f"swap-phase episodes {sign} elimination probability",
-        "episode_share_remaining": f"deep-in-the-season rows {sign} probability",
-        "pre_merge_phase": f"pre-merge episodes {sign} probability",
-        "is_finale": f"final-episode rows {sign} probability",
-        "immunity_won": f"holding individual immunity {sign} probability",
-        "tribe_immunity": f"winning tribe immunity {sign} elimination probability",
-        "has_idol": f"holding a hidden idol {sign} elimination probability",
-        "in_main_alliance": f"being in the dominant alliance {sign} probability",
-        "prior_votes_against": f"each prior vote against {sign} probability",
-        "times_targeted": f"each prior target mention {sign} probability",
-        "confessional_count": f"more confessionals this episode {sign} probability",
-        "visibility_score": f"higher rolling visibility {sign} probability",
-        "visibility_spike": f"a positive visibility spike {sign} probability",
-        "negative_edit_score": f"a stronger negative edit {sign} probability",
-        "strategic_isolation": f"being more isolated {sign} probability",
-        "prior_perf_score": f"stronger prior challenge performance {sign} probability",
-        "reddit_mention_count": f"more Reddit mentions {sign} probability",
-        "reddit_boot_pick_count": f"more Reddit boot picks {sign} probability",
-        "reddit_sentiment": f"more positive Reddit sentiment {sign} probability",
-        "reddit_visibility_score": f"higher Reddit visibility share {sign} probability",
-        "reddit_target_share": f"larger share of Reddit boot picks {sign} probability",
-    }
-    return table.get(name, f"{sign} elimination probability per +1 unit")
-
-
 # --------------------------------------------------------------------------- #
-# Top-level page render                                                       #
+# Page renderer                                                                #
 # --------------------------------------------------------------------------- #
 
-_PAGE_HEAD = """<!DOCTYPE html>
-<html lang='en'><head><meta charset='utf-8'>
-<title>Survivor Elimination · Kalshi dashboard</title>
-<link rel='icon' type='image/svg+xml' href='/static/favicon.svg'>
-<style>
-body { background:#0d1117; color:#c9d1d9;
-       font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;
-       margin:0; padding:24px; }
-h1 { margin:0 0 12px; font-size:20px; }
-h2.subhead { margin:24px 0 8px; font-size:15px; color:#f0f6fc; }
-h3.subhead { margin:16px 0 8px; font-size:13px; color:#f0f6fc; }
-.section { background:#161b22; border:1px solid #21262d; border-radius:8px;
-           padding:14px 18px; margin-bottom:18px; }
-.row.compact { display:grid; grid-template-columns:repeat(auto-fit,minmax(140px,1fr));
-               gap:10px; }
-.card { background:#0d1117; border:1px solid #21262d; border-radius:6px;
-        padding:10px 12px; }
-.card .label { font-size:11px; color:#8b949e; text-transform:uppercase;
-               letter-spacing:0.5px; }
-.card .value { font-size:18px; color:#f0f6fc; font-weight:600;
-               margin-top:4px; }
-.green { color:#3fb950; } .red { color:#f85149; }
-.yellow { color:#e3b341; } .gray { color:#8b949e; }
-.small { font-size:11px; }
-.mono { font-family:"SF Mono",Menlo,Consolas,monospace; font-size:12px; }
-.empty { padding:24px; color:#8b949e; text-align:center; }
-.tab-bar { display:flex; gap:8px; margin-bottom:16px; }
-.tab-pill { padding:6px 12px; background:#161b22; border:1px solid #21262d;
-            border-radius:999px; color:#c9d1d9; text-decoration:none;
-            font-size:13px; }
-.tab-pill-active { background:#1f6feb; color:#fff; border-color:#1f6feb; }
-.bot-filter-bar { display:flex; gap:8px; align-items:center; margin-bottom:16px; }
-.bot-select { background:#0d1117; color:#c9d1d9; border:1px solid #21262d;
-              border-radius:6px; padding:4px 8px; }
-.filter-label { font-size:12px; color:#8b949e; }
-table { width:100%; border-collapse:collapse; }
-th,td { padding:6px 8px; border-bottom:1px solid #21262d; text-align:left;
-        font-size:13px; }
-th { color:#8b949e; font-weight:500; }
-.num { text-align:right; }
-.cell-sep { color:#30363d; }
-.watchlist-scroll { max-height:600px; overflow:auto; border:1px solid #21262d;
-                     border-radius:6px; }
-.badge { display:inline-block; padding:2px 8px; border-radius:999px;
-         font-size:11px; font-weight:600; }
-.badge-yes { background:#3fb95022; color:#3fb950; border:1px solid #3fb95055; }
-.badge-no  { background:#f8514922; color:#f85149; border:1px solid #f8514955; }
-.badge-hedge { background:#e3b34122; color:#e3b341;
-               border:1px solid #e3b34155; }
-.badge-skip { background:#8b949e22; color:#8b949e;
-              border:1px solid #8b949e55; }
-.ticker-link { color:#58a6ff; text-decoration:none; }
-.ticker-link:hover { text-decoration:underline; }
-code { background:#0d1117; padding:1px 4px; border-radius:3px;
-       border:1px solid #21262d; font-size:12px; }
-tr.row-bought.bought-yes td { background:#3fb9500c; }
-tr.row-bought.bought-no  td { background:#f851490c; }
-tr.row-suspect td { background:#e3b3410a; }
-</style></head><body>
-"""
-
-
-def render_page(metrics_path: str | None,
-                coefficients_path: str | None,
-                watchlist_path: str | None,
-                sim_state_path: str | None,
-                available_bots: List[dict],
-                current_bot_key: str,
+def render_page(*, metrics_path: str | None, coefficients_path: str | None,
+                watchlist_path: str | None, sim_state_path: str | None = None,
+                available_bots: List[dict], current_bot_key: str,
                 tab_key: str = "watchlist") -> str:
-    """Render the survivor page for the requested tab.
+    """Render the survivor page using the standard dashboard's CSS.
 
     Tabs:
       watchlist  — current-episode contestants + EV table
       models     — training metrics + coefficients
 
-    Home and History tabs route through the standard cross-bot renderer.
+    Home and History tabs route through the standard cross-bot
+    renderer (the tab bar links to ``/`` and ``/?tab=history``).
     """
-    payload = load_watchlist(watchlist_path)
     metrics = load_metrics(metrics_path)
     coefficients = load_coefficients(coefficients_path)
+    payload = load_watchlist(watchlist_path)
 
-    out = [_PAGE_HEAD,
-           "<h1>Survivor Elimination</h1>",
-           _render_tab_bar(current_bot_key, active=tab_key),
-           _render_bot_dropdown(available_bots, current_bot_key)]
+    # Lazy-import the standard CSS so an isolated test wouldn't drag
+    # the whole dashboard module in.
+    from .dashboard import CSS  # type: ignore
 
-    if tab_key == "models":
-        out.append("<div class='section'>")
-        out.append("<h2 class='subhead'>Model overview</h2>")
+    rows_all = payload.get("rows") or []
+    elim_rows = [r for r in rows_all
+                 if (r.get("market_type") or "") == "elimination"
+                 and (r.get("status") or "").lower() not in
+                     {"closed", "settled", "finalized", "cancelled"}]
+    has_active = bool(elim_rows)
+
+    out: List[str] = ["<!doctype html><html><head><meta charset='utf-8'>"]
+    out.append("<title>Kalshi simulation dashboard</title>")
+    out.append(f"<style>{CSS}</style>")
+    out.append("</head><body>")
+    out.append("<h1>Kalshi simulation dashboard</h1>")
+    out.append(
+        f"<div class='meta'>Loaded "
+        f"{datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%SZ')}"
+        f" · live updates every 60s · DRY-RUN mode (no real orders)</div>"
+    )
+    active_tab = tab_key if tab_key in ("watchlist", "models") else "watchlist"
+    out.append(_render_tab_bar(current_bot_key, active=active_tab))
+
+    if active_tab == "models":
+        out.append("<div class='section'><h2>Model</h2><div class='body'>")
+        out.append(_render_bot_dropdown(available_bots, current_bot_key))
         out.append(_render_models_section(metrics, coefficients))
-        out.append("</div>")
-        out.append("</body></html>")
-        return "".join(out)
+        out.append("</div></div>")
+    else:
+        # Watchlist tab.
+        out.append("<div class='section'><h2>Watchlist — model vs market</h2>"
+                    "<div class='body'>")
+        out.append(_render_bot_dropdown(available_bots, current_bot_key))
 
-    # Watchlist tab (default).
-    out.append("<div class='section'>")
-    out.append("<h2 class='subhead'>Current prediction</h2>")
-    out.append(_render_current_prediction(payload, metrics))
-    out.append("</div>")
+        if not has_active:
+            out.append(
+                "<div class='empty'>"
+                "No active <em>Will&nbsp;X&nbsp;be&nbsp;eliminated</em> "
+                "markets on Kalshi right now. The watchlist will populate "
+                "as soon as the next episode's elimination contracts open."
+                "</div></div></div></body></html>"
+            )
+            return "".join(out)
 
-    out.append("<div class='section'>")
-    out.append("<h2 class='subhead'>Contestants · Kalshi markets vs model</h2>")
-    if payload.get("synthesized_state"):
+        out.append(_render_current_prediction(payload, metrics))
+
+        age = _last_updated_age(payload.get("generated_at"))
         out.append(
-            "<p class='small gray'>"
-            "⚠ No hand-edited <code>current_state.json</code> found — every "
-            "active contestant is being scored with default features, so "
-            "model probabilities are uniform. Edit "
-            "<code>data/raw/current_state.json</code> to populate per-"
-            "contestant signal (visibility, prior votes, alliance state, "
-            "etc.) and the model will differentiate.</p>"
+            f"<h3 class='subhead'>Active elimination markets · "
+            f"{len(elim_rows)} <span class='small gray'>"
+            f"generated {html.escape(age)}</span></h3>"
         )
-    out.append(_render_watchlist_table(payload))
-    out.append("</div>")
+        out.append(_render_watchlist_table(payload))
 
-    out.append("<div class='section'>")
-    out.append("<h2 class='subhead'>Validators</h2>")
-    out.append(_render_validators_panel(payload))
-    out.append("</div>")
+        out.append("<h3 class='subhead'>Validators</h3>")
+        out.append(_render_validators_panel(payload))
 
-    out.append("<div class='section'>")
-    out.append("<h2 class='subhead'>Reddit signal</h2>")
-    out.append(_render_reddit_panel(payload))
-    out.append("</div>")
+        out.append("<h3 class='subhead'>Reddit signal</h3>")
+        out.append(_render_reddit_panel(payload))
+
+        out.append("</div></div>")
 
     out.append("</body></html>")
     return "".join(out)

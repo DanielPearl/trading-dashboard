@@ -2930,6 +2930,13 @@ def _render_bot_cards(out: List[str], rollup: dict,
     out.append("<div class='bot-cards-grid'>")
     for entry in bot_models:
         b = entry.get("bot") or {}
+        # Hide unavailable cards entirely (survivor uses this when no
+        # "Will X be eliminated" markets are active — the user only
+        # wants the card on the homepage when there's something
+        # tradeable). Other bot types still render their stub via the
+        # existing "no snapshot yet" branch.
+        if b.get("dashboard_type") == "survivor" and not b.get("available"):
+            continue
         m = entry.get("model") or {}
         name = b.get("name", "—")
         bot_key = b.get("key", "")
@@ -7252,11 +7259,14 @@ def main(argv: list[str] | None = None) -> int:
             available = bool(b.watchlist_json_path
                              and Path(b.watchlist_json_path).exists())
         elif b.dashboard_type == "survivor":
-            # Same shape as tennis — the bot writes a watchlist.json
-            # every poll cycle; presence of the file is the
-            # availability signal.
-            available = bool(b.watchlist_json_path
-                             and Path(b.watchlist_json_path).exists())
+            # Available only when the watchlist file lists at least one
+            # active "Will X be eliminated" market. The bot's exporter
+            # filters season-winner markets out — if Kalshi only has
+            # season-winner contracts (the common case between
+            # episodes), the bot reports zero rows and the card +
+            # dropdown entry disappear from the dashboard.
+            from . import survivor as _survivor
+            available = _survivor.is_available(b.watchlist_json_path)
         else:
             available = Path(b.db_path).exists()
         bots.append({
