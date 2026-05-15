@@ -1610,11 +1610,10 @@ td.num { text-align: right; font-variant-numeric: tabular-nums; }
 .badge-yes { background: rgba(86, 211, 100, 0.2); color: #56d364; }
 .badge-no { background: rgba(248, 81, 73, 0.2); color: #f85149; }
 /* Sport-bot active-bet side cell: same team-tricode / "vs opp"
-   layout the watchlist uses underneath, plus a YES/NO color
-   accent on the team name so the bet direction stays visible. */
+   layout the watchlist uses underneath. Player / team names render
+   in the default cell colour (no YES/NO accent) so the column reads
+   as identity, not direction. */
 .active-side-team strong { font-weight: 700; }
-.active-side-team.badge-yes strong { color: #56d364; }
-.active-side-team.badge-no strong { color: #f85149; }
 .badge-skip { background: rgba(139, 148, 158, 0.2); color: #8b949e; }
 .badge-hedge { background: rgba(227, 179, 65, 0.2); color: #e3b341; margin-left: 4px; }
 .empty { color: #8b949e; padding: 14px; text-align: center; font-style: italic; }
@@ -3514,7 +3513,8 @@ def _render_active_bets_table(out: List[str], bets: List[dict],
     out.append("<table><thead><tr>"
                f"<th>Opened</th>{bot_th}<th>Ticker</th>"
                "<th>Title</th>"
-               "<th class='num' title='Number of contracts in this position — the size of your bet.'>My contracts</th><th>Side</th>"
+               "<th>Side</th>"
+               "<th class='num' title='Number of contracts in this position — the size of your bet.'>My contracts</th>"
                "<th class='num' title='Model probability for our side at entry — what the model thought before we bet.'>Model prob</th>"
                "<th class='num' title='Implied probability of our side at entry (= entry price in ¢).'>Entry prob</th>"
                "<th class='num' title='Implied probability of our side right now, taken from the market mid.'>Current prob</th>"
@@ -3761,17 +3761,25 @@ def _render_active_bets_table(out: List[str], bets: List[dict],
         # keep the legacy YES/NO badge — the watchlist's third column
         # is a different field (Question) over there.
         if is_sport_bot:
-            side_team = _side_tricode_from_ticker(b.get("ticker"), side)
-            opp_team = _side_tricode_from_ticker(
-                b.get("ticker"),
-                "NO" if side == "YES" else "YES",
-            )
+            # Sport rows prefer pre-supplied labels (tennis carries
+            # _yes_label / _no_label = player names); fall back to the
+            # NBA tricode parser for KXNBAGAME tickers.
+            yes_label = b.get("_yes_label") or _side_tricode_from_ticker(
+                b.get("ticker"), "YES")
+            no_label = b.get("_no_label") or _side_tricode_from_ticker(
+                b.get("ticker"), "NO")
+            if side == "YES":
+                side_team, opp_team = yes_label, no_label
+            else:
+                side_team, opp_team = no_label, yes_label
             if side_team:
+                # No badge_cls colour on the player name — Side reads
+                # as identity, not direction.
                 side_cell = (
-                    f"<td class='active-side-team {badge_cls}'>"
-                    f"<strong>{html.escape(side_team)}</strong>"
+                    f"<td class='active-side-team'>"
+                    f"<strong>{html.escape(str(side_team))}</strong>"
                     f"<br><span class='small gray'>vs "
-                    f"{html.escape(opp_team)}</span></td>"
+                    f"{html.escape(str(opp_team))}</span></td>"
                 )
             else:
                 side_cell = (
@@ -3786,8 +3794,8 @@ def _render_active_bets_table(out: List[str], bets: List[dict],
             f"{bot_td}"
             f"<td class='mono'>{ticker_cell_html(b.get('ticker'))}</td>"
             f"<td>{html.escape(title_text)}</td>"
-            f"<td class='num'>{contracts}</td>"
             f"{side_cell}"
+            f"<td class='num'>{contracts}</td>"
             f"{model_prob_cell}"
             f"{entry_prob_cell}"
             f"{current_prob_cell}"
