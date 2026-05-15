@@ -1728,14 +1728,52 @@ td.num.red, td.num.green { white-space: nowrap; }
     border-color: #1f6feb; background: #11161d;
     transform: translateY(-1px);
 }
-.bot-card-head { display: flex; align-items: baseline;
+.bot-card-head { display: flex; align-items: flex-start;
     justify-content: space-between; gap: 12px;
-    border-bottom: 1px solid #21262d; padding-bottom: 8px;
+    border-bottom: 1px solid #21262d; padding-bottom: 10px;
     margin-bottom: 10px; }
+.bot-card-head-left { display: flex; flex-direction: column;
+    gap: 2px; min-width: 0; }
 .bot-card-head .bot-name { font-size: 14px; font-weight: 700;
-    color: #f0f6fc; letter-spacing: -0.2px; }
+    color: #f0f6fc; letter-spacing: -0.2px;
+    display: inline-flex; align-items: center; gap: 6px; }
+.bot-card-head .bot-price { font-size: 18px; font-weight: 600;
+    color: #f0f6fc; font-variant-numeric: tabular-nums;
+    margin-top: 2px; }
 .bot-card-head .bot-meta { font-size: 10px; color: #8b949e;
-    text-transform: uppercase; letter-spacing: 0.04em; }
+    text-transform: uppercase; letter-spacing: 0.04em;
+    margin-top: 2px; }
+/* On/off toggle in the card header. The track + knob is pure CSS
+   styled to feel like the iOS-style switches the rest of the
+   industry uses — green when on, gray when off, with a 200ms slide
+   on the knob so the click feels responsive. */
+.bot-toggle { all: unset; cursor: pointer; display: inline-flex;
+    align-items: center; gap: 6px; padding: 4px 8px;
+    border-radius: 999px; background: transparent;
+    border: 1px solid transparent; }
+.bot-toggle:hover { background: #1d232c; border-color: #30363d; }
+.bot-toggle .bot-toggle-track { position: relative;
+    width: 32px; height: 18px; border-radius: 999px;
+    background: #30363d; transition: background 160ms; }
+.bot-toggle .bot-toggle-knob { position: absolute;
+    top: 2px; left: 2px; width: 14px; height: 14px;
+    border-radius: 50%; background: #f0f6fc;
+    transition: transform 200ms cubic-bezier(0.4, 0, 0.2, 1); }
+.bot-toggle[data-enabled='1'] .bot-toggle-track { background: #2da44e; }
+.bot-toggle[data-enabled='1'] .bot-toggle-knob { transform: translateX(14px); }
+.bot-toggle .bot-toggle-label { font-size: 10px; font-weight: 700;
+    color: #8b949e; letter-spacing: 0.05em;
+    font-family: ui-monospace, SFMono-Regular, Consolas, monospace; }
+.bot-toggle[data-enabled='1'] .bot-toggle-label { color: #2da44e; }
+/* Paused card — dim the content + drop the hover lift so the bot
+   reads as "off" at a glance without disappearing entirely. */
+.bot-card-paused { opacity: 0.55; border-style: dashed; }
+.bot-card-paused:hover { transform: none; border-color: #30363d;
+    background: #0d1117; }
+.paused-badge { display: inline-block; padding: 1px 6px;
+    border-radius: 4px; background: rgba(139, 148, 158, 0.2);
+    color: #c9d1d9; font-size: 9px; font-weight: 600;
+    letter-spacing: 0.08em; text-transform: uppercase; }
 .bot-card dl { margin: 0; display: grid;
     grid-template-columns: max-content 1fr max-content 1fr;
     gap: 4px 12px;
@@ -2050,9 +2088,55 @@ def render_page(
     out.append(
         f"<script>window.__BUY_CRITERIA__ = {buy_criteria_payload};</script>"
     )
+    out.append(_BOT_TOGGLE_JS)
     out.append(_live_update_script(current_bot, period_key=period_key))
     out.append("</body></html>")
     return "".join(out)
+
+
+# Click handler for the homepage bot-card toggle. Hits the
+# /api/bot/toggle POST endpoint with the bot key, then updates the
+# card's data-enabled state + label / PAUSED badge without a reload.
+# event.preventDefault stops the parent <a class='bot-card'> from
+# following its href when the user clicks the toggle itself.
+_BOT_TOGGLE_JS = """<script>
+function toggleBotState(ev, btn) {
+  ev.preventDefault();
+  ev.stopPropagation();
+  const key = btn.dataset.botKey;
+  if (!key) return;
+  btn.disabled = true;
+  fetch('/api/bot/toggle?bot=' + encodeURIComponent(key), {method: 'POST'})
+    .then(function (r) { return r.json(); })
+    .then(function (data) {
+      const enabled = !!data.enabled;
+      btn.dataset.enabled = enabled ? '1' : '0';
+      btn.setAttribute('aria-pressed', enabled ? 'true' : 'false');
+      const label = btn.querySelector('.bot-toggle-label');
+      if (label) label.textContent = enabled ? 'ON' : 'OFF';
+      const card = btn.closest('.bot-card');
+      if (card) {
+        card.classList.toggle('bot-card-paused', !enabled);
+        // Add or remove the PAUSED badge to match the new state.
+        const nameEl = card.querySelector('.bot-name');
+        if (nameEl) {
+          const existing = nameEl.querySelector('.paused-badge');
+          if (!enabled && !existing) {
+            const pill = document.createElement('span');
+            pill.className = 'paused-badge';
+            pill.title = 'Bot is paused — toggle on to resume taking bets.';
+            pill.textContent = 'PAUSED';
+            nameEl.appendChild(pill);
+          } else if (enabled && existing) {
+            existing.remove();
+          }
+        }
+      }
+    })
+    .catch(function () { /* swallow — keep current visual state */ })
+    .finally(function () { btn.disabled = false; });
+}
+</script>"""
 
 
 def _live_update_script(current_bot: str, period_key: str = "all") -> str:
@@ -2935,10 +3019,23 @@ def _render_bot_cards(out: List[str], rollup: dict,
     a fixed grid (auto-fit minmax 280px) so they share row + column
     edges. Contract rules live on the Watchlist tab to keep these
     cards skimmable.
+
+    Top-right slot carries an on/off toggle (active / paused state).
+    Bot name + current underlying value + series_ticker stack down
+    the left so the most-glanceable info (which bot, what's its
+    current quote, which Kalshi series) sits together. Paused cards
+    get a dimmed style + PAUSED badge so disabled bots are visually
+    distinct from the running ones.
     """
     if not bot_models:
         out.append("<div class='empty'>No bot data yet.</div>")
         return
+
+    # Pull the latest per-bot enable state so the toggles render in
+    # their current position. Defaults to enabled = True for bots
+    # without a stored state.
+    from . import bot_state
+    bot_states = bot_state.get_all_states()
 
     # Per-bot perf rows — used for the period-scoped Gain/loss cell.
     perf_by_name = {name: s for name, s in (rollup.get("per_bot") or [])}
@@ -3010,12 +3107,66 @@ def _render_bot_cards(out: List[str], rollup: dict,
                         f"may have drifted; a retrain is likely overdue.'"
                         f">⚠ drift</span>"
                     )
-        out.append(f"<a class='bot-card' href='{href}'>")
-        out.append("<div class='bot-card-head'>")
-        out.append(
-            f"<div class='bot-name'>{html.escape(name)}{drift_html}</div>"
+        # Toggle state for this bot — defaults to enabled = True.
+        bot_state_entry = bot_states.get(bot_key) or {}
+        bot_enabled = bool(bot_state_entry.get("enabled", True))
+        card_classes = ["bot-card"]
+        if not bot_enabled:
+            card_classes.append("bot-card-paused")
+        # Resolve the underlying value for the left column. Standard
+        # sim.db bots write it as ``current_gas_price`` (legacy column
+        # name, used as the generic "underlying value"). Tennis /
+        # survivor / whale don't have a single scalar underlying, so
+        # the price line collapses to a dash.
+        display = b.get("display") or {}
+        underlying_value = (m or {}).get("current_gas_price")
+        if underlying_value is not None:
+            try:
+                price_str = fmt_underlying(float(underlying_value), display)
+            except (TypeError, ValueError):
+                price_str = "—"
+        else:
+            price_str = "—"
+        paused_badge = (
+            "<span class='paused-badge' title='Bot is paused — toggle "
+            "on to resume taking bets.'>PAUSED</span>"
+            if not bot_enabled else ""
         )
-        out.append(f"<div class='bot-meta'>{html.escape(series_ticker)}</div>")
+        out.append(
+            f"<a class='{' '.join(card_classes)}' href='{href}' "
+            f"data-bot-key='{html.escape(bot_key)}'>"
+        )
+        out.append("<div class='bot-card-head'>")
+        out.append("<div class='bot-card-head-left'>")
+        out.append(
+            f"<div class='bot-name'>{html.escape(name)}{drift_html}"
+            f"{paused_badge}</div>"
+        )
+        out.append(
+            f"<div class='bot-price'>{html.escape(price_str)}</div>"
+        )
+        out.append(
+            f"<div class='bot-meta'>{html.escape(series_ticker)}</div>"
+        )
+        out.append("</div>")
+        # Toggle switch — click is intercepted by JS so the parent
+        # anchor's navigation doesn't fire. data-* attributes hold the
+        # mutable state the JS flips.
+        toggle_attrs = (
+            f"data-bot-key='{html.escape(bot_key)}' "
+            f"data-enabled='{'1' if bot_enabled else '0'}' "
+            f"aria-pressed='{'true' if bot_enabled else 'false'}' "
+            "type='button' onclick='toggleBotState(event, this)'"
+        )
+        out.append(
+            f"<button class='bot-toggle' {toggle_attrs}>"
+            f"<span class='bot-toggle-track'>"
+            f"<span class='bot-toggle-knob'></span>"
+            f"</span>"
+            f"<span class='bot-toggle-label'>"
+            f"{'ON' if bot_enabled else 'OFF'}</span>"
+            f"</button>"
+        )
         out.append("</div>")
 
         if not m:
@@ -7180,6 +7331,44 @@ class Handler(BaseHTTPRequestHandler):
             self.wfile.write(b"ok\n")
         else:
             self.send_error(404)
+
+    def do_POST(self) -> None:  # noqa: N802 (BaseHTTPRequestHandler API)
+        from urllib.parse import urlparse, parse_qs
+        parsed = urlparse(self.path)
+        if parsed.path == "/api/bot/toggle":
+            # Flip the bot's enabled flag and return the new state.
+            # The page's toggle JS reads the response to update the
+            # card without a reload. Unknown bot keys still write a
+            # state entry (idempotent) so future bot deploys can opt
+            # in to honouring the toggle without a server restart.
+            from . import bot_state
+            qs = parse_qs(parsed.query)
+            bot_key = (qs.get("bot", [""])[0] or "").strip()
+            if not bot_key:
+                self.send_error(400, "missing ?bot=")
+                return
+            try:
+                entry = bot_state.toggle_bot(bot_key)
+            except Exception:  # noqa: BLE001
+                log.exception("bot toggle failed")
+                self.send_response(500)
+                self.send_header("Content-Type", "application/json")
+                self.end_headers()
+                self.wfile.write(b'{"error":"toggle failed"}')
+                return
+            payload = json.dumps({
+                "bot": bot_key,
+                "enabled": entry["enabled"],
+                "updated_at": entry["updated_at"],
+            }).encode("utf-8")
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Cache-Control", "no-store")
+            self.send_header("Content-Length", str(len(payload)))
+            self.end_headers()
+            self.wfile.write(payload)
+            return
+        self.send_error(404)
 
 
 def serve(host: str, port: int, bots: List[dict], risk_caps: dict,
