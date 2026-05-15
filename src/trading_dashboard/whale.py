@@ -405,7 +405,16 @@ VALIDATOR_MAX_PRICE_DRIFT    = 10         # cents
 # via the ?min=<dollars> query parameter (see render_page) if they
 # want to inspect smaller flow.
 LIVE_MIN_NOTIONAL_CENTS = 1_000_000      # $10,000+ trades surface by default
-LIVE_LOOKBACK_HOURS     = 24             # recent activity window
+LIVE_LOOKBACK_HOURS     = 24             # recent activity window (legacy path)
+
+# Active-markets scan: walks every currently-open event market and pulls
+# its full trade history so a $10k bet placed weeks ago on a still-open
+# contract still shows up. Per-market lookback is generous; volume
+# prefilter keeps the work bounded (a market with < 10k lifetime
+# contracts couldn't have hosted a $10k single trade).
+ACTIVE_MARKET_LOOKBACK_DAYS = 90
+ACTIVE_MIN_MARKET_VOLUME    = 10_000
+ACTIVE_MAX_MARKETS_SCANNED  = 400        # cap by lifetime volume desc
 
 
 def validate_whale(event: dict,
@@ -1004,6 +1013,145 @@ def _emit_event(out: List[dict], seen_trade_ids: set, t: dict, ticker: str,
     })
 
 
+def fetch_active_big_bets(min_notional_cents: int = LIVE_MIN_NOTIONAL_CENTS,
+                            lookback_days: int = ACTIVE_MARKET_LOOKBACK_DAYS,
+                            max_markets: int = ACTIVE_MAX_MARKETS_SCANNED,
+                            min_market_volume: int = ACTIVE_MIN_MARKET_VOLUME,
+                            ) -> List[dict]:
+    """Walk every currently-open event market and surface every trade
+    in its full history (up to ``lookback_days``) that clears
+    ``min_notional_cents``.
+
+    Different from ``fetch_live_big_bets`` which is bounded by a 24h
+    global trades window — that approach misses big bets placed days
+    or weeks ago on still-active long-running contracts. This one
+    iterates markets directly, so as long as the contract is still
+    open the bet shows up regardless of trade age.
+
+    Bounded by two filters so the request stays tractable:
+      * ``min_market_volume`` — markets with fewer than this many
+        lifetime contracts traded can't have hosted a $10k single
+        trade at any reasonable price.
+      * ``max_markets`` — after the volume cut, keep the top N by
+        lifetime volume. Whales cluster on the most-traded contracts.
+    """
+    from . import kalshi_client
+    client = kalshi_client.get_client()
+    if not client.available:
+        return []
+
+    try:
+        all_open = client.list_markets()  # status="open" default
+    except Exception:  # noqa: BLE001
+        log.exception("whale: list_markets (all open) failed")
+        return []
+
+    candidates: List[dict] = []
+    for m in all_open or []:
+        ticker = m.get("ticker") or ""
+        if not ticker or not _is_event_ticker(ticker):
+            continue
+        try:
+            vol = int(m.get("volume") or 0)
+        except (TypeError, ValueError):
+            vol = 0
+        if vol < min_market_volume:
+            continue
+        candidates.append(m)
+    candidates.sort(key=lambda m: int(m.get("volume") or 0), reverse=True)
+    candidates = candidates[:max_markets]
+
+    seen_trade_ids: set = set()
+    out: List[dict] = []
+
+    def _trade_count(t):
+        c = t.get("count_fp")
+        if c is None:
+            c = t.get("count")
+        try:
+            return int(round(float(c))) if c is not None else 0
+        except (TypeError, ValueError):
+            return 0
+
+    def _trade_price_cents(t, side: str):
+        key = f"{side}_price_dollars"
+        v = t.get(key)
+        if v is None:
+            v = t.get(f"{side}_price")
+        if v is None:
+            return 0
+        try:
+            f = float(v)
+        except (TypeError, ValueError):
+            return 0
+        return int(round(f * 100)) if f < 5 else int(f)
+
+    lookback_hours = lookback_days * 24
+    for m in candidates:
+        ticker = m["ticker"]
+        try:
+            trades = client.fetch_trades(
+                market_ticker=ticker,
+                lookback_hours=lookback_hours,
+                limit=2000,
+            )
+        except Exception:  # noqa: BLE001
+            log.exception("whale: fetch_trades failed for %s", ticker)
+            continue
+        if not trades:
+            continue
+
+        # Skip markets whose biggest trade can't clear the floor —
+        # cheaper than building event dicts and discarding them.
+        has_big = False
+        for t in trades:
+            count = _trade_count(t)
+            yes_p = _trade_price_cents(t, "yes")
+            no_p = _trade_price_cents(t, "no")
+            price = yes_p if yes_p > 0 else no_p
+            if count * price >= min_notional_cents:
+                has_big = True
+                break
+        if not has_big:
+            continue
+
+        close_time = m.get("close_time")
+        mtc: Optional[float] = None
+        if close_time:
+            try:
+                ct = datetime.fromisoformat(
+                    close_time.replace("Z", "+00:00")
+                ).timestamp()
+                mtc = max(0.0, (ct - time.time()) / 60.0)
+            except (TypeError, ValueError):
+                mtc = None
+
+        event_title: Optional[str] = None
+        preview = _market_question(m)
+        if preview == "—" and m.get("event_ticker"):
+            try:
+                event = client.get_event(m["event_ticker"])
+                event_title = (event or {}).get("title") or None
+            except Exception:  # noqa: BLE001
+                event_title = None
+        question = _market_question(m, event_title=event_title)
+
+        mean_c, std_c, cluster_size, current_mid_cents = (
+            _per_ticker_stats(trades, _trade_count, _trade_price_cents)
+        )
+        for t in trades:
+            _emit_event(
+                out, seen_trade_ids, t, ticker,
+                _trade_count, _trade_price_cents,
+                mean_c=mean_c, std_c=std_c,
+                cluster_size=cluster_size,
+                current_mid_cents=current_mid_cents,
+                mtc=mtc, question=question,
+                min_notional_cents=min_notional_cents,
+            )
+    return out
+
+
 # --------------------------------------------------------------------------- #
 # Candidate construction                                                      #
 # --------------------------------------------------------------------------- #
@@ -1424,30 +1572,14 @@ def render_page(
     else:
         effective_min_cents = LIVE_MIN_NOTIONAL_CENTS
         floor_was_explicit = False
-    # Whale watcher scans the WHOLE Kalshi exchange for big bets, not
-    # just the series this dashboard's bots track. Reads global trades
-    # once, then looks up market metadata only for tickers that
-    # produced a qualifying trade.
-    live_events = fetch_live_big_bets(
-        [],  # ignored in scan_all_markets mode
+    # Whale watcher scans every currently-open event market across
+    # the whole Kalshi exchange and surfaces every trade in each
+    # market's history that clears the floor. Unlike the legacy
+    # global-trades feed (24h cap), this catches a $10k bet placed
+    # weeks ago on a still-active long-running contract.
+    live_events = fetch_active_big_bets(
         min_notional_cents=effective_min_cents,
-        scan_all_markets=True,
     )
-    # Auto-bump: if too many bets cleared the default floor, widen
-    # the bar so the user sees only the truly notable ones. Skipped
-    # when the user explicitly set ?min= — they asked for that bar.
-    AUTO_BUMP_THRESHOLD = 30
-    AUTO_BUMP_FLOOR_CENTS = 2_500_000  # $25,000
-    auto_bumped = False
-    if (not floor_was_explicit
-            and effective_min_cents < AUTO_BUMP_FLOOR_CENTS
-            and len(live_events) > AUTO_BUMP_THRESHOLD):
-        live_events = fetch_live_big_bets(
-            [], min_notional_cents=AUTO_BUMP_FLOOR_CENTS,
-            scan_all_markets=True,
-        )
-        effective_min_cents = AUTO_BUMP_FLOOR_CENTS
-        auto_bumped = True
 
     # Combine: tracked signals (from JSONL, with checkpoints) + live
     # big bets (from Kalshi API, no checkpoints yet). The scorer
