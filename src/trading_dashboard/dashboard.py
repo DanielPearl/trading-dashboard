@@ -2657,53 +2657,183 @@ def _live_update_script(current_bot: str, period_key: str = "all") -> str:
     const v = r.validators || {{}};
     const k = r.risk || {{}};
     const h = r.hedge || {{}};
+    // Pair each value with a one-line explanation in muted grey so
+    // the modal reads as documentation, not a config dump.
+    function row(label, value, note) {{
+      const v_html = (value != null && value !== "" && value !== "—")
+        ? value : "<span class='gray'>not set</span>";
+      const note_html = note
+        ? "<div class='small gray' style='margin-top:2px;line-height:1.4;'>"
+          + note + "</div>"
+        : "";
+      return "<dt>" + label + "</dt><dd>" + v_html + note_html + "</dd>";
+    }}
     let html = "";
-    html += "<div class='crit-section'><h4>Edge / EV thresholds</h4><dl>";
-    html += "<dt>Min model edge (YES)</dt><dd>" + (e.min_edge_yes != null ? (e.min_edge_yes * 100).toFixed(0) + " pts" : "—") + "</dd>";
-    html += "<dt>Min model edge (NO)</dt><dd>"  + (e.min_edge_no  != null ? (e.min_edge_no  * 100).toFixed(0) + " pts" : "—") + "</dd>";
-    html += "<dt>Min model confidence</dt><dd>" + fmtPct(e.min_model_confidence) + "</dd>";
-    html += "<dt>Min model accuracy</dt><dd>"   + fmtPct(e.min_model_accuracy) + "</dd>";
-    html += "<dt>Min EV per contract</dt><dd>"  + (e.min_ev_per_contract != null ? "$" + Number(e.min_ev_per_contract).toFixed(2) : "—") + "</dd>";
-    html += "<dt>Min edge over BE</dt><dd>"     + (e.min_prob_edge_over_breakeven != null ? (e.min_prob_edge_over_breakeven * 100).toFixed(0) + " pts" : "—") + "</dd>";
+
+    html += "<div class='crit-section' style='font-size:13px;"
+         + "line-height:1.55;color:#c9d1d9;margin-bottom:14px;'>"
+         + "Before this bot opens a position it runs every contract "
+         + "through four gates: <b>(1) does the model have an edge "
+         + "worth taking</b>, <b>(2) is the market healthy enough to "
+         + "fill at a fair price</b>, <b>(3) does the trade fit inside "
+         + "today's risk budget</b>, and <b>(4) is the auto-hedge "
+         + "armed to close the position</b>. Every gate below must "
+         + "pass on the chosen side (YES or NO); a single failure "
+         + "drops the bet."
+         + "</div>";
+
+    html += "<div class='crit-section'>"
+         + "<h4>1 · Edge &amp; EV — does the model think the price is wrong?</h4>"
+         + "<div class='small gray' style='margin:0 0 8px 0;line-height:1.4;'>"
+         + "Compares the model's probability for the side it would "
+         + "buy against the Kalshi ask. Each threshold is checked "
+         + "against the bet's chosen side only — a 5pt edge on YES "
+         + "doesn't help a NO bet."
+         + "</div><dl>";
+    html += row("Min model edge (YES)",
+      (e.min_edge_yes != null ? (e.min_edge_yes * 100).toFixed(0) + " pts" : "—"),
+      "model probability for YES minus the YES ask. 8 pts = the model "
+      + "must be at least 8 percentage points higher than Kalshi to buy YES.");
+    html += row("Min model edge (NO)",
+      (e.min_edge_no != null ? (e.min_edge_no * 100).toFixed(0) + " pts" : "—"),
+      "same idea on the NO side: the model's NO probability minus the NO ask.");
+    html += row("Min model confidence",
+      fmtPct(e.min_model_confidence),
+      "model's own self-rated certainty for the prediction. Filters "
+      + "out coin-flippy 50/50 calls where the edge could be noise.");
+    html += row("Min model accuracy",
+      fmtPct(e.min_model_accuracy),
+      "rolling historical accuracy of the model on completed contracts. "
+      + "A model that's only hit 50% lately doesn't get to place new bets.");
+    html += row("Min EV per contract",
+      (e.min_ev_per_contract != null ? "$" + Number(e.min_ev_per_contract).toFixed(2) : "—"),
+      "expected $ return on a $1 contract after subtracting half the "
+      + "spread. Filters thin-margin trades where the slippage eats the edge.");
+    html += row("Min edge over break-even",
+      (e.min_prob_edge_over_breakeven != null ? (e.min_prob_edge_over_breakeven * 100).toFixed(0) + " pts" : "—"),
+      "buffer above the price-implied break-even probability. Means the "
+      + "model has to win meaningfully more often than the market price "
+      + "says it has to, not just barely more often.");
     html += "</dl></div>";
 
-    html += "<div class='crit-section'><h4>Validators (must all pass)</h4><dl>";
-    html += "<dt>Min book depth</dt><dd>"       + (v.min_book_depth_contracts != null ? v.min_book_depth_contracts + " contracts" : "—") + "</dd>";
-    html += "<dt>Max spread</dt><dd>"           + (v.max_spread_cents != null ? v.max_spread_cents + "¢" : "—") + "</dd>";
+    html += "<div class='crit-section'>"
+         + "<h4>2 · Market health — is the book good enough to trade?</h4>"
+         + "<div class='small gray' style='margin:0 0 8px 0;line-height:1.4;'>"
+         + "Even a strong edge becomes a bad bet on a market we can't "
+         + "actually fill at the displayed price. These gates check the "
+         + "order book, timing, and ticker sanity."
+         + "</div><dl>";
+    html += row("Min book depth",
+      (v.min_book_depth_contracts != null ? v.min_book_depth_contracts + " contracts" : "—"),
+      "total contracts resting across the visible YES + NO order book. "
+      + "Avoids markets where the bot's own order would move the price.");
+    html += row("Max spread",
+      (v.max_spread_cents != null ? v.max_spread_cents + "¢" : "—"),
+      "ceiling on YES-ask minus NO-ask. Wide spreads mean Kalshi can't "
+      + "even tell us a real price — the bot won't bet into them.");
     let ttc = "—";
     if (v.min_minutes_to_close != null && v.max_minutes_to_close != null)
       ttc = fmtMin(v.min_minutes_to_close) + " – " + fmtMin(v.max_minutes_to_close);
-    html += "<dt>Time to close</dt><dd>" + ttc + "</dd>";
+    html += row("Time to close window", ttc,
+      "how long the contract still has until settlement. Too early = the "
+      + "edge can erode before settle; too late = no time for hedging if "
+      + "the trade moves against us.");
     let pb = "—";
     if (Array.isArray(v.prob_bounds_cents) && v.prob_bounds_cents.length === 2)
       pb = v.prob_bounds_cents[0] + "¢ – " + v.prob_bounds_cents[1] + "¢";
-    html += "<dt>Probability bounds</dt><dd>" + pb + "</dd>";
-    html += "<dt>Min volume</dt><dd>"           + (v.min_volume != null ? v.min_volume : "—") + "</dd>";
-    html += "<dt>Min open interest</dt><dd>"    + (v.min_open_interest != null ? v.min_open_interest : "—") + "</dd>";
-    html += "<dt>Min ask depth</dt><dd>"        + (v.min_depth_at_best_ask != null ? v.min_depth_at_best_ask : "—") + "</dd>";
-    html += "<dt>Basis-risk strike window</dt><dd>" + (v.basis_risk_strike_window_dollars != null ? "±$" + Number(v.basis_risk_strike_window_dollars).toFixed(2) : "—") + "</dd>";
-    html += "<dt>Basis-risk max hours</dt><dd>" + (v.basis_risk_max_hours_to_close != null ? v.basis_risk_max_hours_to_close + "h" : "—") + "</dd>";
+    html += row("Probability bounds", pb,
+      "skip contracts already priced as near-certain (above the upper "
+      + "bound) or near-impossible (below the lower). Those bets pay too "
+      + "little to be worth the tail risk even when the edge is real.");
+    html += row("Min volume",
+      (v.min_volume != null ? v.min_volume : "—"),
+      "total contracts traded so far on the contract. Brand-new markets "
+      + "with zero volume have unreliable mid prices.");
+    html += row("Min open interest",
+      (v.min_open_interest != null ? v.min_open_interest : "—"),
+      "live open positions held by other traders. Confirms there are "
+      + "real counterparties on this contract, not just the bot's own "
+      + "echo on a thin book.");
+    html += row("Min depth at best ask",
+      (v.min_depth_at_best_ask != null ? v.min_depth_at_best_ask : "—"),
+      "size resting at the exact ask the bot would lift. Ensures the bot "
+      + "can actually buy its bet size without partial-filling or "
+      + "walking up the book.");
+    html += row("Basis-risk strike window",
+      (v.basis_risk_strike_window_dollars != null ? "±$" + Number(v.basis_risk_strike_window_dollars).toFixed(2) : "—"),
+      "distance from the underlying to the contract's strike. Trades "
+      + "too close to the threshold settle on noise instead of the model's "
+      + "view — this gate skips them.");
+    html += row("Basis-risk max hours",
+      (v.basis_risk_max_hours_to_close != null ? v.basis_risk_max_hours_to_close + "h" : "—"),
+      "the basis-risk window only applies inside this many hours of "
+      + "settlement; farther out, the underlying has room to move.");
     html += "</dl></div>";
 
-    html += "<div class='crit-section'><h4>Risk caps</h4><dl>";
-    html += "<dt>Bet size</dt><dd>"             + fmtCents(k.bet_size_cents) + "</dd>";
-    html += "<dt>Max open positions</dt><dd>"   + (k.max_open_positions ?? "—") + "</dd>";
-    html += "<dt>Max total exposure</dt><dd>"   + fmtCents(k.max_total_exposure_cents) + "</dd>";
-    html += "<dt>Max bets per day</dt><dd>"     + (k.max_bets_per_day ?? "—") + "</dd>";
-    html += "<dt>Cooldown (same market)</dt><dd>" + (k.cooldown_seconds_same_market != null ? Math.round(k.cooldown_seconds_same_market / 60) + " min" : "—") + "</dd>";
+    html += "<div class='crit-section'>"
+         + "<h4>3 · Risk caps — does this trade fit in the budget?</h4>"
+         + "<div class='small gray' style='margin:0 0 8px 0;line-height:1.4;'>"
+         + "Account-level limits enforced before sizing the order. They "
+         + "exist so a single bad day or a bug in the model can't wipe "
+         + "out the float."
+         + "</div><dl>";
+    html += row("Bet size",
+      fmtCents(k.bet_size_cents),
+      "fixed $ per trade — every position the bot opens is this size, "
+      + "not variable by edge magnitude.");
+    html += row("Max open positions",
+      (k.max_open_positions ?? "—"),
+      "ceiling on the number of concurrent open contracts. Prevents the "
+      + "bot from racking up correlated exposure across the strike ladder.");
+    html += row("Max total exposure",
+      fmtCents(k.max_total_exposure_cents),
+      "$ ceiling on the combined entry cost of all open positions. New "
+      + "trades skip when adding them would breach this cap.");
+    html += row("Max bets per day",
+      (k.max_bets_per_day ?? "—"),
+      "throttle on how many fresh positions the bot can open in a 24h "
+      + "window. Brakes against runaway loops if the model gets stuck "
+      + "endorsing the same contract.");
+    html += row("Cooldown (same market)",
+      (k.cooldown_seconds_same_market != null ? Math.round(k.cooldown_seconds_same_market / 60) + " min" : "—"),
+      "minimum wait before the bot can re-enter the same contract after "
+      + "closing a position on it. Stops flap-trades when the price "
+      + "moves through our break-even repeatedly.");
     html += "</dl></div>";
 
-    html += "<div class='crit-section'><h4>Hedging</h4><dl>";
-    html += "<dt>Enabled</dt><dd>"              + (h.enabled ? "Yes" : "No") + "</dd>";
-    html += "<dt>Profit-lock</dt><dd>"          + (h.profit_lock_cents != null ? h.profit_lock_cents + "¢" : "—") + "</dd>";
-    html += "<dt>Stop-loss</dt><dd>"            + (h.stop_loss_cents != null ? h.stop_loss_cents + "¢" : "—") + "</dd>";
-    html += "<dt>Hedge size fraction</dt><dd>"  + (h.hedge_size_fraction != null ? Number(h.hedge_size_fraction).toFixed(2) : "—") + "</dd>";
+    html += "<div class='crit-section'>"
+         + "<h4>4 · Auto-hedge / exit rules — when does the bot leave?</h4>"
+         + "<div class='small gray' style='margin:0 0 8px 0;line-height:1.4;'>"
+         + "The bot doesn't only buy — once a position is open the hedge "
+         + "monitor watches its mark on every tick and closes the trade "
+         + "when one of these triggers fires."
+         + "</div><dl>";
+    html += row("Enabled",
+      (h.enabled ? "Yes" : "No"),
+      "kill switch for the auto-hedger. When off, positions ride to "
+      + "settlement and the bot accepts the binary outcome.");
+    html += row("Profit-lock",
+      (h.profit_lock_cents != null ? h.profit_lock_cents + "¢" : "—"),
+      "close the position when the mark has gained this many cents above "
+      + "entry. Locks in realised profit instead of giving it back if the "
+      + "edge fades before settle.");
+    html += row("Stop-loss",
+      (h.stop_loss_cents != null ? h.stop_loss_cents + "¢" : "—"),
+      "close the position when the mark has dropped this many cents below "
+      + "entry. Caps the per-trade downside if the model is wrong.");
+    html += row("Hedge size fraction",
+      (h.hedge_size_fraction != null ? Number(h.hedge_size_fraction).toFixed(2) : "—"),
+      "fraction of the original position size to close when a hedge "
+      + "trigger fires. 1.0 = fully exit; 0.5 = scale half off and let "
+      + "the rest run.");
     html += "</dl></div>";
 
     html += "<div class='crit-section' style='font-size:11px;color:#8b949e;'>"
-         + "Every contract the bot considers must clear all of these gates "
-         + "before a bet is placed. The Why? button on each open position "
-         + "shows what the bot saw at entry-time for that specific bet."
+         + "Every contract the bot considers must clear sections 1, 2, "
+         + "and 3 before a bet is placed; once open, section 4 decides "
+         + "when the bot exits. Click <b>Why?</b> on any open position "
+         + "to see the actual values that cleared each gate at "
+         + "entry-time for that specific bet."
          + "</div>";
     return html;
   }}
