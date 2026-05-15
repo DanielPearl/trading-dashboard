@@ -1,27 +1,36 @@
 """Auto-hedge daemon for the dashboard.
 
-Scans every registered sim.db bot's ``positions`` table on a fixed
-interval. For each open position whose unrealized P&L per contract
-crosses the global hedge thresholds (profit-lock or stop-loss), the
-daemon closes the position in place — sets ``status='closed'``,
-stamps an exit price + timestamp + realized_pnl_cents, and tags it
-with ``error_type='hedge_pl'`` / ``'hedge_sl'`` so the History tab
-clearly attributes the close to the hedge engine.
-
-The user-facing effect: a hedged position drops out of the Summary's
+Scans every registered bot's open positions on a fixed interval. For
+each position whose unrealized P&L per contract crosses the global
+hedge thresholds (profit-lock or stop-loss), the daemon closes the
+position in place. The closed position drops out of the Summary's
 active-bets table and appears on the History tab on the next page
-load. No partial closes — the daemon's policy is "exit the whole
-position when the threshold fires", which matches what the toggle-
-off semantics imply (the bot has stopped taking signal-driven risk).
+load, attributed to the hedge engine.
 
-JSON-source bots (tennis, survivor, whale) keep their own state
-files outside sim.db and are skipped here — their sim engines run
-their own close logic.
+Per-bot adapters:
+  - sim.db bots (gas, claims, nat-gas, CPI, NBA):
+      UPDATE positions SET status='closed', exit_price_cents,
+      exited_at, realized_pnl_cents, error_type='hedge_pl'|'hedge_sl'.
+  - tennis / survivor (sim_state.json):
+      Move position from open_positions → closed_positions with
+      closed_at, exit_market_prob, realized_pnl, and
+      exit_reason='hedge_pl'|'hedge_sl'. Atomic write via tempfile +
+      os.replace so the bot's own tick never sees a torn file.
+  - whale (orders.jsonl):
+      Append a ``hedge_close`` order record. Whale doesn't track
+      per-position P&L explicitly — the daemon mirrors the sim.db
+      math against the latest market quote and appends to the log.
+
+No partial closes — the daemon's policy is "exit the whole position
+when the threshold fires."
 """
 from __future__ import annotations
 
+import json
 import logging
+import os
 import sqlite3
+import tempfile
 import threading
 import time
 from contextlib import closing
@@ -159,8 +168,225 @@ def _check_db(db_path: str, bot_key: str, bot_name: str,
     return closed
 
 
+def _atomic_write_json(path: Path, payload: Any) -> None:
+    """Write JSON atomically — concurrent readers (the bot's own tick)
+    never see a torn file. Tempfile lands in the same directory so
+    the os.replace stays on one filesystem."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = tempfile.NamedTemporaryFile(
+        mode="w", encoding="utf-8", dir=str(path.parent),
+        prefix=f".{path.name}.", suffix=".tmp", delete=False,
+    )
+    try:
+        json.dump(payload, tmp, indent=2, default=str)
+        tmp.flush()
+        os.fsync(tmp.fileno())
+    finally:
+        tmp.close()
+    os.replace(tmp.name, path)
+
+
+def _check_tennis_state(sim_state_path: str | None, bot_key: str,
+                         bot_name: str, profit_lock_cents: int,
+                         stop_loss_cents: int,
+                         ) -> List[Dict[str, Any]]:
+    """Hedge open positions in a tennis-shape sim_state.json (also
+    works for the survivor bot — same schema).
+
+    Position P&L in cents = (current_market_prob − entry_market_prob)
+    × 100, applied to the bet's side. On a hedge close we move the
+    position from ``open_positions`` to ``closed_positions`` with
+    ``closed_at``, ``exit_market_prob``, ``realized_pnl``, and
+    ``exit_reason='hedge_pl'|'hedge_sl'``. The bot's own ``_settle_
+    position`` won't fire on these later because they're no longer
+    in open_positions.
+    """
+    if not sim_state_path:
+        return []
+    p = Path(sim_state_path)
+    if not p.exists():
+        return []
+    try:
+        with p.open("r", encoding="utf-8") as f:
+            state = json.load(f)
+    except (OSError, json.JSONDecodeError) as exc:
+        log.warning("hedge: failed to read %s: %s", p, exc)
+        return []
+    open_positions = state.get("open_positions") or []
+    if not open_positions:
+        return []
+    still_open: List[Dict[str, Any]] = []
+    newly_closed: List[Dict[str, Any]] = []
+    actions: List[Dict[str, Any]] = []
+    now = datetime.now(timezone.utc).isoformat(timespec="seconds")
+    for pos in open_positions:
+        entry = pos.get("entry_market_prob")
+        mark = pos.get("current_market_prob")
+        if entry is None or mark is None:
+            still_open.append(pos)
+            continue
+        try:
+            entry_f = float(entry)
+            mark_f = float(mark)
+        except (TypeError, ValueError):
+            still_open.append(pos)
+            continue
+        pnl_cents = (mark_f - entry_f) * 100.0
+        reason: str | None = None
+        if profit_lock_cents > 0 and pnl_cents >= profit_lock_cents:
+            reason = "hedge_pl"
+        elif stop_loss_cents > 0 and pnl_cents <= -stop_loss_cents:
+            reason = "hedge_sl"
+        if not reason:
+            still_open.append(pos)
+            continue
+        stake = float(pos.get("stake", 1.0) or 1.0)
+        slippage = float(pos.get("slippage", 0.0) or 0.0)
+        realized = stake * (mark_f - entry_f - slippage)
+        closed_pos = {
+            **pos,
+            "closed_at": now,
+            "exit_market_prob": round(mark_f, 4),
+            "realized_pnl": round(realized, 4),
+            "exit_reason": reason,
+            # Tennis dashboard adapter inspects ``result`` to colour
+            # the History row. Hedged exits aren't a clean win/loss,
+            # so we mark them HEDGE so the adapter can highlight
+            # them appropriately if it ever cares.
+            "result": "HEDGE",
+            "won": realized > 0,  # purely informational
+        }
+        newly_closed.append(closed_pos)
+        actions.append({
+            "bot_key": bot_key, "bot_name": bot_name,
+            "position_id": pos.get("position_id"),
+            "ticker": pos.get("match_id"),
+            "side": pos.get("side"),
+            "entry_cents": int(round(entry_f * 100)),
+            "exit_cents": int(round(mark_f * 100)),
+            "pnl_per_contract": int(round(pnl_cents)),
+            "realized_pnl": realized,
+            "reason": reason,
+        })
+    if not actions:
+        return []
+    # Persist updated state. Append to closed_positions, replace
+    # open_positions with the remainder.
+    state["open_positions"] = still_open
+    state["closed_positions"] = (state.get("closed_positions") or []) + newly_closed
+    # Refresh stats: total_closed, wins/losses (we mark wins by
+    # realized_pnl > 0 since there's no settle outcome), total
+    # realized P&L. Mirrors the tennis simulator's stats block.
+    stats = state.setdefault("stats", {})
+    closed_all = state["closed_positions"]
+    wins = sum(1 for c in closed_all if c.get("won"))
+    losses = sum(1 for c in closed_all if not c.get("won"))
+    total_realized = sum(float(c.get("realized_pnl", 0) or 0) for c in closed_all)
+    total_unrealized = sum(float(p.get("unrealized_pnl", 0) or 0)
+                            for p in still_open)
+    stats.update({
+        "open_count": len(still_open),
+        "total_closed": len(closed_all),
+        "wins": wins, "losses": losses,
+        "total_realized_pnl": round(total_realized, 4),
+        "total_unrealized_pnl": round(total_unrealized, 4),
+        "win_rate": (wins / (wins + losses)) if (wins + losses) else None,
+        "total_staked": round(sum(float(c.get("stake", 0) or 0)
+                                    for c in closed_all), 4),
+    })
+    _atomic_write_json(p, state)
+    return actions
+
+
+def _check_whale_orders(orders_path: str | None, bot_key: str,
+                         bot_name: str, profit_lock_cents: int,
+                         stop_loss_cents: int,
+                         ) -> List[Dict[str, Any]]:
+    """Hedge for the whale-watcher bot.
+
+    Whale doesn't keep an open_positions ledger in the same shape as
+    the other bots — its ``orders.jsonl`` is an append-only log of
+    follow / hedge decisions. For each whale "follow" record without
+    a matching "close" entry, the daemon computes the trade's
+    current P&L vs the configured thresholds and appends a
+    ``hedge_close`` row so the close lands in the History tab via
+    the whale adapter.
+    """
+    if not orders_path:
+        return []
+    p = Path(orders_path)
+    if not p.exists():
+        return []
+    try:
+        lines = p.read_text(encoding="utf-8").splitlines()
+    except OSError as exc:
+        log.warning("hedge: failed to read %s: %s", p, exc)
+        return []
+    # Build a (ticker -> [follow_record, close_record?]) index.
+    open_follows: Dict[str, Dict[str, Any]] = {}
+    for ln in lines:
+        if not ln.strip():
+            continue
+        try:
+            rec = json.loads(ln)
+        except json.JSONDecodeError:
+            continue
+        kind = (rec.get("kind") or rec.get("action") or "").lower()
+        ticker = rec.get("ticker") or ""
+        if kind in ("follow", "buy", "open") and ticker:
+            open_follows[ticker] = rec
+        elif kind in ("close", "hedge_close", "sell", "exit") and ticker:
+            open_follows.pop(ticker, None)
+    actions: List[Dict[str, Any]] = []
+    now = datetime.now(timezone.utc).isoformat(timespec="seconds")
+    new_lines: List[str] = []
+    for ticker, rec in open_follows.items():
+        entry = rec.get("entry_price_cents") or rec.get("price_cents")
+        mark = rec.get("current_price_cents") or rec.get("mark_cents")
+        side = (rec.get("side") or "").upper()
+        if entry is None or mark is None:
+            continue
+        try:
+            entry_i = int(entry)
+            mark_i = int(mark)
+        except (TypeError, ValueError):
+            continue
+        if side == "NO":
+            pnl_cents = (100 - mark_i) - (100 - entry_i)
+        else:
+            pnl_cents = mark_i - entry_i
+        reason: str | None = None
+        if profit_lock_cents > 0 and pnl_cents >= profit_lock_cents:
+            reason = "hedge_pl"
+        elif stop_loss_cents > 0 and pnl_cents <= -stop_loss_cents:
+            reason = "hedge_sl"
+        if not reason:
+            continue
+        close_rec = {
+            "kind": "hedge_close", "ticker": ticker,
+            "side": side or "YES",
+            "entry_price_cents": entry_i,
+            "exit_price_cents": mark_i,
+            "pnl_cents": pnl_cents,
+            "reason": reason,
+            "created_at": now,
+        }
+        new_lines.append(json.dumps(close_rec))
+        actions.append({
+            "bot_key": bot_key, "bot_name": bot_name,
+            "ticker": ticker, "side": close_rec["side"],
+            "entry_cents": entry_i, "exit_cents": mark_i,
+            "pnl_per_contract": pnl_cents, "reason": reason,
+        })
+    if new_lines:
+        # Append to the jsonl atomically (open + write under a lock).
+        with p.open("a", encoding="utf-8") as f:
+            f.write("\n".join(new_lines) + "\n")
+    return actions
+
+
 def tick(bots: List[dict], hedge_cfg: dict) -> List[Dict[str, Any]]:
-    """One scan across every sim.db-style bot. Returns the closes
+    """One scan across every registered bot. Returns the closes
     applied this tick so the caller can log / report them."""
     if not hedge_cfg or not hedge_cfg.get("enabled"):
         return []
@@ -170,25 +396,44 @@ def tick(bots: List[dict], hedge_cfg: dict) -> List[Dict[str, Any]]:
         return []
     closed: List[Dict[str, Any]] = []
     for b in bots:
-        # JSON-source bots use their own sim engines outside sim.db.
-        if b.get("dashboard_type") in ("tennis", "survivor", "whale"):
-            continue
-        db = b.get("db_path") or ""
-        if not db:
-            continue
+        dt = b.get("dashboard_type") or "standard"
+        bot_key = b.get("key", "")
+        bot_name = b.get("name", "")
         try:
-            results = _check_db(db, b.get("key", ""), b.get("name", ""),
-                                  profit_lock_cents=pl, stop_loss_cents=sl)
+            if dt in ("tennis", "survivor"):
+                # Tennis + survivor both use sim_state.json. Survivor
+                # currently has no open positions but the framework
+                # is in place — as soon as the bot starts paper-
+                # trading elimination markets, this path picks them
+                # up automatically.
+                results = _check_tennis_state(
+                    b.get("sim_state_path"), bot_key, bot_name,
+                    profit_lock_cents=pl, stop_loss_cents=sl,
+                )
+            elif dt == "whale":
+                results = _check_whale_orders(
+                    b.get("orders_path") or b.get("signals_path"),
+                    bot_key, bot_name,
+                    profit_lock_cents=pl, stop_loss_cents=sl,
+                )
+            else:
+                db = b.get("db_path") or ""
+                if not db:
+                    continue
+                results = _check_db(
+                    db, bot_key, bot_name,
+                    profit_lock_cents=pl, stop_loss_cents=sl,
+                )
         except Exception:  # noqa: BLE001
-            log.exception("hedge tick failed for %s", b.get("key"))
+            log.exception("hedge tick failed for %s", bot_key)
             continue
         for r in results:
             log.info(
-                "[hedge] %s %s pos=%d side=%s entry=%d exit=%d pnl=%+d "
-                "contracts=%d reason=%s",
-                r["bot_name"], r["ticker"], r["position_id"], r["side"],
-                r["entry"], r["exit"], r["pnl_per_contract"],
-                r["contracts"], r["reason"],
+                "[hedge] %s %s side=%s entry=%s exit=%s pnl=%+d reason=%s",
+                r["bot_name"], r.get("ticker"), r.get("side"),
+                r.get("entry_cents") or r.get("entry"),
+                r.get("exit_cents") or r.get("exit"),
+                r.get("pnl_per_contract", 0), r.get("reason"),
             )
         closed.extend(results)
     return closed
