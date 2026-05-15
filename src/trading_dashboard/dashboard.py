@@ -1534,6 +1534,12 @@ td.num { text-align: right; font-variant-numeric: tabular-nums; }
 .badge { display: inline-block; padding: 2px 8px; border-radius: 10px; font-size: 11px; font-weight: 600; }
 .badge-yes { background: rgba(86, 211, 100, 0.2); color: #56d364; }
 .badge-no { background: rgba(248, 81, 73, 0.2); color: #f85149; }
+/* Sport-bot active-bet side cell: same team-tricode / "vs opp"
+   layout the watchlist uses underneath, plus a YES/NO color
+   accent on the team name so the bet direction stays visible. */
+.active-side-team strong { font-weight: 700; }
+.active-side-team.badge-yes strong { color: #56d364; }
+.active-side-team.badge-no strong { color: #f85149; }
 .badge-skip { background: rgba(139, 148, 158, 0.2); color: #8b949e; }
 .badge-hedge { background: rgba(227, 179, 65, 0.2); color: #e3b341; margin-left: 4px; }
 .empty { color: #8b949e; padding: 14px; text-align: center; font-style: italic; }
@@ -3335,7 +3341,11 @@ def _render_active_bets_table(out: List[str], bets: List[dict],
                               show_bot: bool = True,
                               chart_link: bool = False,
                               hedge_cfg: dict | None = None,
-                              hide_settled: bool = True) -> None:
+                              hide_settled: bool = True,
+                              watchlist: List[dict] | None = None,
+                              event_title: str | None = None,
+                              is_sport_bot: bool = False,
+                              display: dict | None = None) -> None:
     """Shared renderer used by both Section 1 (cross-bot summary) and
     the per-bot view inside the Watchlist tab. Columns:
         Opened | [Bot] | Ticker | Question | Contracts | Side
@@ -3380,6 +3390,16 @@ def _render_active_bets_table(out: List[str], bets: List[dict],
     if not bets:
         out.append(f"<div class='empty'>{html.escape(empty_msg)}</div>")
         return
+    # Look-up of the ticker table underneath so the active-bets row
+    # mirrors the same title + side text the watchlist shows for the
+    # same ticker. Per-bot views pass `watchlist`; the cross-bot
+    # Summary tab leaves it None and falls back to the legacy fields
+    # stored on each position.
+    wl_by_ticker: dict = {
+        (w.get("ticker") or ""): w for w in (watchlist or [])
+    }
+    use_event_title = bool((display or {}).get("watchlist_title_use_event")
+                           and event_title)
     bot_th = "<th>Bot</th>" if show_bot else ""
     # Column layout: ``Title`` carries Kalshi's published contract title
     # (the YES question text). ``Side`` carries the YES / NO badge.
@@ -3565,12 +3585,18 @@ def _render_active_bets_table(out: List[str], bets: List[dict],
         }
         criteria_json = html.escape(json.dumps(
             criteria, separators=(",", ":"), default=str))
-        # Title cell: Kalshi-published contract title (the exact YES
-        # question text from the market page). Tennis bets carry it
-        # via ``_title``; Kalshi-bot bets via ``title``. Falls through
-        # to a derived "matchup — bet on X" or the strike question
-        # text when no Kalshi title is recorded.
-        title_text = b.get("_title") or b.get("title") or ""
+        # Title cell: mirror the watchlist row underneath for the same
+        # ticker so the two tables always show identical text. Falls
+        # through to the position's stored title and finally to a
+        # derived question when no watchlist match is available (the
+        # cross-bot Summary tab doesn't supply a watchlist).
+        wl_row = wl_by_ticker.get(b.get("ticker") or "")
+        if use_event_title:
+            title_text = event_title
+        elif wl_row and wl_row.get("title"):
+            title_text = wl_row.get("title")
+        else:
+            title_text = b.get("_title") or b.get("title") or ""
         if not title_text:
             match_text = b.get("_match") or _match_text_from_ticker(b.get("ticker"))
             side_player = b.get("_side_player")
@@ -3620,13 +3646,43 @@ def _render_active_bets_table(out: List[str], bets: List[dict],
             model_prob_cell = (
                 f"<td class='num'{tip}>{model_p*100:.0f}%</td>"
             )
+        # Side cell: for sport bots, mirror the watchlist row underneath
+        # (team tricode on top, "vs opponent" beneath). The team we're
+        # actually rooting for sits on top — on a NO bet that's the
+        # team the YES side is *against* — so the user reads the bet
+        # the same way Kalshi's market page reads it. The badge color
+        # (green YES / red NO) is preserved as a left-edge accent so
+        # the bet direction stays visible at a glance. Non-sport bots
+        # keep the legacy YES/NO badge — the watchlist's third column
+        # is a different field (Question) over there.
+        if is_sport_bot:
+            side_team = _side_tricode_from_ticker(b.get("ticker"), side)
+            opp_team = _side_tricode_from_ticker(
+                b.get("ticker"),
+                "NO" if side == "YES" else "YES",
+            )
+            if side_team:
+                side_cell = (
+                    f"<td class='active-side-team {badge_cls}'>"
+                    f"<strong>{html.escape(side_team)}</strong>"
+                    f"<br><span class='small gray'>vs "
+                    f"{html.escape(opp_team)}</span></td>"
+                )
+            else:
+                side_cell = (
+                    f"<td><span class='badge {badge_cls}'>{side}</span></td>"
+                )
+        else:
+            side_cell = (
+                f"<td><span class='badge {badge_cls}'>{side}</span></td>"
+            )
         out.append(
             f"<tr{tr_attrs}><td>{html.escape(opened)}</td>"
             f"{bot_td}"
             f"<td class='mono'>{ticker_cell_html(b.get('ticker'))}</td>"
             f"<td>{html.escape(title_text)}</td>"
             f"<td class='num'>{contracts}</td>"
-            f"<td><span class='badge {badge_cls}'>{side}</span></td>"
+            f"{side_cell}"
             f"{model_prob_cell}"
             f"{entry_prob_cell}"
             f"{current_prob_cell}"
@@ -6412,8 +6468,15 @@ def _render_watchlist(out: List[str], watchlist: List[dict],
             enriched_rows.append(enriched)
         # Most-recently opened first (consistent with the home table).
         enriched_rows.sort(key=lambda r: r.get("opened_at", ""), reverse=True)
+        # Pass the watchlist + event title + sport-bot flag through so
+        # the active-bets row mirrors the title and side text of the
+        # ticker table directly underneath.
         _render_active_bets_table(out, enriched_rows, show_bot=False,
-                                   chart_link=True, hedge_cfg=hedge_cfg)
+                                   chart_link=True, hedge_cfg=hedge_cfg,
+                                   watchlist=watchlist,
+                                   event_title=event_title,
+                                   is_sport_bot=(current_bot in {"nba"}),
+                                   display=display)
     else:
         out.append("<div class='empty'>No active bets right now.</div>")
 
