@@ -2556,11 +2556,41 @@ def _live_update_script(current_bot: str, period_key: str = "all") -> str:
   // each, marked with [data-period-select] so we can wire them all).
   // Bot-selectors (one on Home, one on each per-bot Watchlist tab).
   // All marked with [data-bot-select]; on change we navigate to the
-  // option's value (the target URL).
+  // option's value. The option values bake in the SERVER-rendered tab
+  // (from ?tab= at page load), but tab pills swap panels client-side
+  // via history.replaceState — so the option's URL goes stale once
+  // the user changes tabs. Re-read the current tab from the URL bar
+  // (or fall back to the active tab pill) and override the option's
+  // ?tab= so the bot switch keeps the user on whichever tab is
+  // currently visible.
   document.querySelectorAll("[data-bot-select]").forEach(function (sel) {{
     sel.addEventListener("change", function () {{
-      const url = sel.value;
-      if (url) window.location.href = url;
+      let target = sel.value;
+      if (!target) return;
+      let currentTab = null;
+      try {{
+        currentTab = new URL(window.location.href).searchParams.get("tab");
+      }} catch (err) {{ /* old browser */ }}
+      if (!currentTab) {{
+        const activePill = document.querySelector(".tab-pill-active");
+        if (activePill) currentTab = activePill.getAttribute("data-tab");
+      }}
+      if (currentTab) {{
+        try {{
+          // Resolve against the current origin so we can use
+          // URLSearchParams regardless of whether the option value
+          // starts with "?" or "/". Only override the tab when the
+          // option already carries one (per-bot URLs); leave the
+          // "All bots" / cross-bot URL alone so it lands on the
+          // cross-bot Home view.
+          const u = new URL(target, window.location.origin);
+          if (u.searchParams.has("tab")) {{
+            u.searchParams.set("tab", currentTab);
+            target = u.pathname + u.search;
+          }}
+        }} catch (err) {{ /* fall through to raw target */ }}
+      }}
+      window.location.href = target;
     }});
   }});
   // Period-selectors (Home + History tabs).
