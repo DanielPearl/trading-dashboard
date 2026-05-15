@@ -427,6 +427,9 @@ def fetch_global_summary(bots: List[dict],
         if b.get("dashboard_type") == "tennis":
             from . import tennis as _tennis
             s = _tennis.summary_for_rollup(b.get("sim_state_path"))
+        elif b.get("dashboard_type") == "survivor":
+            from . import survivor as _survivor
+            s = _survivor.summary_for_rollup(b.get("sim_state_path"))
         elif b.get("dashboard_type") and b["dashboard_type"] != "standard":
             continue
         else:
@@ -2948,7 +2951,7 @@ def _render_bot_cards(out: List[str], rollup: dict,
         # through its own page since its model has its own renderer.
         if not bot_key:
             href = "#"
-        elif (b.get("dashboard_type") == "tennis"):
+        elif b.get("dashboard_type") in ("tennis", "survivor"):
             href = f"?bot={html.escape(bot_key)}&tab=models"
         else:
             href = f"?tab=models&bot={html.escape(bot_key)}"
@@ -2963,7 +2966,7 @@ def _render_bot_cards(out: List[str], rollup: dict,
         ACTUAL_WIN_MIN_N = 10
         DRIFT_PP_THRESHOLD = 0.10
         drift_html = ""
-        if m and b.get("dashboard_type") != "tennis":
+        if m and b.get("dashboard_type") not in ("tennis", "survivor"):
             a_wins_pre = int(m.get("actual_wins") or 0)
             a_losses_pre = int(m.get("actual_losses") or 0)
             a_total_pre = a_wins_pre + a_losses_pre
@@ -6751,6 +6754,32 @@ class Handler(BaseHTTPRequestHandler):
                 if tab_key not in {"home", "watchlist", "models", "history"}:
                     tab_key = "home"
 
+                # Survivor-elimination uses the same JSON-source pattern
+                # as the tennis bot (watchlist.json + metrics.json +
+                # coefficients.json), but with a Survivor-shaped
+                # per-contestant table. Dispatch early — the standard
+                # render path expects a sim.db.
+                if bot.get("dashboard_type") == "survivor":
+                    from . import survivor as _survivor
+                    survivor_tab = "models" if tab_key == "models" else "watchlist"
+                    body = _survivor.render_page(
+                        metrics_path=bot.get("metrics_path"),
+                        coefficients_path=bot.get("coefficients_path"),
+                        watchlist_path=bot.get("watchlist_json_path"),
+                        sim_state_path=bot.get("sim_state_path"),
+                        available_bots=self.bots,
+                        current_bot_key=bot["key"],
+                        tab_key=survivor_tab,
+                    )
+                    payload = body.encode("utf-8")
+                    self.send_response(200)
+                    self.send_header("Content-Type", "text/html; charset=utf-8")
+                    self.send_header("Cache-Control", "no-store")
+                    self.send_header("Content-Length", str(len(payload)))
+                    self.end_headers()
+                    self.wfile.write(payload)
+                    return
+
                 # Tennis-forecast uses a different page entirely — JSON
                 # source (watchlist.json + metrics.json + coefficients.json),
                 # tennis-shaped watchlist rendering. Dispatch early so the
@@ -6918,6 +6947,18 @@ class Handler(BaseHTTPRequestHandler):
                     # metrics.json / coefficients.json. Synthesize a model
                     # dict for the card grid so the tennis bot shows up
                     # alongside the Kalshi bots on the home page.
+                    if b.get("dashboard_type") == "survivor":
+                        from . import survivor as _survivor
+                        m = _survivor.model_summary_for_card(
+                            b.get("metrics_path"),
+                            b.get("sim_state_path"),
+                        )
+                        bot_models.append({
+                            "bot": b, "model": m,
+                            "rules_text": "", "strike_count": 0,
+                            "strike_lo": None, "strike_hi": None,
+                        })
+                        continue
                     if b.get("dashboard_type") == "tennis":
                         from . import tennis as _tennis
                         m = _tennis.model_summary_for_card(
@@ -7090,6 +7131,10 @@ class Handler(BaseHTTPRequestHandler):
                     # the snapshot endpoint so client navigation past
                     # the tennis tab doesn't 500 on /api/snapshot.
                     payload_dict = {"bot": bot["key"], "type": "tennis"}
+                elif bot.get("dashboard_type") == "survivor":
+                    # Survivor page also uses page reloads; the live
+                    # monitor rewrites watchlist.json every few minutes.
+                    payload_dict = {"bot": bot["key"], "type": "survivor"}
                 else:
                     db_path = bot["db_path"]
                     payload_dict = build_snapshot(db_path, self.bots,
@@ -7204,6 +7249,12 @@ def main(argv: list[str] | None = None) -> int:
             # Tennis bot is "available" if the watchlist JSON exists. The
             # tennis-forecast cron writes it on every refresh; an empty
             # rows list still counts as available (renders empty state).
+            available = bool(b.watchlist_json_path
+                             and Path(b.watchlist_json_path).exists())
+        elif b.dashboard_type == "survivor":
+            # Same shape as tennis — the bot writes a watchlist.json
+            # every poll cycle; presence of the file is the
+            # availability signal.
             available = bool(b.watchlist_json_path
                              and Path(b.watchlist_json_path).exists())
         else:

@@ -126,6 +126,24 @@ bots:
     metrics_path: /root/tennis-forecast/data/processed/artifacts/metrics.json
     coefficients_path: /root/tennis-forecast/data/processed/artifacts/model_coefficients.json
     sim_state_path: /root/tennis-forecast/data/outputs/sim_state.json
+  - key: survivor
+    name: Survivor Elimination
+    # Survivor-elimination bot writes the same JSON-output shape as the
+    # tennis bot (watchlist.json + metrics.json + coefficients.json),
+    # so it routes through a dedicated ``dashboard_type: survivor``
+    # adapter that renders a per-contestant table instead of a per-
+    # match table. The series_ticker is a *prefix* (KXSURVIVOR) — the
+    # bot scans every series matching it and picks up new seasons
+    # without a code change.
+    dashboard_type: survivor
+    series_ticker: KXSURVIVOR
+    db_path: /root/survivor-elimination/data/outputs/watchlist.json
+    decisions_path: /root/survivor-elimination/data/outputs/watchlist.json
+    watchlist_json_path: /root/survivor-elimination/data/outputs/watchlist.json
+    metrics_path: /root/survivor-elimination/data/processed/artifacts/metrics.json
+    coefficients_path: /root/survivor-elimination/data/processed/artifacts/model_coefficients.json
+    sim_state_path: /root/survivor-elimination/data/outputs/sim_state.json
+
   - key: table-tennis
     name: Table Tennis Forecast
     # Table-tennis bot writes the same JSON output schema as tennis, so
