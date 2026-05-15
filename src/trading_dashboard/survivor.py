@@ -435,10 +435,9 @@ def _render_models_section(metrics: Dict[str, Any],
                             coefficients: Dict[str, Any]) -> str:
     blended = metrics.get("blended") or {}
     blended_train = metrics.get("blended_train") or {}
-    logistic = metrics.get("logistic") or {}
-    logistic_train = metrics.get("logistic_train") or {}
-    gbt = metrics.get("calibrated_gbt") or {}
-    gbt_train = metrics.get("calibrated_gbt_train") or {}
+    families = metrics.get("families") or {}
+    leaderboard = metrics.get("cv_leaderboard") or []
+    best_model = metrics.get("best_model") or "—"
     out: List[str] = []
     out.append(
         "<p class='small gray'>The elimination model is trained on "
@@ -450,9 +449,12 @@ def _render_models_section(metrics: Dict[str, Any],
         "spike, negative-edit score, strategic isolation, prior "
         "challenge performance) and Reddit-derived columns "
         "(mention count, boot-pick count, sentiment, target share). "
-        "Two models are trained: an L2-regularised logistic regression "
-        "(interpretable) and a calibrated HistGradientBoosting "
-        "ensemble. The lower-Brier model is used in production.</p>"
+        "Every training run sweeps a zoo of candidate classifiers "
+        "(logistic, random forest, HistGradientBoosting, XGBoost, "
+        "LightGBM, linear SVM, naive Bayes) under season-aware "
+        "leave-one-season-out cross-validation, then stacks the "
+        "top-3 with a logistic meta-learner. The model with the "
+        "best held-out F1 wins production.</p>"
     )
     threshold = blended.get("threshold")
     pos_rate_train = metrics.get("train_positive_rate")
@@ -469,57 +471,90 @@ def _render_models_section(metrics: Dict[str, Any],
             f"model is using threshold <code>{threshold:.2f}</code>.</p>"
         )
 
-    out.append("<h3 class='subhead'>Probabilistic quality "
-                "<span class='small gray'>(threshold-independent)</span></h3>")
-    out.append("<table><thead><tr>"
-               "<th>Component</th><th>Accuracy</th><th>Brier</th>"
-               "<th>Log loss</th><th>ROC AUC</th></tr></thead><tbody>")
-    for name, mm in [("Logistic regression", logistic),
-                      ("Calibrated GBT",     gbt),
-                      ("Blended (live)",     blended)]:
-        if not mm or mm.get("brier") is None:
-            out.append(f"<tr><td>{html.escape(name)}</td>"
-                        "<td>—</td><td>—</td><td>—</td><td>—</td></tr>")
-            continue
-        out.append(
-            f"<tr><td>{html.escape(name)}</td>"
-            f"<td>{_fmt_pct(mm.get('accuracy'), 1)}</td>"
-            f"<td>{mm.get('brier'):.3f}</td>"
-            f"<td>{mm.get('log_loss'):.3f}</td>"
-            f"<td>{_fmt_pct(mm.get('roc_auc'), 1)}</td></tr>"
-        )
-    out.append("</tbody></table>")
+    # CV leaderboard — every family's best hyperparam config, ranked
+    # by season-aware-CV F1. The user explicitly asked which models
+    # were considered; this surfaces the full picture.
+    if leaderboard:
+        out.append("<h3 class='subhead'>Sweep leaderboard "
+                    "<span class='small gray'>(season-aware CV F1, "
+                    f"{len(leaderboard)} families)</span></h3>")
+        out.append("<table><thead><tr>"
+                    "<th>Family</th><th>CV F1</th><th>CV P</th>"
+                    "<th>CV R</th><th>Hyperparams</th>"
+                    "</tr></thead><tbody>")
+        for sc in leaderboard:
+            params_str = ", ".join(f"{k}={v}" for k, v in (sc.get("params") or {}).items())
+            family = sc.get("family", "—")
+            mark = " ←" if family == best_model else ""
+            out.append(
+                f"<tr><td><code>{html.escape(str(family))}</code>{html.escape(mark)}</td>"
+                f"<td>{_fmt_pct(sc.get('cv_mean_f1'), 1)} "
+                f"<span class='small gray'>± {_fmt_pct(sc.get('cv_std_f1'), 1)}</span></td>"
+                f"<td>{_fmt_pct(sc.get('cv_mean_precision'), 1)}</td>"
+                f"<td>{_fmt_pct(sc.get('cv_mean_recall'), 1)}</td>"
+                f"<td><span class='small gray'>{html.escape(params_str)}</span></td>"
+                f"</tr>"
+            )
+        out.append("</tbody></table>")
 
-    out.append("<h3 class='subhead'>Predicted vs actual "
-                "<span class='small gray'>(P / R / F1 at tuned threshold)"
-                "</span></h3>")
-    out.append("<table><thead><tr>"
-               "<th>Component</th><th>Split</th>"
-               "<th>Precision</th><th>Recall</th><th>F1</th>"
-               "<th>Accuracy</th></tr></thead><tbody>")
-    rows = [
-        ("Logistic regression", "Train", logistic_train),
-        ("Logistic regression", "Test",  logistic),
-        ("Calibrated GBT",      "Train", gbt_train),
-        ("Calibrated GBT",      "Test",  gbt),
-        ("Blended (live)",      "Train", blended_train),
-        ("Blended (live)",      "Test",  blended),
-    ]
-    for name, split, mm in rows:
-        if not mm:
-            out.append(f"<tr><td>{html.escape(name)}</td>"
-                        f"<td>{split}</td><td>—</td><td>—</td>"
-                        f"<td>—</td><td>—</td></tr>")
-            continue
-        out.append(
-            f"<tr><td>{html.escape(name)}</td>"
-            f"<td><span class='small gray'>{split}</span></td>"
-            f"<td>{_fmt_pct(mm.get('precision'), 1)}</td>"
-            f"<td>{_fmt_pct(mm.get('recall'), 1)}</td>"
-            f"<td>{_fmt_pct(mm.get('f1'), 1)}</td>"
-            f"<td>{_fmt_pct(mm.get('accuracy'), 1)}</td></tr>"
-        )
-    out.append("</tbody></table>")
+    # Test-set performance of every fitted family + the stacker. The
+    # winner row is marked with ← in the family column.
+    if families:
+        out.append("<h3 class='subhead'>Held-out test performance "
+                    "<span class='small gray'>(seasons "
+                    f"{html.escape(str(metrics.get('test_seasons') or ''))})"
+                    "</span></h3>")
+        out.append("<table><thead><tr>"
+                    "<th>Family</th><th>F1</th><th>Precision</th>"
+                    "<th>Recall</th><th>Accuracy</th>"
+                    "<th>Brier</th><th>ROC AUC</th>"
+                    "</tr></thead><tbody>")
+        # Sort by test F1 desc.
+        ranked = sorted(families.items(),
+                         key=lambda kv: -(kv[1].get("test") or {}).get("f1", 0))
+        for name, fam in ranked:
+            t = fam.get("test") or {}
+            if not t:
+                continue
+            mark = " ←" if name == best_model else ""
+            out.append(
+                f"<tr><td><code>{html.escape(str(name))}</code>{html.escape(mark)}</td>"
+                f"<td>{_fmt_pct(t.get('f1'), 1)}</td>"
+                f"<td>{_fmt_pct(t.get('precision'), 1)}</td>"
+                f"<td>{_fmt_pct(t.get('recall'), 1)}</td>"
+                f"<td>{_fmt_pct(t.get('accuracy'), 1)}</td>"
+                f"<td>{t.get('brier', 0):.3f}</td>"
+                f"<td>{_fmt_pct(t.get('roc_auc'), 1)}</td>"
+                f"</tr>"
+            )
+        out.append("</tbody></table>")
+
+    # Train vs test for the WINNING family — exposes the
+    # train→test F1 drop that signalled overfitting in earlier iterations.
+    if best_model and best_model in families:
+        fam = families[best_model]
+        out.append("<h3 class='subhead'>Predicted vs actual · winning model "
+                    f"<code>{html.escape(best_model)}</code> "
+                    "<span class='small gray'>(P / R / F1 at tuned "
+                    "threshold)</span></h3>")
+        out.append("<table><thead><tr>"
+                    "<th>Split</th><th>Precision</th><th>Recall</th>"
+                    "<th>F1</th><th>Accuracy</th><th>Brier</th>"
+                    "</tr></thead><tbody>")
+        for split, mm in [("Train", fam.get("train") or {}),
+                            ("Test",  fam.get("test")  or {})]:
+            if not mm:
+                continue
+            out.append(
+                f"<tr><td>{split}</td>"
+                f"<td>{_fmt_pct(mm.get('precision'), 1)}</td>"
+                f"<td>{_fmt_pct(mm.get('recall'), 1)}</td>"
+                f"<td>{_fmt_pct(mm.get('f1'), 1)}</td>"
+                f"<td>{_fmt_pct(mm.get('accuracy'), 1)}</td>"
+                f"<td>{mm.get('brier', 0):.3f}</td>"
+                f"</tr>"
+            )
+        out.append("</tbody></table>")
 
     out.append(
         f"<p class='small gray'>Train seasons: "
