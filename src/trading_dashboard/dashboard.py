@@ -3369,6 +3369,7 @@ def _render_active_bets_table(out: List[str], bets: List[dict],
                f"<th>Opened</th>{bot_th}<th>Ticker</th>"
                "<th>Title</th>"
                "<th class='num'>Contracts</th><th>Side</th>"
+               "<th class='num' title='Model probability for our side at entry — what the model thought before we bet.'>Model prob</th>"
                "<th class='num' title='Implied probability of our side at entry (= entry price in ¢).'>Entry prob</th>"
                "<th class='num' title='Implied probability of our side right now, taken from the market mid.'>Current prob</th>"
                "<th class='num' title='Entry prob × contracts + Kalshi entry fee — total cash out at open'>Entry cost</th>"
@@ -3490,6 +3491,21 @@ def _render_active_bets_table(out: List[str], bets: List[dict],
         # data-criteria on click and populates the shared modal.
         m_yes = b.get("model_yes_prob_at_entry")
         k_yes = b.get("kalshi_yes_prob_at_entry")
+        # Backfill from decision_json for bots whose schema doesn't
+        # have dedicated columns (natural-gas stashes both probs
+        # inside the JSON payload). Same fallback fetch_bet_history
+        # applies to closed rows.
+        if (m_yes is None or k_yes is None) and b.get("decision_json"):
+            try:
+                _dj = json.loads(b["decision_json"]) if isinstance(
+                    b["decision_json"], str) else b["decision_json"]
+                if isinstance(_dj, dict):
+                    if m_yes is None and _dj.get("model_prob") is not None:
+                        m_yes = _dj["model_prob"]
+                    if k_yes is None and _dj.get("kalshi_implied_prob") is not None:
+                        k_yes = _dj["kalshi_implied_prob"]
+            except (TypeError, ValueError, json.JSONDecodeError):
+                pass
         # Selected-side probabilities — YES bet uses model_yes / kalshi_yes
         # directly; NO bet uses 1 - model_yes / 1 - kalshi_yes.
         if m_yes is not None:
@@ -3570,6 +3586,19 @@ def _render_active_bets_table(out: List[str], bets: List[dict],
                 pass
         else:
             tr_attrs = ""
+        # Model prob cell — renders the side-adjusted model probability
+        # from the criteria computation above. Tooltip surfaces the
+        # implied edge (model − Kalshi) when both are available.
+        if model_p is None:
+            model_prob_cell = "<td class='num gray'>—</td>"
+        else:
+            tip = ""
+            if edge_pts is not None:
+                tip = (f" title='Model edge {edge_pts:+.1f}pp vs entry "
+                       f"price'")
+            model_prob_cell = (
+                f"<td class='num'{tip}>{model_p*100:.0f}%</td>"
+            )
         out.append(
             f"<tr{tr_attrs}><td>{html.escape(opened)}</td>"
             f"{bot_td}"
@@ -3577,6 +3606,7 @@ def _render_active_bets_table(out: List[str], bets: List[dict],
             f"<td>{html.escape(title_text)}</td>"
             f"<td class='num'>{contracts}</td>"
             f"<td><span class='badge {badge_cls}'>{side}</span></td>"
+            f"{model_prob_cell}"
             f"{entry_prob_cell}"
             f"{current_prob_cell}"
             f"{entry_cost_cell}"
