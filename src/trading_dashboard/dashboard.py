@@ -4166,24 +4166,44 @@ def _holdout_confidence(pairs: List[Tuple[float, int]]) -> dict:
 
 def _render_confidence_card(out: List[str], conf: dict,
                              extra_lines: List[str] | None = None) -> None:
-    """Render the model-page confidence banner. Sits at the top of
-    the Model panel for every bot type so the user always knows how
-    much weight to put on the metrics that follow.
+    """Render the held-out-data trust indicator at the top of the
+    Model panel. Compact one-liner: row count + confidence tier in
+    muted grey, with the tier label tinted by tier colour. The
+    underlying ``_holdout_confidence`` dict still carries the full
+    reasoning sentence in ``reason`` — it goes into the title
+    tooltip so users can hover for the long-form explanation.
     """
     color = conf["color"]
-    out.append(
-        f"<div style='display:flex;align-items:flex-start;gap:14px;"
-        f"padding:12px 14px;margin:0 0 16px 0;border-radius:6px;"
-        f"border:1px solid {color};background:{color}15;'>"
-        f"<div style='font-weight:600;color:{color};white-space:nowrap;'>"
-        f"{html.escape(conf['label'])}</div>"
-        f"<div style='flex:1;color:#c9d1d9;font-size:13px;line-height:1.4;'>"
-        f"{html.escape(conf['reason'])}"
-    )
+    n = int(conf.get("n") or 0)
+    if n <= 0:
+        # No held-out data — keep the line so the user still sees
+        # that the trainer hasn't written one yet.
+        text = html.escape(conf.get("label", "No held-out data"))
+        reason = html.escape(conf.get("reason", ""))
+        out.append(
+            f"<p class='small gray' "
+            f"style='margin:0 0 12px 0;' title='{reason}'>"
+            f"Held-out test set: <span style='color:{color};"
+            f"font-weight:600;'>{text}</span></p>"
+        )
+    else:
+        n_pos = int(conf.get("n_pos") or 0)
+        n_neg = int(conf.get("n_neg") or 0)
+        label = html.escape(conf.get("label", ""))
+        reason = html.escape(conf.get("reason", ""))
+        out.append(
+            f"<p class='small gray' "
+            f"style='margin:0 0 12px 0;' title='{reason}'>"
+            f"Held-out test set: <b style='color:#c9d1d9;'>"
+            f"{n:,} predictions</b> "
+            f"<span class='gray'>({n_pos:,} positives / "
+            f"{n_neg:,} negatives)</span> · "
+            f"<span style='color:{color};font-weight:600;'>{label}</span>"
+            f"</p>"
+        )
     for line in (extra_lines or []):
-        out.append(f"<div class='small gray' style='margin-top:4px;'>"
-                   f"{line}</div>")
-    out.append("</div></div>")
+        out.append(f"<p class='small gray' style='margin:0 0 4px 0;'>"
+                   f"{line}</p>")
 
 
 def calibration_from_holdout(pairs: List[Tuple[float, int]],
