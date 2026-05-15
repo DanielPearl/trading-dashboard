@@ -592,6 +592,51 @@ def _market_question(market: Optional[dict],
     return "—"
 
 
+# Whale-watcher scope: real-world event markets only.
+#
+# Sports + crypto are removed per user request — those series have
+# a totally different microstructure (sports lines move on roster
+# news + odds-shopping flow, crypto on macro-aligned spot moves)
+# and dilute the "informed event flow" signal the whale screen
+# exists to surface. Kept as an inclusion test on each ticker's
+# series prefix; ``_is_event_ticker`` short-circuits the per-trade
+# pipeline before we even look up the market.
+_EXCLUDED_SERIES_PREFIXES = (
+    # Team sports
+    "KXNBAGAME", "KXNFLGAME", "KXMLBGAME", "KXMLB", "KXNHLGAME", "KXNHL",
+    "KXNCAA", "KXNCAAB", "KXNCAAF", "KXNCAAM", "KXNCAAW",
+    "KXMLS", "KXFIFA", "KXWORLDCUP", "KXCHAMPIONSLG", "KXEPL",
+    # Tennis (ATP / WTA / Challenger / ITF / table)
+    "KXATPMATCH", "KXATP", "KXWTAMATCH", "KXWTA",
+    "KXITFMATCH", "KXITF", "KXCHALLENGER",
+    "KXTABLETENNIS", "TABLETENNIS",
+    # Golf / racing / combat / F1
+    "KXPGA", "KXGOLF", "KXLPGA",
+    "KXUFC", "KXMMA", "KXBOX", "KXBOXING",
+    "KXF1", "KXNASCAR", "KXINDYCAR", "KXTOURDEFRANCE",
+    # Crypto — spot price + volatility markets
+    "KXBTC", "KXBITCOIN", "KXETH", "KXETHEREUM",
+    "KXBTCD", "KXBTCH", "KXBTCM", "KXBTCW",
+    "KXETHD", "KXETHH", "KXETHM", "KXETHW",
+    "KXSOLD", "KXSOLM", "KXXRPD",
+    "KXCRYPTO",
+)
+
+
+def _is_event_ticker(ticker: str | None) -> bool:
+    """True when ``ticker`` looks like a real-world event market
+    (politics, economics, weather, climate, etc.) — i.e. NOT in the
+    excluded sports or crypto families. Used to short-circuit the
+    whale pipeline so the screen surfaces only event flow."""
+    if not ticker:
+        return False
+    t = ticker.upper()
+    series = t.split("-", 1)[0]  # everything before the first hyphen
+    if any(series.startswith(p) for p in _EXCLUDED_SERIES_PREFIXES):
+        return False
+    return True
+
+
 def fetch_live_big_bets(series_tickers: List[str],
                           min_notional_cents: int = LIVE_MIN_NOTIONAL_CENTS,
                           lookback_hours: int = LIVE_LOOKBACK_HOURS,
@@ -663,10 +708,15 @@ def fetch_live_big_bets(series_tickers: List[str],
             log.exception("whale: global fetch_trades failed")
             return []
 
-        # Pre-filter trades by notional so we only do per-ticker
-        # market lookups on tickers that actually have big bets.
+        # Pre-filter trades by notional + scope. Notional first so we
+        # only do per-ticker market lookups on tickers that actually
+        # have big bets; scope second (drop sports + crypto series)
+        # so the screen surfaces real-world event flow only.
         big_trades: List[dict] = []
         for t in trades:
+            tk = t.get("ticker")
+            if not _is_event_ticker(tk):
+                continue
             count = _trade_count(t)
             yes_p = _trade_price_cents(t, "yes")
             no_p = _trade_price_cents(t, "no")
@@ -1361,7 +1411,17 @@ def render_page(
             return int(e.get("whale_notional_cents") or 0) >= effective_min_cents
         except (TypeError, ValueError):
             return False
-    filtered_events = [e for e in events if _clears_floor(e)]
+    # Same event-scope filter the live trades use — keeps the JSONL
+    # historical pipeline aligned with the live screen so sports +
+    # crypto signals from older bot runs don't leak in.
+    filtered_events = [
+        e for e in events
+        if _clears_floor(e) and _is_event_ticker(e.get("ticker"))
+    ]
+    # Belt-and-braces: even though live_events were filtered at the
+    # source, re-run the predicate so any future code path that
+    # bypasses fetch_live_big_bets stays scoped.
+    live_events = [e for e in live_events if _is_event_ticker(e.get("ticker"))]
     combined_events = filtered_events + live_events
     candidates = compute_candidates(combined_events, cohorts)
     summary = summarize(combined_events, candidates)
