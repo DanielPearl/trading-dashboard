@@ -533,6 +533,108 @@ def fetch_ev_realized_buckets(db_path: str) -> List[dict]:
     return out
 
 
+def fetch_hedge_audit(db_path: str) -> dict:
+    """Was the hedge worth it?
+
+    For every closed position whose ``error_type`` starts with
+    ``hedge_`` (profit-lock or stop-loss), look up the same ticker's
+    eventual settlement from ``market_views`` and compute the
+    counterfactual P&L of holding to settlement. Aggregate across
+    all such bets so the user can see whether hedges have net saved
+    money or net cost money.
+
+    Settlement is inferred from the latest market_views row for the
+    ticker captured AFTER the hedge exit: YES settled when the final
+    ``yes_ask_cents`` is ≥ 95, NO when ≤ 5. Anything else is treated
+    as "unknown" and excluded from the counterfactual sums (still
+    counted in totals).
+
+    Returns a dict the renderer can shape into a small summary card.
+    Empty (zero hedged) when no hedge-exited bets exist or the DB
+    lacks the schema.
+    """
+    blank = {"n_hedged": 0, "n_with_settlement": 0,
+             "actual_pnl_cents": 0, "counterfactual_pnl_cents": 0,
+             "delta_cents": 0,
+             "n_hedge_saved": 0, "n_hedge_cost": 0}
+    if not Path(db_path).exists():
+        return blank
+    try:
+        with closing(_conn(db_path)) as c:
+            cols = {r["name"] for r in
+                    c.execute("PRAGMA table_info(positions)").fetchall()}
+            if "error_type" not in cols:
+                return blank
+            rows = c.execute(
+                "SELECT id, ticker, side, entry_price_cents, contracts, "
+                "       realized_pnl_cents, exited_at "
+                "FROM positions "
+                "WHERE status = 'closed' "
+                "  AND error_type LIKE 'hedge_%' "
+                "  AND realized_pnl_cents IS NOT NULL "
+                "  AND entry_price_cents IS NOT NULL"
+            ).fetchall()
+            results: List[dict] = []
+            for r in rows:
+                # Settlement signal: latest market_views row for the
+                # ticker captured AFTER the position exited. Extreme
+                # yes_ask (≥95 or ≤5) ⇒ the contract resolved one way.
+                settle = c.execute(
+                    "SELECT yes_ask_cents FROM market_views "
+                    "WHERE ticker = ? AND captured_at > ? "
+                    "  AND yes_ask_cents IS NOT NULL "
+                    "ORDER BY id DESC LIMIT 1",
+                    (r["ticker"], r["exited_at"] or ""),
+                ).fetchone()
+                results.append({**dict(r),
+                                "settle_yes": (dict(settle)["yes_ask_cents"]
+                                                if settle else None)})
+    except (sqlite3.OperationalError, sqlite3.DatabaseError):
+        return blank
+    if not results:
+        return blank
+    actual_total = 0
+    counter_total = 0
+    n_known = 0
+    n_saved = 0
+    n_cost = 0
+    for r in results:
+        actual_total += int(r["realized_pnl_cents"] or 0)
+        settle_yes = r["settle_yes"]
+        if settle_yes is None:
+            continue
+        if settle_yes >= 95:
+            yes_won = True
+        elif settle_yes <= 5:
+            yes_won = False
+        else:
+            continue
+        side = (r["side"] or "").upper()
+        side_won = (yes_won if side == "YES" else not yes_won)
+        entry = int(r["entry_price_cents"] or 0)
+        contracts = int(r["contracts"] or 0)
+        per_contract = (100 - entry) if side_won else (-entry)
+        counter = per_contract * contracts
+        counter_total += counter
+        delta = int(r["realized_pnl_cents"] or 0) - counter
+        # Positive delta ⇒ hedge made us money relative to holding
+        # (we exited at a better price than the eventual settlement).
+        if delta > 0:
+            n_saved += 1
+        elif delta < 0:
+            n_cost += 1
+        n_known += 1
+    return {
+        "n_hedged": len(results),
+        "n_with_settlement": n_known,
+        "actual_pnl_cents": actual_total,
+        "counterfactual_pnl_cents": counter_total,
+        "delta_cents": actual_total - counter_total,
+        "n_hedge_saved": n_saved,
+        "n_hedge_cost": n_cost,
+    }
+
+
 # Paper-trading bankroll used when the bot's display config doesn't
 # specify one. The Kelly sizing column on the watchlist multiplies
 # half-Kelly fractions against this — change it via display.bankroll_cents
@@ -2172,6 +2274,28 @@ td.num.red, td.num.green { white-space: nowrap; }
     font-size: 9px; font-weight: 700; text-transform: uppercase;
     letter-spacing: 0.04em; line-height: 1.5;
     vertical-align: 2px; }
+/* Auto-pause notifications panel — surfaced above the bot-card
+   grid on Home when the regime monitor has flipped a bot off in the
+   recent past. Silent (no DOM) when the audit log is empty so the
+   page stays calm on the happy path. */
+.notifications-panel { margin-bottom: 14px;
+    background: #1d1f24; border: 1px solid #3d342a;
+    border-left: 3px solid #e3934d; border-radius: 6px;
+    padding: 10px 14px; }
+.notifications-head { display: flex; gap: 10px;
+    flex-wrap: wrap; align-items: baseline; margin-bottom: 6px; }
+.notifications-title { color: #e3934d; font-weight: 700;
+    font-size: 12px; text-transform: uppercase;
+    letter-spacing: 0.06em; }
+.notifications-list { margin: 0; padding: 0; list-style: none;
+    display: flex; flex-direction: column; gap: 4px; }
+.notifications-list li { display: grid;
+    grid-template-columns: 130px 160px 1fr;
+    gap: 10px; font-size: 12px; color: #c9d1d9; }
+.notification-ts { color: #8b949e; font-family: monospace;
+    font-size: 11px; }
+.notification-bot { color: #f0f6fc; font-weight: 600; }
+.notification-reason { color: #8b949e; }
 /* Regime-status pill — sits inline with the bot name on the Home
    tab cards. Three states map to existing summary colours so the
    palette stays consistent: green = edge confirmed, yellow = edge
@@ -2526,6 +2650,7 @@ def render_page(
                      hedge_cfg=hedge_cfg)
     out.append("<div class='section'><h2>Model performance</h2>"
                "<div class='body'>")
+    _render_notifications_panel(out)
     _render_bot_cards(out, global_summary, bot_models, period_label)
     out.append("</div></div>")
     out.append("</div>")  # /home panel
@@ -3911,6 +4036,42 @@ def _render_summary(out: List[str], rollup: dict, active_bets: List[dict],
     out.append("</div>")
 
     out.append("</div></div>")
+
+
+def _render_notifications_panel(out: List[str],
+                                  limit: int = 5) -> None:
+    """Recent auto-pause notifications from the regime monitor.
+
+    Reads the tail of ``data/regime_notifications.jsonl`` and renders
+    a compact panel above the bot card grid when there's at least one
+    entry. Silent (no rendering) when the file is empty or missing —
+    a no-news-is-good-news posture so the Home tab stays calm.
+    """
+    from . import regime_monitor
+    notes = regime_monitor.read_notifications(limit=limit)
+    if not notes:
+        return
+    out.append("<div class='notifications-panel'>")
+    out.append(
+        "<div class='notifications-head'>"
+        "<span class='notifications-title'>Recent auto-pauses</span>"
+        "<span class='small gray'>The regime monitor auto-disabled "
+        "these bots after 3 consecutive 30-day windows of negative "
+        "P&amp;L. Use the bot card toggle to resume.</span></div>"
+    )
+    out.append("<ul class='notifications-list'>")
+    for n in notes:
+        ts = (n.get("ts") or "")[:19].replace("T", " ")
+        bot_name = n.get("bot_name") or n.get("bot_key") or "—"
+        reason = n.get("reason") or ""
+        out.append(
+            f"<li><span class='notification-ts'>{html.escape(ts)}</span>"
+            f"<span class='notification-bot'>"
+            f"{html.escape(str(bot_name))}</span>"
+            f"<span class='notification-reason'>"
+            f"{html.escape(reason)}</span></li>"
+        )
+    out.append("</ul></div>")
 
 
 def _render_bot_cards(out: List[str], rollup: dict,
@@ -6925,6 +7086,78 @@ def _svg_roc_curve(points: List[dict],
     return "".join(parts)
 
 
+def _render_hedge_audit(out: List[str], audit: dict) -> None:
+    """Hedge effectiveness audit on the Models tab.
+
+    Two-state render: when there are zero hedge-exited bets, show an
+    explainer card so the user understands what's measured. Otherwise,
+    show a 4-card summary: hedged-bet count, actual P&L, counterfactual
+    P&L (if held to settlement), and delta. Green delta means the hedge
+    on net made money vs holding; red means it cost money.
+    """
+    out.append(
+        "<h3 class='subhead'>Hedge effectiveness "
+        "<span class='small gray'>(profit-lock + stop-loss exits "
+        "vs. counterfactual hold-to-settlement)</span></h3>"
+    )
+    n_hedged = audit.get("n_hedged", 0) or 0
+    if n_hedged == 0:
+        out.append(
+            "<div class='empty'>No hedge events recorded yet — the "
+            "hedge daemon's profit-lock and stop-loss thresholds "
+            "haven't fired on any closed position. This card will "
+            "populate once they do.</div>"
+        )
+        return
+    n_known = audit.get("n_with_settlement", 0) or 0
+    actual = audit.get("actual_pnl_cents", 0) or 0
+    counter = audit.get("counterfactual_pnl_cents", 0) or 0
+    delta = audit.get("delta_cents", 0) or 0
+    n_saved = audit.get("n_hedge_saved", 0) or 0
+    n_cost = audit.get("n_hedge_cost", 0) or 0
+
+    def _money(c: int) -> str:
+        sign = "+" if c > 0 else ("−" if c < 0 else "")
+        return f"{sign}${abs(c)/100:.2f}"
+
+    delta_cls = ("green" if delta > 0
+                  else ("red" if delta < 0 else "gray"))
+    out.append("<div class='row compact'>")
+    out.append(
+        f"<div class='card'><div class='label' "
+        f"title='Total closed positions whose error_type started with "
+        f"hedge_ — profit-lock or stop-loss exits.'>"
+        f"Hedged exits</div>"
+        f"<div class='value'>{n_hedged}</div></div>"
+    )
+    out.append(
+        f"<div class='card'><div class='label' "
+        f"title='Actual realized P&amp;L summed across hedged-out "
+        f"positions.'>Actual P&amp;L</div>"
+        f"<div class='value {('green' if actual>0 else 'red' if actual<0 else 'gray')}'>"
+        f"{_money(actual)}</div></div>"
+    )
+    out.append(
+        f"<div class='card'><div class='label' "
+        f"title='Counterfactual P&amp;L if every hedged bet had been "
+        f"held to natural settlement, summed over the "
+        f"{n_known} of {n_hedged} bets whose contracts have settled.'>"
+        f"If held to settle</div>"
+        f"<div class='value {('green' if counter>0 else 'red' if counter<0 else 'gray')}'>"
+        f"{_money(counter)}</div></div>"
+    )
+    out.append(
+        f"<div class='card'><div class='label' "
+        f"title='Actual − counterfactual. Positive: the hedge saved "
+        f"money vs holding. Negative: the hedge cost money — you "
+        f"would have done better letting positions run. {n_saved} "
+        f"hedge exits paid off, {n_cost} hedged out too early.'>"
+        f"Hedge delta</div>"
+        f"<div class='value {delta_cls}'>{_money(delta)}</div></div>"
+    )
+    out.append("</div>")
+
+
 def _render_ev_realized_table(out: List[str],
                                 buckets: List[dict]) -> None:
     """Predicted-vs-realized EV bucket table for the Models tab.
@@ -7225,6 +7458,12 @@ def _render_models_panel(out: List[str], bot: dict, model: dict | None,
     # edge. If realized is negative where predicted was positive,
     # the model is mis-calibrated (anti-edge).
     _render_ev_realized_table(out, fetch_ev_realized_buckets(db_path))
+
+    # ── Hedge effectiveness audit ───────────────────────────────────
+    # "Did the hedge_monitor's profit-lock / stop-loss exits actually
+    # net make money vs. just holding to settlement?" Empty when no
+    # hedge events have fired yet.
+    _render_hedge_audit(out, fetch_hedge_audit(db_path))
 
     out.append("</div></div>")
 
@@ -8926,6 +9165,12 @@ def serve(host: str, port: int, bots: List[dict], risk_caps: dict,
     # thresholds. No-op when hedge.enabled is false in config.
     from . import hedge_monitor
     hedge_monitor.start_daemon(bots, hedge_cfg)
+    # Auto-pause daemon. Six-hourly walk of the bot list — bots with
+    # three consecutive 30-day windows of negative realized P&L get
+    # their on/off toggle flipped to OFF, with the action recorded
+    # in data/regime_notifications.jsonl for the Home-tab panel.
+    from . import regime_monitor
+    regime_monitor.start_daemon(bots)
     server = ThreadingHTTPServer((host, port), Handler)
     log.info("dashboard listening on http://%s:%d", host, port)
     log.info("registered bots: %s",
