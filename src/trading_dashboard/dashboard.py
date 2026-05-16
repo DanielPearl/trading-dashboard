@@ -1871,7 +1871,7 @@ def time_to_close_str(minutes: float | None) -> str:
     if minutes is None:
         return "—"
     if -2 < minutes < 2:
-        return "closing"
+        return "closing..."
     if minutes < 0:
         ago = -minutes
         if ago > 1440:
