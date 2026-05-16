@@ -2296,6 +2296,8 @@ td.num.red, td.num.green { white-space: nowrap; }
     color: #f85149; border: 1px solid rgba(248, 81, 73, 0.35); }
 .in-game-pill.ig-yellow { background: rgba(227, 179, 65, 0.18);
     color: #e3b341; border: 1px solid rgba(227, 179, 65, 0.35); }
+.in-game-pill.ig-gray { background: rgba(139, 148, 158, 0.15);
+    color: #8b949e; border: 1px solid rgba(139, 148, 158, 0.30); }
 .drift-badge { display: inline-block; margin-left: 6px;
     padding: 1px 6px; border-radius: 4px;
     background: rgba(212, 153, 0, 0.18);
@@ -2747,6 +2749,7 @@ def render_page(
         current_bot=current_bot,
         model_view=model_view,
         bot_active_bets=bot_active_bets,
+        bot_closed_positions=bot_closed_positions,
     )
     out.append("</div>")  # /models panel
 
@@ -7420,7 +7423,9 @@ def _ingame_proxy_metrics(bot: dict,
 
 
 def _render_ingame_model_view(out: List[str], bot: dict,
-                                 active_bets: List[dict]) -> None:
+                                 active_bets: List[dict],
+                                 closed_positions: List[dict] | None = None,
+                                 ) -> None:
     """In-game model view for a sport bot's Models tab.
 
     Shows three sections:
@@ -7482,7 +7487,10 @@ def _render_ingame_model_view(out: List[str], bot: dict,
     # Count features the heuristic actually uses today (the "Live"
     # rows in the SPORT_FEATURES table below).
     feat_table = {
-        "nba": 5,            # score diff, time, velocity, vol, divergence
+        # Counts the green "Live" rows in SPORT_FEATURES below.
+        "nba": 9,            # score, time, velocity, vol, divergence,
+                              # espn_proj, injuries, foul trouble,
+                              # box-score gaps
         "tennis": 5,         # live_prob, score, injury, pre_game, divergence
         "table-tennis": 2,   # live_prob, score
         "darts": 2,          # live_prob, set state
@@ -7619,15 +7627,23 @@ def _render_ingame_model_view(out: List[str], bot: dict,
             ("Market volatility", "Live", "market_views history (stdev)"),
             ("Divergence vs pre-game", "Live",
              "market_views + position.model_yes_prob_at_entry"),
-            ("Foul trouble", "TODO",
-             "nba_api box-score endpoint"),
-            ("Lineup combinations", "TODO",
-             "nba_api play-by-play (sub events)"),
+            ("ESPN win projection", "Live",
+             "ESPN /summary?event= predictor block"),
+            ("Critical injury counts (per team)", "Live",
+             "ESPN /summary injuries block"),
+            ("Foul trouble (players w/ ≥4 PF)", "Live",
+             "ESPN /summary boxscore.players[*]"),
+            ("Live FG% / FT% / 3P% / AST / REB / TO gaps", "Live",
+             "ESPN /summary boxscore.teams[*].statistics"),
             ("Shooting % vs xFG", "TODO",
-             "nba_api shot chart + xFG training set"),
-            ("Free throw rate", "TODO", "nba_api team-stats endpoint"),
-            ("Bench vs starter +/-", "TODO",
+             "nba_api shot chart + xFG training set (richer than "
+             "ESPN's FG%)"),
+            ("Lineup combinations + bench vs starter +/-", "TODO",
              "nba_api advanced box-score endpoint"),
+            ("Possession-adjusted pace", "TODO",
+             "nba_api play-by-play with pace estimator"),
+            ("Per-player minutes restriction", "TODO",
+             "team injury report + minutes feed"),
         ],
         "tennis": [
             ("Live win probability", "Live",
@@ -7698,6 +7714,9 @@ def _render_ingame_model_view(out: List[str], bot: dict,
     # ── Historical backtest of the testable features ────────────────
     _render_ingame_backtest(out, bot)
 
+    # ── Recent predictions log + outcome reconciliation ─────────────
+    _render_ingame_predictions_log(out, bot, closed_positions or [])
+
 
 # ──────────────────────────────────────────────────────────────────
 # In-game model coefficients — the weights and constants baked into
@@ -7737,6 +7756,21 @@ _INGAME_COEFFICIENTS: Dict[str, List[tuple]] = {
          "Volatility above this completely cancels the "
          "reversion pull (market is in too much flux to trust "
          "pre-game prior)",
+         "tuned"),
+        ("ESPN win-projection weight", 0.25,
+         "Weight assigned to ESPN's own predicted win % when "
+         "blending it as a third opinion alongside state_prob "
+         "and reversion-adjusted prior",
+         "tuned"),
+        ("Injury / foul-trouble nudge (per player)", 0.015,
+         "Each critical injury OR foul-troubled key player on "
+         "our team drops live_prob by this; same magnitude on "
+         "the opp team raises it",
+         "tuned"),
+        ("Box-score gap nudge (per pp)", 0.001,
+         "Per-pp coefficient on live FG% / FT% / 3P% / AST gap "
+         "vs opponent. Turnover gap weighted 3×, rebound gap "
+         "weighted 1.5×",
          "tuned"),
         ("EXIT_NOW threshold", 0.30,
          "Recommend exit when our_side_prob falls below this "
@@ -8013,12 +8047,115 @@ def _ingame_backtest_rows(bot: dict) -> List[dict]:
     return rows
 
 
+def _render_ingame_predictions_log(out: List[str], bot: dict,
+                                       closed_positions: List[dict]
+                                       ) -> None:
+    """Recent predictions panel for the In-game view.
+
+    Reads the tail of ``data/in_game_predictions.jsonl`` filtered to
+    this bot, joins each entry against the closed-bet ledger
+    (matching on ticker), and surfaces the outcome (WON / LOST /
+    OPEN) so the user can see whether the model's calls held up.
+    """
+    bot_key = bot.get("key", "")
+    out.append(
+        "<h3 class='subhead'>Recent predictions "
+        "<span class='small gray'>(every confident action "
+        "transition the in-game model has logged for this bot, "
+        "newest first)</span></h3>"
+    )
+    try:
+        from .in_game import logger as _ig_logger
+        entries = _ig_logger.read_for_bot(bot_key, limit=40)
+    except Exception:  # noqa: BLE001
+        entries = []
+    if not entries:
+        out.append(
+            "<div class='empty'>No predictions logged yet. The log "
+            "populates once the in-game model issues a confident "
+            "EXIT / RUN / HOLD action and that action changes from "
+            "the previous one for the same ticker.</div>"
+        )
+        return
+    # Index closed positions by ticker for outcome lookup. We use
+    # the most-recent close per ticker so re-traded contracts use
+    # the latest realized P&L.
+    by_ticker: Dict[str, dict] = {}
+    for c in (closed_positions or []):
+        t = c.get("ticker") or ""
+        if not t:
+            continue
+        # Newer close wins (later exited_at).
+        prev = by_ticker.get(t)
+        if prev is None:
+            by_ticker[t] = c
+            continue
+        if (c.get("exited_at") or "") > (prev.get("exited_at") or ""):
+            by_ticker[t] = c
+    out.append(
+        "<table><thead><tr>"
+        "<th>When</th><th>Ticker</th><th>Side</th>"
+        "<th>Action</th>"
+        "<th class='num'>Live prob</th>"
+        "<th class='num'>Confidence</th>"
+        "<th>Outcome</th><th>Reason</th>"
+        "</tr></thead><tbody>"
+    )
+    ACTION_LABEL = {
+        "exit_now": ("EXIT", "ig-red"),
+        "let_run": ("RUN", "ig-green"),
+        "hold": ("HOLD", "ig-yellow"),
+    }
+    for e in entries:
+        ts = (e.get("ts") or "")[:19].replace("T", " ")
+        ticker = e.get("ticker") or ""
+        side = (e.get("side") or "—")
+        action = (e.get("action") or "").lower()
+        a_label, a_cls = ACTION_LABEL.get(action, ("—", "ig-gray"))
+        lp = e.get("live_prob_yes") or 0.0
+        conf = e.get("confidence") or 0.0
+        reason = e.get("reason") or ""
+        match = by_ticker.get(ticker)
+        if match:
+            pnl = int(match.get("realized_pnl_cents") or 0)
+            if pnl > 0:
+                outcome_label = "WON"
+                outcome_cls = "green"
+            elif pnl < 0:
+                outcome_label = "LOST"
+                outcome_cls = "red"
+            else:
+                outcome_label = "FLAT"
+                outcome_cls = "gray"
+            outcome_html = (
+                f"<span class='{outcome_cls}' "
+                f"title='Realized P&amp;L: "
+                f"{'+' if pnl > 0 else ('−' if pnl < 0 else '')}"
+                f"${abs(pnl)/100:.2f}'>{outcome_label}</span>"
+            )
+        else:
+            outcome_html = "<span class='gray'>OPEN</span>"
+        out.append(
+            f"<tr><td class='small gray'>{html.escape(ts)}</td>"
+            f"<td class='mono'>{html.escape(ticker)}</td>"
+            f"<td>{html.escape(str(side))}</td>"
+            f"<td><span class='in-game-pill {a_cls}'>"
+            f"{a_label}</span></td>"
+            f"<td class='num'>{lp*100:.0f}%</td>"
+            f"<td class='num'>{conf*100:.0f}%</td>"
+            f"<td>{outcome_html}</td>"
+            f"<td class='small gray'>{html.escape(reason)}</td></tr>"
+        )
+    out.append("</tbody></table>")
+
+
 def _render_models_panel(out: List[str], bot: dict, model: dict | None,
                           display: dict | None,
                           available_bots: List[dict],
                           current_bot: str,
                           model_view: str = "pregame",
                           bot_active_bets: List[dict] | None = None,
+                          bot_closed_positions: List[dict] | None = None,
                           ) -> None:
     """Per-bot Models tab content. Standard sim.db bots get the full
     deep-dive (headline metrics card row, full feature list bar chart,
@@ -8042,7 +8179,8 @@ def _render_models_panel(out: List[str], bot: dict, model: dict | None,
     if is_sport_bot:
         _render_model_view_toggle(out, bot_key, model_view, current_bot)
     if is_sport_bot and model_view == "ingame":
-        _render_ingame_model_view(out, bot, bot_active_bets or [])
+        _render_ingame_model_view(out, bot, bot_active_bets or [],
+                                     bot_closed_positions or [])
         out.append("</div></div>")
         return
     # Tennis-shape bots (tennis / table-tennis / darts) don't have a

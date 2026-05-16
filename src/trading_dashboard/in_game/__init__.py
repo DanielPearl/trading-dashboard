@@ -51,20 +51,26 @@ def predict(bot: Dict[str, Any], position: Dict[str, Any],
     """Dispatch to the sport-specific in-game model. Returns ``None``
     when the bot has no in-game model registered or when the model
     can't produce a confident estimate from available data.
+
+    Side-effect: every confident *transition* (the model's
+    recommended action flipping from its prior value for the same
+    ticker) is appended to ``data/in_game_predictions.jsonl`` via
+    the logger module. See ``in_game/logger.py``.
     """
     bot_key = (bot.get("key") or "").lower()
     dt = (bot.get("dashboard_type") or "standard").lower()
+    pred: Optional[LivePrediction] = None
     try:
         if bot_key == "nba":
-            return _nba.predict(bot, position, market_view)
-        if bot_key == "tennis" or (dt == "tennis" and bot_key == "tennis"):
-            return _tennis.predict(bot, position, market_view,
-                                     sport="tennis")
-        if bot_key == "table-tennis":
-            return _tennis.predict(bot, position, market_view,
-                                     sport="table-tennis")
-        if bot_key == "darts":
-            return _darts.predict(bot, position, market_view)
+            pred = _nba.predict(bot, position, market_view)
+        elif bot_key == "tennis" or (dt == "tennis" and bot_key == "tennis"):
+            pred = _tennis.predict(bot, position, market_view,
+                                      sport="tennis")
+        elif bot_key == "table-tennis":
+            pred = _tennis.predict(bot, position, market_view,
+                                      sport="table-tennis")
+        elif bot_key == "darts":
+            pred = _darts.predict(bot, position, market_view)
     except Exception:  # noqa: BLE001
         # In-game model errors must NEVER take down the hedge tick.
         # A failed live prediction returns None — caller falls back
@@ -74,4 +80,13 @@ def predict(bot: Dict[str, Any], position: Dict[str, Any],
             "in_game.predict failed for bot=%s", bot_key,
         )
         return None
-    return None
+    if pred is not None:
+        try:
+            from . import logger as _ig_logger
+            _ig_logger.maybe_log(bot, position, pred)
+        except Exception:  # noqa: BLE001
+            import logging
+            logging.getLogger("dashboard.in_game").exception(
+                "in_game.logger.maybe_log failed for bot=%s", bot_key,
+            )
+    return pred

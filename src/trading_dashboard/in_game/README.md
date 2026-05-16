@@ -30,7 +30,7 @@ positions:
 
 | Sport | Source for live state | Model |
 | --- | --- | --- |
-| NBA | ESPN scoreboard JSON | Logistic on lead / √(seconds remaining), overlaid with market velocity / volatility / divergence |
+| NBA | ESPN scoreboard + `/summary?event=` (predictor, injuries, live box score) | Logistic on lead / √(seconds remaining), blended 75/25 with ESPN's own win projection, then nudged by injury counts, foul trouble (≥4 PF), and live FG/FT/3P/AST/REB/TO gaps |
 | Tennis | bot's `watchlist.json` (`live_prob_a`, `live_prob_b`, `current_score`, `injury_news_flag`) | Trust the bot's own live estimate; layer divergence + reversion pull from market |
 | Table tennis | same as tennis | same |
 | Darts | same as tennis (sets settle faster) | tennis logic with a confidence bump after the first set |
@@ -48,21 +48,25 @@ Each row below is a feature on the user's wish list that requires
 either an external data feed or a trained model. The path to enable
 it is sketched.
 
-### NBA — full feature set
+### NBA — what's Live now vs. what's still TODO
 
-| Feature | Why we don't have it | What's needed |
+| Feature | Status | Source / TODO |
 | --- | --- | --- |
-| possession-adjusted pace | not in ESPN scoreboard summary | scrape ESPN gamecast or use `nba_api` for live play-by-play |
-| shooting % vs expected | needs shot location + xFG model | `nba_api` shot chart endpoint; train xFG on historical |
-| foul trouble | per-player foul counts | `nba_api` box score endpoint |
-| lineup combinations on floor | substitution data | `nba_api` play-by-play; map subs to current lineup |
-| rest/fatigue | minutes per player in last N games | season schedule + box scores |
-| turnover / rebound / FT rate | not in scoreboard summary | `nba_api` team stats endpoint |
-| clutch-time historical performance | per-team clutch ledger | aggregate from historical play-by-play |
-| live win-prob shifts | track our own series over time | already have; compute deltas from `_in_game.features["state_prob"]` history |
-| implied pace vs pregame pace | needs pace estimate at game start | publish per-game pre-game pace, compare to live pace from box score |
-| injury / minutes restriction | injury report feed | ESPN injuries endpoint or APIs like `the-odds-api` |
-| bench vs starter efficiency | per-player +/- in real time | `nba_api` advanced box |
+| Score differential | **Live** | ESPN scoreboard |
+| Time remaining | **Live** | ESPN scoreboard (period + clock) |
+| Market velocity / volatility / divergence | **Live** | `market_views` history |
+| ESPN's own win projection (second opinion) | **Live** | ESPN `/summary?event=` predictor block |
+| Critical injuries per team | **Live** | ESPN `/summary` injuries block (Out / Day-to-Day / Doubtful) |
+| Foul trouble (players w/ ≥4 PF) | **Live** | ESPN `/summary` boxscore.players |
+| Live FG% / FT% / 3P% / AST / REB / TO gaps | **Live** | ESPN `/summary` boxscore.teams.statistics |
+| Possession-adjusted pace | TODO | `nba_api` live play-by-play |
+| Shooting % vs xFG | TODO | `nba_api` shot chart + xFG training set |
+| Lineup combinations on floor | TODO | `nba_api` play-by-play (sub events) |
+| Rest/fatigue (minutes last N games) | TODO | season schedule + box scores |
+| Clutch-time historical performance | TODO | aggregate from historical play-by-play |
+| Implied pace vs pre-game pace | TODO | per-game pre-game pace baseline + live diff |
+| Per-player minutes restriction | TODO | injury report + minutes feed |
+| Bench vs starter efficiency | TODO | `nba_api` advanced box |
 
 ### Tennis (and table-tennis)
 
@@ -116,6 +120,15 @@ it is sketched.
    tennis watchlist file is read with a 15s TTL. The 30s hedge
    tick will therefore touch each external dependency at most
    once per pass.
+
+6. **Predictions are logged for self-evaluation.** Every confident
+   action *transition* (model's recommended action flipping for a
+   ticker) gets appended to `data/in_game_predictions.jsonl` via
+   `in_game/logger.py`. The Models > In-game view's "Recent
+   predictions" panel reads the tail and joins each row against
+   the closed-bet ledger to surface WON / LOST / OPEN. Append-only;
+   never rewritten. This becomes the training set when we replace
+   the heuristic with a learned model.
 
 ## How to train a real model when you're ready
 
