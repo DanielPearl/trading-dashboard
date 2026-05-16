@@ -1861,9 +1861,17 @@ def time_to_close_str(minutes: float | None) -> str:
     settled days ago but whose simulator hasn't received a settle
     signal yet. We surface those as "settled" + how long ago, so
     the user can see the bet is stuck open rather than just a dash.
+
+    Special case: the ±2-minute window around the close time
+    renders as "closing" instead of "0m" / "settled 1m ago".
+    Avoids the misleading "0m" reading on rows that are actively
+    resolving — the hedge daemon will sweep them shortly via the
+    ``settled_auto`` path.
     """
     if minutes is None:
         return "—"
+    if -2 < minutes < 2:
+        return "closing"
     if minutes < 0:
         ago = -minutes
         if ago > 1440:

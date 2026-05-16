@@ -120,7 +120,7 @@ def _close_position(c: sqlite3.Connection, *, position_id: int,
     return realized_cents
 
 
-def _ticker_is_stale(ticker: str | None, grace_minutes: int = 60) -> bool:
+def _ticker_is_stale(ticker: str | None, grace_minutes: int = 15) -> bool:
     """True when the Kalshi ticker's encoded settlement date is more
     than ``grace_minutes`` in the past — the contract has settled
     but the position is still ``status='open'``.
