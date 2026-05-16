@@ -325,6 +325,50 @@ def _extract_summary_features(event_id: str, our_team: str,
         if key in our_stats and key in opp_stats:
             out[out_key] = our_stats[key] - opp_stats[key]
 
+    # ── Vegas odds (pickcenter). Convert moneyline to an implied
+    # win probability, with -110 vig-strip baked in via the
+    # standard moneyline-to-prob formula.
+    pc = (summary.get("pickcenter") or [{}])[0] or {}
+    for side, our_key in (("homeTeamOdds", "vegas_win_prob_our"),
+                            ("awayTeamOdds", "vegas_win_prob_our")):
+        block = pc.get(side) or {}
+        team = block.get("team") or {}
+        ab = (team.get("abbreviation") or "").upper()
+        if ab not in (our_team.upper(), opp_team.upper()):
+            continue
+        ml = block.get("moneyLine")
+        if ml is None:
+            continue
+        try:
+            ml = int(ml)
+        except (TypeError, ValueError):
+            continue
+        if ml < 0:
+            implied = abs(ml) / float(abs(ml) + 100)
+        else:
+            implied = 100.0 / float(ml + 100)
+        if ab == our_team.upper():
+            out["vegas_win_prob_our"] = implied
+        else:
+            out["vegas_win_prob_opp"] = implied
+
+    # ── Recent form: last-5-games W-L per team. Surfaced as
+    # our_recent_wins / opp_recent_wins (0-5). Crude proxy for
+    # rest/fatigue + roster health; a 5-0 streak is meaningfully
+    # different from a 0-5 slide even after controlling for talent.
+    for block in (summary.get("lastFiveGames") or []):
+        ab = ((block.get("team") or {}).get("abbreviation") or "").upper()
+        events = block.get("events") or []
+        wins = sum(1 for ev in events
+                    if (ev.get("gameResult") or "").upper() == "W")
+        n = len(events)
+        if ab == our_team.upper():
+            out["our_recent_wins"] = wins
+            out["our_recent_games"] = n
+        elif ab == opp_team.upper():
+            out["opp_recent_wins"] = wins
+            out["opp_recent_games"] = n
+
     # ── Foul trouble: per-player fouls on our team. ESPN exposes
     # them in boxscore.players[*].statistics[*].athletes[*].stats
     # where each athlete's stats list is indexed by the same labels
@@ -467,6 +511,24 @@ def predict(bot: Dict[str, Any], position: Dict[str, Any],
     if espn_proj is not None:
         blended = 0.75 * blended + 0.25 * float(espn_proj)
 
+    # Vegas implied win prob via pickcenter moneyline. Sportsbook
+    # consensus is a fourth opinion; weight modestly (15%) since
+    # the pre-game model already implicitly factored it in.
+    vegas_prob = summary_features.get("vegas_win_prob_our")
+    if vegas_prob is not None:
+        blended = 0.85 * blended + 0.15 * float(vegas_prob)
+
+    # Recent form: nudge by (our_wins − opp_wins) / 5 × 1.5pp.
+    # A 5-0 streak with opponent on 0-5 = +1.5pp; mild signal,
+    # easy to compute, captures momentum carry-over.
+    our_rw = summary_features.get("our_recent_wins")
+    opp_rw = summary_features.get("opp_recent_wins")
+    if our_rw is not None and opp_rw is not None:
+        try:
+            blended += 0.015 * (int(our_rw) - int(opp_rw)) / 5.0
+        except (TypeError, ValueError):
+            pass
+
     # Home-court advantage. Standard NBA analytics put home edge
     # around +3pp on win probability for a neutral matchup. We
     # apply a small nudge proportional to time remaining — early
@@ -587,12 +649,14 @@ def predict(bot: Dict[str, Any], position: Dict[str, Any],
     elif ha_val == "away":
         features_out["our_home_away"] = 0.0
     # ESPN /summary derived features — only emitted when present.
-    for k in ("espn_win_proj_our", "our_critical_injuries",
-              "opp_critical_injuries", "foul_trouble_count",
+    for k in ("espn_win_proj_our", "vegas_win_prob_our",
+              "our_critical_injuries", "opp_critical_injuries",
+              "foul_trouble_count",
               "team_fg_pct_gap", "team_ft_pct_gap",
               "team_3pt_pct_gap", "team_to_gap",
               "team_reb_gap", "team_ast_gap",
-              "news_injury_ours", "news_injury_opp"):
+              "news_injury_ours", "news_injury_opp",
+              "our_recent_wins", "opp_recent_wins"):
         v = summary_features.get(k)
         if v is None:
             continue
@@ -605,6 +669,16 @@ def predict(bot: Dict[str, Any], position: Dict[str, Any],
     if summary_features.get("espn_win_proj_our") is not None:
         reason_bits.append(
             f"espn_proj={summary_features['espn_win_proj_our']:.2f}"
+        )
+    if summary_features.get("vegas_win_prob_our") is not None:
+        reason_bits.append(
+            f"vegas={summary_features['vegas_win_prob_our']:.2f}"
+        )
+    if (summary_features.get("our_recent_wins") is not None
+            and summary_features.get("opp_recent_wins") is not None):
+        reason_bits.append(
+            f"form={summary_features['our_recent_wins']}-vs-"
+            f"{summary_features['opp_recent_wins']}/5"
         )
     if (summary_features.get("our_critical_injuries", 0) or 0) > 0:
         reason_bits.append(

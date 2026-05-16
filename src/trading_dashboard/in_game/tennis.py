@@ -188,11 +188,9 @@ def predict(bot: Dict[str, Any], position: Dict[str, Any],
                      else (1.0 - pre_match_prob_a)
                           if pre_match_prob_a is not None else None)
 
-    # Market state. Tennis-shape tickers don't always appear in the
-    # tennis bot's local market_views — the watchlist is JSON-only
-    # for that adapter. So we read market features from the
-    # watchlist row directly (yes_ask_cents_a / _b) and skip the
-    # historical velocity / volatility for now.
+    # Market state. Current price from the watchlist row; price
+    # history from the dashboard's tennis_snapshotter daemon
+    # (writes per-match JSONL every 60s to data/tennis_history/).
     market_yes_cents = row.get("yes_ask_cents_a" if side_label == "A"
                                 else "yes_ask_cents_b")
     try:
@@ -204,12 +202,17 @@ def predict(bot: Dict[str, Any], position: Dict[str, Any],
                             if market_yes_cents is not None else None)
 
     div = _features.divergence(pre_game_our, current_market_prob)
-    # Tennis-shape doesn't currently expose price history per match
-    # in a queryable form, so velocity / volatility are 0 here.
-    # When the tennis bot starts persisting per-tick odds, we can
-    # plug them in via market_state.recent_market_history.
-    velocity = 0.0
-    volat = 0.0
+    # Cross-sport velocity / volatility from the snapshotter's
+    # per-match history. Same window the NBA model uses.
+    try:
+        from . import tennis_snapshotter as _snap
+        history = _snap.yes_cents_history(
+            bot.get("key") or "tennis", match_id, side_label, hours=6,
+        )
+    except Exception:  # noqa: BLE001
+        history = []
+    velocity = _features.market_velocity(history, window_seconds=300)
+    volat = _features.volatility(history, window_seconds=600)
 
     state = _parse_score_state(score_str)
     sets_completed = state.get("sets_completed", 0)

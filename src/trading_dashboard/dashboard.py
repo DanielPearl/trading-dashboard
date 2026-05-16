@@ -7488,12 +7488,14 @@ def _render_ingame_model_view(out: List[str], bot: dict,
     # rows in the SPORT_FEATURES table below).
     feat_table = {
         # Counts the green "Live" rows in SPORT_FEATURES below.
-        "nba": 11,           # score, time, velocity, vol, divergence,
+        "nba": 13,           # score, time, velocity, vol, divergence,
                               # espn_proj, injuries, foul trouble,
-                              # box-score gaps, home/away, news
+                              # box-score gaps, home/away, news,
+                              # vegas, recent_form
         "tennis": 9,         # live_prob, score, injury_flag, pre_game,
-                              # divergence, bot_confidence/volatility,
-                              # bot_rec, comeback_prob, espn_news
+                              # divergence (now real via snapshotter),
+                              # bot_confidence/volatility, bot_rec,
+                              # comeback_prob, espn_news
         "table-tennis": 7,   # tennis features minus comeback + espn_news
         "darts": 7,          # same as table-tennis
     }
@@ -7641,6 +7643,10 @@ def _render_ingame_model_view(out: List[str], bot: dict,
              "ESPN scoreboard homeAway flag"),
             ("Recent injury news mentions (12h)", "Live",
              "ESPN /news?limit=40 keyword scan (in_game/news_signals)"),
+            ("Vegas consensus win prob (moneyline)", "Live",
+             "ESPN /summary pickcenter.{home,away}TeamOdds.moneyLine"),
+            ("Recent form (W-L in last 5)", "Live",
+             "ESPN /summary lastFiveGames.events[].gameResult"),
             ("Shooting % vs xFG", "TODO",
              "nba_api shot chart + xFG training set (richer than "
              "ESPN's FG%)"),
@@ -7793,6 +7799,16 @@ _INGAME_COEFFICIENTS: Dict[str, List[tuple]] = {
          "Each ESPN news article mentioning our team in an "
          "injury context within the last 12 hours nudges "
          "live_prob down by this; same on the opp team raises it",
+         "tuned"),
+        ("Vegas (pickcenter) blend weight", 0.15,
+         "Sportsbook consensus moneyline → implied win prob, "
+         "blended in at this weight as a fourth opinion. "
+         "Smaller than ESPN's 25% because the pre-game model "
+         "already implicitly factors in line movement",
+         "tuned"),
+        ("Recent-form nudge (per 5 games)", 0.015,
+         "Per (our_wins − opp_wins) / 5 differential nudge from "
+         "lastFiveGames. Captures momentum carry-over",
          "tuned"),
         ("EXIT_NOW threshold", 0.30,
          "Recommend exit when our_side_prob falls below this "
@@ -10171,6 +10187,12 @@ def serve(host: str, port: int, bots: List[dict], risk_caps: dict,
     # in data/regime_notifications.jsonl for the Home-tab panel.
     from . import regime_monitor
     regime_monitor.start_daemon(bots)
+    # Tennis odds snapshotter. Every 60s walks each tennis-shape
+    # bot's watchlist.json and appends per-match price snapshots so
+    # the in-game model has a velocity / volatility / divergence
+    # time-series to read — same shape NBA gets from market_views.
+    from .in_game import tennis_snapshotter
+    tennis_snapshotter.start_daemon(bots)
     server = ThreadingHTTPServer((host, port), Handler)
     log.info("dashboard listening on http://%s:%d", host, port)
     log.info("registered bots: %s",
