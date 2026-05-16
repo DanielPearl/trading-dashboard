@@ -533,6 +533,51 @@ def fetch_ev_realized_buckets(db_path: str) -> List[dict]:
     return out
 
 
+# Paper-trading bankroll used when the bot's display config doesn't
+# specify one. The Kelly sizing column on the watchlist multiplies
+# half-Kelly fractions against this — change it via display.bankroll_cents
+# in dashboard.yaml if a particular bot deserves a bigger or smaller
+# stake size.
+DEFAULT_BANKROLL_CENTS = 100_000  # $1,000 per bot
+
+
+def kelly_contracts(price_cents: float | int | None,
+                     win_prob: float | None,
+                     bankroll_cents: int,
+                     fraction: float = 0.5) -> int:
+    """Half-Kelly suggested contract count for one side of a Kalshi
+    binary contract.
+
+    Kelly fraction f* = (b·p − q) / b   where
+        b = decimal payout odds = (100 − price) / price
+        p = win probability for the side we're buying
+        q = 1 − p
+    The dashboard plays it conservative: ``fraction`` defaults to 0.5
+    so the suggestion is half-Kelly. Returns 0 when the bet has no
+    positive Kelly fraction (no edge after fees model would be a
+    further haircut on top — caller can layer that later).
+    """
+    if price_cents is None or win_prob is None:
+        return 0
+    try:
+        price = float(price_cents)
+        p = float(win_prob)
+    except (TypeError, ValueError):
+        return 0
+    if price <= 0 or price >= 100:
+        return 0
+    q = 1.0 - p
+    b = (100.0 - price) / price
+    if b <= 0:
+        return 0
+    kf = (b * p - q) / b
+    if kf <= 0:
+        return 0
+    capital = bankroll_cents * kf * fraction
+    n = int(capital / price)  # price already in cents = cents per contract
+    return max(0, n)
+
+
 def bot_regime_status(db_path: str, days: int = 90,
                         min_bets: int = 10) -> dict:
     """Rolling edge-health check used by the Home-tab bot cards.
@@ -2355,6 +2400,17 @@ tr.row-bought td.mono { color: #f0f6fc; font-weight: 600; }
 .history-scroll details > summary { position: sticky; bottom: 0;
     background: #161b22; padding: 6px 10px; cursor: pointer;
     border-top: 1px solid #30363d; }
+/* History tab P&L attribution — small breakdown tables in a two-up
+   grid. Each panel has its own h3 subhead and a compact table. */
+.attribution-grid { display: grid; gap: 14px;
+    grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+    margin-bottom: 14px; }
+.attribution-panel { background: #0d1117;
+    border: 1px solid #21262d; border-radius: 6px;
+    padding: 10px 14px; }
+.attribution-panel h3.subhead { margin-top: 0; margin-bottom: 6px; }
+.attribution-panel table { font-size: 12px; }
+.attribution-panel th, .attribution-panel td { padding: 6px 8px; }
 /* History tab P&L line chart — sits between the headline cards and
    the ledger table. The wrap is `position: relative` so the empty-
    state overlay can be absolute-positioned over the SVG frame. */
@@ -2543,6 +2599,11 @@ def render_page(
     _render_history_chart(out, global_history,
                             period_key=period_key,
                             current_bot=current_bot)
+    # P&L attribution panels — small breakdown tables that answer
+    # "where did this P&L come from?" by bot / month / side / EV
+    # bucket. Sits between the chart and the ledger so the user sees
+    # the shape of the P&L before reading individual bet rows.
+    _render_history_attribution(out, global_history)
     # Pass heading="" so the table renders without a duplicate
     # subhead — the section title above already carries the period.
     # Scroll container clamps the table to a sensible viewport
@@ -4483,6 +4544,139 @@ def _render_history_chart(out: List[str], history: List[dict],
         "</div>"
     )
     out.append("</div>")  # /history-chart-section
+
+
+def _render_history_attribution(out: List[str],
+                                  history: List[dict]) -> None:
+    """P&L attribution panels for the History tab — small breakdown
+    tables that slice the closed-bet ledger four ways: by bot, by
+    month, by side (YES/NO), and by predicted-EV bucket. Each panel
+    tries to answer "where is the P&L coming from?" so the user can
+    spot whether profit is broad (likely real edge) or concentrated
+    in one slice (likely a quirk).
+
+    Respects whatever period filter the History tab is currently on
+    — ``history`` is already the period-scoped list the caller passes
+    into the chart and ledger renderers below.
+    """
+    if not history:
+        return  # Empty state already covered by the ledger block.
+
+    def _row(label: str, bets: List[dict]) -> dict:
+        n = len(bets)
+        total = sum((b.get("realized_pnl_cents") or 0) for b in bets)
+        wins = sum(1 for b in bets if (b.get("realized_pnl_cents") or 0) > 0)
+        return {"label": label, "n": n, "total_cents": total,
+                "win_pct": (wins / n) if n else 0.0}
+
+    def _emit_table(title: str, hint: str, rows: List[dict]) -> None:
+        out.append(
+            f"<div class='attribution-panel'>"
+            f"<h3 class='subhead'>{html.escape(title)} "
+            f"<span class='small gray'>{html.escape(hint)}</span></h3>"
+        )
+        if not rows:
+            out.append("<div class='empty'>No data in this slice.</div>"
+                       "</div>")
+            return
+        out.append(
+            "<table><thead><tr>"
+            "<th>Bucket</th>"
+            "<th class='num'>Bets</th>"
+            "<th class='num'>P&amp;L</th>"
+            "<th class='num'>Win %</th>"
+            "</tr></thead><tbody>"
+        )
+        for r in rows:
+            pnl_cls = ("green" if r["total_cents"] > 0
+                        else ("red" if r["total_cents"] < 0 else "gray"))
+            win = r["win_pct"]
+            win_cls = ("green" if win > 0.5
+                        else ("red" if r["n"] > 0 and win < 0.5 else "gray"))
+            win_str = f"{win*100:.0f}%" if r["n"] > 0 else "—"
+            dollars = r["total_cents"] / 100.0
+            sign = "+" if r["total_cents"] > 0 else (
+                "−" if r["total_cents"] < 0 else "")
+            out.append(
+                f"<tr><td>{html.escape(r['label'])}</td>"
+                f"<td class='num'>{r['n']}</td>"
+                f"<td class='num {pnl_cls}'>{sign}${abs(dollars):.2f}</td>"
+                f"<td class='num {win_cls}'>{win_str}</td></tr>"
+            )
+        out.append("</tbody></table></div>")
+
+    # ── Slice: by bot ───────────────────────────────────────────────
+    by_bot: dict[str, List[dict]] = {}
+    for h in history:
+        by_bot.setdefault(h.get("_bot_name") or "—", []).append(h)
+    bot_rows = sorted(
+        (_row(name, bets) for name, bets in by_bot.items()),
+        key=lambda r: r["total_cents"], reverse=True,
+    )
+
+    # ── Slice: by month (YYYY-MM) ───────────────────────────────────
+    by_month: dict[str, List[dict]] = {}
+    for h in history:
+        ts = (h.get("exited_at") or "")[:7]  # YYYY-MM
+        if ts:
+            by_month.setdefault(ts, []).append(h)
+    month_rows = [_row(m, bets) for m, bets in
+                  sorted(by_month.items(), reverse=True)]
+
+    # ── Slice: by side (YES vs NO) ──────────────────────────────────
+    by_side: dict[str, List[dict]] = {}
+    for h in history:
+        side = (h.get("side") or "").upper() or "—"
+        by_side.setdefault(side, []).append(h)
+    side_rows = [_row(s, bets) for s, bets in sorted(by_side.items())]
+
+    # ── Slice: by predicted EV bucket (decimal $/contract) ──────────
+    ev_buckets = [
+        ("< 0¢",   -10.0,  0.0),
+        ("0–2¢",    0.0,   0.02),
+        ("2–4¢",    0.02,  0.04),
+        ("4–7¢",    0.04,  0.07),
+        ("7–10¢",   0.07,  0.10),
+        ("10¢+",    0.10,  10.0),
+        ("untagged", None, None),  # bets without recorded EV
+    ]
+    ev_rows: List[dict] = []
+    for label, lo, hi in ev_buckets:
+        bucket_bets: List[dict] = []
+        for h in history:
+            ev = h.get("expected_ev_at_entry")
+            if lo is None:
+                if ev is None:
+                    bucket_bets.append(h)
+                continue
+            if ev is None:
+                continue
+            try:
+                ev_f = float(ev)
+            except (TypeError, ValueError):
+                continue
+            if ev_f < lo or ev_f >= hi:
+                continue
+            bucket_bets.append(h)
+        if bucket_bets:
+            ev_rows.append(_row(label, bucket_bets))
+
+    out.append(
+        "<h3 class='subhead' style='margin-top:14px;'>"
+        "P&amp;L attribution "
+        "<span class='small gray'>(where the closed-bet P&amp;L came "
+        "from in the selected period)</span></h3>"
+    )
+    out.append("<div class='attribution-grid'>")
+    _emit_table("By bot", "which bots carried this period",
+                 bot_rows)
+    _emit_table("By month", "calendar month of exit",
+                 month_rows)
+    _emit_table("By side", "YES vs NO",
+                 side_rows)
+    _emit_table("By predicted EV", "entry-EV bucket vs realized P&L",
+                 ev_rows)
+    out.append("</div>")
 
 
 def _render_bet_history_block(out: List[str], history: List[dict],
@@ -7608,6 +7802,7 @@ def _render_watchlist(out: List[str], watchlist: List[dict],
                "<th class='num' title='Bot model probability for YES | NO.'>My % <span class='small gray'>(yes | no)</span></th>"
                "<th class='num' title='Edge = my probability − Kalshi price, per side. Positive means the bot disagrees with Kalshi in that direction.'>Edge <span class='small gray'>(yes | no)</span></th>"
                "<th class='num' title='Expected value per $1 contract for YES | NO, net of half-spread.'>EV <span class='small gray'>(yes | no)</span></th>"
+               "<th class='num' title='Half-Kelly suggested contracts for the best side at the bot&apos;s configured bankroll. A ⚠ marks rows where the suggested size exceeds the order book&apos;s visible depth — the price you&apos;d actually fill at would be worse than quoted.'>Size</th>"
                "<th>Verdict</th></tr></thead><tbody id='watchlist-tbody'>")
     for v in watchlist:
         ticker = v.get("ticker", "")
@@ -7921,6 +8116,55 @@ def _render_watchlist(out: List[str], watchlist: List[dict],
             f"<span class='cell-sep'> | </span>"
             f"<span class='{ev_no_cls}' data-side='no'>{ev_no_str}</span></td>"
         )
+
+        # Half-Kelly suggested size for the best-EV side. Skip the
+        # column for rows with no positive-EV side (renders as "—").
+        # When the suggested contract count exceeds the visible book
+        # depth, append a ⚠ — the price you'd actually fill at would
+        # slip past the quoted ask, eroding the predicted edge.
+        bankroll_cents = int(
+            (display or {}).get("bankroll_cents")
+            or DEFAULT_BANKROLL_CENTS
+        )
+        size_str = "—"
+        size_cls = "gray"
+        size_tt = "No positive-edge side on this row."
+        if best_side_v in ("YES", "NO") and (best_ev_v or 0) > 0:
+            price = ya_c if best_side_v == "YES" else na_c
+            prob = (float(p) if best_side_v == "YES"
+                     else (1.0 - float(p)) if p is not None else None)
+            n_contracts = kelly_contracts(price, prob, bankroll_cents)
+            if n_contracts <= 0:
+                size_str = "0"
+                size_cls = "gray"
+                size_tt = ("Kelly fraction is zero or negative for the "
+                           "best side after odds adjustment.")
+            else:
+                cost_cents = n_contracts * (price or 0)
+                size_tt = (f"Half-Kelly @ ${bankroll_cents/100:.0f} "
+                            f"bankroll · cost ≈ "
+                            f"${cost_cents/100:.2f} · side {best_side_v}")
+                # Liquidity reality check: visible book depth.
+                depth = v.get("book_depth")
+                try:
+                    depth_n = int(depth) if depth is not None else None
+                except (TypeError, ValueError):
+                    depth_n = None
+                if depth_n is not None and depth_n > 0 and n_contracts > depth_n:
+                    size_str = f"{n_contracts} ⚠"
+                    size_cls = "yellow"
+                    size_tt = (f"Suggested {n_contracts} but only "
+                                f"{depth_n} contracts visible at the "
+                                f"quoted ask — actual fill would slip "
+                                f"past the price you see.")
+                else:
+                    size_str = str(n_contracts)
+                    size_cls = "green"
+        size_cell = (
+            f"<td class='num {size_cls}' "
+            f"title='{html.escape(size_tt)}'>{size_str}</td>"
+        )
+
         out.append(f"<tr{row_cls} data-ticker='{tt_esc}'{strike_attr}{yes_attr}>"
                    f"<td class='mono'>{ticker_cell}</td>"
                    f"{middle_cells}"
@@ -7929,6 +8173,7 @@ def _render_watchlist(out: List[str], watchlist: List[dict],
                    f"{my_cell}"
                    f"{edge_cell}"
                    f"{ev_cell}"
+                   f"{size_cell}"
                    f"<td data-field='verdict'>{badge}</td></tr>")
     out.append("</tbody></table></div>")
     # Append the row-click JS hook so clicks on a watchlist row draw a
