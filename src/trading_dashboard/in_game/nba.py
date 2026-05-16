@@ -47,6 +47,8 @@ from .base import (
 from . import features as _features
 from . import market_state as _market_state
 from . import news_signals as _news
+from . import nba_cdn as _nba_cdn
+from . import model_loader as _model_loader
 
 log = logging.getLogger("dashboard.in_game.nba")
 
@@ -477,6 +479,20 @@ def predict(bot: Dict[str, Any], position: Dict[str, Any],
         state.get("opp_team") or "",
     )
 
+    # NBA.com CDN live-data — pace, FT rate, fouled-out counts,
+    # starter vs bench +/-. Only meaningful when the game is live;
+    # silently returns {} otherwise. These features supplement
+    # ESPN's coarser team-stat block with deeper play-derived
+    # numbers from the same JSON NBA.com itself uses.
+    try:
+        cdn_features = _nba_cdn.advanced_features(
+            state.get("our_team") or "",
+            state.get("opp_team") or "",
+        )
+        summary_features.update(cdn_features)
+    except Exception:  # noqa: BLE001
+        log.exception("NBA CDN feature extract failed")
+
     # Cross-sport news scanner — count recent injury-related ESPN
     # articles that mention either team's abbreviation. Folded as
     # a small per-article nudge: news that mentions OUR team in
@@ -561,6 +577,52 @@ def predict(bot: Dict[str, Any], position: Dict[str, Any],
     blended -= NEWS_NUDGE * (summary_features.get("news_injury_ours", 0) or 0)
     blended += NEWS_NUDGE * (summary_features.get("news_injury_opp", 0) or 0)
 
+    # NBA.com CDN nudges — these are the new live-derived features
+    # that the ESPN summary block doesn't surface. Each is a small
+    # additive nudge; nothing here should dominate the lead/time
+    # logistic, just refine around the edges.
+    #   • Free-throw rate gap: getting to the line is a stable
+    #     team advantage. ±0.3pp per pp of FT-rate gap.
+    ft_rate_gap = summary_features.get("cdn_ft_rate_gap")
+    if ft_rate_gap is not None:
+        try:
+            blended += 0.003 * float(ft_rate_gap)
+        except (TypeError, ValueError):
+            pass
+    #   • Fouled-out players: each one is a major negative for
+    #     the affected team. We only track ours from CDN.
+    fouled_out = summary_features.get("cdn_fouls_out_ours") or 0
+    if fouled_out:
+        blended -= 0.03 * fouled_out
+    #   • Players in foul trouble (4 or 5 fouls): smaller nudge
+    #     than fouled-out; reflects coach managing minutes.
+    fouled_trouble_cdn = summary_features.get("cdn_foul_trouble_ours") or 0
+    if fouled_trouble_cdn:
+        blended -= 0.01 * fouled_trouble_cdn
+    #   • Starter / bench plus-minus signals — when our starters
+    #     are running negative +/- but our bench is positive, the
+    #     coach's rotation is working against the result. Each
+    #     point of differential nudges ~0.1pp.
+    starter_pm = summary_features.get("cdn_starter_plusminus_avg")
+    if starter_pm is not None:
+        try:
+            blended += 0.001 * float(starter_pm)
+        except (TypeError, ValueError):
+            pass
+    #   • Pace: not directly directional, but high pace amplifies
+    #     existing edges (more possessions = less variance from
+    #     the mean). When we're trailing in a high-pace game with
+    #     time left, comeback is harder; when leading, lead is
+    #     safer. So pace × sign(lead) × small factor.
+    pace = summary_features.get("cdn_live_pace")
+    if pace is not None and state.get("our_lead", 0) != 0:
+        try:
+            pace_diff = float(pace) - 100.0  # league avg ~100 poss/48m
+            lead_sign = 1 if state["our_lead"] > 0 else -1
+            blended += 0.0005 * pace_diff * lead_sign
+        except (TypeError, ValueError):
+            pass
+
     # Live-game box-score deltas: each pp of FG% / FT% gap nudges
     # the live prob by a small amount. Direction: positive gap for
     # our team raises our prob.
@@ -590,6 +652,32 @@ def predict(bot: Dict[str, Any], position: Dict[str, Any],
             pass
 
     blended = softclip_prob(blended)
+
+    # Trained classifier (when a model file exists). Blends at 40%
+    # weight — high enough to materially shift the call, low enough
+    # that the heuristic still anchors when the classifier is
+    # confused. No-op when no model has been trained yet.
+    trained_probe_features = {
+        "state_prob": state_prob,
+        "lead": float(state.get("our_lead", 0)),
+        "seconds_remaining": float(state.get("seconds_remaining", 0)),
+        "market_velocity": velocity,
+        "volatility": volat,
+        "divergence": div if div is not None else 0.0,
+        "reversion_pull": reversion_pull,
+        **{k: v for k, v in summary_features.items()
+            if isinstance(v, (int, float))},
+    }
+    try:
+        trained_prob = _model_loader.trained_probability(
+            "nba", trained_probe_features,
+        )
+    except Exception:  # noqa: BLE001
+        log.exception("trained model probe failed")
+        trained_prob = None
+    if trained_prob is not None:
+        blended = 0.6 * blended + 0.4 * float(trained_prob)
+        blended = softclip_prob(blended)
 
     # Confidence rules: high when game is past the first quarter
     # AND market volatility is below 1.5. Otherwise medium / low.
@@ -656,7 +744,13 @@ def predict(bot: Dict[str, Any], position: Dict[str, Any],
               "team_3pt_pct_gap", "team_to_gap",
               "team_reb_gap", "team_ast_gap",
               "news_injury_ours", "news_injury_opp",
-              "our_recent_wins", "opp_recent_wins"):
+              "our_recent_wins", "opp_recent_wins",
+              # NBA.com CDN advanced live features
+              "cdn_live_pace", "cdn_fg_pct_gap", "cdn_3pt_pct_gap",
+              "cdn_ft_rate_gap", "cdn_to_gap", "cdn_reb_gap",
+              "cdn_fouls_out_ours", "cdn_foul_trouble_ours",
+              "cdn_starter_plusminus_avg", "cdn_bench_plusminus_avg",
+              "cdn_bench_minutes_share"):
         v = summary_features.get(k)
         if v is None:
             continue
@@ -679,6 +773,14 @@ def predict(bot: Dict[str, Any], position: Dict[str, Any],
         reason_bits.append(
             f"form={summary_features['our_recent_wins']}-vs-"
             f"{summary_features['opp_recent_wins']}/5"
+        )
+    if summary_features.get("cdn_live_pace") is not None:
+        reason_bits.append(
+            f"pace={summary_features['cdn_live_pace']:.0f}"
+        )
+    if (summary_features.get("cdn_fouls_out_ours") or 0) > 0:
+        reason_bits.append(
+            f"fouled_out={summary_features['cdn_fouls_out_ours']}"
         )
     if (summary_features.get("our_critical_injuries", 0) or 0) > 0:
         reason_bits.append(

@@ -127,27 +127,68 @@ it is sketched.
    `in_game/logger.py`. The Models > In-game view's "Recent
    predictions" panel reads the tail and joins each row against
    the closed-bet ledger to surface WON / LOST / OPEN. Append-only;
-   never rewritten. This becomes the training set when we replace
-   the heuristic with a learned model.
+   never rewritten.
 
-## How to train a real model when you're ready
+7. **Feature snapshots are logged densely for training.** Every
+   prediction (regardless of confidence or action) writes one JSON
+   line to `data/in_game_features.jsonl` via
+   `in_game/feature_log.py`. The trainer joins these snapshots
+   against the closed-bet ledger to build labeled training pairs.
 
-For one sport (NBA) the rough pipeline:
+## Package inventory
 
-1. Pull historical schedules + final scores from `nba_api` or
-   basketball-reference. Filter to last 3-5 seasons.
-2. For each game, walk the play-by-play stream. At fixed sample
-   points (every 30 game-seconds), snapshot the feature vector
-   you'd have had at that moment.
-3. Label each sample with the eventual winner. The feature vector
-   is your X; the binary "did this team win" is your y.
-4. Train a gradient-boosted tree or simple logistic on the
-   feature/label pairs. Hold out the last season for validation.
-5. Drop the trained model into `nba.py`, replacing
-   `_win_prob_from_state` with a call to `model.predict_proba`.
-6. Keep the existing heuristic as the fallback for when the model
-   says "low confidence" or the live feature isn't available.
+| Module | Purpose |
+| --- | --- |
+| `base.py` | `LivePrediction` dataclass + action constants |
+| `features.py` | Cross-sport market features (velocity / volatility / divergence) |
+| `market_state.py` | Per-ticker history reader (market_views) for NBA |
+| `news_signals.py` | ESPN /news scanner with injury-keyword matching |
+| `nba.py` | NBA in-game scorer (ESPN + CDN + market + news) |
+| `nba_cdn.py` | NBA.com CDN adapter (pace, FT rate, foul trouble, +/-) |
+| `tennis.py` | Tennis-shape scorer (bot's live_prob + market overlay) |
+| `tennis_snapshotter.py` | Background daemon: per-poll tennis odds → JSONL |
+| `darts.py` | Darts (thin wrapper on tennis.py) |
+| `logger.py` | Transition audit log (sparse) |
+| `feature_log.py` | Dense per-tick feature snapshot log (training data) |
+| `train_classifier.py` | Stdlib SGD logistic regression trainer (runnable as script) |
+| `model_loader.py` | Loads + applies a trained model when one exists |
 
-Same shape works for tennis with the ATP/WTA point-by-point
-database, table tennis with ITTF feeds, and darts with the PDC
-data partners. Each is a multi-week pipeline of its own.
+## How to train a real model
+
+The data substrate is **already in place**. Every prediction the
+in-game model issues now writes a dense feature snapshot to
+`data/in_game_features.jsonl` via `in_game/feature_log.py`. Once
+the dashboard accumulates a few weeks of game time across the
+sport bots, run the trainer:
+
+```
+python -m trading_dashboard.in_game.train_classifier \
+    --bot nba --db-path /root/nba/data/sim.db
+```
+
+The script (stdlib only — no sklearn / numpy) does the full
+pipeline:
+1. Loads every feature snapshot for the bot from
+   `data/in_game_features.jsonl`.
+2. Joins each row against the bot's closed-position ledger to
+   assign a `won` label (1 if realized P&L > 0, else 0).
+3. Splits 80/20 train/holdout *grouped by position ticker* (so a
+   position's snapshots don't leak across folds).
+4. Per-feature z-score standardization on the training set;
+   applies same transform to holdout.
+5. Mini-batch SGD logistic regression with L2 regularization.
+6. Reports holdout accuracy / precision / recall / F1 / ROC AUC.
+7. Writes weights + standardization params to
+   `data/in_game_models/<bot>_logreg.json`.
+
+The next time the dashboard starts, `in_game/model_loader.py`
+picks up the file and `nba.predict()` blends the trained
+classifier's output at 40% weight against the heuristic's 60%.
+**Heuristic remains as the high-fidelity fallback** — if a single
+feature breaks or the classifier returns NaN, the live prediction
+still works.
+
+Same shape works for tennis once the tennis bot's watchlist
+schema is extended with per-point features. Run the same command
+with `--bot tennis` once the bot is publishing the per-point
+stats and the snapshot log has accumulated.

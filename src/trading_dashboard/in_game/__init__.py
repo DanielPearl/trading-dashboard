@@ -81,6 +81,10 @@ def predict(bot: Dict[str, Any], position: Dict[str, Any],
         )
         return None
     if pred is not None:
+        # Two logs: the audit (transition-only, human-readable) and
+        # the feature snapshot (dense, for training). Both are
+        # append-only JSONL and both swallow errors so a logger
+        # failure can never break a hedge tick.
         try:
             from . import logger as _ig_logger
             _ig_logger.maybe_log(bot, position, pred)
@@ -88,5 +92,13 @@ def predict(bot: Dict[str, Any], position: Dict[str, Any],
             import logging
             logging.getLogger("dashboard.in_game").exception(
                 "in_game.logger.maybe_log failed for bot=%s", bot_key,
+            )
+        try:
+            from . import feature_log as _ig_features
+            _ig_features.log_snapshot(bot, position, pred)
+        except Exception:  # noqa: BLE001
+            import logging
+            logging.getLogger("dashboard.in_game").exception(
+                "in_game.feature_log failed for bot=%s", bot_key,
             )
     return pred

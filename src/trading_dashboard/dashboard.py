@@ -7488,10 +7488,11 @@ def _render_ingame_model_view(out: List[str], bot: dict,
     # rows in the SPORT_FEATURES table below).
     feat_table = {
         # Counts the green "Live" rows in SPORT_FEATURES below.
-        "nba": 13,           # score, time, velocity, vol, divergence,
+        "nba": 17,           # score, time, velocity, vol, divergence,
                               # espn_proj, injuries, foul trouble,
                               # box-score gaps, home/away, news,
-                              # vegas, recent_form
+                              # vegas, recent_form, cdn_pace,
+                              # cdn_ft_rate, cdn_fouls, cdn_starter_pm
         "tennis": 9,         # live_prob, score, injury_flag, pre_game,
                               # divergence (now real via snapshotter),
                               # bot_confidence/volatility, bot_rec,
@@ -7647,13 +7648,20 @@ def _render_ingame_model_view(out: List[str], bot: dict,
              "ESPN /summary pickcenter.{home,away}TeamOdds.moneyLine"),
             ("Recent form (W-L in last 5)", "Live",
              "ESPN /summary lastFiveGames.events[].gameResult"),
+            ("Live pace (possessions / 48 min)", "Live",
+             "NBA.com CDN /boxscore.homeTeam.statistics.pace"),
+            ("Free-throw rate gap", "Live",
+             "NBA.com CDN boxscore: FTA / FGA per team"),
+            ("Fouled-out + foul-trouble counts (CDN)", "Live",
+             "NBA.com CDN boxscore.players foulsPersonal"),
+            ("Starter vs bench +/- splits", "Live",
+             "NBA.com CDN boxscore.players starter + plusMinusPoints"),
             ("Shooting % vs xFG", "TODO",
-             "nba_api shot chart + xFG training set (richer than "
-             "ESPN's FG%)"),
-            ("Lineup combinations + bench vs starter +/-", "TODO",
-             "nba_api advanced box-score endpoint"),
-            ("Possession-adjusted pace", "TODO",
-             "nba_api play-by-play with pace estimator"),
+             "shot-chart endpoint + offline xFG training set "
+             "(richer than the raw FG% we already have)"),
+            ("Lineup combinations on floor", "TODO",
+             "NBA.com CDN playbyplay sub events → reconstruct "
+             "5-man unit. Doable next session."),
             ("Per-player minutes restriction", "TODO",
              "team injury report + minutes feed"),
         ],
@@ -7809,6 +7817,28 @@ _INGAME_COEFFICIENTS: Dict[str, List[tuple]] = {
         ("Recent-form nudge (per 5 games)", 0.015,
          "Per (our_wins − opp_wins) / 5 differential nudge from "
          "lastFiveGames. Captures momentum carry-over",
+         "tuned"),
+        ("CDN: FT-rate gap nudge (per pp)", 0.003,
+         "NBA.com CDN: per-pp coefficient on (our FT/FGA − opp "
+         "FT/FGA). Getting to the line is a stable team edge.",
+         "tuned"),
+        ("CDN: fouled-out player nudge", 0.030,
+         "Each one of our players with 6+ PF drops live_prob by "
+         "this. Sourced from NBA.com CDN boxscore.players[*]",
+         "tuned"),
+        ("CDN: foul-trouble (4-5 PF) nudge", 0.010,
+         "Smaller nudge than fouled-out; reflects coach managing "
+         "minutes on a player nearing disqualification",
+         "tuned"),
+        ("CDN: starter +/- amplification", 0.001,
+         "Per-point coefficient on average starter plus-minus. "
+         "Negative starter +/- with positive bench +/- means "
+         "rotation is working against us",
+         "tuned"),
+        ("CDN: pace × lead amplification", 0.0005,
+         "Per (pace − 100 league avg) × sign(lead). High pace "
+         "amplifies existing leads (fewer variance possessions "
+         "left); low pace gives trailing team more comeback room",
          "tuned"),
         ("EXIT_NOW threshold", 0.30,
          "Recommend exit when our_side_prob falls below this "
