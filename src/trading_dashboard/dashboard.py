@@ -2338,10 +2338,11 @@ function toggleBotState(ev, btn) {
 </script>"""
 
 
-# History-tab cumulative P&L chart renderer. Reads the closed-bet
-# ledger embedded as JSON on the SVG node, filters by selected bot +
-# date range, plots cumulative realized P&L in cents. Hover crosshair
-# uses the same idiom as the watchlist hero chart.
+# History-tab daily P&L chart renderer. Reads the closed-bet ledger
+# embedded as JSON on the SVG node, filters by selected bot + date
+# range, buckets bets by UTC day, then plots each day's net realized
+# P&L in cents. The line crosses zero naturally when winning vs. losing
+# days alternate; a dashed baseline at $0 makes the sign obvious.
 _HISTORY_CHART_JS = """<script>
 (function () {
   const svg = document.querySelector('[data-history-chart]');
@@ -2385,13 +2386,17 @@ _HISTORY_CHART_JS = """<script>
       if (cutoff != null && p[0] < cutoff) return false;
       return true;
     });
-    pts.sort(function (a, b) { return a[0] - b[0]; });
-    // Build cumulative series.
-    let cum = 0;
-    const series = pts.map(function (p) {
-      cum += p[1];
-      return [p[0], cum];
+    // Bucket bets by UTC day, summing realized P&L in cents per
+    // bucket. Each series point is (UTC-midnight epoch, day net).
+    const daily = new Map();
+    pts.forEach(function (p) {
+      const d = new Date(p[0] * 1000);
+      const dayEpoch = Math.floor(Date.UTC(
+        d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate()) / 1000);
+      daily.set(dayEpoch, (daily.get(dayEpoch) || 0) + p[1]);
     });
+    const series = Array.from(daily.entries())
+      .sort(function (a, b) { return a[0] - b[0]; });
     svg.innerHTML = '';
     if (series.length === 0) {
       if (empty) empty.hidden = false;
@@ -2458,11 +2463,11 @@ _HISTORY_CHART_JS = """<script>
           (i === N_TICKS ? 'end' : 'middle')
       }, fmtDate(t)));
     }
-    // Polyline of cumulative P&L. Color: green if last value > 0,
-    // red if < 0, gray if exactly 0.
-    const last = series[series.length - 1][1];
-    const color = last > 0 ? '#3fb950' :
-      (last < 0 ? '#f85149' : '#8b949e');
+    // Polyline of daily net P&L. Color reflects net result across
+    // the visible range: green if total > 0, red if < 0, gray if 0.
+    const total = series.reduce(function (a, s) { return a + s[1]; }, 0);
+    const color = total > 0 ? '#3fb950' :
+      (total < 0 ? '#f85149' : '#8b949e');
     const path = series.map(function (s) {
       return x(s[0]).toFixed(1) + ',' + y(s[1]).toFixed(1);
     }).join(' ');
