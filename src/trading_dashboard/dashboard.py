@@ -2061,8 +2061,6 @@ tr.row-bought td.mono { color: #f0f6fc; font-weight: 600; }
    the ledger table. The wrap is `position: relative` so the empty-
    state overlay can be absolute-positioned over the SVG frame. */
 .history-chart-section { margin-top: 14px; }
-.history-chart-section .history-chart-controls {
-    border-bottom: none; padding-bottom: 6px; margin-bottom: 6px; }
 .history-chart-wrap { position: relative;
     border: 1px solid #30363d; border-radius: 6px;
     background: #0d1117; padding: 8px 4px 4px 4px; }
@@ -2240,7 +2238,7 @@ def render_page(
     # ledger table so the user sees the shape of gains/losses before
     # digging into per-row detail. Has its own bot + date filters,
     # independent from the page-level period dropdown above.
-    _render_history_chart(out, global_history, available_bots)
+    _render_history_chart(out, global_history)
     # Pass heading="" so the table renders without a duplicate
     # subhead — the section title above already carries the period.
     # Scroll container clamps the table to a sensible viewport
@@ -2349,15 +2347,12 @@ _HISTORY_CHART_JS = """<script>
   if (!svg) return;
   const wrap = svg.parentElement;
   const empty = wrap.querySelector('[data-history-chart-empty]');
-  const botSel = document.querySelector('[data-history-chart-bot]');
-  const rangeSel = document.querySelector('[data-history-chart-range]');
   let raw = [];
   try { raw = JSON.parse(svg.dataset.points || '[]'); } catch (e) {}
   const W = 800, H = 260;
   const PAD_L = 56, PAD_R = 14, PAD_T = 14, PAD_B = 28;
   const INNER_W = W - PAD_L - PAD_R;
   const INNER_H = H - PAD_T - PAD_B;
-  const RANGE_DAYS = {day: 1, week: 7, month: 30, year: 365, all: null};
   function fmtSignedDollars(cents) {
     const v = cents / 100;
     const sign = v > 0 ? '+' : (v < 0 ? '-' : '');
@@ -2368,28 +2363,13 @@ _HISTORY_CHART_JS = """<script>
     return d.toLocaleDateString(undefined,
       {month: 'short', day: 'numeric'});
   }
-  function fmtDateTime(epoch) {
-    const d = new Date(epoch * 1000);
-    return d.toLocaleString(undefined,
-      {month: 'short', day: 'numeric',
-       hour: 'numeric', minute: '2-digit'});
-  }
   function render() {
-    const botKey = botSel ? botSel.value : '';
-    const rangeKey = rangeSel ? rangeSel.value : 'all';
-    const days = RANGE_DAYS[rangeKey];
     const now = Math.floor(Date.now() / 1000);
-    const cutoff = days != null ? now - days * 86400 : null;
-    // Filter + sort ascending by time.
-    let pts = raw.filter(function (p) {
-      if (botKey && p[2] !== botKey) return false;
-      if (cutoff != null && p[0] < cutoff) return false;
-      return true;
-    });
-    // Bucket bets by UTC day, summing realized P&L in cents per
-    // bucket. Each series point is (UTC-midnight epoch, day net).
+    // Bucket every closed bet by UTC day, summing realized P&L in
+    // cents per bucket. Each series point is (UTC-midnight epoch,
+    // day net).
     const daily = new Map();
-    pts.forEach(function (p) {
+    raw.forEach(function (p) {
       const d = new Date(p[0] * 1000);
       const dayEpoch = Math.floor(Date.UTC(
         d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate()) / 1000);
@@ -2403,8 +2383,8 @@ _HISTORY_CHART_JS = """<script>
       return;
     }
     if (empty) empty.hidden = true;
-    // X range: cutoff (if set) → now; else first point → now.
-    const tMin = cutoff != null ? cutoff : series[0][0];
+    // X range: first closed-bet day → now.
+    const tMin = series[0][0];
     const tMax = now;
     const tSpan = Math.max(1, tMax - tMin);
     // Y range: include 0 so the zero baseline always shows. 8% pad.
@@ -2506,8 +2486,6 @@ _HISTORY_CHART_JS = """<script>
       }));
     });
   }
-  if (botSel) botSel.addEventListener('change', render);
-  if (rangeSel) rangeSel.addEventListener('change', render);
   render();
 })();
 </script>"""
@@ -4045,15 +4023,11 @@ def _render_active_bets_table(out: List[str], bets: List[dict],
     out.append("</tbody></table>")
 
 
-def _render_history_chart(out: List[str], history: List[dict],
-                            available_bots: List[dict]) -> None:
-    """Cumulative net P&L line chart for the History tab.
-
-    Filterable by bot and date range — both controls live above the
-    chart and are independent from the page-level period dropdown.
-    The full closed-bet ledger is embedded as a JSON payload on the
-    SVG node; the JS does all filtering + drawing client-side so the
-    chart re-renders instantly when the user changes a control.
+def _render_history_chart(out: List[str], history: List[dict]) -> None:
+    """Daily net P&L line chart for the History tab — all bots,
+    all-time. The closed-bet ledger is embedded as JSON on the SVG
+    node; the JS buckets bets by UTC day and draws the line client-
+    side.
     """
     points: List[list] = []
     for h in history:
@@ -4069,55 +4043,23 @@ def _render_history_chart(out: List[str], history: List[dict],
             epoch = int(dt.replace(tzinfo=timezone.utc).timestamp())
         except (TypeError, ValueError):
             continue
-        bot_key = h.get("_bot_key") or ""
         try:
             pnl_int = int(pnl)
         except (TypeError, ValueError):
             continue
-        points.append([epoch, pnl_int, bot_key])
+        points.append([epoch, pnl_int])
     points_payload = html.escape(
         json.dumps(points, separators=(",", ":")),
         quote=True,
     )
     out.append("<div class='history-chart-section'>")
-    out.append("<div class='history-chart-controls bot-filter-bar'>")
-    out.append("<label class='filter-label' for='history-chart-bot'>Bot</label>")
-    out.append(
-        "<select id='history-chart-bot' class='bot-select' "
-        "data-history-chart-bot>"
-    )
-    out.append("<option value=''>All bots</option>")
-    for b in available_bots or []:
-        out.append(
-            f"<option value='{html.escape(b.get('key',''))}'>"
-            f"{html.escape(b.get('name',''))}</option>"
-        )
-    out.append("</select>")
-    out.append(
-        "<label class='filter-label' for='history-chart-range'>Date</label>"
-    )
-    out.append(
-        "<select id='history-chart-range' class='bot-select' "
-        "data-history-chart-range>"
-    )
-    # Date range options for the chart — independent from the page's
-    # period filter so the chart can show all-time while the table
-    # below shows a narrower window (or vice versa).
-    for key, label, _days in PERIOD_OPTIONS:
-        sel = " selected" if key == "all" else ""
-        out.append(
-            f"<option value='{html.escape(key)}'{sel}>"
-            f"{html.escape(label)}</option>"
-        )
-    out.append("</select>")
-    out.append("</div>")  # /history-chart-controls
     out.append(
         "<div class='history-chart-wrap'>"
         f"<svg data-history-chart data-points='{points_payload}' "
         "width='100%' height='260' viewBox='0 0 800 260' "
         "preserveAspectRatio='none' style='display:block'></svg>"
         "<div class='history-chart-empty' data-history-chart-empty hidden>"
-        "No closed bets in this range.</div>"
+        "No closed bets yet.</div>"
         "</div>"
     )
     out.append("</div>")  # /history-chart-section
