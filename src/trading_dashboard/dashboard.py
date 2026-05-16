@@ -6407,34 +6407,53 @@ def _render_models_panel(out: List[str], bot: dict, model: dict | None,
     top_imp_str = (f"{top_imp:.4f}" if isinstance(top_imp, (int, float))
                     else "—")
 
-    # ── Model overview cards — positioned at the top of the panel,
-    # matching the headline-cards layout of the Home tab. Same data
-    # that used to live in the "Model overview" definition list lower
-    # on the page, just rendered as boxes so the eye lands on it.
-    overview_cards: List[Tuple[str, str]] = [
-        ("Last retrained", overview.get("last_retrained") or "—"),
-        ("Features considered → kept",
-            (f"{n_total} → {n_kept} "
-             f"({n_kept/n_total*100:.0f}%)" if n_total else "—")),
-        (f"Stable across all {overview['max_folds']} folds",
-            str(overview["n_stable_all_folds"])),
-        ("Top feature",
-            (f"{overview.get('top_feature')} ({top_imp_str})"
-             if overview.get("top_feature") else "—")),
-    ]
-    if overview.get("snapshot_first") and overview.get("snapshot_last"):
-        overview_cards.append((
-            "Deployed",
-            f"live since {overview['snapshot_first'][:10]} · "
-            f"{overview.get('snapshots_recorded') or 0} snapshots",
-        ))
+    # ── Model coefficient cards — positioned at the top of the panel,
+    # using the same .row / .card styling as the Home tab. Surfaces
+    # the bottom-line training metrics (Accuracy / F1 / Precision /
+    # Recall / ROC AUC / Features) up front before the deep-dive
+    # chart and confusion matrix below.
+    def _pct(v: object, decimals: int = 0) -> str:
+        if v is None:
+            return "—"
+        try:
+            return f"{float(v)*100:.{decimals}f}%"
+        except (TypeError, ValueError):
+            return "—"
+
     out.append("<div class='row'>")
-    for label, value in overview_cards:
-        out.append(
-            f"<div class='card'><div class='label'>"
-            f"{html.escape(label)}</div>"
-            f"<div class='value'>{html.escape(str(value))}</div></div>"
-        )
+    if not model:
+        out.append("<div class='card'><div class='label'>Model</div>"
+                   "<div class='value'>No snapshot yet</div></div>")
+    else:
+        metric_cards = [
+            ("Accuracy",
+             "Held-out classifier accuracy on the trainer's test set.",
+             _pct(model.get("classifier_accuracy"), 1)),
+            ("F1",
+             "Harmonic mean of precision and recall on the test set.",
+             _pct(model.get("training_f1"))),
+            ("Precision",
+             "Fraction of predicted positives that were correct.",
+             _pct(model.get("training_precision"))),
+            ("Recall",
+             "Fraction of actual positives the model caught.",
+             _pct(model.get("training_recall"))),
+            ("ROC AUC",
+             "Area under the ROC curve on the test set. "
+             "0.5 = random, 1.0 = perfect.",
+             _pct(model.get("training_roc_auc"))),
+            ("Features",
+             "Number of input features the model uses.",
+             (str(int(model.get("feature_count")))
+              if model.get("feature_count") is not None else "—")),
+        ]
+        for label, title, value in metric_cards:
+            out.append(
+                f"<div class='card'><div class='label' "
+                f"title='{html.escape(title)}'>"
+                f"{html.escape(label)}</div>"
+                f"<div class='value'>{html.escape(value)}</div></div>"
+            )
     out.append("</div>")
 
     # ── Top features (chart first, sources below) ───────────────────
