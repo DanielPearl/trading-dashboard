@@ -143,10 +143,30 @@ def fetch_summary(db_path: str, period_days: int | None = None) -> dict:
                 "SELECT COUNT(*) n FROM positions"
             ).fetchone()
             open_row = c.execute(
-                "SELECT COUNT(*) n, COALESCE(SUM(entry_price_cents * contracts), 0) exp, "
-                "COALESCE(SUM(contracts), 0) ctr "
+                "SELECT COUNT(*) n, COALESCE(SUM(entry_price_cents * contracts), 0) exp "
                 "FROM positions WHERE status = 'open'"
             ).fetchone()
+            # Active-bets count + active-contracts sum: filter out
+            # zombie open positions whose ticker has already settled
+            # (>60 min past close). Mirrors the same guard the
+            # active-bets table applies (``hide_settled``) so the
+            # headline cards agree with what's rendered in the table.
+            open_rows = c.execute(
+                "SELECT p.ticker, p.contracts, "
+                "  (SELECT mv.minutes_to_close FROM market_views mv "
+                "     WHERE mv.ticker = p.ticker "
+                "     ORDER BY mv.id DESC LIMIT 1) AS mtc "
+                "FROM positions p WHERE p.status = 'open'"
+            ).fetchall()
+            active_count = 0
+            active_contracts = 0
+            for r in open_rows:
+                mtc = r["mtc"]
+                if mtc is None:
+                    mtc = minutes_to_close_from_ticker(r["ticker"])
+                if (mtc if mtc is not None else 0) >= -60:
+                    active_count += 1
+                    active_contracts += r["contracts"] or 0
             closed_row = c.execute(
                 "SELECT COUNT(*) n, COALESCE(SUM(realized_pnl_cents), 0) pnl, "
                 "SUM(CASE WHEN realized_pnl_cents > 0 THEN 1 ELSE 0 END) wins, "
@@ -263,9 +283,9 @@ def fetch_summary(db_path: str, period_days: int | None = None) -> dict:
         return empty
     return {
         "total_bets": int(total["n"] or 0),
-        "open_count": int(open_row["n"] or 0),
+        "open_count": int(active_count),
         "exposure_cents": int(open_row["exp"] or 0),
-        "active_contracts": int(open_row["ctr"] or 0),
+        "active_contracts": int(active_contracts),
         "closed_count": int(closed_row["n"] or 0),
         "realized_pnl_cents": int(closed_row["pnl"] or 0),
         "wins_lifetime": int(closed_row["wins"] or 0),
