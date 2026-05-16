@@ -2510,6 +2510,19 @@ tr.row-bought td.mono { color: #f0f6fc; font-weight: 600; }
 .summary-active-scroll table { margin: 0; }
 .summary-active-scroll thead th { position: sticky; top: 0;
     background: #161b22; z-index: 1; }
+/* Watchlist-tab Active bets scroller. Mirrors .watchlist-scroll
+   (the strike-ladder table below) so the two read as a stacked
+   pair, but capped at a smaller height since it's the bet list
+   not the full ladder. Section-grey background contrasts the
+   near-black chart panel directly above it. */
+.watchlist-active-scroll { max-height: 220px; overflow-y: auto;
+    border: 1px solid #21262d; border-radius: 6px;
+    background: #161b22; margin-top: 4px;
+    margin-bottom: 14px; }
+.watchlist-active-scroll table { margin: 0; border: none; }
+.watchlist-active-scroll thead th { position: sticky; top: 0;
+    z-index: 1; background: #1d232c;
+    box-shadow: 0 1px 0 #30363d; }
 /* History tab scroll container — taller than the Summary's active
    bets scroll since the History tab is dedicated to this table.
    ~14 rows visible before the user scrolls. */
@@ -7920,10 +7933,12 @@ def _render_watchlist(out: List[str], watchlist: List[dict],
         enriched_rows.sort(key=lambda r: r.get("opened_at", ""), reverse=True)
         # Pass the watchlist + event title + sport-bot flag through so
         # the active-bets row mirrors the title and side text of the
-        # ticker table directly underneath. Wrap in the same scroll
-        # container the Home tab's aggregate active-bets table uses
-        # so a long list doesn't push the chart / ladder off screen.
-        out.append("<div class='summary-active-scroll'>")
+        # ticker table directly underneath. Wrap in a dedicated scroll
+        # container that mirrors the strike-ladder's styling (sticky
+        # header, soft border) but with a lighter section-grey
+        # background so the table contrasts the chart panel sitting
+        # right above it.
+        out.append("<div class='watchlist-active-scroll'>")
         _render_active_bets_table(
             out, enriched_rows, show_bot=False,
             chart_link=True, hedge_cfg=hedge_cfg,
