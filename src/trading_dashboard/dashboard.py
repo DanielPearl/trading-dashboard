@@ -456,6 +456,83 @@ def fetch_bet_history(db_path: str, limit: int = 100) -> List[dict]:
     return out
 
 
+def fetch_ev_realized_buckets(db_path: str) -> List[dict]:
+    """Edge-vs-realized bucket analysis for the Models tab.
+
+    For every closed position with both ``expected_ev_at_entry`` and
+    ``realized_pnl_cents`` recorded, bucket by the predicted EV (in
+    decimal $/contract) and compute count / mean predicted EV / mean
+    realized ¢-per-contract / win rate / total P&L per bucket.
+
+    Returns ``[]`` for bots whose schema doesn't carry
+    ``expected_ev_at_entry`` (older / tennis-style bots). The caller
+    decides whether to render the section.
+    """
+    if not Path(db_path).exists():
+        return []
+    try:
+        with closing(_conn(db_path)) as c:
+            cols = {r["name"] for r in
+                    c.execute("PRAGMA table_info(positions)").fetchall()}
+            if "expected_ev_at_entry" not in cols:
+                return []
+            rows = c.execute(
+                "SELECT expected_ev_at_entry, realized_pnl_cents, contracts "
+                "FROM positions "
+                "WHERE status = 'closed' "
+                "  AND expected_ev_at_entry IS NOT NULL "
+                "  AND realized_pnl_cents IS NOT NULL "
+                "  AND contracts > 0"
+            ).fetchall()
+    except (sqlite3.OperationalError, sqlite3.DatabaseError):
+        return []
+    # Bucket edges in decimal $ per contract. The first bucket catches
+    # bets that slipped in below the EV gate (older data, or rounding);
+    # the rest follow the 2¢ / 4¢ / 7¢ / 10¢ ladder we discussed.
+    buckets: List[Tuple[str, float, float]] = [
+        ("< 0¢",   -10.0,  0.0),
+        ("0–2¢",    0.0,   0.02),
+        ("2–4¢",    0.02,  0.04),
+        ("4–7¢",    0.04,  0.07),
+        ("7–10¢",   0.07,  0.10),
+        ("10¢+",    0.10,  10.0),
+    ]
+    out: List[dict] = []
+    for label, lo, hi in buckets:
+        n = 0
+        ev_sum = 0.0
+        realized_per_sum = 0.0
+        wins = 0
+        total_pnl_cents = 0
+        for r in rows:
+            try:
+                ev = float(r["expected_ev_at_entry"])
+                pnl = int(r["realized_pnl_cents"])
+                contracts = int(r["contracts"])
+            except (TypeError, ValueError):
+                continue
+            if contracts <= 0:
+                continue
+            if ev < lo or ev >= hi:
+                continue
+            n += 1
+            ev_sum += ev
+            realized_per_sum += pnl / contracts
+            total_pnl_cents += pnl
+            if pnl > 0:
+                wins += 1
+        out.append({
+            "label": label,
+            "count": n,
+            "predicted_ev_cents": (ev_sum / n) * 100.0 if n else None,
+            "realized_per_contract_cents": (realized_per_sum / n
+                                              if n else None),
+            "win_rate": (wins / n) if n else None,
+            "total_pnl_cents": total_pnl_cents,
+        })
+    return out
+
+
 def fetch_global_summary(bots: List[dict],
                           period_days: int | None = None) -> dict:
     """Cross-bot rollup for the Summary section's headline cards.
@@ -6431,6 +6508,101 @@ def _svg_roc_curve(points: List[dict],
     return "".join(parts)
 
 
+def _render_ev_realized_table(out: List[str],
+                                buckets: List[dict]) -> None:
+    """Predicted-vs-realized EV bucket table for the Models tab.
+
+    Each row is one predicted-EV bucket (e.g. 4–7¢) with the bot's
+    average predicted edge, the realized cents-per-contract over the
+    closed bets in that bucket, win rate, and total P&L. The Realized
+    column is colour-coded against the predicted EV so the user can
+    skim for buckets where the edge held vs. where it disappeared.
+    """
+    # Show the section even when there's nothing to plot — the empty
+    # state explains *why* (no closed bets / unsupported schema).
+    out.append(
+        "<h3 class='subhead'>Predicted vs realized EV "
+        "<span class='small gray'>(closed bets, bucketed by entry EV)"
+        "</span></h3>"
+    )
+    has_data = any((b.get("count") or 0) > 0 for b in buckets)
+    if not buckets or not has_data:
+        out.append(
+            "<div class='empty'>No closed bets with a recorded EV "
+            "estimate yet — this table populates once the bot has "
+            "closed at least one position with "
+            "<code>expected_ev_at_entry</code> set.</div>"
+        )
+        return
+    out.append(
+        "<table><thead><tr>"
+        "<th title='Predicted EV at entry, in cents per contract.'>"
+        "EV bucket</th>"
+        "<th class='num'>Bets</th>"
+        "<th class='num' title='Mean predicted EV across the bucket "
+        "(cents per contract).'>Predicted</th>"
+        "<th class='num' title='Mean realized P&amp;L per contract "
+        "across the bucket (cents). If the edge survived contact "
+        "with the market, this tracks the Predicted column.'>"
+        "Realized</th>"
+        "<th class='num' title='Fraction of bets in this bucket that "
+        "closed with positive P&amp;L.'>Win %</th>"
+        "<th class='num' title='Sum of realized P&amp;L across every "
+        "bet in this bucket, in dollars.'>Total P&amp;L</th>"
+        "</tr></thead><tbody>"
+    )
+    for b in buckets:
+        n = b.get("count") or 0
+        pred = b.get("predicted_ev_cents")
+        realized = b.get("realized_per_contract_cents")
+        win = b.get("win_rate")
+        total = b.get("total_pnl_cents") or 0
+        # Empty buckets render as dashes — keeps the bucket ladder
+        # visible even when one tier has no trades yet.
+        if n == 0:
+            out.append(
+                f"<tr><td>{html.escape(b['label'])}</td>"
+                f"<td class='num gray'>0</td>"
+                f"<td class='num gray'>—</td>"
+                f"<td class='num gray'>—</td>"
+                f"<td class='num gray'>—</td>"
+                f"<td class='num gray'>—</td></tr>"
+            )
+            continue
+        # Colour the Realized cell against the bucket's predicted EV.
+        # Green = edge largely survived (realized ≥ predicted × 0.5
+        # OR realized within 1¢ of predicted on tiny EV).
+        # Yellow = edge eroded but still positive realized.
+        # Red = realized ≤ 0 where predicted was positive.
+        if realized is None or pred is None:
+            real_cls = "gray"
+        elif pred <= 0:
+            real_cls = "green" if realized > 0 else "red"
+        elif realized >= max(pred * 0.5, pred - 1.0):
+            real_cls = "green"
+        elif realized > 0:
+            real_cls = "yellow"
+        else:
+            real_cls = "red"
+        win_cls = "green" if (win or 0) > 0.5 else ("red" if win is not None and win < 0.5 else "gray")
+        total_dollars = total / 100.0
+        total_cls = "green" if total > 0 else ("red" if total < 0 else "gray")
+        # Tag low-sample buckets so the user knows not to overweight them.
+        noisy = (" <span class='small gray'>noisy</span>"
+                  if n < 10 else "")
+        out.append(
+            f"<tr><td>{html.escape(b['label'])}{noisy}</td>"
+            f"<td class='num'>{n}</td>"
+            f"<td class='num'>{pred:+.2f}¢</td>"
+            f"<td class='num {real_cls}'>{realized:+.2f}¢</td>"
+            f"<td class='num {win_cls}'>{(win or 0)*100:.0f}%</td>"
+            f"<td class='num {total_cls}'>"
+            f"{'+' if total > 0 else ('−' if total < 0 else '')}"
+            f"${abs(total_dollars):.2f}</td></tr>"
+        )
+    out.append("</tbody></table>")
+
+
 def _render_models_panel(out: List[str], bot: dict, model: dict | None,
                           display: dict | None,
                           available_bots: List[dict],
@@ -6641,6 +6813,15 @@ def _render_models_panel(out: List[str], bot: dict, model: dict | None,
                 f"<td class='num {cls}'>{acc*100:.0f}%</td></tr>"
             )
         out.append("</tbody></table>")
+
+    # ── Predicted vs realized EV ────────────────────────────────────
+    # The "did the model's edge survive contact with the market?" check.
+    # For each predicted-EV bucket: did realized ¢/contract roughly
+    # track the predicted EV? If yes, the edge is real. If realized
+    # systematically lags predicted, fees + slippage are eating the
+    # edge. If realized is negative where predicted was positive,
+    # the model is mis-calibrated (anti-edge).
+    _render_ev_realized_table(out, fetch_ev_realized_buckets(db_path))
 
     out.append("</div></div>")
 
