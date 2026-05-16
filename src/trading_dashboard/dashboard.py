@@ -1375,7 +1375,8 @@ def unrealized_pnl_cents(pos: dict) -> int | None:
 def fmt_cents(c: int | float | None) -> str:
     if c is None:
         return "—"
-    return f"${c/100:+.2f}" if c < 0 else f"${c/100:.2f}"
+    sign = "−" if c < 0 else ""
+    return f"{sign}${abs(c)/100:.2f}"
 
 
 def _favicon_link() -> str:
@@ -3001,10 +3002,10 @@ def _live_update_script(current_bot: str, period_key: str = "all") -> str:
   }}
   function fmtEv(ev) {{
     if (ev === null || ev === undefined) return "0";
-    const rounded = Math.round(ev * 1000) / 1000;
+    const rounded = Math.round(ev * 100) / 100;
     if (rounded === 0) return "0";
     const sign = rounded >= 0 ? "+" : "−";
-    return "$" + sign + Math.abs(rounded).toFixed(3);
+    return sign + "$" + Math.abs(rounded).toFixed(2);
   }}
   function evClass(ev, minEv) {{
     if (ev === null || ev === undefined) return "gray";
@@ -3261,7 +3262,7 @@ def _live_update_script(current_bot: str, period_key: str = "all") -> str:
   function fmtCents3(v) {{
     if (v === null || v === undefined || !isFinite(v)) return "—";
     const sign = v >= 0 ? "+" : "−";
-    return sign + "$" + Math.abs(v).toFixed(3);
+    return sign + "$" + Math.abs(v).toFixed(2);
   }}
   function buildCriteriaHTML(c) {{
     // Every value in this popup is rendered green: the bet only
@@ -4921,11 +4922,13 @@ def _render_bet_history_block(out: List[str], history: List[dict],
         else:
             mp_str = "—"
         ev = b.get("expected_ev_at_entry")
-        if ev is None or round(float(ev), 3) == 0:
+        if ev is None or round(float(ev), 2) == 0:
             ev_str = "0"
             ev_cls = "gray"
         else:
-            ev_str, ev_cls = (f"${ev:+.3f}", _ev_status(ev)[0])
+            ev_sign = "+" if ev > 0 else "−"
+            ev_str = f"{ev_sign}${abs(ev):.2f}"
+            ev_cls = _ev_status(ev)[0]
         # Title cell: Kalshi-published contract title; falls back to a
         # derived "matchup — bet on X" or the strike question text
         # when no Kalshi title is recorded on this row.
@@ -8151,8 +8154,9 @@ def _render_watchlist(out: List[str], watchlist: List[dict],
             entry_part = f" @ {entry_c}c" if entry_c is not None else ""
             model_part = ""
             if best_ev_v is not None and best_side_v in ("YES", "NO"):
+                _ev_sign = "+" if best_ev_v > 0 else "−"
                 model_part = (f" · model now: {best_side_v} "
-                              f"(EV ${best_ev_v:+.3f})")
+                              f"(EV {_ev_sign}${abs(best_ev_v):.2f})")
             held_tt = (f"You are holding {bought_side}{entry_part}"
                        f"{model_part}")
             badge = (f"<span class='badge {held_cls}' "
@@ -8164,8 +8168,9 @@ def _render_watchlist(out: List[str], watchlist: List[dict],
             # EV $0.05" on hover even though the cell says SKIP.
             skip_tt = reason
             if best_ev_v is not None and best_side_v in ("YES", "NO"):
+                _ev_sign = "+" if best_ev_v > 0 else "−"
                 rec = (f"model favours {best_side_v} "
-                       f"(EV ${best_ev_v:+.3f})")
+                       f"(EV {_ev_sign}${abs(best_ev_v):.2f})")
                 skip_tt = (f"{rec} · {reason}" if reason else rec)
             tt_attr = (f" title='{html.escape(skip_tt)}'"
                        if skip_tt else "")
@@ -8215,16 +8220,17 @@ def _render_watchlist(out: List[str], watchlist: List[dict],
         row_cls = (f" class='{' '.join(classes)}'" if classes else "") + title_attr
 
         # Pre-format EV cells. Zero or missing values render as a plain
-        # "0" instead of the sign-prefixed "$+0.000" or "—" dash —
-        # both convey the same thing ("no actionable edge") and "0"
-        # reads cleaner across a dense table.
+        # "0" instead of the signed "+$0.00" or "—" dash — both convey
+        # the same thing ("no actionable edge") and "0" reads cleaner
+        # across a dense table.
         def _ev_cell(ev: float | None) -> tuple[str, str]:
             if ev is None:
                 return "0", "gray"
-            if round(float(ev), 3) == 0:
+            if round(float(ev), 2) == 0:
                 return "0", "gray"
             cls_, _ = _ev_status(ev)
-            return f"${ev:+.3f}", cls_
+            sign = "+" if ev > 0 else "−"
+            return f"{sign}${abs(ev):.2f}", cls_
         ev_yes_str, ev_yes_cls = _ev_cell(ev_yes_v)
         ev_no_str, ev_no_cls = _ev_cell(ev_no_v)
 
