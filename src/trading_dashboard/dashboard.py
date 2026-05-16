@@ -3362,6 +3362,12 @@ def _render_bot_cards(out: List[str], rollup: dict,
             href = "#"
         elif b.get("dashboard_type") in ("tennis", "survivor"):
             href = f"?bot={html.escape(bot_key)}&tab=models"
+        elif b.get("dashboard_type") == "bitcoin":
+            # BTC bot is rule-based — the standard Models tab renders
+            # all-empty (no classifier_accuracy, no walk-forward
+            # importance, etc.). Link to the bot's Watchlist instead,
+            # which is the meaningful per-contract view for this bot.
+            href = f"?bot={html.escape(bot_key)}&tab=watchlist"
         else:
             href = f"?tab=models&bot={html.escape(bot_key)}"
 
