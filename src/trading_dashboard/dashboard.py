@@ -533,6 +533,92 @@ def fetch_ev_realized_buckets(db_path: str) -> List[dict]:
     return out
 
 
+def bot_regime_status(db_path: str, days: int = 90,
+                        min_bets: int = 10) -> dict:
+    """Rolling edge-health check used by the Home-tab bot cards.
+
+    Looks at the last ``days`` of closed bets with both
+    ``expected_ev_at_entry`` and ``realized_pnl_cents`` recorded, then
+    grades how well the realized cents-per-contract is tracking the
+    predicted EV. Returns a small dict the renderer turns into a
+    status pill.
+
+    Statuses
+    --------
+    ``"green"``  — realized ≥ predicted × 0.5 (edge largely survived)
+    ``"yellow"`` — realized > 0 but well below predicted (eroding)
+    ``"red"``    — realized ≤ 0 where predicted was positive (anti-edge)
+    ``"gray"``   — not enough data (or schema lacks the EV column)
+    """
+    empty = {"status": "gray", "label": "no data",
+             "reason": "Needs closed bets with a recorded entry EV."}
+    if not Path(db_path).exists():
+        return empty
+    try:
+        with closing(_conn(db_path)) as c:
+            cols = {r["name"] for r in
+                    c.execute("PRAGMA table_info(positions)").fetchall()}
+            if "expected_ev_at_entry" not in cols:
+                return empty
+            rows = c.execute(
+                "SELECT expected_ev_at_entry, realized_pnl_cents, contracts "
+                "FROM positions WHERE status = 'closed' "
+                "  AND expected_ev_at_entry IS NOT NULL "
+                "  AND realized_pnl_cents IS NOT NULL "
+                "  AND contracts > 0 "
+                "  AND date(exited_at) >= date('now', ?)",
+                (f"-{int(days)} days",),
+            ).fetchall()
+    except (sqlite3.OperationalError, sqlite3.DatabaseError):
+        return empty
+    if len(rows) < min_bets:
+        return {
+            "status": "gray",
+            "label": "warming up",
+            "reason": (f"Only {len(rows)} closed bets in the last "
+                       f"{days}d — need ≥ {min_bets} for a reading."),
+        }
+    pred_sum_cents = 0.0
+    realized_per_sum = 0.0
+    total_pnl_cents = 0
+    for r in rows:
+        try:
+            ev = float(r["expected_ev_at_entry"])
+            pnl = int(r["realized_pnl_cents"])
+            contracts = int(r["contracts"])
+        except (TypeError, ValueError):
+            continue
+        if contracts <= 0:
+            continue
+        pred_sum_cents += ev * 100.0
+        realized_per_sum += pnl / contracts
+        total_pnl_cents += pnl
+    n = len(rows)
+    pred = pred_sum_cents / n
+    realized = realized_per_sum / n
+    # Edge-survival rule mirrors the EV-vs-realized table: realized
+    # within half of predicted (or within 1¢ at tiny predicted EV)
+    # is "the edge held". Negative realized with positive predicted is
+    # the anti-edge regime that warrants pausing the bot.
+    if pred <= 0:
+        status = "green" if realized > 0 else "red"
+        label = "edge confirmed" if status == "green" else "anti-edge"
+    elif realized >= max(pred * 0.5, pred - 1.0):
+        status, label = "green", "edge confirmed"
+    elif realized > 0:
+        status, label = "yellow", "edge eroding"
+    else:
+        status, label = "red", "anti-edge"
+    reason = (f"{n} bets · predicted {pred:+.1f}¢/contract · "
+              f"realized {realized:+.1f}¢/contract · "
+              f"net {'+' if total_pnl_cents > 0 else ('−' if total_pnl_cents < 0 else '')}"
+              f"${abs(total_pnl_cents)/100:.2f} over {days}d")
+    return {"status": status, "label": label, "reason": reason,
+            "predicted_cents": pred, "realized_cents": realized,
+            "total_pnl_cents": total_pnl_cents, "n_bets": n,
+            "days": days}
+
+
 def fetch_global_summary(bots: List[dict],
                           period_days: int | None = None) -> dict:
     """Cross-bot rollup for the Summary section's headline cards.
@@ -2041,6 +2127,21 @@ td.num.red, td.num.green { white-space: nowrap; }
     font-size: 9px; font-weight: 700; text-transform: uppercase;
     letter-spacing: 0.04em; line-height: 1.5;
     vertical-align: 2px; }
+/* Regime-status pill — sits inline with the bot name on the Home
+   tab cards. Three states map to existing summary colours so the
+   palette stays consistent: green = edge confirmed, yellow = edge
+   eroding, red = anti-edge. */
+.regime-pill { display: inline-block; margin-left: 6px;
+    padding: 1px 6px; border-radius: 4px;
+    font-size: 9px; font-weight: 700; text-transform: uppercase;
+    letter-spacing: 0.04em; line-height: 1.5;
+    vertical-align: 2px; }
+.regime-pill.regime-green { background: rgba(63, 185, 80, 0.18);
+    color: #3fb950; border: 1px solid rgba(63, 185, 80, 0.35); }
+.regime-pill.regime-yellow { background: rgba(227, 179, 65, 0.18);
+    color: #e3b341; border: 1px solid rgba(227, 179, 65, 0.35); }
+.regime-pill.regime-red { background: rgba(248, 81, 73, 0.18);
+    color: #f85149; border: 1px solid rgba(248, 81, 73, 0.35); }
 /* The HTML `hidden` attribute applies `display: none` via the UA
    stylesheet (specificity 0,1,0). Our `.criteria-modal { display:
    flex }` rule shares that specificity and wins by source order, so
@@ -3853,6 +3954,21 @@ def _render_bot_cards(out: List[str], rollup: dict,
                         f"may have drifted; a retrain is likely overdue.'"
                         f">⚠ drift</span>"
                     )
+        # Regime status pill — rolling edge-health check sourced from
+        # the bot's last 90 days of closed bets. Sits inline with the
+        # bot name so the user can scan the grid for which bots are
+        # currently making money. Tennis-style adapters don't have
+        # the schema we need, so they get no pill (rather than a
+        # misleading "no data" badge on every load).
+        regime_html = ""
+        if b.get("dashboard_type") not in ("tennis", "survivor"):
+            regime = bot_regime_status(b.get("db_path") or "")
+            if regime.get("status") and regime["status"] != "gray":
+                regime_html = (
+                    f"<span class='regime-pill regime-{regime['status']}' "
+                    f"title='{html.escape(regime.get('reason') or '')}'>"
+                    f"{html.escape(regime.get('label') or '')}</span>"
+                )
         # Toggle state for this bot — defaults to enabled = True.
         bot_state_entry = bot_states.get(bot_key) or {}
         bot_enabled = bool(bot_state_entry.get("enabled", True))
@@ -3878,8 +3994,8 @@ def _render_bot_cards(out: List[str], rollup: dict,
         out.append("<div class='bot-card-head'>")
         out.append("<div class='bot-card-head-left'>")
         out.append(
-            f"<div class='bot-name'>{html.escape(name)}{drift_html}"
-            f"{paused_badge}</div>"
+            f"<div class='bot-name'>{html.escape(name)}{regime_html}"
+            f"{drift_html}{paused_badge}</div>"
         )
         out.append(
             f"<div class='bot-meta'>{html.escape(series_ticker)}</div>"
@@ -4786,6 +4902,62 @@ def calibration_from_holdout(pairs: List[Tuple[float, int]],
     return bins
 
 
+def calibration_from_live_bets(db_path: str,
+                                 n_bins: int = 10) -> List[dict]:
+    """Live-bets calibration overlay for the Models tab.
+
+    Pulls every closed position with a recorded model-yes-probability
+    at entry and an outcome (realized_pnl_cents). Each bet is mapped
+    back to the implicit "did the contract resolve YES?" event so the
+    bucket curve matches the holdout calibration's semantics:
+        YES bet won  → contract resolved YES
+        YES bet lost → contract resolved NO
+        NO  bet won  → contract resolved NO
+        NO  bet lost → contract resolved YES
+    Returns bins with the same shape as ``calibration_from_holdout``
+    so a single render path can overlay both series.
+    """
+    if not Path(db_path).exists():
+        return []
+    try:
+        with closing(_conn(db_path)) as c:
+            cols = {r["name"] for r in
+                    c.execute("PRAGMA table_info(positions)").fetchall()}
+            if "model_yes_prob_at_entry" not in cols:
+                return []
+            rows = c.execute(
+                "SELECT model_yes_prob_at_entry, side, realized_pnl_cents "
+                "FROM positions "
+                "WHERE status = 'closed' "
+                "  AND model_yes_prob_at_entry IS NOT NULL "
+                "  AND realized_pnl_cents IS NOT NULL"
+            ).fetchall()
+    except (sqlite3.OperationalError, sqlite3.DatabaseError):
+        return []
+    edges = [i / n_bins for i in range(n_bins + 1)]
+    bins = [{"lo": edges[i], "hi": edges[i + 1],
+             "n": 0, "wins": 0} for i in range(n_bins)]
+    for r in rows:
+        try:
+            p_yes = float(r["model_yes_prob_at_entry"])
+            side = (r["side"] or "").upper()
+            pnl = int(r["realized_pnl_cents"])
+        except (TypeError, ValueError):
+            continue
+        won = pnl > 0
+        if side == "YES":
+            resolved_yes = won
+        elif side == "NO":
+            resolved_yes = not won
+        else:
+            continue
+        idx = min(n_bins - 1, max(0, int(p_yes * n_bins)))
+        bins[idx]["n"] += 1
+        if resolved_yes:
+            bins[idx]["wins"] += 1
+    return bins
+
+
 def _read_holdout_predictions(csv_path: str) -> List[Tuple[float, int]]:
     """Load (predicted_prob, actual_label) pairs from a bot's
     holdout_predictions.csv. The trainer writes this file on each
@@ -5068,13 +5240,20 @@ def _svg_feature_importance(features: List[dict],
     return "".join(parts)
 
 
-def _svg_calibration(bins: List[dict]) -> str:
+def _svg_calibration(bins: List[dict],
+                       live_bins: List[dict] | None = None) -> str:
     """Reliability diagram — predicted-prob bin midpoint on X, observed
     win-rate on Y, point size scales with bin sample count. Diagonal
     reference line shows perfect calibration.
+
+    ``live_bins`` (optional) overlays a second series sourced from the
+    bot's live closed-bet ledger. Holdout = blue (training-time
+    expectation); live = orange (what the bot is actually getting).
+    Divergence between the two is the drift signal.
     """
     populated = [b for b in bins if b.get("n", 0) > 0]
-    if not populated:
+    live_populated = [b for b in (live_bins or []) if b.get("n", 0) > 0]
+    if not populated and not live_populated:
         return ("<div class='empty'>Not enough closed bets yet to "
                 "draw a calibration curve.</div>")
     width, height = 460, 320
@@ -5140,6 +5319,50 @@ def _svg_calibration(bins: List[dict]) -> str:
             f"({b['wins']/b['n']*100:.0f}%)</title>"
             f"<circle cx='{x:.1f}' cy='{y:.1f}' r='{size:.1f}' "
             f"fill='#58a6ff' fill-opacity='0.7' stroke='#58a6ff'/></g>"
+        )
+    # Live-bets overlay: same polyline + circle treatment in orange so
+    # the user can see drift at a glance — when the orange line drops
+    # below the blue (holdout) line, the model is losing more bets
+    # than it expected to in that bucket.
+    if live_populated:
+        live_pts: List[Tuple[float, float]] = []
+        n_live_total = sum(b.get("n", 0) for b in live_populated) or 1
+        for b in live_populated:
+            mid = (b["lo"] + b["hi"]) / 2.0
+            rate = b["wins"] / b["n"]
+            x = pad_l + mid * inner_w
+            y = pad_t + (1 - rate) * inner_h
+            live_pts.append((x, y))
+        live_poly = " ".join(f"{x:.1f},{y:.1f}" for x, y in live_pts)
+        parts.append(
+            f"<polyline points='{live_poly}' fill='none' "
+            f"stroke='#e3934d' stroke-width='2' stroke-dasharray='5,3'/>"
+        )
+        for b, (x, y) in zip(live_populated, live_pts):
+            size = max(3, min(14, (b["n"] / n_live_total) * 60))
+            parts.append(
+                f"<g><title>Live · {b['lo']*100:.0f}–{b['hi']*100:.0f}%: "
+                f"{b['wins']}/{b['n']} resolved YES "
+                f"({b['wins']/b['n']*100:.0f}%)</title>"
+                f"<circle cx='{x:.1f}' cy='{y:.1f}' r='{size:.1f}' "
+                f"fill='#e3934d' fill-opacity='0.7' stroke='#e3934d'/></g>"
+            )
+    # Legend — placed inside the chart so the two series stay visually
+    # tied to the lines they label.
+    legend_y = pad_t + 6
+    parts.append(
+        f"<g><line x1='{pad_l + 6}' x2='{pad_l + 26}' y1='{legend_y}' "
+        f"y2='{legend_y}' stroke='#58a6ff' stroke-width='2'/>"
+        f"<text x='{pad_l + 30}' y='{legend_y + 3}' fill='#8b949e' "
+        f"font-size='10'>Holdout</text></g>"
+    )
+    if live_populated:
+        parts.append(
+            f"<g><line x1='{pad_l + 90}' x2='{pad_l + 110}' "
+            f"y1='{legend_y}' y2='{legend_y}' stroke='#e3934d' "
+            f"stroke-width='2' stroke-dasharray='5,3'/>"
+            f"<text x='{pad_l + 114}' y='{legend_y + 3}' fill='#8b949e' "
+            f"font-size='10'>Live</text></g>"
         )
     # Axis labels.
     parts.append(
@@ -6739,7 +6962,6 @@ def _render_models_panel(out: List[str], bot: dict, model: dict | None,
     # `pairs` was already loaded up top; reuse it here so the page only
     # reads holdout_predictions.csv once.
     roc_points = roc_from_holdout(pairs)
-    cm = confusion_from_holdout(pairs, threshold=0.5)
     n_pairs = len(pairs)
     holdout_blurb = (
         "Sourced from the trainer's held-out historical test set — "
@@ -6755,24 +6977,10 @@ def _render_models_panel(out: List[str], bot: dict, model: dict | None,
     # headers below quote, surfaced once here as a compact one-liner
     # so the trust signal lives next to the held-out plots it grades.
     _render_confidence_card(out, conf)
-    out.append(
-        "<div style='display:grid;grid-template-columns:1fr 1fr;"
-        "gap:14px;align-items:start;'>"
-    )
-    out.append("<div>")
     out.append("<h3 class='subhead' style='margin-top:0;'>"
                 "ROC curve <span class='small gray'>(historical "
                 f"held-out test set, {n_pairs:,} predictions)</span></h3>")
     out.append(_svg_roc_curve(roc_points, auc_scalar=auc_scalar))
-    out.append("</div>")
-    out.append("<div>")
-    out.append("<h3 class='subhead' style='margin-top:0;'>"
-                "Confusion matrix <span class='small gray'>"
-                "(historical held-out test set, threshold = 0.5)"
-                "</span></h3>")
-    out.append(_svg_confusion(cm))
-    out.append("</div>")
-    out.append("</div>")
 
     # ── Calibration curve from the held-out predictions ─────────────
     out.append("<h3 class='subhead'>Calibration "
@@ -6780,7 +6988,8 @@ def _render_models_panel(out: List[str], bot: dict, model: dict | None,
                 "set, predicted prob vs observed positive rate)"
                 "</span></h3>")
     cal_bins = calibration_from_holdout(pairs, n_bins=10)
-    out.append(_svg_calibration(cal_bins))
+    live_cal_bins = calibration_from_live_bets(db_path, n_bins=10)
+    out.append(_svg_calibration(cal_bins, live_bins=live_cal_bins))
 
     # ── Per-strike accuracy ─────────────────────────────────────────
     rows = fetch_per_strike_accuracy(db_path)
