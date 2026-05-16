@@ -2064,10 +2064,6 @@ tr.row-bought td.mono { color: #f0f6fc; font-weight: 600; }
 .history-chart-wrap { position: relative;
     border: 1px solid #30363d; border-radius: 6px;
     background: #0d1117; padding: 8px 4px 4px 4px; }
-.history-chart-empty {
-    position: absolute; inset: 0; display: flex;
-    align-items: center; justify-content: center;
-    color: #8b949e; font-size: 12px; pointer-events: none; }
 """
 
 
@@ -2345,8 +2341,6 @@ _HISTORY_CHART_JS = """<script>
 (function () {
   const svg = document.querySelector('[data-history-chart]');
   if (!svg) return;
-  const wrap = svg.parentElement;
-  const empty = wrap.querySelector('[data-history-chart-empty]');
   let raw = [];
   try { raw = JSON.parse(svg.dataset.points || '[]'); } catch (e) {}
   const W = 800, H = 260;
@@ -2378,11 +2372,7 @@ _HISTORY_CHART_JS = """<script>
     const series = Array.from(daily.entries())
       .sort(function (a, b) { return a[0] - b[0]; });
     svg.innerHTML = '';
-    if (series.length === 0) {
-      if (empty) empty.hidden = false;
-      return;
-    }
-    if (empty) empty.hidden = true;
+    if (series.length === 0) return;
     // X range: first closed-bet day → now.
     const tMin = series[0][0];
     const tMax = now;
@@ -4058,8 +4048,6 @@ def _render_history_chart(out: List[str], history: List[dict]) -> None:
         f"<svg data-history-chart data-points='{points_payload}' "
         "width='100%' height='260' viewBox='0 0 800 260' "
         "preserveAspectRatio='none' style='display:block'></svg>"
-        "<div class='history-chart-empty' data-history-chart-empty hidden>"
-        "No closed bets yet.</div>"
         "</div>"
     )
     out.append("</div>")  # /history-chart-section
