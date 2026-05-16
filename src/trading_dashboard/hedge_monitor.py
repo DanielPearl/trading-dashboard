@@ -141,10 +141,12 @@ def _ticker_is_stale(ticker: str | None, grace_minutes: int = 60) -> bool:
     return mtc < -grace_minutes
 
 
-def _check_db(db_path: str, bot_key: str, bot_name: str,
+def _check_db(db_path: str, bot: Dict[str, Any],
                 profit_lock_cents: int, stop_loss_cents: int,
                 ) -> List[Dict[str, Any]]:
     """Scan one bot's sim.db. Returns the list of closes applied."""
+    bot_key = bot.get("key", "")
+    bot_name = bot.get("name", "")
     p = Path(db_path)
     if not p.exists():
         return []
@@ -189,6 +191,20 @@ def _check_db(db_path: str, bot_key: str, bot_name: str,
                     reason = "hedge_sl"
             if not reason:
                 continue
+            # Sport bots: skip pre-game / "warming up" hedge closes.
+            # Settled_auto exits still proceed — zombie positions need
+            # cleanup regardless of game state.
+            if reason in ("hedge_pl", "hedge_sl"):
+                from . import sport_game_state
+                allowed, gate_reason = sport_game_state.is_hedge_allowed(
+                    bot, ticker,
+                )
+                if not allowed:
+                    log.info(
+                        "[hedge] skip %s %s reason=%s — sport gate: %s",
+                        bot_name, ticker, reason, gate_reason,
+                    )
+                    continue
             exit_mark = mark if mark is not None else entry
             realized = _close_position(
                 c, position_id=pos_id, entry=entry,
@@ -224,8 +240,8 @@ def _atomic_write_json(path: Path, payload: Any) -> None:
     os.replace(tmp.name, path)
 
 
-def _check_tennis_state(sim_state_path: str | None, bot_key: str,
-                         bot_name: str, profit_lock_cents: int,
+def _check_tennis_state(sim_state_path: str | None, bot: Dict[str, Any],
+                         profit_lock_cents: int,
                          stop_loss_cents: int,
                          ) -> List[Dict[str, Any]]:
     """Hedge open positions in a tennis-shape sim_state.json (also
@@ -239,6 +255,8 @@ def _check_tennis_state(sim_state_path: str | None, bot_key: str,
     position`` won't fire on these later because they're no longer
     in open_positions.
     """
+    bot_key = bot.get("key", "")
+    bot_name = bot.get("name", "")
     if not sim_state_path:
         return []
     p = Path(sim_state_path)
@@ -296,6 +314,21 @@ def _check_tennis_state(sim_state_path: str | None, bot_key: str,
         if not reason:
             still_open.append(pos)
             continue
+        # Sport gate: skip pre-match / "warming up" hedge closes on
+        # tennis-shape bots. Settled_auto still proceeds so zombie
+        # matches get cleaned up regardless of game state.
+        if reason in ("hedge_pl", "hedge_sl"):
+            from . import sport_game_state
+            allowed, gate_reason = sport_game_state.is_hedge_allowed(
+                bot, ticker,
+            )
+            if not allowed:
+                log.info(
+                    "[hedge] skip %s %s reason=%s — sport gate: %s",
+                    bot_name, ticker, reason, gate_reason,
+                )
+                still_open.append(pos)
+                continue
         stake = float(pos.get("stake", 1.0) or 1.0)
         slippage = float(pos.get("slippage", 0.0) or 0.0)
         realized = stake * (mark_f - entry_f - slippage)
@@ -463,7 +496,7 @@ def tick(bots: List[dict], hedge_cfg: dict) -> List[Dict[str, Any]]:
                 # trading elimination markets, this path picks them
                 # up automatically.
                 results = _check_tennis_state(
-                    b.get("sim_state_path"), bot_key, bot_name,
+                    b.get("sim_state_path"), b,
                     profit_lock_cents=pl, stop_loss_cents=sl,
                 )
             elif dt == "whale":
@@ -483,7 +516,7 @@ def tick(bots: List[dict], hedge_cfg: dict) -> List[Dict[str, Any]]:
                 if not db:
                     continue
                 results = _check_db(
-                    db, bot_key, bot_name,
+                    db, b,
                     profit_lock_cents=pl, stop_loss_cents=sl,
                 )
         except Exception:  # noqa: BLE001
