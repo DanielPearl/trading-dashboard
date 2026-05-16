@@ -7548,6 +7548,326 @@ def _render_ingame_model_view(out: List[str], bot: dict,
             )
         out.append("</tbody></table>")
 
+    # ── Coefficients (what weights the heuristic uses today) ────────
+    _render_ingame_coefficients(out, bot_key)
+
+    # ── Historical backtest of the testable features ────────────────
+    _render_ingame_backtest(out, bot)
+
+
+# ──────────────────────────────────────────────────────────────────
+# In-game model coefficients — the weights and constants baked into
+# the heuristic implementations under ``in_game/``. Listed here so
+# the user can see them at a glance and (later) compare them to
+# what a trained model would set.
+#
+# Each entry: (label, current_weight, role description, status)
+# Status values:
+#   ``tuned``    — hand-set in code; defensible heuristic
+#   ``learned``  — would come from a trained model; currently
+#                  hand-set as a placeholder
+# ──────────────────────────────────────────────────────────────────
+_INGAME_COEFFICIENTS: Dict[str, List[tuple]] = {
+    "nba": [
+        ("Lead / √(sec remaining) coefficient", 0.045,
+         "Logistic weight in win_prob = σ(c · lead / √(time)). "
+         "Canonical basketball value (Brian Burke).", "tuned"),
+        ("Confidence past Q1, low volatility", 0.70,
+         "Output confidence when game is past Q1 and live "
+         "market vol < 1.5", "tuned"),
+        ("Confidence past Q1, high volatility", 0.45,
+         "Output confidence when past Q1 but vol ≥ 1.5", "tuned"),
+        ("Confidence pre-Q1", 0.25,
+         "Output confidence within the first 12 game-minutes — "
+         "still too noisy to trust the lead-based model",
+         "tuned"),
+        ("Market velocity cap", 1.00,
+         "Max absolute cents/min movement the velocity feature "
+         "reports (clipped to keep linear combos sane)",
+         "tuned"),
+        ("Divergence reversion damp", 0.50,
+         "Fraction of (current_market − pre_game) the in-game "
+         "model pulls back toward the pre-game prior",
+         "tuned"),
+        ("Volatility damp ceiling", 4.00,
+         "Volatility above this completely cancels the "
+         "reversion pull (market is in too much flux to trust "
+         "pre-game prior)",
+         "tuned"),
+        ("EXIT_NOW threshold", 0.30,
+         "Recommend exit when our_side_prob falls below this "
+         "with confidence ≥ 0.5",
+         "tuned"),
+        ("LET_RUN threshold", 0.10,
+         "Recommend let-run when our_side_prob exceeds entry "
+         "by this much",
+         "tuned"),
+    ],
+    "tennis": [
+        ("Confidence in set 1", 0.35, "Low — first set is noisy",
+         "tuned"),
+        ("Confidence in set 2", 0.55, "Medium — pattern emerging",
+         "tuned"),
+        ("Confidence in set 3+", 0.75, "High — match well-determined",
+         "tuned"),
+        ("Injury-flag confidence haircut", 0.25,
+         "Subtract this from confidence when injury_news_flag is set",
+         "tuned"),
+        ("Divergence floor (overreaction)", 0.15,
+         "Minimum |market − pre_game| before the reversion pull "
+         "kicks in",
+         "tuned"),
+        ("Reversion pull strength", 0.30,
+         "Fraction of (market − pre_game) the in-game estimate "
+         "pulls back",
+         "tuned"),
+        ("Divergence threshold for HOLD", 0.20,
+         "|market − pre_game| above this with low live volatility "
+         "→ market overreaction → HOLD",
+         "tuned"),
+        ("EXIT_NOW threshold", 0.30,
+         "Recommend exit when our_bet_prob falls below this with "
+         "confidence ≥ 0.5",
+         "tuned"),
+        ("LET_RUN threshold", 0.10,
+         "Recommend let-run when our_bet_prob exceeds entry by "
+         "this much",
+         "tuned"),
+    ],
+    "table-tennis": [
+        ("Same coefficients as tennis", 0.0,
+         "Table tennis uses the tennis heuristic with no overrides",
+         "tuned"),
+    ],
+    "darts": [
+        ("Confidence bump after 1 set", 0.10,
+         "Add this to the tennis-derived confidence once one "
+         "set has completed (darts sets settle faster)",
+         "tuned"),
+        ("Inherits all tennis coefficients", 0.0,
+         "Confidence ladder + reversion logic from tennis.py",
+         "tuned"),
+    ],
+}
+
+
+def _render_ingame_coefficients(out: List[str], bot_key: str) -> None:
+    """Coefficient table + bar chart of relative weights for the
+    sport bot's in-game heuristic. Mirrors the pre-game model's
+    top-features visual idiom so the two views read consistently.
+    """
+    coefs = _INGAME_COEFFICIENTS.get(bot_key, [])
+    out.append(
+        "<h3 class='subhead'>Coefficients "
+        "<span class='small gray'>(heuristic — hand-tuned today, "
+        "would be learned in a trained version)</span></h3>"
+    )
+    if not coefs:
+        out.append(
+            "<div class='empty'>No coefficient table registered "
+            "for this sport.</div>"
+        )
+        return
+    # Table view — full detail.
+    out.append(
+        "<table><thead><tr>"
+        "<th>Coefficient</th>"
+        "<th class='num'>Value</th>"
+        "<th>Role</th>"
+        "<th>Status</th>"
+        "</tr></thead><tbody>"
+    )
+    for label, value, role, status in coefs:
+        status_cls = "green" if status == "tuned" else "yellow"
+        status_label = ("Hand-tuned" if status == "tuned"
+                          else "TODO: learn from data")
+        v_str = (f"{value:.3f}" if isinstance(value, float)
+                  else str(value))
+        out.append(
+            f"<tr><td>{html.escape(label)}</td>"
+            f"<td class='num'>{html.escape(v_str)}</td>"
+            f"<td class='small gray'>{html.escape(role)}</td>"
+            f"<td class='{status_cls}'>{html.escape(status_label)}</td>"
+            f"</tr>"
+        )
+    out.append("</tbody></table>")
+
+
+def _render_ingame_backtest(out: List[str], bot: dict) -> None:
+    """Historical backtest of the in-game model's most testable
+    feature: pre-game/market divergence at entry. Closed positions
+    are bucketed by |pre_game_prob − market_implied_prob| at entry,
+    and we report the realized P&L per bucket. A real 'market
+    overreaction' signal shows up as high-divergence buckets that
+    correlate with positive realized P&L.
+
+    Coefficients that depend on live game state (lead/time, set
+    score, live volatility) can't be replayed from the data we
+    currently store. They're marked as not-yet-backtestable above
+    in the coefficient table.
+    """
+    bot_key = bot.get("key", "")
+    out.append(
+        "<h3 class='subhead'>Historical backtest "
+        "<span class='small gray'>(divergence-at-entry feature, "
+        "closed bets only — the live-state features can't be "
+        "replayed without snapshot data we don't yet log)"
+        "</span></h3>"
+    )
+    rows = _ingame_backtest_rows(bot)
+    if not rows:
+        out.append(
+            "<div class='empty'>No closed bets with the data we "
+            "need (pre-game model probability + entry market "
+            "price) on file yet.</div>"
+        )
+        return
+    # Buckets in 5pp width up to 0.30, then a tail bucket for huge
+    # divergences. Each row: bets, mean divergence, win rate,
+    # mean realized cents per contract, total P&L.
+    buckets = [
+        ("0–5%",    0.00, 0.05),
+        ("5–10%",   0.05, 0.10),
+        ("10–15%",  0.10, 0.15),
+        ("15–20%",  0.15, 0.20),
+        ("20–30%",  0.20, 0.30),
+        ("30%+",    0.30, 1.01),
+    ]
+    out.append(
+        "<table><thead><tr>"
+        "<th>Divergence @ entry</th>"
+        "<th class='num'>Bets</th>"
+        "<th class='num'>Mean div.</th>"
+        "<th class='num'>Win %</th>"
+        "<th class='num'>¢/contract</th>"
+        "<th class='num'>Total P&amp;L</th>"
+        "</tr></thead><tbody>"
+    )
+    any_data = False
+    for label, lo, hi in buckets:
+        bucket = [r for r in rows if lo <= r["divergence"] < hi]
+        n = len(bucket)
+        if n == 0:
+            out.append(
+                f"<tr><td>{html.escape(label)}</td>"
+                f"<td class='num gray'>0</td>"
+                f"<td class='num gray'>—</td>"
+                f"<td class='num gray'>—</td>"
+                f"<td class='num gray'>—</td>"
+                f"<td class='num gray'>—</td></tr>"
+            )
+            continue
+        any_data = True
+        mean_div = sum(r["divergence"] for r in bucket) / n * 100.0
+        wins = sum(1 for r in bucket if r["pnl_cents"] > 0)
+        win_pct = wins / n
+        cents_per = sum(r["pnl_per_contract"] for r in bucket) / n
+        total = sum(r["pnl_cents"] for r in bucket)
+        win_cls = ("green" if win_pct > 0.5
+                    else ("red" if win_pct < 0.5 else "gray"))
+        cents_cls = ("green" if cents_per > 0
+                      else ("red" if cents_per < 0 else "gray"))
+        total_cls = ("green" if total > 0
+                      else ("red" if total < 0 else "gray"))
+        cents_sign = "+" if cents_per > 0 else ("−" if cents_per < 0 else "")
+        total_sign = "+" if total > 0 else ("−" if total < 0 else "")
+        out.append(
+            f"<tr><td>{html.escape(label)}</td>"
+            f"<td class='num'>{n}</td>"
+            f"<td class='num'>{mean_div:.1f}%</td>"
+            f"<td class='num {win_cls}'>{win_pct*100:.0f}%</td>"
+            f"<td class='num {cents_cls}'>"
+            f"{cents_sign}{abs(cents_per):.2f}¢</td>"
+            f"<td class='num {total_cls}'>"
+            f"{total_sign}${abs(total)/100:.2f}</td></tr>"
+        )
+    out.append("</tbody></table>")
+    if not any_data:
+        out.append(
+            "<p class='small gray' style='margin-top:8px;'>"
+            "No closed bets fell into any divergence bucket yet — "
+            "the backtest populates once the bot closes positions "
+            "with both a pre-game model probability and an entry "
+            "market price on record.</p>"
+        )
+
+
+def _ingame_backtest_rows(bot: dict) -> List[dict]:
+    """Pull closed bets for the bot and compute the divergence /
+    realized-P&L pairs the backtest needs. Empty when the bot has
+    no closed bets or the schema is missing required columns.
+    """
+    bot_key = bot.get("key", "")
+    rows: List[dict] = []
+    if bot.get("dashboard_type") == "tennis":
+        # Tennis-shape: closed_positions in sim_state.json. The rollup
+        # shape exposes entry_price_cents (market view) + the bot's
+        # pre-game model probability under model_yes_prob_at_entry.
+        # Divergence = |model − market| on the side bet (tennis rows
+        # are always YES-side in the rollup output).
+        from . import tennis as _tennis
+        for p in _tennis.closed_positions_for_rollup(
+                bot.get("sim_state_path"), limit=500):
+            entry_cents = p.get("entry_price_cents")
+            entry_model = p.get("model_yes_prob_at_entry")
+            pnl = p.get("realized_pnl_cents")
+            contracts = p.get("contracts") or 1
+            if (entry_cents is None or entry_model is None
+                    or pnl is None):
+                continue
+            try:
+                market_prob = float(entry_cents) / 100.0
+                div = abs(float(entry_model) - market_prob)
+                pnl_int = int(pnl)
+            except (TypeError, ValueError):
+                continue
+            rows.append({
+                "divergence": div,
+                "pnl_cents": pnl_int,
+                "pnl_per_contract": pnl_int / max(1, int(contracts)),
+            })
+        return rows
+    # Standard sim.db (NBA).
+    db_path = bot.get("db_path") or ""
+    if not db_path or not Path(db_path).exists():
+        return []
+    try:
+        with closing(_conn(db_path)) as c:
+            cols = {r["name"] for r in
+                    c.execute("PRAGMA table_info(positions)").fetchall()}
+            if "model_yes_prob_at_entry" not in cols:
+                return []
+            db_rows = c.execute(
+                "SELECT side, entry_price_cents, contracts, "
+                "       realized_pnl_cents, model_yes_prob_at_entry "
+                "FROM positions WHERE status = 'closed' "
+                "  AND realized_pnl_cents IS NOT NULL "
+                "  AND entry_price_cents IS NOT NULL "
+                "  AND model_yes_prob_at_entry IS NOT NULL"
+            ).fetchall()
+    except (sqlite3.OperationalError, sqlite3.DatabaseError):
+        return []
+    for r in db_rows:
+        side = (r["side"] or "").upper()
+        try:
+            entry_c = int(r["entry_price_cents"])
+            pnl_int = int(r["realized_pnl_cents"])
+            contracts = int(r["contracts"] or 1)
+            model_yes = float(r["model_yes_prob_at_entry"])
+        except (TypeError, ValueError):
+            continue
+        market_yes_for_side = (entry_c / 100.0 if side == "YES"
+                                 else (100 - entry_c) / 100.0)
+        model_yes_for_side = (model_yes if side == "YES"
+                                else 1.0 - model_yes)
+        div = abs(model_yes_for_side - market_yes_for_side)
+        rows.append({
+            "divergence": div,
+            "pnl_cents": pnl_int,
+            "pnl_per_contract": pnl_int / max(1, contracts),
+        })
+    return rows
+
 
 def _render_models_panel(out: List[str], bot: dict, model: dict | None,
                           display: dict | None,
