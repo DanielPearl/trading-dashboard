@@ -775,6 +775,41 @@ def fetch_underlying_history(db_path: str, hours: int = 72,
     return out
 
 
+def fetch_ticker_yes_prob_history(db_path: str, ticker: str | None,
+                                    hours: int = 168) -> List[dict]:
+    """Time-series of YES probability (in cents, 0-100) for one ticker.
+
+    Reads ``market_views`` rows for the ticker over the last N hours.
+    Each row is a snapshot the bot took at scoring time, so the chart
+    point density mirrors how often the bot polls.
+
+    Returns ``[{"ts": unix_seconds, "value": yes_ask_cents}, …]``.
+    Empty when the DB / ticker has no data.
+    """
+    if not ticker or not Path(db_path).exists():
+        return []
+    try:
+        with closing(_conn(db_path)) as c:
+            rows = c.execute(
+                "SELECT captured_at, yes_ask_cents AS value "
+                "FROM market_views "
+                "WHERE ticker = ? AND yes_ask_cents IS NOT NULL "
+                "  AND captured_at >= datetime('now', ?) "
+                "ORDER BY captured_at ASC",
+                (ticker, f"-{int(hours)} hours"),
+            ).fetchall()
+    except (sqlite3.OperationalError, sqlite3.DatabaseError):
+        return []
+    out: List[dict] = []
+    for r in rows:
+        d = dict(r)
+        ts = _iso_to_unix(d.get("captured_at"))
+        if ts is not None:
+            d["ts"] = ts
+            out.append(d)
+    return out
+
+
 def _iso_to_unix(s: str | None) -> float | None:
     """Parse SQLite's `YYYY-MM-DD HH:MM:SS` (UTC) strings into unix
     seconds. Returns None on malformed input — callers fall back to the
@@ -1178,6 +1213,8 @@ def svg_kalshi_chart(history: List[dict], display: dict,
                       contract_open_ts: float | None = None,
                       contract_close_ts: float | None = None,
                       total_volume: int | None = None,
+                      y_min: float | None = None,
+                      y_max: float | None = None,
                       width: int = 760, height: int = 220) -> str:
     """Underlying-price chart, derived from Kalshi's strike ladder.
 
@@ -1227,20 +1264,25 @@ def svg_kalshi_chart(history: List[dict], display: dict,
     # series, so what you see scrubbing matches what you see on the line.
     pts_plot: List[Tuple[float, float]] = list(pts_in)
 
-    # Auto-scale the y-axis to the actual data range with 8% padding.
-    # When there's an active bet, also include its strike in the range
-    # so the dotted reference line is always visible on the chart.
-    values = [v for _, v in pts_in]
-    if strike_is_active_bet and reference_strike is not None:
-        values = values + [float(reference_strike)]
-    vmin = min(values)
-    vmax = max(values)
-    if vmax == vmin:
-        pad_v = max(0.001, abs(vmax) * 0.005)
+    # Y-axis: callers can pin the range (``y_min`` / ``y_max``) when
+    # the chart represents a value with inherent bounds — e.g. a
+    # probability series capped at 0..100¢. When unpinned, auto-scale
+    # to the actual data range with 8% padding (default behaviour).
+    if y_min is not None and y_max is not None:
+        y_lo = float(y_min)
+        y_hi = float(y_max)
     else:
-        pad_v = (vmax - vmin) * 0.08
-    y_lo = vmin - pad_v
-    y_hi = vmax + pad_v
+        values = [v for _, v in pts_in]
+        if strike_is_active_bet and reference_strike is not None:
+            values = values + [float(reference_strike)]
+        vmin = min(values)
+        vmax = max(values)
+        if vmax == vmin:
+            pad_v = max(0.001, abs(vmax) * 0.005)
+        else:
+            pad_v = (vmax - vmin) * 0.08
+        y_lo = vmin - pad_v
+        y_hi = vmax + pad_v
 
     # With the strike included in the value set, the dotted line is
     # always in range when there's a bet. The flag is kept for
@@ -2162,6 +2204,7 @@ def render_page(
     period_key: str = "all",
     tab_key: str = "home",
     bot_models: List[dict] | None = None,
+    prob_history: List[dict] | None = None,
 ) -> str:
     out: List[str] = []
     out.append("<!doctype html><html><head>")
@@ -2251,6 +2294,7 @@ def render_page(
                           latest_active=latest_active,
                           bot_active_bets=bot_active_bets or [],
                           kalshi_history=kalshi_history,
+                          prob_history=prob_history or [],
                           atm_market=atm_market,
                           contract_open_ts=contract_open_ts,
                           contract_close_ts=contract_close_ts,
@@ -6687,6 +6731,7 @@ def _render_watchlist_hero(out: List[str],
                             display: dict,
                             latest_active: dict | None,
                             kalshi_history: List[dict] | None = None,
+                            prob_history: List[dict] | None = None,
                             atm_market: dict | None = None,
                             contract_open_ts: float | None = None,
                             contract_close_ts: float | None = None,
@@ -6698,15 +6743,30 @@ def _render_watchlist_hero(out: List[str],
     value at the cursor's timestamp, then restores the live current
     when the cursor leaves the chart.
     """
-    # Pull current + earliest from the Kalshi-forecast series (the
-    # implied-underlying derived from the strike ladder). That's the
-    # series the chart plots, so the hero forecast and the chart
-    # endpoints line up. Falls back to local snapshots / latest model
-    # snapshot only if the Kalshi feed is unavailable.
+    # Chart data source — prefer the probability series (one point per
+    # bot poll, y-axis pinned 0..100¢) so the line reflects how the
+    # tracked ticker's implied probability moved over time. Falls back
+    # to the Kalshi implied-underlying when there's no probability
+    # history yet (e.g. a freshly-registered bot with empty
+    # market_views).
+    prob_history = prob_history or []
+    use_prob = bool(prob_history)
+    if use_prob:
+        chart_history = prob_history
+        chart_display = {
+            "divisor": 1.0,
+            "underlying_decimals": 0,
+            "underlying_unit": "%",
+            "unit_position": "suffix",
+        }
+    else:
+        chart_history = kalshi_history or []
+        chart_display = display
+
     current: float | None = None
     earliest_value: float | None = None
-    if kalshi_history:
-        for r in reversed(kalshi_history):
+    if chart_history:
+        for r in reversed(chart_history):
             v = r.get("value")
             if v is None:
                 continue
@@ -6715,7 +6775,7 @@ def _render_watchlist_hero(out: List[str],
                 break
             except (TypeError, ValueError):
                 continue
-        for r in kalshi_history:
+        for r in chart_history:
             v = r.get("value")
             if v is None:
                 continue
@@ -6724,21 +6784,24 @@ def _render_watchlist_hero(out: List[str],
                 break
             except (TypeError, ValueError):
                 continue
-    if current is None and model is not None and model.get("current_gas_price") is not None:
-        try:
-            current = float(model["current_gas_price"])
-        except (TypeError, ValueError):
-            current = None
-    if earliest_value is None and underlying_history:
-        for r in underlying_history:
-            v = r.get("value")
-            if v is None:
-                continue
+    if not use_prob:
+        # Fallbacks only meaningful for the implied-underlying view —
+        # the probability series has no equivalent of model.current_gas_price.
+        if current is None and model is not None and model.get("current_gas_price") is not None:
             try:
-                earliest_value = float(v)
-                break
+                current = float(model["current_gas_price"])
             except (TypeError, ValueError):
-                continue
+                current = None
+        if earliest_value is None and underlying_history:
+            for r in underlying_history:
+                v = r.get("value")
+                if v is None:
+                    continue
+                try:
+                    earliest_value = float(v)
+                    break
+                except (TypeError, ValueError):
+                    continue
 
     # Raw value delta over the visible chart window (e.g. "▼ 9.05K").
     # Replaces the prior percent-change indicator: the user wants to see
@@ -6777,14 +6840,14 @@ def _render_watchlist_hero(out: List[str],
         change_cls = ""
         value_change = None
     else:
-        current_str = fmt_underlying(current, display)
+        current_str = fmt_underlying(current, chart_display)
         # Format the raw delta in the bot's native units, then strip the
         # leading sign (the arrow already conveys direction).
         if value_change is None:
             change_body = "—"
             change_cls = ""
         else:
-            signed = _fmt_signed_underlying(value_change, display)
+            signed = _fmt_signed_underlying(value_change, chart_display)
             # _fmt_signed_underlying emits "+" or "−" as the first char.
             change_body = signed.lstrip("+−-")
             change_cls = "pos" if value_change >= 0 else "neg"
@@ -6854,26 +6917,44 @@ def _render_watchlist_hero(out: List[str],
                f"</div>")
     out.append("</div>")  # /wl-hero-top
 
-    # Pick a reference strike to color the line against. Active bet's
-    # Reference strike for chart coloring: only set when there's an
-    # active bet. The dotted strike line + green-above-or-below split
-    # only make sense relative to a real position; closest-to-money
-    # was noisy without one.
-    reference_strike = active_strike
-    strike_side = active_side
-    strike_is_active = active_strike is not None
+    # Probability mode: pin y-axis to 0..100 (the value range a Kalshi
+    # binary contract can ever take) and reference the active bet's
+    # entry probability (entry_price_cents) — which lives on the same
+    # 0..100 scale. Otherwise auto-scale as before and reference the
+    # active bet's strike value.
+    if use_prob:
+        if latest_active is not None:
+            try:
+                reference_strike = float(
+                    latest_active.get("entry_price_cents"))
+                strike_is_active = True
+            except (TypeError, ValueError):
+                reference_strike = None
+                strike_is_active = False
+        else:
+            reference_strike = None
+            strike_is_active = False
+        strike_side = active_side
+        y_pin_min, y_pin_max = 0.0, 100.0
+    else:
+        reference_strike = active_strike
+        strike_side = active_side
+        strike_is_active = active_strike is not None
+        y_pin_min, y_pin_max = None, None
 
-    # Chart plots Kalshi's implied-underlying forecast. Empty frame
-    # renders when the strike ladder hasn't produced enough data points
-    # yet (svg_kalshi_chart handles the <2 case internally).
+    # Chart plots the chosen series (probability when present, else
+    # Kalshi's implied-underlying forecast). svg_kalshi_chart handles
+    # the <2 datapoint case internally.
     out.append(svg_kalshi_chart(
-        kalshi_history or [], display,
+        chart_history, chart_display,
         reference_strike=reference_strike,
         strike_side=strike_side,
         strike_is_active_bet=strike_is_active,
         contract_open_ts=contract_open_ts,
         contract_close_ts=contract_close_ts,
         total_volume=total_volume,
+        y_min=y_pin_min,
+        y_max=y_pin_max,
     ))
     out.append("</div>")
 
@@ -6885,6 +6966,7 @@ def _render_watchlist(out: List[str], watchlist: List[dict],
                       latest_active: dict | None = None,
                       bot_active_bets: List[dict] | None = None,
                       kalshi_history: List[dict] | None = None,
+                      prob_history: List[dict] | None = None,
                       atm_market: dict | None = None,
                       contract_open_ts: float | None = None,
                       contract_close_ts: float | None = None,
@@ -7015,6 +7097,7 @@ def _render_watchlist(out: List[str], watchlist: List[dict],
                            underlying_history or [],
                            display or {}, latest_active,
                            kalshi_history=kalshi_history,
+                           prob_history=prob_history or [],
                            atm_market=atm_market,
                            contract_open_ts=contract_open_ts,
                            contract_close_ts=contract_close_ts,
@@ -7829,6 +7912,27 @@ class Handler(BaseHTTPRequestHandler):
                         kalshi_markets, contract_open_ts = [], None
                         contract_close_ts = None
                         event_title = None
+                # Probability series for the watchlist hero chart —
+                # picks the most-relevant ticker (active bet → ATM →
+                # first watchlist row) and pulls its YES-prob history
+                # from market_views. The chart pins y to 0-100¢ since
+                # any binary contract's value is bounded by the
+                # ticker's 0..100 price range.
+                chart_ticker: str | None = None
+                if latest_active and latest_active.get("ticker"):
+                    chart_ticker = latest_active.get("ticker")
+                elif atm_market and atm_market.get("ticker"):
+                    chart_ticker = atm_market.get("ticker")
+                elif watchlist:
+                    chart_ticker = (watchlist[0] or {}).get("ticker")
+                if (db_path and chart_ticker
+                        and bot.get("dashboard_type") not in ("tennis",
+                                                              "survivor")):
+                    prob_history = fetch_ticker_yes_prob_history(
+                        db_path, chart_ticker, hours=7 * 24)
+                else:
+                    prob_history = []
+
                 # Chart shows only the current event's data. The local
                 # model_snapshots merge was retired with the 5-day view.
 
@@ -8010,6 +8114,7 @@ class Handler(BaseHTTPRequestHandler):
                     underlying_history=underlying_history,
                     display=bot.get("display") or {},
                     kalshi_history=kalshi_history,
+                    prob_history=prob_history,
                     atm_market=atm_market,
                     contract_open_ts=contract_open_ts,
                     contract_close_ts=contract_close_ts,
