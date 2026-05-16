@@ -775,6 +775,26 @@ def fetch_underlying_history(db_path: str, hours: int = 72,
     return out
 
 
+def pick_recent_market_view_ticker(db_path: str) -> str | None:
+    """Most-recently-updated ticker in ``market_views`` with a non-null
+    yes_ask_cents. Used as a robust chart-ticker fallback when neither
+    the active bet nor Kalshi's ATM market produces a ticker that has
+    fresh data locally (e.g. a bot mid-event-rollover).
+    """
+    if not Path(db_path).exists():
+        return None
+    try:
+        with closing(_conn(db_path)) as c:
+            row = c.execute(
+                "SELECT ticker FROM market_views "
+                "WHERE yes_ask_cents IS NOT NULL "
+                "ORDER BY id DESC LIMIT 1"
+            ).fetchone()
+    except (sqlite3.OperationalError, sqlite3.DatabaseError):
+        return None
+    return (dict(row).get("ticker") if row else None)
+
+
 def fetch_ticker_yes_prob_history(db_path: str, ticker: str | None,
                                     hours: int = 168) -> List[dict]:
     """Time-series of YES probability (in cents, 0-100) for one ticker.
@@ -1394,9 +1414,7 @@ def svg_kalshi_chart(history: List[dict], display: dict,
         ys = y_at(float(reference_strike))
         is_no = (side == "NO")
         line_color = "#f85149" if is_no else "#3fb950"
-        label_strike = fmt_underlying(float(reference_strike), display)
-        label = (f"Below {label_strike}" if is_no
-                 else f"Above {label_strike}")
+        label = "Entry"
         out.append(f"<line x1='{pad_l}' y1='{ys}' x2='{width-pad_r}' y2='{ys}' "
                    f"stroke='{line_color}' stroke-width='1.5' "
                    f"stroke-dasharray='4,4' opacity='0.95'/>")
@@ -7905,24 +7923,40 @@ class Handler(BaseHTTPRequestHandler):
                         event_title = None
                 # Probability series for the watchlist hero chart —
                 # picks the most-relevant ticker (active bet → ATM →
-                # first watchlist row) and pulls its YES-prob history
-                # from market_views. The chart pins y to 0-100¢ since
-                # any binary contract's value is bounded by the
-                # ticker's 0..100 price range.
-                chart_ticker: str | None = None
-                if latest_active and latest_active.get("ticker"):
-                    chart_ticker = latest_active.get("ticker")
-                elif atm_market and atm_market.get("ticker"):
-                    chart_ticker = atm_market.get("ticker")
-                elif watchlist:
-                    chart_ticker = (watchlist[0] or {}).get("ticker")
-                if (db_path and chart_ticker
+                # first watchlist row → most-recently-updated ticker
+                # in market_views) and pulls its YES-prob history from
+                # market_views. The chart pins y to 0-100¢ since any
+                # binary contract's value is bounded by the ticker's
+                # 0..100 price range. When the first pick has no
+                # recent data (e.g. mid-event-rollover, Kalshi's ATM
+                # not yet scored locally) we fall back to whichever
+                # ticker was most recently written so the chart still
+                # plots something useful.
+                prob_history: List[dict] = []
+                if (db_path
                         and bot.get("dashboard_type") not in ("tennis",
                                                               "survivor")):
-                    prob_history = fetch_ticker_yes_prob_history(
-                        db_path, chart_ticker, hours=7 * 24)
-                else:
-                    prob_history = []
+                    candidates: List[str] = []
+                    if latest_active and latest_active.get("ticker"):
+                        candidates.append(latest_active["ticker"])
+                    if atm_market and atm_market.get("ticker"):
+                        candidates.append(atm_market["ticker"])
+                    if watchlist:
+                        t = (watchlist[0] or {}).get("ticker")
+                        if t:
+                            candidates.append(t)
+                    fallback = pick_recent_market_view_ticker(db_path)
+                    if fallback:
+                        candidates.append(fallback)
+                    seen: set = set()
+                    for t in candidates:
+                        if not t or t in seen:
+                            continue
+                        seen.add(t)
+                        prob_history = fetch_ticker_yes_prob_history(
+                            db_path, t, hours=7 * 24)
+                        if prob_history:
+                            break
 
                 # Chart shows only the current event's data. The local
                 # model_snapshots merge was retired with the 5-day view.
