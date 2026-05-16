@@ -131,6 +131,7 @@ def fetch_summary(db_path: str, period_days: int | None = None) -> dict:
         "period_wins": 0, "period_losses": 0,
         "period_money_spent_cents": 0,
         "period_money_gained_cents": 0,
+        "period_contracts_bought": 0,
         "potential_gain_cents": 0,
     }
     if not Path(db_path).exists():
@@ -204,8 +205,13 @@ def fetch_summary(db_path: str, period_days: int | None = None) -> dict:
                     "  SUM(entry_price_cents * contracts + realized_pnl_cents), 0"
                     ") v FROM positions WHERE status = 'closed'"
                 ).fetchone()
+                contracts_row = c.execute(
+                    "SELECT COALESCE(SUM(contracts), 0) v "
+                    "FROM positions WHERE status = 'closed'"
+                ).fetchone()
                 period_money_spent = spent_row["v"] or 0
                 period_money_gained = gained_row["v"] or 0
+                period_contracts_bought = contracts_row["v"] or 0
             else:
                 # bets_made = opened in the window (open or closed)
                 period_window = f"-{int(period_days)} days"
@@ -242,8 +248,15 @@ def fetch_summary(db_path: str, period_days: int | None = None) -> dict:
                     "  AND date(exited_at) >= date('now', ?)",
                     (period_window,),
                 ).fetchone()
+                contracts_row = c.execute(
+                    "SELECT COALESCE(SUM(contracts), 0) v "
+                    "FROM positions WHERE status = 'closed' "
+                    "  AND date(exited_at) >= date('now', ?)",
+                    (period_window,),
+                ).fetchone()
                 period_money_spent = spent_row["v"] or 0
                 period_money_gained = gained_row["v"] or 0
+                period_contracts_bought = contracts_row["v"] or 0
     except (sqlite3.OperationalError, sqlite3.DatabaseError):
         return empty
     return {
@@ -268,6 +281,7 @@ def fetch_summary(db_path: str, period_days: int | None = None) -> dict:
         "period_losses": int(period_losses or 0),
         "period_money_spent_cents": int(period_money_spent or 0),
         "period_money_gained_cents": int(period_money_gained or 0),
+        "period_contracts_bought": int(period_contracts_bought or 0),
         "potential_gain_cents": int(potential["v"] or 0),
     }
 
@@ -436,6 +450,7 @@ def fetch_global_summary(bots: List[dict],
         "period_losses": 0,
         "period_money_spent_cents": 0,
         "period_money_gained_cents": 0,
+        "period_contracts_bought": 0,
         "potential_gain_cents": 0,    # always current
         # Lifetime fields kept for callers that still want them.
         "total_bets": 0,
@@ -470,6 +485,7 @@ def fetch_global_summary(bots: List[dict],
         rollup["period_losses"] += s.get("period_losses", 0)
         rollup["period_money_spent_cents"] += s.get("period_money_spent_cents", 0)
         rollup["period_money_gained_cents"] += s.get("period_money_gained_cents", 0)
+        rollup["period_contracts_bought"] += s.get("period_contracts_bought", 0)
         rollup["potential_gain_cents"] += s.get("potential_gain_cents", 0)
         rollup["total_bets"] += s.get("total_bets", 0)
         rollup["net_pnl_cents"] += s.get("realized_pnl_cents", 0)
@@ -2229,7 +2245,8 @@ def render_page(
     # Same 6 headline cards as Home, scoped to whatever period the
     # filter above selected. id_suffix='-history' keeps the snapshot
     # poller (which targets the Home-tab ids) from double-patching.
-    _render_summary_cards(out, global_summary, id_suffix="-history")
+    _render_summary_cards(out, global_summary, id_suffix="-history",
+                           show_closed_contracts=True)
     # Cumulative P&L line chart — sits between the cards and the
     # ledger table so the user sees the shape of gains/losses before
     # digging into per-row detail. Has its own bot + date filters,
@@ -3320,7 +3337,8 @@ def _render_period_filter(out: List[str], period_key: str,
 
 
 def _render_summary_cards(out: List[str], rollup: dict,
-                           id_suffix: str = "") -> None:
+                           id_suffix: str = "",
+                           show_closed_contracts: bool = False) -> None:
     """Emit the 6-card headline row used on Home and History tabs.
 
     All values come from ``rollup`` (period-scoped) except
@@ -3332,6 +3350,11 @@ def _render_summary_cards(out: List[str], rollup: dict,
     History instance uses ``"-history"`` so the poller skips it and
     the cards refresh only on full-page reload (which is fine since
     closed-bet rollups change rarely).
+
+    ``show_closed_contracts`` swaps the first card from the live
+    "Active bets" count to "Closed contracts" — total contracts
+    bought across positions closed in the period. Used on the History
+    tab where past activity matters more than the current open count.
     """
     net = rollup.get("period_net_pnl_cents", 0)
     pnl_cls = "green" if net > 0 else ("red" if net < 0 else "gray")
@@ -3345,13 +3368,23 @@ def _render_summary_cards(out: List[str], rollup: dict,
                    + rollup.get("period_losses", 0))
     money_spent = rollup.get("period_money_spent_cents", 0)
     money_gained = rollup.get("period_money_gained_cents", 0)
+    closed_contracts = rollup.get("period_contracts_bought", 0)
     out.append("<div class='row'>")
-    out.append(f"<div class='card'><div class='label' "
-               f"title='Live count of currently-open positions across "
-               f"all bots. Not affected by the period filter.'>"
-               f"Active bets</div>"
-               f"<div class='value' id='card-active-bets{id_suffix}'>"
-               f"{rollup['active_bets']}</div></div>")
+    if show_closed_contracts:
+        out.append(f"<div class='card'><div class='label' "
+                   f"title='Total number of contracts bought across "
+                   f"positions closed in the selected period.'>"
+                   f"Closed contracts</div>"
+                   f"<div class='value' "
+                   f"id='card-closed-contracts{id_suffix}'>"
+                   f"{closed_contracts}</div></div>")
+    else:
+        out.append(f"<div class='card'><div class='label' "
+                   f"title='Live count of currently-open positions across "
+                   f"all bots. Not affected by the period filter.'>"
+                   f"Active bets</div>"
+                   f"<div class='value' id='card-active-bets{id_suffix}'>"
+                   f"{rollup['active_bets']}</div></div>")
     out.append(f"<div class='card'><div class='label'>"
                f"Closed bets</div>"
                f"<div class='value' id='card-closed-bets{id_suffix}'>"
