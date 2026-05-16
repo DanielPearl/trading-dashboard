@@ -7488,12 +7488,14 @@ def _render_ingame_model_view(out: List[str], bot: dict,
     # rows in the SPORT_FEATURES table below).
     feat_table = {
         # Counts the green "Live" rows in SPORT_FEATURES below.
-        "nba": 9,            # score, time, velocity, vol, divergence,
+        "nba": 11,           # score, time, velocity, vol, divergence,
                               # espn_proj, injuries, foul trouble,
-                              # box-score gaps
-        "tennis": 5,         # live_prob, score, injury, pre_game, divergence
-        "table-tennis": 2,   # live_prob, score
-        "darts": 2,          # live_prob, set state
+                              # box-score gaps, home/away, news
+        "tennis": 9,         # live_prob, score, injury_flag, pre_game,
+                              # divergence, bot_confidence/volatility,
+                              # bot_rec, comeback_prob, espn_news
+        "table-tennis": 7,   # tennis features minus comeback + espn_news
+        "darts": 7,          # same as table-tennis
     }
     live_feature_count = feat_table.get(bot_key, 0)
 
@@ -7635,6 +7637,10 @@ def _render_ingame_model_view(out: List[str], bot: dict,
              "ESPN /summary boxscore.players[*]"),
             ("Live FG% / FT% / 3P% / AST / REB / TO gaps", "Live",
              "ESPN /summary boxscore.teams[*].statistics"),
+            ("Home-court advantage (time-decayed)", "Live",
+             "ESPN scoreboard homeAway flag"),
+            ("Recent injury news mentions (12h)", "Live",
+             "ESPN /news?limit=40 keyword scan (in_game/news_signals)"),
             ("Shooting % vs xFG", "TODO",
              "nba_api shot chart + xFG training set (richer than "
              "ESPN's FG%)"),
@@ -7656,13 +7662,19 @@ def _render_ingame_model_view(out: List[str], bot: dict,
              "watchlist.json pre_match_prob_a"),
             ("Market divergence", "Live",
              "watchlist.json yes_ask_cents_a/_b"),
+            ("Bot confidence + volatility score", "Live",
+             "watchlist.json confidence_score + volatility_score"),
+            ("Bot recommended action (signal only)", "Live",
+             "watchlist.json recommended_action"),
+            ("Comeback probability from set state", "Live",
+             "Klaassen-Magnus style heuristic on parsed set wins"),
+            ("Recent ESPN injury news mentions (12h)", "Live",
+             "ESPN tennis /news feed keyword scan"),
             ("Breakpoint conversion %", "TODO",
              "live point-by-point feed (the bot has it but doesn't "
              "yet expose it on the watchlist row)"),
             ("Serve velocity decline", "TODO",
              "radar gun data; only via broadcast-paired feeds"),
-            ("Historical comeback prob from score state", "TODO",
-             "offline analysis of ATP/WTA point-by-point database"),
         ],
         "table-tennis": [
             ("Live win probability", "Live",
@@ -7772,6 +7784,16 @@ _INGAME_COEFFICIENTS: Dict[str, List[tuple]] = {
          "vs opponent. Turnover gap weighted 3×, rebound gap "
          "weighted 1.5×",
          "tuned"),
+        ("Home-court advantage (peak)", 0.025,
+         "Maximum nudge applied when our team is at home "
+         "(decays from full strength at tip to 30% in the "
+         "final minute of regulation)",
+         "tuned"),
+        ("Injury news nudge (per article, 12h)", 0.010,
+         "Each ESPN news article mentioning our team in an "
+         "injury context within the last 12 hours nudges "
+         "live_prob down by this; same on the opp team raises it",
+         "tuned"),
         ("EXIT_NOW threshold", 0.30,
          "Recommend exit when our_side_prob falls below this "
          "with confidence ≥ 0.5",
@@ -7802,6 +7824,29 @@ _INGAME_COEFFICIENTS: Dict[str, List[tuple]] = {
         ("Divergence threshold for HOLD", 0.20,
          "|market − pre_game| above this with low live volatility "
          "→ market overreaction → HOLD",
+         "tuned"),
+        ("Bot confidence cap (over our model)", 0.10,
+         "In-game confidence can't exceed the tennis bot's own "
+         "confidence_score by more than this; caps our claims "
+         "when the bot itself is unsure",
+         "tuned"),
+        ("Bot-volatility haircut threshold", 0.50,
+         "Tennis bot's volatility_score above this triggers a "
+         "confidence haircut (calibrated to bot's own threshold)",
+         "tuned"),
+        ("Bot-volatility haircut weight", 0.40,
+         "Multiplier on (bot_volatility − threshold) when "
+         "applying the haircut; capped at 0.30 max",
+         "tuned"),
+        ("Comeback-prob exit threshold", 0.10,
+         "Recommend EXIT when historical comeback probability "
+         "from current set state falls below this (match "
+         "essentially decided)",
+         "tuned"),
+        ("Injury-news confidence haircut (per article)", 0.10,
+         "Each recent ESPN tennis article matching a player name + "
+         "injury keyword drops in-game confidence by this; "
+         "max 3 articles compound",
          "tuned"),
         ("EXIT_NOW threshold", 0.30,
          "Recommend exit when our_bet_prob falls below this with "

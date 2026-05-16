@@ -46,6 +46,7 @@ from .base import (
 )
 from . import features as _features
 from . import market_state as _market_state
+from . import news_signals as _news
 
 log = logging.getLogger("dashboard.in_game.nba")
 
@@ -184,12 +185,14 @@ def _live_state(ticker: str) -> Optional[Dict[str, Any]]:
         for comp in (ev.get("competitions") or []):
             competitors = comp.get("competitors") or []
             abbr_to_score: Dict[str, int] = {}
+            abbr_to_home_away: Dict[str, str] = {}
             for c in competitors:
                 ab = ((c.get("team") or {}).get("abbreviation") or "").upper()
                 try:
                     abbr_to_score[ab] = int(c.get("score") or 0)
                 except (TypeError, ValueError):
                     abbr_to_score[ab] = 0
+                abbr_to_home_away[ab] = (c.get("homeAway") or "").lower()
             if team_a.upper() not in abbr_to_score:
                 continue
             if team_b.upper() not in abbr_to_score:
@@ -215,6 +218,7 @@ def _live_state(ticker: str) -> Optional[Dict[str, Any]]:
                 "our_score": our_score,
                 "opp_score": opp_score,
                 "our_lead": our_score - opp_score,
+                "our_home_away": abbr_to_home_away.get(our_team.upper(), ""),
             }
     return None
 
@@ -429,6 +433,26 @@ def predict(bot: Dict[str, Any], position: Dict[str, Any],
         state.get("opp_team") or "",
     )
 
+    # Cross-sport news scanner — count recent injury-related ESPN
+    # articles that mention either team's abbreviation. Folded as
+    # a small per-article nudge: news that mentions OUR team in
+    # an injury context tends to be bad for us.
+    try:
+        our_news_count = _news.injury_signal_count(
+            "basketball/nba",
+            [state.get("our_team") or ""],
+            max_age_hours=12,
+        )
+        opp_news_count = _news.injury_signal_count(
+            "basketball/nba",
+            [state.get("opp_team") or ""],
+            max_age_hours=12,
+        )
+    except Exception:  # noqa: BLE001
+        our_news_count, opp_news_count = 0, 0
+    summary_features["news_injury_ours"] = our_news_count
+    summary_features["news_injury_opp"] = opp_news_count
+
     # Blend: the state-derived probability is the anchor. Reversion
     # pull nudges us back toward the pre-game prior when divergence
     # is high but live volatility is low (overreaction). High
@@ -443,6 +467,21 @@ def predict(bot: Dict[str, Any], position: Dict[str, Any],
     if espn_proj is not None:
         blended = 0.75 * blended + 0.25 * float(espn_proj)
 
+    # Home-court advantage. Standard NBA analytics put home edge
+    # around +3pp on win probability for a neutral matchup. We
+    # apply a small nudge proportional to time remaining — early
+    # game the crowd factor is at its peak, late game player
+    # adjustments dominate.
+    HOME_NUDGE_MAX = 0.025
+    ha = (state.get("our_home_away") or "").lower()
+    if ha in ("home", "away"):
+        secs_for_decay = float(state.get("seconds_remaining", 2880))
+        # Decay home advantage as the game progresses (1.0 at tip,
+        # 0.3 in the final minute). Game length ~48 min = 2880 s.
+        decay = 0.3 + 0.7 * min(1.0, secs_for_decay / 2880.0)
+        sign = 1 if ha == "home" else -1
+        blended += sign * HOME_NUDGE_MAX * decay
+
     # Injury / foul-trouble nudges. Each significant injury or
     # foul-troubled key player on OUR team drops our_team_live_prob
     # by 1.5pp; same magnitude on the opp team raises it.
@@ -452,6 +491,13 @@ def predict(bot: Dict[str, Any], position: Dict[str, Any],
     foul_trouble = summary_features.get("foul_trouble_count", 0) or 0
     blended -= INJURY_NUDGE * (our_inj + foul_trouble)
     blended += INJURY_NUDGE * opp_inj
+
+    # Recent injury-news mentions: smaller signal than the
+    # structured ESPN injury list (1pp vs 1.5pp). Only counts
+    # articles from the last 12 hours.
+    NEWS_NUDGE = 0.010
+    blended -= NEWS_NUDGE * (summary_features.get("news_injury_ours", 0) or 0)
+    blended += NEWS_NUDGE * (summary_features.get("news_injury_opp", 0) or 0)
 
     # Live-game box-score deltas: each pp of FG% / FT% gap nudges
     # the live prob by a small amount. Direction: positive gap for
@@ -534,12 +580,19 @@ def predict(bot: Dict[str, Any], position: Dict[str, Any],
         "lead": float(state.get("our_lead", 0)),
         "seconds_remaining": float(secs_left),
     }
+    # Home/away flag — 1.0 home, 0.0 away, -1.0 unknown.
+    ha_val = (state.get("our_home_away") or "").lower()
+    if ha_val == "home":
+        features_out["our_home_away"] = 1.0
+    elif ha_val == "away":
+        features_out["our_home_away"] = 0.0
     # ESPN /summary derived features — only emitted when present.
     for k in ("espn_win_proj_our", "our_critical_injuries",
               "opp_critical_injuries", "foul_trouble_count",
               "team_fg_pct_gap", "team_ft_pct_gap",
               "team_3pt_pct_gap", "team_to_gap",
-              "team_reb_gap", "team_ast_gap"):
+              "team_reb_gap", "team_ast_gap",
+              "news_injury_ours", "news_injury_opp"):
         v = summary_features.get(k)
         if v is None:
             continue

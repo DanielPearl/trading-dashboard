@@ -49,6 +49,7 @@ from .base import (
     ACTION_HOLD, ACTION_EXIT_NOW, ACTION_LET_RUN, ACTION_NEUTRAL,
 )
 from . import features as _features
+from . import news_signals as _news
 
 log = logging.getLogger("dashboard.in_game.tennis")
 
@@ -230,6 +231,74 @@ def predict(bot: Dict[str, Any], position: Dict[str, Any],
     if injury_flag:
         confidence = max(0.1, confidence - 0.25)
 
+    # The tennis bot publishes its own per-match confidence and
+    # volatility scores on the watchlist row. Use them to modulate
+    # the in-game model's confidence: when the bot itself isn't
+    # sure, we shouldn't be either.
+    bot_confidence_score = None
+    bot_volatility_score = None
+    try:
+        v = row.get("confidence_score")
+        bot_confidence_score = float(v) if v is not None else None
+    except (TypeError, ValueError):
+        pass
+    try:
+        v = row.get("volatility_score")
+        bot_volatility_score = float(v) if v is not None else None
+    except (TypeError, ValueError):
+        pass
+    if bot_confidence_score is not None:
+        # Take a soft minimum: in-game confidence can't exceed the
+        # bot's own confidence by more than 10pp. Caps our claims
+        # when the bot is unsure of its live estimate.
+        cap = min(0.95, bot_confidence_score + 0.10)
+        confidence = min(confidence, cap)
+    if (bot_volatility_score is not None
+            and bot_volatility_score > 0.5):
+        # High volatility from the bot — drop our confidence
+        # proportionally. 0.5 is the calibrated "things are
+        # moving fast" threshold the bot itself uses.
+        haircut = min(0.30, (bot_volatility_score - 0.5) * 0.40)
+        confidence = max(0.10, confidence - haircut)
+
+    # The bot also publishes its own recommended action. We surface
+    # it as a feature but DON'T let it drive our action — that
+    # would just echo the bot to itself. The user can see both
+    # on the In-game predictions panel and judge agreement.
+    bot_recommendation = (row.get("recommended_action") or "").strip()
+
+    # Cross-sport news scanner — pull last-name keywords from the
+    # match's player labels and ask ESPN's tennis news feed if
+    # there's an injury-related article mentioning either player
+    # in the last 12 hours. Only meaningful for the `tennis`
+    # sport endpoint; table-tennis / darts don't have an ESPN
+    # news feed and return 0.
+    news_count = 0
+    try:
+        sport_path = _news.NEWS_PATHS.get(sport)
+        if sport_path:
+            # Try a few keyword forms — the bot stores the side
+            # player names under _yes_label / _no_label / title.
+            kws: list = []
+            for k in ("player_a", "player_b", "title_a", "title_b"):
+                val = row.get(k)
+                if val:
+                    # Take the last name (last whitespace-delim
+                    # token) for a more specific match.
+                    parts = str(val).split()
+                    if parts:
+                        kws.append(parts[-1])
+            news_count = _news.injury_signal_count(
+                sport_path, kws, max_age_hours=12,
+            )
+    except Exception:  # noqa: BLE001
+        news_count = 0
+    if news_count > 0:
+        # Drop confidence on injury news — symmetric across sides
+        # since we can't always tell which player the article is
+        # about without proper NLP.
+        confidence = max(0.10, confidence - 0.10 * min(3, news_count))
+
     # Volatility damp — but we don't have it from history yet.
     # Reversion pull stays modest.
     reversion_pull = 0.0
@@ -261,6 +330,50 @@ def predict(bot: Dict[str, Any], position: Dict[str, Any],
         except (TypeError, ValueError):
             entry_prob = None
 
+    # Historical comeback probability from current score state.
+    # Heuristic baseline from published tennis serve-dominance models
+    # (Klaassen-Magnus style): when down a set, a 60% baseline server
+    # has roughly a ~28% comeback probability in best-of-3, ~38% in
+    # best-of-5. We use a simplified table keyed on (our_sets_won,
+    # opp_sets_won) for best-of-3 (default for tennis/table-tennis).
+    # Negative comeback prob ⇒ we're not behind; surface as None.
+    comeback_prob: Optional[float] = None
+    our_sets = (sets_completed if side_label == "A" else 0)  # placeholder
+    # Properly compute from score parses — re-walk pairs to count
+    # set wins on each side.
+    set_pairs = _SCORE_PAIR_RE.findall(score_str or "")
+    our_sets_won = 0
+    opp_sets_won = 0
+    if set_pairs:
+        # All pairs except the last are completed sets.
+        for pair in set_pairs[:-1]:
+            try:
+                a, b = int(pair[0]), int(pair[1])
+            except (TypeError, ValueError):
+                continue
+            # Standard tennis set: first to 6 with 2-game lead, or
+            # tiebreak to 7. Table tennis sets go to 11. We don't
+            # know which is which from score format alone, so:
+            # whichever side has more games "won" the set.
+            if side_label == "A":
+                our, opp = a, b
+            else:
+                our, opp = b, a
+            if our > opp:
+                our_sets_won += 1
+            elif opp > our:
+                opp_sets_won += 1
+    # Comeback table (we trail). Best-of-3 default.
+    COMEBACK_BO3 = {
+        (0, 1): 0.30,  # down a set in BO3, normal player
+        (0, 2): 0.05,  # match point essentially
+        (1, 2): 0.05,
+    }
+    if opp_sets_won > our_sets_won:
+        comeback_prob = COMEBACK_BO3.get(
+            (our_sets_won, opp_sets_won),
+        )
+
     action = ACTION_NEUTRAL
     reason_bits = [
         f"sets={sets_completed}",
@@ -272,6 +385,14 @@ def predict(bot: Dict[str, Any], position: Dict[str, Any],
     if confidence >= 0.6 and our_bet_prob < 0.30:
         action = ACTION_EXIT_NOW
         reason_bits.append("model expects loss")
+    elif (comeback_prob is not None and comeback_prob < 0.10
+            and confidence >= 0.5):
+        # Match is functionally over and we're losing — exit if we
+        # haven't been told otherwise by the bot's live model.
+        action = ACTION_EXIT_NOW
+        reason_bits.append(
+            f"comeback prob ~{comeback_prob*100:.0f}% — match "
+            "essentially decided")
     elif confidence >= 0.5 and entry_prob is not None and our_bet_prob > entry_prob + 0.10:
         action = ACTION_LET_RUN
         reason_bits.append("model expects gain vs entry")
@@ -279,20 +400,37 @@ def predict(bot: Dict[str, Any], position: Dict[str, Any],
         action = ACTION_HOLD
         reason_bits.append("possible market overreaction")
 
+    features_out = {
+        "live_prob_a": float(live_prob_a) if live_prob_a is not None else 0.0,
+        "live_prob_b": float(live_prob_b) if live_prob_b is not None else 0.0,
+        "our_team_live": our_team_live,
+        "our_bet_prob": our_bet_prob,
+        "divergence": div if div is not None else 0.0,
+        "sets_completed": float(sets_completed),
+        "injury_flag": 1.0 if injury_flag else 0.0,
+        "market_velocity": velocity,
+        "volatility": volat,
+    }
+    if bot_confidence_score is not None:
+        features_out["bot_confidence_score"] = bot_confidence_score
+    if bot_volatility_score is not None:
+        features_out["bot_volatility_score"] = bot_volatility_score
+    # Comeback context — surfaced even when 0 so the UI can show
+    # "0% comeback prob" for hopeless states rather than blanking.
+    if comeback_prob is not None:
+        features_out["comeback_prob"] = comeback_prob
+    if news_count > 0:
+        features_out["news_injury_count"] = float(news_count)
+
+    if bot_recommendation:
+        reason_bits.append(f"bot_rec={bot_recommendation}")
+    if comeback_prob is not None and comeback_prob < 0.15:
+        reason_bits.append(f"comeback_p={comeback_prob:.2f}")
+
     return LivePrediction(
         live_prob_yes=clamp01(blended),
         confidence=confidence,
         recommended_action=action,
         reason=f"[{sport}] " + " · ".join(reason_bits),
-        features={
-            "live_prob_a": float(live_prob_a) if live_prob_a is not None else 0.0,
-            "live_prob_b": float(live_prob_b) if live_prob_b is not None else 0.0,
-            "our_team_live": our_team_live,
-            "our_bet_prob": our_bet_prob,
-            "divergence": div if div is not None else 0.0,
-            "sets_completed": float(sets_completed),
-            "injury_flag": 1.0 if injury_flag else 0.0,
-            "market_velocity": velocity,
-            "volatility": volat,
-        },
+        features=features_out,
     )
