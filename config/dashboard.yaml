@@ -102,32 +102,6 @@ bots:
       # auto-downgrade to hourly inside fetch_underlying_history (a
       # single-day daily series would be 0-1 points).
       chart_period_minutes: 1440
-  - key: whale-watcher
-    name: Whale Watcher
-    # Whale bot uses signal-analysis JSONLs instead of a sim.db. db_path
-    # is set to signals_path so the existing "available" check behaves
-    # sensibly on this entry.
-    dashboard_type: whale
-    db_path: /root/whale-watcher/data/signal_tracking.jsonl
-    decisions_path: /root/whale-watcher/data/signal_tracking.jsonl
-    signals_path: /root/whale-watcher/data/signal_tracking.jsonl
-    orders_path: /root/whale-watcher/data/orders.jsonl
-    # Whale recorder's sqlite store. A separate service (the whale
-    # recorder) scans Kalshi's last-24h trade feed once a minute and
-    # upserts every ≥$10k bet on an event-based market, then prunes
-    # rows whose market has closed. The dashboard's whale page reads
-    # from this file so big bets persist past their 24h API window
-    # for as long as the underlying contract is still active.
-    whales_db_path: /root/whale-watcher/data/whales.db
-  - key: rules-parser
-    name: Rules Parser
-    # Rules-arb bot — parses each watched contract's settlement rules
-    # into typed clauses, monitors news for events that match those
-    # clauses, and simulates trades on misprices. The dashboard reads
-    # rules_intel.db read-only.
-    dashboard_type: rules-parser
-    db_path: /root/rules-parser/data/rules_intel.db
-    decisions_path: /root/rules-parser/data/rules_intel.db
   - key: tennis
     name: Tennis Forecast
     # Tennis bot (Baseline Break) writes a JSON watchlist + metrics +
@@ -190,29 +164,6 @@ bots:
     metrics_path: /root/darts-forecast/data/processed/artifacts/metrics.json
     coefficients_path: /root/darts-forecast/data/processed/artifacts/model_coefficients.json
     sim_state_path: /root/darts-forecast/data/outputs/sim_state.json
-
-  - key: bitcoin-live-forecast
-    name: Bitcoin Live Forecast
-    # Paper-trading BTC bot. Writes the shared positions / position_marks
-    # / model_snapshots schema so the home / models / history tabs use
-    # the standard render path; the custom Bitcoin Watchlist and
-    # Bitcoin Performance tabs dispatch into
-    # ``trading_dashboard.bitcoin_live_forecast`` for their own page
-    # renderers. The series_ticker is the KXBTC prefix — the bot also
-    # scans the KXBTCD daily-close series under the hood.
-    dashboard_type: bitcoin
-    series_ticker: KXBTC
-    db_path: /root/bitcoin-signal/data/sim.db
-    decisions_path: /root/bitcoin-signal/data/decisions.jsonl
-    display:
-      underlying_label: BTC / USD spot
-      underlying_unit: "$"
-      underlying_decimals: 0
-      unit_position: prefix
-      # 1-min underlying chart — BTC moves continuously, hourly candles
-      # would mask the per-tick momentum the bot actually trades.
-      chart_period_minutes: 1
-      prediction_period_label: this contract
 
 # ---------------------------------------------------------------------------
 # Display thresholds. Mirror the gas-bot's gates so the buy-criteria panel

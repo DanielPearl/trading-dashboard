@@ -68,18 +68,11 @@ class BotEntry:
     db_path: str
     decisions_path: str
     # "standard" → render the gas-bot-style page (model card, watchlist,
-    # positions). "whale" → render the signal-analysis page driven by
-    # signals_path / orders_path instead of a sim.db.
-    # "tennis" → render the tennis-forecast page driven by
+    # positions). "tennis" → render the tennis-forecast page driven by
     # watchlist_json_path + metrics_path + coefficients_path.
+    # "survivor" → same JSON-source shape as tennis with a per-
+    # contestant table.
     dashboard_type: str = "standard"
-    signals_path: str | None = None
-    orders_path: str | None = None
-    # Whale recorder's sqlite store. Used by the whale dashboard
-    # type instead of (or in addition to) the JSONL signals feed —
-    # the recorder service writes every ≥$10k bet on an open
-    # event market and prunes rows when the market closes.
-    whales_db_path: str | None = None
     # Tennis bot inputs — the tennis-forecast project writes these to
     # data/outputs/ + data/processed/artifacts/ on its own cadence;
     # the dashboard just reads them.

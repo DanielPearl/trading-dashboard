@@ -100,9 +100,8 @@ def _safe_query(db_path: str, query: str, params: tuple = ()) -> List[dict]:
     table the gas-prices schema defines (e.g. natural-gas doesn't have
     `position_marks` since it's a daily-cadence bot, not continuous).
 
-    Also tolerates files that aren't SQLite at all (DatabaseError) — this
-    happens when a whale-type bot is in the registry; its db_path points
-    at a JSONL, not a sim.db.
+    Also tolerates files that aren't SQLite at all (DatabaseError) —
+    e.g. if a registry entry's db_path ever points at a JSONL.
     """
     if not Path(db_path).exists():
         return []
@@ -339,11 +338,10 @@ def fetch_bet_history(db_path: str, limit: int = 100) -> List[dict]:
     """Closed positions only — for the Bet History section.
 
     Tolerates schema drift across bots. ``gas_price_at_close`` only exists
-    on the gas-prices simulator schema; for other bots (e.g. whale-watcher)
-    we still want their closed bets to appear in the cross-bot Summary,
-    just with an empty Gas-at-close cell. floor_strike + cap_strike are
-    pulled via subqueries on market_views so the bet-history view can
-    render the human Question text per row.
+    on the gas-prices simulator schema; bots without it still appear in
+    the cross-bot Summary with an empty Gas-at-close cell. floor_strike
+    + cap_strike are pulled via subqueries on market_views so the bet-
+    history view can render the human Question text per row.
     """
     if not Path(db_path).exists():
         return []
@@ -451,12 +449,6 @@ def fetch_global_summary(bots: List[dict],
     for b in bots:
         if not b.get("available"):
             continue
-        # Whale-type bots don't write the standard positions schema —
-        # their realized-P&L story is told on the whale page itself.
-        # Skip them in the cross-bot rollup so the summary card row
-        # stays focused on the recurrent-series bots.
-        if b.get("dashboard_type") == "whale":
-            continue
         # Tennis bot keeps its paper-trade ledger in a JSON file rather
         # than a sim.db; we map it onto the same dict shape via
         # ``tennis.summary_for_rollup`` so the cross-bot summary cards
@@ -467,15 +459,6 @@ def fetch_global_summary(bots: List[dict],
         elif b.get("dashboard_type") == "survivor":
             from . import survivor as _survivor
             s = _survivor.summary_for_rollup(b.get("sim_state_path"))
-        elif b.get("dashboard_type") == "bitcoin":
-            # BTC bot writes the standard schema (positions /
-            # position_marks / trades) so it could in theory go through
-            # fetch_summary; the dedicated adapter is a hair faster
-            # because it reads from btc_paper_trades directly and skips
-            # the schema-probing fallbacks that fetch_summary does for
-            # cross-bot tolerance.
-            from . import bitcoin_live_forecast as _btc_adapter
-            s = _btc_adapter.summary_for_rollup(b.get("db_path"))
         elif b.get("dashboard_type") and b["dashboard_type"] != "standard":
             continue
         else:
@@ -3362,12 +3345,6 @@ def _render_bot_cards(out: List[str], rollup: dict,
             href = "#"
         elif b.get("dashboard_type") in ("tennis", "survivor"):
             href = f"?bot={html.escape(bot_key)}&tab=models"
-        elif b.get("dashboard_type") == "bitcoin":
-            # BTC bot is rule-based — the standard Models tab renders
-            # all-empty (no classifier_accuracy, no walk-forward
-            # importance, etc.). Link to the bot's Watchlist instead,
-            # which is the meaningful per-contract view for this bot.
-            href = f"?bot={html.escape(bot_key)}&tab=watchlist"
         else:
             href = f"?tab=models&bot={html.escape(bot_key)}"
 
@@ -3418,8 +3395,8 @@ def _render_bot_cards(out: List[str], rollup: dict,
         # was dropped — surfacing $4.50 / 211K / 0.38pp on a model-
         # performance card was confusing (it's not the bot's *score*,
         # it's the upstream market value), and the bots that don't
-        # track a scalar (tennis / survivor / whale) were forced to
-        # render "—" there anyway.
+        # track a scalar (tennis / survivor) were forced to render
+        # "—" there anyway.
         paused_badge = (
             "<span class='paused-badge' title='Bot is paused — toggle "
             "on to resume taking bets.'>PAUSED</span>"
@@ -6020,7 +5997,7 @@ def _render_models_panel(out: List[str], bot: dict, model: dict | None,
     """Per-bot Models tab content. Standard sim.db bots get the full
     deep-dive (headline metrics card row, full feature list bar chart,
     calibration curve, confusion matrix, per-strike accuracy table).
-    Tennis and whale dispatch into their own renderers.
+    Tennis dispatches into its own renderer.
     """
     out.append("<div class='section'><h2>Model</h2><div class='body'>")
     # Bot filter moved above the tab bar (per user request).
@@ -7377,14 +7354,11 @@ class Handler(BaseHTTPRequestHandler):
                 period_days = _period_days(period_key)
                 # Active tab for the per-bot pane: ?tab=watchlist|model|activebet|rules
                 tab_key = qs_top.get("tab", ["home"])[0]
-                # `performance` is its own tab for the Bitcoin bot; for
-                # every other bot it was merged into `home` so legacy
-                # URLs silently redirect to home.
-                if (tab_key == "performance"
-                        and bot.get("dashboard_type") != "bitcoin"):
+                # `performance` was merged into `home`; legacy URLs
+                # silently redirect to home so deep links keep working.
+                if tab_key == "performance":
                     tab_key = "home"
-                if tab_key not in {"home", "watchlist", "models",
-                                   "history", "performance"}:
+                if tab_key not in {"home", "watchlist", "models", "history"}:
                     tab_key = "home"
 
                 # Survivor-elimination uses the same JSON-source pattern
@@ -7422,98 +7396,6 @@ class Handler(BaseHTTPRequestHandler):
                 # render_page args from watchlist.json + sim_state.json
                 # and falls through to the cross-bot rollup + final
                 # render at the bottom of this method.
-
-                # Bitcoin Live Forecast — the bot writes the standard
-                # schema, so the home / models / history tabs use the
-                # generic render path. The custom Bitcoin Watchlist +
-                # Performance pages have their own renderers (per-
-                # contract threshold + edge view, paper-trade history)
-                # and dispatch here.
-                if (bot.get("dashboard_type") == "bitcoin"
-                        and tab_key in {"watchlist", "performance"}):
-                    from . import bitcoin_live_forecast as _btc_adapter
-                    body = _btc_adapter.render_page(
-                        db_path=bot.get("db_path"),
-                        available_bots=self.bots,
-                        current_bot_key=bot["key"],
-                        tab_key=tab_key,
-                    )
-                    payload = body.encode("utf-8")
-                    self.send_response(200)
-                    self.send_header("Content-Type", "text/html; charset=utf-8")
-                    self.send_header("Cache-Control", "no-store")
-                    self.send_header("Content-Length", str(len(payload)))
-                    self.end_headers()
-                    self.wfile.write(payload)
-                    return
-
-                # Rules Parser also uses a custom renderer — same
-                # SQLite-backed pattern as the standard bots, but the
-                # tables it reads are rules-arb specific (signals,
-                # simulated_positions, sources, rule_clauses) so the
-                # generic strike-ladder render path isn't applicable.
-                if bot.get("dashboard_type") == "rules-parser":
-                    from . import rules_parser as _rules_parser
-                    rp_tab = tab_key if tab_key in {
-                        k for k, _ in _rules_parser.RULES_PARSER_TABS
-                    } else "watchlist"
-                    body = _rules_parser.render_page(
-                        db_path=bot.get("db_path"),
-                        available_bots=self.bots,
-                        current_bot_key=bot["key"],
-                        tab_key=rp_tab,
-                    )
-                    payload = body.encode("utf-8")
-                    self.send_response(200)
-                    self.send_header("Content-Type", "text/html; charset=utf-8")
-                    self.send_header("Cache-Control", "no-store")
-                    self.send_header("Content-Length", str(len(payload)))
-                    self.end_headers()
-                    self.wfile.write(payload)
-                    return
-
-                # Whale-watcher uses a different page entirely — JSONL
-                # source, signal-analysis-style render. Dispatch early so
-                # the standard render path stays focused on sim.db bots.
-                if bot.get("dashboard_type") == "whale":
-                    from . import whale
-                    qs = parse_qs(parsed.query)
-                    sort_by = qs.get("sort", ["recent"])[0]
-                    whale_tab = qs.get("tab", ["home"])[0]
-                    if whale_tab not in {k for k, _ in whale.WHALE_TABS}:
-                        whale_tab = "home"
-                    # ?min=<dollars> overrides the default $10,000 floor
-                    # for which trades count as "big bets". Lets the user
-                    # dial it down to inspect smaller flow without a
-                    # redeploy. Anything non-numeric falls through to
-                    # the default.
-                    min_dollars: int | None = None
-                    raw_min = qs.get("min", [""])[0]
-                    if raw_min:
-                        try:
-                            min_dollars = max(0, int(float(raw_min)))
-                        except (TypeError, ValueError):
-                            min_dollars = None
-                    events = whale.load_events(bot.get("signals_path"))
-                    orders = whale.load_orders(bot.get("orders_path"))
-                    body = whale.render_page(
-                        events=events,
-                        orders=orders,
-                        available_bots=self.bots,
-                        current_bot_key=bot["key"],
-                        sort_by=sort_by,
-                        tab_key=whale_tab,
-                        min_notional_dollars=min_dollars,
-                        whales_db_path=bot.get("whales_db_path"),
-                    )
-                    payload = body.encode("utf-8")
-                    self.send_response(200)
-                    self.send_header("Content-Type", "text/html; charset=utf-8")
-                    self.send_header("Cache-Control", "no-store")
-                    self.send_header("Content-Length", str(len(payload)))
-                    self.end_headers()
-                    self.wfile.write(payload)
-                    return
 
                 db_path = bot.get("db_path") or ""
 
@@ -7691,69 +7573,6 @@ class Handler(BaseHTTPRequestHandler):
                             h["_display"] = b.get("display") or {}
                             global_history.append(h)
                         continue
-                    if b.get("dashboard_type") == "rules-parser":
-                        # Rules Parser does its own SQLite-backed
-                        # bookkeeping (simulated_positions). Surface
-                        # actual_wins / actual_losses on the homepage
-                        # card and pull open + closed sim positions
-                        # into the cross-bot rollup tables.
-                        from . import rules_parser as _rules_parser
-                        m = _rules_parser.model_summary_for_card(b.get("db_path"))
-                        bot_models.append({
-                            "bot": b,
-                            "model": m,
-                            "rules_text": "",
-                            "strike_count": 0,
-                            "strike_lo": None, "strike_hi": None,
-                        })
-                        for ab in _rules_parser.active_bets_for_rollup(
-                                b.get("db_path")):
-                            ab["_bot_name"] = b["name"]
-                            ab["_bot_key"] = b["key"]
-                            ab["_dashboard_type"] = b.get("dashboard_type") or "standard"
-                            ab["_display"] = b.get("display") or {}
-                            global_active_bets.append(ab)
-                        for h in _rules_parser.closed_positions_for_rollup(
-                                b.get("db_path"), limit=50):
-                            h["_bot_name"] = b["name"]
-                            h["_bot_key"] = b["key"]
-                            h["_dashboard_type"] = b.get("dashboard_type") or "standard"
-                            h["_display"] = b.get("display") or {}
-                            global_history.append(h)
-                        continue
-                    # Bitcoin Live Forecast writes the standard schema
-                    # (positions / position_marks / model_snapshots), so
-                    # the existing fetch_* helpers work against it. Fall
-                    # through to the standard branch below — but pull
-                    # closed paper bets via the BTC adapter first so the
-                    # cross-bot history table reads from btc_paper_trades
-                    # (richer entry/exit reason fields than ``positions``
-                    # alone).
-                    if b.get("dashboard_type") == "bitcoin":
-                        from . import bitcoin_live_forecast as _btc_adapter
-                        for ab in _btc_adapter.active_bets_for_rollup(
-                                b["db_path"]):
-                            ab["_bot_name"] = b["name"]
-                            ab["_bot_key"] = b["key"]
-                            ab["_dashboard_type"] = "bitcoin"
-                            ab["_display"] = b.get("display") or {}
-                            global_active_bets.append(ab)
-                        for h in _btc_adapter.closed_positions_for_rollup(
-                                b["db_path"], limit=50):
-                            h["_bot_name"] = b["name"]
-                            h["_bot_key"] = b["key"]
-                            h["_dashboard_type"] = "bitcoin"
-                            h["_display"] = b.get("display") or {}
-                            global_history.append(h)
-                        m = fetch_latest_model(b["db_path"])
-                        bot_models.append({
-                            "bot": b,
-                            "model": m,
-                            "rules_text": "",
-                            "strike_count": 0,
-                            "strike_lo": None, "strike_hi": None,
-                        })
-                        continue
                     if b.get("dashboard_type") and b["dashboard_type"] != "standard":
                         continue
                     for ab in fetch_active_bets_with_marks(b["db_path"]):
@@ -7894,15 +7713,7 @@ class Handler(BaseHTTPRequestHandler):
                 if snap_period not in {k for k, _, _ in PERIOD_OPTIONS}:
                     snap_period = "all"
                 snap_period_days = _period_days(snap_period)
-                if bot.get("dashboard_type") == "whale":
-                    # Whale page uses meta-refresh, not the JS poller.
-                    # Return a minimal stub so any client polling this
-                    # endpoint gets a clean 200.
-                    payload_dict = {"bot": bot["key"], "type": "whale"}
-                elif bot.get("dashboard_type") == "rules-parser":
-                    # Same story — Rules Parser uses meta-refresh.
-                    payload_dict = {"bot": bot["key"], "type": "rules-parser"}
-                elif bot.get("dashboard_type") == "tennis":
+                if bot.get("dashboard_type") == "tennis":
                     # Tennis bots now render through the standard
                     # ``render_page`` — feed the JS poller a real
                     # snapshot built from the JSON watchlist + sim_state
@@ -8074,19 +7885,7 @@ def main(argv: list[str] | None = None) -> int:
     # unavailable bot in the dropdown shows a friendly stub.
     bots: list[dict] = []
     for b in cfg.bots:
-        # Whale-type bots are "always available" from the dashboard's
-        # POV — an empty signal_tracking.jsonl just means no signals
-        # yet, not that the bot is offline. Showing "(no data)" next
-        # to the dropdown name is misleading; the page itself renders
-        # a clear empty-state when there are zero events.
-        if b.dashboard_type == "whale":
-            available = True
-        elif b.dashboard_type == "rules-parser":
-            # Rules Parser is "always available" — the bot may not have
-            # produced any signals yet but the watchlist page renders
-            # a clean empty state in that case.
-            available = True
-        elif b.dashboard_type == "tennis":
+        if b.dashboard_type == "tennis":
             # Tennis bot is "available" if the watchlist JSON exists. The
             # tennis-forecast cron writes it on every refresh; an empty
             # rows list still counts as available (renders empty state).
@@ -8109,9 +7908,6 @@ def main(argv: list[str] | None = None) -> int:
             "db_path": b.db_path,
             "decisions_path": b.decisions_path,
             "dashboard_type": b.dashboard_type,
-            "signals_path": b.signals_path,
-            "orders_path": b.orders_path,
-            "whales_db_path": b.whales_db_path,
             "watchlist_json_path": b.watchlist_json_path,
             "metrics_path": b.metrics_path,
             "coefficients_path": b.coefficients_path,
