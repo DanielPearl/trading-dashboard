@@ -1496,11 +1496,9 @@ def _empty_chart_frame(width: int = 760, height: int = 220,
         f"<svg width='100%' height='{height}' viewBox='0 0 {width} {height}' "
         f"preserveAspectRatio='none' style='display:block'>"
     ]
-    # 5 horizontal gridlines, no labels (no data range to anchor them to).
-    for i in range(5):
-        y = pad_t + (i / 4.0) * (height - pad_t - pad_b)
-        out.append(f"<line x1='{pad_l}' y1='{y}' x2='{width-pad_r}' y2='{y}' "
-                   f"stroke='#1f2530' stroke-width='1'/>")
+    # Horizontal gridlines removed — the only horizontal line on the
+    # chart is the dashed Entry reference (drawn elsewhere when an
+    # active bet sets a strike side).
     # Day ticks across [contract_open, now] — chart always ends at
     # the current date, never extends into the future even when the
     # contract isn't closed yet. (contract_close_ts is intentionally
@@ -1660,13 +1658,13 @@ def svg_kalshi_chart(history: List[dict], display: dict,
         f"preserveAspectRatio='none' style='display:block'>"
     ]
 
-    # 5 evenly-spaced y-gridlines, labeled in the underlying's units.
+    # 5 evenly-spaced y-axis labels, no horizontal gridlines — the
+    # only horizontal line on the chart is the dashed Entry reference
+    # drawn below (when there's an active bet). Keeps the visual
+    # weight on the plotted polyline.
     for i in range(5):
         v = y_lo + (i / 4.0) * (y_hi - y_lo)
         y = y_at(v)
-        out.append(f"<line x1='{pad_l}' y1='{y}' x2='{width-pad_r}' y2='{y}' "
-                   f"stroke='#1f2530' stroke-width='1'/>")
-        # Y-axis label sits to the right of the chart (Kalshi style).
         out.append(f"<text x='{width-pad_r+6}' y='{y+4}' fill='#8b949e' "
                    f"font-size='10' text-anchor='start'>"
                    f"{html.escape(fmt_underlying(v, display))}</text>")
