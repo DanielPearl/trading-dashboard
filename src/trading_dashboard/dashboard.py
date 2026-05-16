@@ -31,7 +31,7 @@ from contextlib import closing
 from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from typing import Any, List, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 log = logging.getLogger("dashboard")
 
@@ -7350,6 +7350,75 @@ def _render_model_view_toggle(out: List[str], bot_key: str,
     out.append("</div>")
 
 
+def _ingame_proxy_metrics(bot: dict,
+                            threshold: float = 0.15) -> Optional[dict]:
+    """Proxy classifier metrics for the in-game model's divergence
+    feature, the only part of the model that can be replayed from
+    the data we currently log.
+
+    For each closed bet:
+        prediction = 1 if divergence_at_entry > ``threshold`` else 0
+                     (heuristic: 'this bet should win because the
+                      market was overreacting at entry')
+        actual     = 1 if realized_pnl > 0 else 0
+
+    Returns ``{accuracy, precision, recall, f1, roc_auc, n}`` or
+    ``None`` when there aren't enough closed bets to score.
+
+    Live-state features (NBA lead/time, tennis live_prob_*) can't
+    be replayed without historical state snapshots and are not
+    measured here. The Models view labels this clearly.
+    """
+    rows = _ingame_backtest_rows(bot)
+    if not rows or len(rows) < 5:
+        return None
+    tp = fp = tn = fn = 0
+    pos_scores: List[float] = []
+    neg_scores: List[float] = []
+    for r in rows:
+        pred = 1 if r["divergence"] > threshold else 0
+        actual = 1 if r["pnl_cents"] > 0 else 0
+        if pred == 1 and actual == 1:
+            tp += 1
+        elif pred == 1 and actual == 0:
+            fp += 1
+        elif pred == 0 and actual == 0:
+            tn += 1
+        else:
+            fn += 1
+        if actual == 1:
+            pos_scores.append(r["divergence"])
+        else:
+            neg_scores.append(r["divergence"])
+    n = len(rows)
+    accuracy = (tp + tn) / n
+    precision = (tp / (tp + fp)) if (tp + fp) > 0 else 0.0
+    recall = (tp / (tp + fn)) if (tp + fn) > 0 else 0.0
+    f1 = ((2.0 * precision * recall) / (precision + recall)
+           if (precision + recall) > 0 else 0.0)
+    # Wilcoxon-Mann-Whitney AUC: P(random positive > random
+    # negative) using divergence as the score.
+    pairs = 0
+    correct = 0.0
+    for ps in pos_scores:
+        for ns in neg_scores:
+            pairs += 1
+            if ps > ns:
+                correct += 1.0
+            elif ps == ns:
+                correct += 0.5
+    auc = (correct / pairs) if pairs > 0 else None
+    return {
+        "accuracy": accuracy,
+        "precision": precision,
+        "recall": recall,
+        "f1": f1,
+        "roc_auc": auc,
+        "n": n,
+        "threshold": threshold,
+    }
+
+
 def _render_ingame_model_view(out: List[str], bot: dict,
                                  active_bets: List[dict]) -> None:
     """In-game model view for a sport bot's Models tab.
@@ -7394,6 +7463,81 @@ def _render_ingame_model_view(out: List[str], bot: dict,
         ),
     }
     desc = SPORT_DESC.get(bot_key, "")
+
+    # ── Headline metric cards (proxy classifier on the divergence
+    # feature; the live-state portion isn't backtestable yet). Same
+    # 6-card layout as the pre-game view so the user can scan
+    # accuracy / F1 / precision / recall / ROC AUC / features side
+    # by side.
+    proxy = _ingame_proxy_metrics(bot)
+
+    def _pct(v: object, decimals: int = 0) -> str:
+        if v is None:
+            return "—"
+        try:
+            return f"{float(v)*100:.{decimals}f}%"
+        except (TypeError, ValueError):
+            return "—"
+
+    # Count features the heuristic actually uses today (the "Live"
+    # rows in the SPORT_FEATURES table below).
+    feat_table = {
+        "nba": 5,            # score diff, time, velocity, vol, divergence
+        "tennis": 5,         # live_prob, score, injury, pre_game, divergence
+        "table-tennis": 2,   # live_prob, score
+        "darts": 2,          # live_prob, set state
+    }
+    live_feature_count = feat_table.get(bot_key, 0)
+
+    out.append("<div class='row compact'>")
+    if proxy is None:
+        out.append(
+            "<div class='card'><div class='label'>Sample size</div>"
+            "<div class='value gray'>too small</div></div>"
+        )
+        for _ in range(5):
+            out.append(
+                "<div class='card'><div class='label'>—</div>"
+                "<div class='value gray'>—</div></div>"
+            )
+    else:
+        n_bets_title = (f"Proxy backtest on {proxy['n']} closed bets "
+                         f"(divergence > {proxy['threshold']*100:.0f}% "
+                         f"→ predict win).")
+        for label, value, kind in [
+            ("Accuracy", proxy["accuracy"], "pct"),
+            ("F1", proxy["f1"], "pct"),
+            ("Precision", proxy["precision"], "pct"),
+            ("Recall", proxy["recall"], "pct"),
+            ("ROC AUC", proxy["roc_auc"], "pct"),
+            ("Features", live_feature_count, "count"),
+        ]:
+            if kind == "count":
+                shown = str(value)
+                title_attr = ("Number of features the in-game heuristic "
+                               "currently consumes (the Live rows in the "
+                               "Features in play table below).")
+            else:
+                shown = _pct(value, 0) if value is not None else "—"
+                title_attr = n_bets_title
+            out.append(
+                f"<div class='card'><div class='label' "
+                f"title='{html.escape(title_attr)}'>"
+                f"{html.escape(label)}</div>"
+                f"<div class='value'>{html.escape(shown)}</div></div>"
+            )
+    out.append("</div>")
+    out.append(
+        "<p class='small gray' style='margin:-6px 0 14px 0;'>"
+        "Metrics are computed on a proxy classifier — "
+        "<strong>divergence-at-entry &gt; "
+        f"{(proxy['threshold']*100 if proxy else 15):.0f}%</strong> as "
+        "the predictor of 'this bet will win'. The live-state "
+        "features (NBA lead/time, tennis live_prob) need historical "
+        "snapshots we don't yet log; those will start showing up "
+        "in these numbers once snapshotting lands.</p>"
+    )
+
     out.append(
         "<h3 class='subhead'>How the in-game model works "
         "<span class='small gray'>(heuristic baseline — see "
