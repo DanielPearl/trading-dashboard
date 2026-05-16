@@ -7625,21 +7625,12 @@ _WATCHLIST_ROW_CLICK_JS = """
     const svg = findChart();
     if (!svg) return;
     clearOverlay(svg);
-    // Sport bots stamp data-yes-prob (0..1); non-sport bots stamp
-    // data-strike (raw underlying value). Whichever attribute is
-    // present drives the overlay's value + label.
-    const strike = parseFloat(tr.dataset.strike);
+    // Strike overlay removed per user request. Sport bots can still
+    // stamp data-yes-prob (0..1); those rows are no-ops on the
+    // probability-axis hero chart since the range check rejects
+    // values < yMin or > yMax.
     const yesProb = parseFloat(tr.dataset.yesProb);
-    if (Number.isFinite(strike)) {
-      drawOverlay(svg, {
-        value: strike,
-        text: 'strike ' + strike.toFixed(2),
-      }, '#e3b341');
-    } else if (Number.isFinite(yesProb)) {
-      // Sport-style chart: yesProb is plotted on a 0..1 axis. The
-      // hero chart for NBA carries ELO as its Y axis, so a 0..1 line
-      // wouldn't fall inside its range. We bail in that case (the
-      // overlay's range check above takes care of it).
+    if (Number.isFinite(yesProb)) {
       drawOverlay(svg, {
         value: yesProb,
         text: 'YES ' + (yesProb * 100).toFixed(0) + '%',
