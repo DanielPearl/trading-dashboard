@@ -2101,6 +2101,16 @@ tr.row-bought td.mono { color: #f0f6fc; font-weight: 600; }
    the ledger table. The wrap is `position: relative` so the empty-
    state overlay can be absolute-positioned over the SVG frame. */
 .history-chart-section { margin-top: 14px; }
+/* Inline toolbar above the chart: chart title on the left, period
+   selector on the right. Suppress the .bot-filter-bar divider so
+   the filter reads as a chart control, not a section break. */
+.history-chart-toolbar { display: flex; align-items: center;
+    justify-content: space-between; gap: 12px;
+    margin: 0 0 8px 0; flex-wrap: wrap; }
+.history-chart-toolbar .history-chart-title {
+    color: #c9d1d9; font-size: 14px; font-weight: 600; }
+.history-chart-toolbar .bot-filter-bar { padding: 0; margin: 0;
+    border-bottom: none; }
 .history-chart-wrap { position: relative;
     border: 1px solid #30363d; border-radius: 6px;
     background: #0d1117; padding: 8px 4px 4px 4px; }
@@ -2262,21 +2272,17 @@ def render_page(
         f"</span></h2>"
         f"<div class='body'>"
     )
-    # Headline cards first, then the period filter underneath — keeps
-    # the at-a-glance totals at the top of the panel. id_suffix=
-    # '-history' lets the snapshot poller (which targets Home-tab ids)
-    # skip them.
+    # Headline cards at the top of the panel. id_suffix='-history'
+    # lets the snapshot poller (which targets Home-tab ids) skip them.
     _render_summary_cards(out, global_summary, id_suffix="-history",
                            show_closed_contracts=True)
-    # Day/Week/Month/Year/All-time dropdown; clicking keeps the user
-    # on the History tab and just narrows the rows.
-    _render_period_filter(out, period_key, current_bot=current_bot,
-                            tab_key="history")
-    # Cumulative P&L line chart — sits between the cards and the
-    # ledger table so the user sees the shape of gains/losses before
-    # digging into per-row detail. Has its own bot + date filters,
-    # independent from the page-level period dropdown above.
-    _render_history_chart(out, global_history)
+    # Daily P&L chart with the Day/Week/Month/Year/All-time period
+    # selector rendered as the chart's toolbar — period scopes the
+    # chart, cards, and table below via a full-page reload on the
+    # ``?period=X`` query param.
+    _render_history_chart(out, global_history,
+                            period_key=period_key,
+                            current_bot=current_bot)
     # Pass heading="" so the table renders without a duplicate
     # subhead — the section title above already carries the period.
     # Scroll container clamps the table to a sensible viewport
@@ -4155,11 +4161,13 @@ def _render_active_bets_table(out: List[str], bets: List[dict],
     out.append("</tbody></table>")
 
 
-def _render_history_chart(out: List[str], history: List[dict]) -> None:
-    """Daily net P&L line chart for the History tab — all bots,
-    all-time. The closed-bet ledger is embedded as JSON on the SVG
-    node; the JS buckets bets by UTC day and draws the line client-
-    side.
+def _render_history_chart(out: List[str], history: List[dict],
+                            period_key: str = "all",
+                            current_bot: str = "") -> None:
+    """Daily net P&L line chart for the History tab. The closed-bet
+    ledger is embedded as JSON on the SVG node; the JS buckets bets
+    by UTC day and draws the line client-side. The period dropdown
+    sits inline above the chart as its toolbar.
     """
     points: List[list] = []
     for h in history:
@@ -4185,6 +4193,13 @@ def _render_history_chart(out: List[str], history: List[dict]) -> None:
         quote=True,
     )
     out.append("<div class='history-chart-section'>")
+    # Toolbar row: chart title on the left, period selector on the
+    # right — visually anchors the filter to the chart it controls.
+    out.append("<div class='history-chart-toolbar'>")
+    out.append("<div class='history-chart-title'>Daily net P&amp;L</div>")
+    _render_period_filter(out, period_key, current_bot=current_bot,
+                            tab_key="history")
+    out.append("</div>")
     out.append(
         "<div class='history-chart-wrap'>"
         f"<svg data-history-chart data-points='{points_payload}' "
