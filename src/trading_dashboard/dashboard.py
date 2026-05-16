@@ -1644,7 +1644,7 @@ h2 { font-size: 14px; font-weight: 600; text-transform: uppercase; letter-spacin
 /* Cards sit on a slightly lighter, slightly cooler shade than the
    section background (#161b22). Subtle border + soft drop-shadow gives
    them a gentle elevated appearance against the section panel. */
-.card { background: #1d232c; border: 1px solid #30363d; border-radius: 8px; padding: 14px 18px; flex: 1; min-width: 180px; box-shadow: 0 1px 2px rgba(0,0,0,0.35); }
+.card { background: #1d232c; border: 1px solid #30363d; border-radius: 8px; padding: 14px 18px; flex: 1; min-width: 180px; box-shadow: 0 1px 2px rgba(0,0,0,0.35); text-align: center; }
 .card .label { font-size: 11px; text-transform: uppercase; color: #9ca5b3; letter-spacing: 0.05em; }
 .card .value { font-size: 22px; font-weight: 600; color: #f0f6fc; margin-top: 4px; }
 /* Color modifiers — must be more specific than .card .value (0,2,0) so
