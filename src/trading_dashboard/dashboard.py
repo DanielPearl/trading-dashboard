@@ -2057,6 +2057,19 @@ tr.row-bought td.mono { color: #f0f6fc; font-weight: 600; }
 .history-scroll details > summary { position: sticky; bottom: 0;
     background: #161b22; padding: 6px 10px; cursor: pointer;
     border-top: 1px solid #30363d; }
+/* History tab P&L line chart — sits between the headline cards and
+   the ledger table. The wrap is `position: relative` so the empty-
+   state overlay can be absolute-positioned over the SVG frame. */
+.history-chart-section { margin-top: 14px; }
+.history-chart-section .history-chart-controls {
+    border-bottom: none; padding-bottom: 6px; margin-bottom: 6px; }
+.history-chart-wrap { position: relative;
+    border: 1px solid #30363d; border-radius: 6px;
+    background: #0d1117; padding: 8px 4px 4px 4px; }
+.history-chart-empty {
+    position: absolute; inset: 0; display: flex;
+    align-items: center; justify-content: center;
+    color: #8b949e; font-size: 12px; pointer-events: none; }
 """
 
 
@@ -2223,6 +2236,11 @@ def render_page(
     # filter above selected. id_suffix='-history' keeps the snapshot
     # poller (which targets the Home-tab ids) from double-patching.
     _render_summary_cards(out, global_summary, id_suffix="-history")
+    # Cumulative P&L line chart — sits between the cards and the
+    # ledger table so the user sees the shape of gains/losses before
+    # digging into per-row detail. Has its own bot + date filters,
+    # independent from the page-level period dropdown above.
+    _render_history_chart(out, global_history, available_bots)
     # Pass heading="" so the table renders without a duplicate
     # subhead — the section title above already carries the period.
     # Scroll container clamps the table to a sensible viewport
@@ -2271,6 +2289,7 @@ def render_page(
         f"<script>window.__BUY_CRITERIA__ = {buy_criteria_payload};</script>"
     )
     out.append(_BOT_TOGGLE_JS)
+    out.append(_HISTORY_CHART_JS)
     out.append(_live_update_script(current_bot, period_key=period_key))
     out.append("</body></html>")
     return "".join(out)
@@ -2316,6 +2335,155 @@ function toggleBotState(ev, btn) {
     .catch(function () { /* swallow — keep current visual state */ })
     .finally(function () { btn.disabled = false; });
 }
+</script>"""
+
+
+# History-tab cumulative P&L chart renderer. Reads the closed-bet
+# ledger embedded as JSON on the SVG node, filters by selected bot +
+# date range, plots cumulative realized P&L in cents. Hover crosshair
+# uses the same idiom as the watchlist hero chart.
+_HISTORY_CHART_JS = """<script>
+(function () {
+  const svg = document.querySelector('[data-history-chart]');
+  if (!svg) return;
+  const wrap = svg.parentElement;
+  const empty = wrap.querySelector('[data-history-chart-empty]');
+  const botSel = document.querySelector('[data-history-chart-bot]');
+  const rangeSel = document.querySelector('[data-history-chart-range]');
+  let raw = [];
+  try { raw = JSON.parse(svg.dataset.points || '[]'); } catch (e) {}
+  const W = 800, H = 260;
+  const PAD_L = 56, PAD_R = 14, PAD_T = 14, PAD_B = 28;
+  const INNER_W = W - PAD_L - PAD_R;
+  const INNER_H = H - PAD_T - PAD_B;
+  const RANGE_DAYS = {day: 1, week: 7, month: 30, year: 365, all: null};
+  function fmtSignedDollars(cents) {
+    const v = cents / 100;
+    const sign = v > 0 ? '+' : (v < 0 ? '-' : '');
+    return sign + '$' + Math.abs(v).toFixed(2);
+  }
+  function fmtDate(epoch) {
+    const d = new Date(epoch * 1000);
+    return d.toLocaleDateString(undefined,
+      {month: 'short', day: 'numeric'});
+  }
+  function fmtDateTime(epoch) {
+    const d = new Date(epoch * 1000);
+    return d.toLocaleString(undefined,
+      {month: 'short', day: 'numeric',
+       hour: 'numeric', minute: '2-digit'});
+  }
+  function render() {
+    const botKey = botSel ? botSel.value : '';
+    const rangeKey = rangeSel ? rangeSel.value : 'all';
+    const days = RANGE_DAYS[rangeKey];
+    const now = Math.floor(Date.now() / 1000);
+    const cutoff = days != null ? now - days * 86400 : null;
+    // Filter + sort ascending by time.
+    let pts = raw.filter(function (p) {
+      if (botKey && p[2] !== botKey) return false;
+      if (cutoff != null && p[0] < cutoff) return false;
+      return true;
+    });
+    pts.sort(function (a, b) { return a[0] - b[0]; });
+    // Build cumulative series.
+    let cum = 0;
+    const series = pts.map(function (p) {
+      cum += p[1];
+      return [p[0], cum];
+    });
+    svg.innerHTML = '';
+    if (series.length === 0) {
+      if (empty) empty.hidden = false;
+      return;
+    }
+    if (empty) empty.hidden = true;
+    // X range: cutoff (if set) → now; else first point → now.
+    const tMin = cutoff != null ? cutoff : series[0][0];
+    const tMax = now;
+    const tSpan = Math.max(1, tMax - tMin);
+    // Y range: include 0 so the zero baseline always shows. 8% pad.
+    let vals = series.map(function (s) { return s[1]; });
+    vals.push(0);
+    let yMin = Math.min.apply(null, vals);
+    let yMax = Math.max.apply(null, vals);
+    if (yMin === yMax) { yMin -= 1; yMax += 1; }
+    const yPad = (yMax - yMin) * 0.08;
+    yMin -= yPad; yMax += yPad;
+    function x(t) {
+      return PAD_L + ((t - tMin) / tSpan) * INNER_W;
+    }
+    function y(v) {
+      return PAD_T + (1 - (v - yMin) / (yMax - yMin)) * INNER_H;
+    }
+    const NS = 'http://www.w3.org/2000/svg';
+    function el(name, attrs, text) {
+      const n = document.createElementNS(NS, name);
+      for (const k in attrs) n.setAttribute(k, attrs[k]);
+      if (text != null) n.textContent = text;
+      return n;
+    }
+    // Horizontal gridlines + Y labels (5 ticks).
+    for (let i = 0; i <= 4; i++) {
+      const yv = yMin + (i / 4) * (yMax - yMin);
+      const py = y(yv);
+      svg.appendChild(el('line', {
+        x1: PAD_L, y1: py, x2: W - PAD_R, y2: py,
+        stroke: '#1f2530', 'stroke-width': '1'
+      }));
+      svg.appendChild(el('text', {
+        x: PAD_L - 6, y: py + 4, fill: '#8b949e',
+        'font-size': '10', 'text-anchor': 'end'
+      }, fmtSignedDollars(yv)));
+    }
+    // Zero baseline emphasized.
+    if (yMin < 0 && yMax > 0) {
+      const py0 = y(0);
+      svg.appendChild(el('line', {
+        x1: PAD_L, y1: py0, x2: W - PAD_R, y2: py0,
+        stroke: '#30363d', 'stroke-width': '1',
+        'stroke-dasharray': '3,3'
+      }));
+    }
+    // X-axis date ticks — up to 6 evenly spaced labels across the
+    // visible time span.
+    const N_TICKS = 5;
+    for (let i = 0; i <= N_TICKS; i++) {
+      const t = tMin + (i / N_TICKS) * tSpan;
+      const px = x(t);
+      svg.appendChild(el('text', {
+        x: px, y: H - 8, fill: '#8b949e',
+        'font-size': '10',
+        'text-anchor': i === 0 ? 'start' :
+          (i === N_TICKS ? 'end' : 'middle')
+      }, fmtDate(t)));
+    }
+    // Polyline of cumulative P&L. Color: green if last value > 0,
+    // red if < 0, gray if exactly 0.
+    const last = series[series.length - 1][1];
+    const color = last > 0 ? '#3fb950' :
+      (last < 0 ? '#f85149' : '#8b949e');
+    const path = series.map(function (s) {
+      return x(s[0]).toFixed(1) + ',' + y(s[1]).toFixed(1);
+    }).join(' ');
+    svg.appendChild(el('polyline', {
+      points: path, fill: 'none',
+      stroke: color, 'stroke-width': '2',
+      'stroke-linejoin': 'round', 'stroke-linecap': 'round'
+    }));
+    // Dots on each closed-bet point so single trades are still
+    // visible.
+    series.forEach(function (s) {
+      svg.appendChild(el('circle', {
+        cx: x(s[0]), cy: y(s[1]), r: '2.5',
+        fill: color
+      }));
+    });
+  }
+  if (botSel) botSel.addEventListener('change', render);
+  if (rangeSel) rangeSel.addEventListener('change', render);
+  render();
+})();
 </script>"""
 
 
@@ -3849,6 +4017,84 @@ def _render_active_bets_table(out: List[str], bets: List[dict],
             f"</tr>"
         )
     out.append("</tbody></table>")
+
+
+def _render_history_chart(out: List[str], history: List[dict],
+                            available_bots: List[dict]) -> None:
+    """Cumulative net P&L line chart for the History tab.
+
+    Filterable by bot and date range — both controls live above the
+    chart and are independent from the page-level period dropdown.
+    The full closed-bet ledger is embedded as a JSON payload on the
+    SVG node; the JS does all filtering + drawing client-side so the
+    chart re-renders instantly when the user changes a control.
+    """
+    points: List[list] = []
+    for h in history:
+        ts_str = h.get("exited_at")
+        pnl = h.get("realized_pnl_cents")
+        if not ts_str or pnl is None:
+            continue
+        # Same idiom as the bet-history rows: chop to 19 chars to drop
+        # fractional seconds + tz suffix, then parse as UTC. Timestamps
+        # in sim.db are recorded in UTC.
+        try:
+            dt = datetime.fromisoformat(ts_str[:19])
+            epoch = int(dt.replace(tzinfo=timezone.utc).timestamp())
+        except (TypeError, ValueError):
+            continue
+        bot_key = h.get("_bot_key") or ""
+        try:
+            pnl_int = int(pnl)
+        except (TypeError, ValueError):
+            continue
+        points.append([epoch, pnl_int, bot_key])
+    points_payload = html.escape(
+        json.dumps(points, separators=(",", ":")),
+        quote=True,
+    )
+    out.append("<div class='history-chart-section'>")
+    out.append("<div class='history-chart-controls bot-filter-bar'>")
+    out.append("<label class='filter-label' for='history-chart-bot'>Bot</label>")
+    out.append(
+        "<select id='history-chart-bot' class='bot-select' "
+        "data-history-chart-bot>"
+    )
+    out.append("<option value=''>All bots</option>")
+    for b in available_bots or []:
+        out.append(
+            f"<option value='{html.escape(b.get('key',''))}'>"
+            f"{html.escape(b.get('name',''))}</option>"
+        )
+    out.append("</select>")
+    out.append(
+        "<label class='filter-label' for='history-chart-range'>Date</label>"
+    )
+    out.append(
+        "<select id='history-chart-range' class='bot-select' "
+        "data-history-chart-range>"
+    )
+    # Date range options for the chart — independent from the page's
+    # period filter so the chart can show all-time while the table
+    # below shows a narrower window (or vice versa).
+    for key, label, _days in PERIOD_OPTIONS:
+        sel = " selected" if key == "all" else ""
+        out.append(
+            f"<option value='{html.escape(key)}'{sel}>"
+            f"{html.escape(label)}</option>"
+        )
+    out.append("</select>")
+    out.append("</div>")  # /history-chart-controls
+    out.append(
+        "<div class='history-chart-wrap'>"
+        f"<svg data-history-chart data-points='{points_payload}' "
+        "width='100%' height='260' viewBox='0 0 800 260' "
+        "preserveAspectRatio='none' style='display:block'></svg>"
+        "<div class='history-chart-empty' data-history-chart-empty hidden>"
+        "No closed bets in this range.</div>"
+        "</div>"
+    )
+    out.append("</div>")  # /history-chart-section
 
 
 def _render_bet_history_block(out: List[str], history: List[dict],
