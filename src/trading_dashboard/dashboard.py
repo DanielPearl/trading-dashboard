@@ -2266,6 +2266,20 @@ td.num.red, td.num.green { white-space: nowrap; }
    training accuracy and live actual-win-% diverge by >10pp on n≥10
    closed bets. Surfaces "this model may have drifted" as a one-look
    signal without forcing users to compare two cells. */
+/* Pre-game / In-game toggle that lives at the top of the Models
+   panel for sport bots. Pills mimic the existing tab-pill idiom
+   but live inside one section instead of the page-level tab bar. */
+.model-view-toggle { display: inline-flex; gap: 4px;
+    margin-bottom: 14px; padding: 4px; background: #0d1117;
+    border: 1px solid #21262d; border-radius: 8px; }
+.model-view-toggle .model-view-pill {
+    text-decoration: none; color: #8b949e; font-size: 12px;
+    font-weight: 600; padding: 6px 14px; border-radius: 5px;
+    text-transform: none; letter-spacing: 0.02em; }
+.model-view-toggle .model-view-pill:hover { color: #c9d1d9; }
+.model-view-toggle .model-view-pill.model-view-active {
+    background: #1d232c; color: #f0f6fc;
+    box-shadow: 0 1px 2px rgba(0,0,0,0.4); }
 /* In-game model pill — appears in the active-bets table next to the
    YES/NO badge when the live model has a confident view of the
    position. EXIT = red (model expects loss), RUN = green (model
@@ -2609,6 +2623,7 @@ def render_page(
     tab_key: str = "home",
     bot_models: List[dict] | None = None,
     prob_history: List[dict] | None = None,
+    model_view: str = "pregame",
 ) -> str:
     out: List[str] = []
     out.append("<!doctype html><html><head>")
@@ -2730,6 +2745,8 @@ def render_page(
         display=display,
         available_bots=available_bots,
         current_bot=current_bot,
+        model_view=model_view,
+        bot_active_bets=bot_active_bets,
     )
     out.append("</div>")  # /models panel
 
@@ -7310,19 +7327,258 @@ def _render_ev_realized_table(out: List[str],
     out.append("</tbody></table>")
 
 
+def _render_model_view_toggle(out: List[str], bot_key: str,
+                                 current_view: str,
+                                 current_bot: str) -> None:
+    """Pre-game / In-game pill toggle for sport bots. Selecting a tab
+    swaps the ``?model_view=`` query param via a full-page nav so the
+    URL stays shareable.
+    """
+    bot_qs = (f"&bot={html.escape(current_bot)}" if current_bot else "")
+    options = [
+        ("pregame", "Pre-game"),
+        ("ingame", "In-game"),
+    ]
+    out.append("<div class='model-view-toggle'>")
+    for key, label in options:
+        active = " model-view-active" if key == current_view else ""
+        href = f"?tab=models{bot_qs}&model_view={key}"
+        out.append(
+            f"<a class='model-view-pill{active}' "
+            f"href='{html.escape(href)}'>{html.escape(label)}</a>"
+        )
+    out.append("</div>")
+
+
+def _render_ingame_model_view(out: List[str], bot: dict,
+                                 active_bets: List[dict]) -> None:
+    """In-game model view for a sport bot's Models tab.
+
+    Shows three sections:
+      1. What the in-game model does for this sport (description).
+      2. Currently-open positions with their live in-game prediction.
+      3. The features the model uses, with sources called out.
+
+    The pre-game model's content (Accuracy / F1 / ROC / etc.) is on
+    the Pre-game tab — completely separate.
+    """
+    bot_key = bot.get("key", "")
+    name = bot.get("name", bot_key)
+    SPORT_DESC = {
+        "nba": (
+            "Live game state pulled from ESPN's public scoreboard "
+            "every 30 seconds. Win probability derived from the "
+            "canonical basketball logistic on lead / √(seconds "
+            "remaining), then overlaid with cross-sport market "
+            "features (velocity, volatility, divergence from "
+            "pre-game prior). High confidence after Q1; low while "
+            "the live state is still volatile."
+        ),
+        "tennis": (
+            "Trusts the bot's own watchlist.json live_prob fields "
+            "(computed per-point from the live data feed) as the "
+            "authoritative live signal. Layers market overreaction "
+            "detection on top — when the market has moved sharply "
+            "away from a stable live estimate, the model says "
+            "HOLD. Confidence ramps from set 1 through set 3+."
+        ),
+        "table-tennis": (
+            "Same architecture as tennis — the bot's per-point "
+            "live model is authoritative. Confidence ladder is "
+            "tighter since table-tennis sets settle quickly."
+        ),
+        "darts": (
+            "Same architecture as tennis. Confidence bumps higher "
+            "after a single set because darts settles faster within "
+            "a set than tennis does."
+        ),
+    }
+    desc = SPORT_DESC.get(bot_key, "")
+    out.append(
+        "<h3 class='subhead'>How the in-game model works "
+        "<span class='small gray'>(heuristic baseline — see "
+        "in_game/README.md for the training-pipeline roadmap)"
+        "</span></h3>"
+    )
+    if desc:
+        out.append(f"<p class='small' style='color:#c9d1d9;"
+                    f"margin:0 0 14px 0;'>{html.escape(desc)}</p>")
+
+    # ── Section 2: current live predictions ─────────────────────────
+    live_rows: List[dict] = []
+    for ab in (active_bets or []):
+        ig = ab.get("_in_game") or {}
+        if not ig:
+            continue
+        live_rows.append({"bet": ab, "ig": ig})
+    out.append(
+        f"<h3 class='subhead'>Currently-open positions "
+        f"<span class='small gray'>({len(live_rows)} with a live "
+        f"prediction)</span></h3>"
+    )
+    if not live_rows:
+        out.append(
+            "<div class='empty'>No open positions with a confident "
+            "live prediction right now. The in-game model only "
+            "speaks for sport positions whose match is past the "
+            "start gate; pre-tip or pre-match positions show up "
+            "here once the game is well underway.</div>"
+        )
+    else:
+        out.append(
+            "<table><thead><tr>"
+            "<th>Ticker</th><th>Side</th>"
+            "<th class='num'>Entry</th>"
+            "<th class='num'>Live prob</th>"
+            "<th class='num'>Confidence</th>"
+            "<th>Action</th><th>Reason</th>"
+            "</tr></thead><tbody>"
+        )
+        ACTION_LABEL = {
+            "exit_now": ("EXIT", "red"),
+            "let_run": ("RUN", "green"),
+            "hold": ("HOLD", "yellow"),
+            "neutral": ("—", "gray"),
+        }
+        for r in live_rows:
+            b = r["bet"]
+            ig = r["ig"]
+            ticker = html.escape(b.get("ticker") or
+                                   b.get("match_id") or "—")
+            side = html.escape((b.get("side") or "").upper())
+            entry_c = b.get("entry_price_cents")
+            entry_str = (f"{int(entry_c)}¢" if entry_c is not None
+                          else "—")
+            lp = ig.get("live_prob_yes") or 0.0
+            conf = ig.get("confidence") or 0.0
+            action = (ig.get("action") or "neutral").lower()
+            label, cls = ACTION_LABEL.get(action, ("—", "gray"))
+            reason = html.escape(ig.get("reason") or "")
+            out.append(
+                f"<tr><td class='mono'>{ticker}</td>"
+                f"<td>{side}</td>"
+                f"<td class='num'>{entry_str}</td>"
+                f"<td class='num'>{lp*100:.0f}%</td>"
+                f"<td class='num'>{conf*100:.0f}%</td>"
+                f"<td><span class='in-game-pill ig-{cls}'>"
+                f"{label}</span></td>"
+                f"<td class='small gray'>{reason}</td></tr>"
+            )
+        out.append("</tbody></table>")
+
+    # ── Section 3: features the model uses ──────────────────────────
+    SPORT_FEATURES = {
+        "nba": [
+            ("Score differential", "Live", "ESPN scoreboard"),
+            ("Time remaining", "Live", "ESPN scoreboard (period + clock)"),
+            ("Market velocity", "Live", "market_views history (cents/min)"),
+            ("Market volatility", "Live", "market_views history (stdev)"),
+            ("Divergence vs pre-game", "Live",
+             "market_views + position.model_yes_prob_at_entry"),
+            ("Foul trouble", "TODO",
+             "nba_api box-score endpoint"),
+            ("Lineup combinations", "TODO",
+             "nba_api play-by-play (sub events)"),
+            ("Shooting % vs xFG", "TODO",
+             "nba_api shot chart + xFG training set"),
+            ("Free throw rate", "TODO", "nba_api team-stats endpoint"),
+            ("Bench vs starter +/-", "TODO",
+             "nba_api advanced box-score endpoint"),
+        ],
+        "tennis": [
+            ("Live win probability", "Live",
+             "watchlist.json live_prob_a / live_prob_b"),
+            ("Current score state", "Live",
+             "watchlist.json current_score"),
+            ("Injury news flag", "Live",
+             "watchlist.json injury_news_flag"),
+            ("Pre-game prior", "Live",
+             "watchlist.json pre_match_prob_a"),
+            ("Market divergence", "Live",
+             "watchlist.json yes_ask_cents_a/_b"),
+            ("Breakpoint conversion %", "TODO",
+             "live point-by-point feed (the bot has it but doesn't "
+             "yet expose it on the watchlist row)"),
+            ("Serve velocity decline", "TODO",
+             "radar gun data; only via broadcast-paired feeds"),
+            ("Historical comeback prob from score state", "TODO",
+             "offline analysis of ATP/WTA point-by-point database"),
+        ],
+        "table-tennis": [
+            ("Live win probability", "Live",
+             "watchlist.json live_prob_a / live_prob_b"),
+            ("Current score state", "Live",
+             "watchlist.json current_score"),
+            ("Reaction-time decay", "TODO",
+             "would require frame-level video analysis"),
+            ("Spin/style matchup", "TODO",
+             "historical match outcomes by player style"),
+        ],
+        "darts": [
+            ("Live win probability", "Live",
+             "watchlist.json live_prob_a / live_prob_b"),
+            ("Set state", "Live", "watchlist.json current_score"),
+            ("Checkout %", "TODO",
+             "live leg-by-leg feed (bot has access; not yet exposed "
+             "on watchlist row)"),
+            ("Leg-streak persistence", "TODO",
+             "per-tick watchlist with running leg stats"),
+        ],
+    }
+    feats = SPORT_FEATURES.get(bot_key, [])
+    if feats:
+        out.append(
+            "<h3 class='subhead'>Features in play "
+            "<span class='small gray'>(Live = currently used; "
+            "TODO = would need an additional feed or trained "
+            "model — see in_game/README.md)</span></h3>"
+        )
+        out.append(
+            "<table><thead><tr>"
+            "<th>Feature</th><th>Status</th><th>Source</th>"
+            "</tr></thead><tbody>"
+        )
+        for label, status, source in feats:
+            status_cls = "green" if status == "Live" else "gray"
+            out.append(
+                f"<tr><td>{html.escape(label)}</td>"
+                f"<td class='{status_cls}'>{html.escape(status)}</td>"
+                f"<td class='small gray'>{html.escape(source)}</td>"
+                f"</tr>"
+            )
+        out.append("</tbody></table>")
+
+
 def _render_models_panel(out: List[str], bot: dict, model: dict | None,
                           display: dict | None,
                           available_bots: List[dict],
-                          current_bot: str) -> None:
+                          current_bot: str,
+                          model_view: str = "pregame",
+                          bot_active_bets: List[dict] | None = None,
+                          ) -> None:
     """Per-bot Models tab content. Standard sim.db bots get the full
     deep-dive (headline metrics card row, full feature list bar chart,
-    calibration curve, confusion matrix, per-strike accuracy table).
+    calibration curve, predicted-vs-realized EV, hedge audit, etc.).
     Tennis dispatches into its own renderer.
+
+    Sport bots (NBA, tennis, table-tennis, darts) get a Pre-game /
+    In-game toggle at the top so the user can switch between the
+    standard pre-game view and the in-game advisory model's view.
+    The two are completely separate — toggling never mixes the
+    populations.
     """
     out.append("<div class='section'><h2>Model</h2><div class='body'>")
     # Bot filter moved above the tab bar (per user request).
     if not bot:
         out.append("<div class='empty'>Bot not found.</div>")
+        out.append("</div></div>")
+        return
+    bot_key = bot.get("key", "")
+    is_sport_bot = bot_key in {"nba", "tennis", "table-tennis", "darts"}
+    if is_sport_bot:
+        _render_model_view_toggle(out, bot_key, model_view, current_bot)
+    if is_sport_bot and model_view == "ingame":
+        _render_ingame_model_view(out, bot, bot_active_bets or [])
         out.append("</div></div>")
         return
     # Tennis-shape bots (tennis / table-tennis / darts) don't have a
@@ -8732,6 +8988,13 @@ class Handler(BaseHTTPRequestHandler):
                     tab_key = "home"
                 if tab_key not in {"home", "watchlist", "models", "history"}:
                     tab_key = "home"
+                # Models tab supports a pregame / ingame view toggle on
+                # sport bots. Defaults to pregame; ignored for non-sport
+                # bots (the Models panel only renders the pregame view
+                # for them anyway).
+                model_view = qs_top.get("model_view", ["pregame"])[0]
+                if model_view not in {"pregame", "ingame"}:
+                    model_view = "pregame"
 
                 # Survivor-elimination uses the same JSON-source pattern
                 # as the tennis bot (watchlist.json + metrics.json +
@@ -9120,6 +9383,7 @@ class Handler(BaseHTTPRequestHandler):
                     period_key=period_key,
                     tab_key=tab_key,
                     bot_models=bot_models,
+                    model_view=model_view,
                 )
             except Exception:  # noqa: BLE001
                 log.exception("dashboard render failed")
