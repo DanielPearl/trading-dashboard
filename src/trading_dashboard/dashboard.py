@@ -2262,15 +2262,16 @@ def render_page(
         f"</span></h2>"
         f"<div class='body'>"
     )
+    # Headline cards first, then the period filter underneath — keeps
+    # the at-a-glance totals at the top of the panel. id_suffix=
+    # '-history' lets the snapshot poller (which targets Home-tab ids)
+    # skip them.
+    _render_summary_cards(out, global_summary, id_suffix="-history",
+                           show_closed_contracts=True)
     # Day/Week/Month/Year/All-time dropdown; clicking keeps the user
     # on the History tab and just narrows the rows.
     _render_period_filter(out, period_key, current_bot=current_bot,
                             tab_key="history")
-    # Same 6 headline cards as Home, scoped to whatever period the
-    # filter above selected. id_suffix='-history' keeps the snapshot
-    # poller (which targets the Home-tab ids) from double-patching.
-    _render_summary_cards(out, global_summary, id_suffix="-history",
-                           show_closed_contracts=True)
     # Cumulative P&L line chart — sits between the cards and the
     # ledger table so the user sees the shape of gains/losses before
     # digging into per-row detail. Has its own bot + date filters,
@@ -3550,7 +3551,7 @@ def _render_summary(out: List[str], rollup: dict, active_bets: List[dict],
                else ("red" if has_closed and win_pct < 0.5 else "gray"))
     win_pct_str = f"{win_pct*100:.0f}%" if has_closed else "—"
 
-    out.append("<div class='section'><h2>1 · Summary — across all bots</h2>"
+    out.append("<div class='section'><h2>Summary — across all bots</h2>"
                "<div class='body summary-body'>")
 
     # Bot-jump dropdown moved above the tab bar (per user request) so
@@ -6391,43 +6392,35 @@ def _render_models_panel(out: List[str], bot: dict, model: dict | None,
     top_imp_str = (f"{top_imp:.4f}" if isinstance(top_imp, (int, float))
                     else "—")
 
-    # ── Headline metrics — top of the page, matching the cards layout
-    # the Home / Watchlist tabs lead with. Surfaces accuracy / F1 /
-    # precision / recall / ROC AUC / feature count up front so the
-    # user lands on the bottom-line numbers before the deep-dive
-    # chart and table.
-    out.append("<h3 class='subhead'>Headline metrics</h3>")
-    if not model:
-        out.append("<div class='empty'>No model snapshot yet.</div>")
-    else:
-        def _pct(v, decimals=0):
-            if v is None:
-                return "—"
-            try:
-                return f"{float(v)*100:.{decimals}f}%"
-            except (TypeError, ValueError):
-                return "—"
+    # ── Model overview cards — positioned at the top of the panel,
+    # matching the headline-cards layout of the Home tab. Same data
+    # that used to live in the "Model overview" definition list lower
+    # on the page, just rendered as boxes so the eye lands on it.
+    overview_cards: List[Tuple[str, str]] = [
+        ("Last retrained", overview.get("last_retrained") or "—"),
+        ("Features considered → kept",
+            (f"{n_total} → {n_kept} "
+             f"({n_kept/n_total*100:.0f}%)" if n_total else "—")),
+        (f"Stable across all {overview['max_folds']} folds",
+            str(overview["n_stable_all_folds"])),
+        ("Top feature",
+            (f"{overview.get('top_feature')} ({top_imp_str})"
+             if overview.get("top_feature") else "—")),
+    ]
+    if overview.get("snapshot_first") and overview.get("snapshot_last"):
+        overview_cards.append((
+            "Deployed",
+            f"live since {overview['snapshot_first'][:10]} · "
+            f"{overview.get('snapshots_recorded') or 0} snapshots",
+        ))
+    out.append("<div class='row'>")
+    for label, value in overview_cards:
         out.append(
-            "<div class='cards' "
-            "style='display:grid;grid-template-columns:repeat(6, 1fr);"
-            "gap:10px;width:100%;'>"
+            f"<div class='card'><div class='label'>"
+            f"{html.escape(label)}</div>"
+            f"<div class='value'>{html.escape(str(value))}</div></div>"
         )
-        for label, v, decimals in [
-            ("Accuracy", model.get("classifier_accuracy"), 1),
-            ("F1", model.get("training_f1"), 0),
-            ("Precision", model.get("training_precision"), 0),
-            ("Recall", model.get("training_recall"), 0),
-            ("ROC AUC", model.get("training_roc_auc"), 0),
-            ("Features", model.get("feature_count"), None),
-        ]:
-            if label == "Features":
-                shown = (str(int(v)) if v is not None else "—")
-            else:
-                shown = _pct(v, decimals or 0)
-            out.append(f"<div class='card'><div class='label'>"
-                        f"{html.escape(label)}</div>"
-                        f"<div class='value'>{shown}</div></div>")
-        out.append("</div>")
+    out.append("</div>")
 
     # ── Top features (chart first, sources below) ───────────────────
     TOP_N = 25
@@ -6462,41 +6455,6 @@ def _render_models_panel(out: List[str], bot: dict, model: dict | None,
     # eye lands on the bars first and uses the legend to decode.
     out.append(_render_feature_source_legend(feats))
     out.append(_render_feature_source_table(feats))
-
-    # ── Model overview — compact definition list (no card chrome). ──
-    out.append("<h3 class='subhead'>Model overview "
-                "<span class='small gray'>(from training "
-                "artifacts)</span></h3>")
-    overview_items: List[Tuple[str, str]] = [
-        ("Last retrained", overview.get("last_retrained") or "—"),
-        ("Features considered → kept",
-            (f"{n_total} → {n_kept} "
-             f"({n_kept/n_total*100:.0f}%)" if n_total else "—")),
-        (f"Stable across all {overview['max_folds']} folds",
-            str(overview["n_stable_all_folds"])),
-        ("Top feature",
-            (f"{overview.get('top_feature')} ({top_imp_str})"
-             if overview.get("top_feature") else "—")),
-    ]
-    if overview.get("snapshot_first") and overview.get("snapshot_last"):
-        overview_items.append((
-            "Deployed",
-            f"live since {overview['snapshot_first'][:10]} · "
-            f"{overview.get('snapshots_recorded') or 0} snapshots",
-        ))
-    out.append(
-        "<dl class='model-overview-dl' "
-        "style='display:grid;grid-template-columns:auto 1fr;"
-        "gap:6px 18px;margin:0 0 12px 0;font-size:13px;'>"
-    )
-    for label, value in overview_items:
-        out.append(
-            f"<dt class='gray' style='margin:0;'>"
-            f"{html.escape(label)}</dt>"
-            f"<dd style='margin:0;color:#c9d1d9;'>"
-            f"{html.escape(str(value))}</dd>"
-        )
-    out.append("</dl>")
 
     # ── ROC curve + confusion matrix — both sourced from the
     # trainer's held-out predictions (data/holdout_predictions.csv).
