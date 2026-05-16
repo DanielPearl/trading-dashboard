@@ -467,6 +467,15 @@ def fetch_global_summary(bots: List[dict],
         elif b.get("dashboard_type") == "survivor":
             from . import survivor as _survivor
             s = _survivor.summary_for_rollup(b.get("sim_state_path"))
+        elif b.get("dashboard_type") == "bitcoin":
+            # BTC bot writes the standard schema (positions /
+            # position_marks / trades) so it could in theory go through
+            # fetch_summary; the dedicated adapter is a hair faster
+            # because it reads from btc_paper_trades directly and skips
+            # the schema-probing fallbacks that fetch_summary does for
+            # cross-bot tolerance.
+            from . import bitcoin_live_forecast as _btc_adapter
+            s = _btc_adapter.summary_for_rollup(b.get("db_path"))
         elif b.get("dashboard_type") and b["dashboard_type"] != "standard":
             continue
         else:
@@ -7362,11 +7371,14 @@ class Handler(BaseHTTPRequestHandler):
                 period_days = _period_days(period_key)
                 # Active tab for the per-bot pane: ?tab=watchlist|model|activebet|rules
                 tab_key = qs_top.get("tab", ["home"])[0]
-                # `performance` was merged into `home`; legacy URLs
-                # silently redirect to home so deep links keep working.
-                if tab_key == "performance":
+                # `performance` is its own tab for the Bitcoin bot; for
+                # every other bot it was merged into `home` so legacy
+                # URLs silently redirect to home.
+                if (tab_key == "performance"
+                        and bot.get("dashboard_type") != "bitcoin"):
                     tab_key = "home"
-                if tab_key not in {"home", "watchlist", "models", "history"}:
+                if tab_key not in {"home", "watchlist", "models",
+                                   "history", "performance"}:
                     tab_key = "home"
 
                 # Survivor-elimination uses the same JSON-source pattern
@@ -7404,6 +7416,30 @@ class Handler(BaseHTTPRequestHandler):
                 # render_page args from watchlist.json + sim_state.json
                 # and falls through to the cross-bot rollup + final
                 # render at the bottom of this method.
+
+                # Bitcoin Live Forecast — the bot writes the standard
+                # schema, so the home / models / history tabs use the
+                # generic render path. The custom Bitcoin Watchlist +
+                # Performance pages have their own renderers (per-
+                # contract threshold + edge view, paper-trade history)
+                # and dispatch here.
+                if (bot.get("dashboard_type") == "bitcoin"
+                        and tab_key in {"watchlist", "performance"}):
+                    from . import bitcoin_live_forecast as _btc_adapter
+                    body = _btc_adapter.render_page(
+                        db_path=bot.get("db_path"),
+                        available_bots=self.bots,
+                        current_bot_key=bot["key"],
+                        tab_key=tab_key,
+                    )
+                    payload = body.encode("utf-8")
+                    self.send_response(200)
+                    self.send_header("Content-Type", "text/html; charset=utf-8")
+                    self.send_header("Cache-Control", "no-store")
+                    self.send_header("Content-Length", str(len(payload)))
+                    self.end_headers()
+                    self.wfile.write(payload)
+                    return
 
                 # Rules Parser also uses a custom renderer — same
                 # SQLite-backed pattern as the standard bots, but the

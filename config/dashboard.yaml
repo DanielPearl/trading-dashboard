@@ -191,6 +191,29 @@ bots:
     coefficients_path: /root/darts-forecast/data/processed/artifacts/model_coefficients.json
     sim_state_path: /root/darts-forecast/data/outputs/sim_state.json
 
+  - key: bitcoin-live-forecast
+    name: Bitcoin Live Forecast
+    # Paper-trading BTC bot. Writes the shared positions / position_marks
+    # / model_snapshots schema so the home / models / history tabs use
+    # the standard render path; the custom Bitcoin Watchlist and
+    # Bitcoin Performance tabs dispatch into
+    # ``trading_dashboard.bitcoin_live_forecast`` for their own page
+    # renderers. The series_ticker is the KXBTC prefix — the bot also
+    # scans the KXBTCD daily-close series under the hood.
+    dashboard_type: bitcoin
+    series_ticker: KXBTC
+    db_path: /root/bitcoin-signal/data/sim.db
+    decisions_path: /root/bitcoin-signal/data/decisions.jsonl
+    display:
+      underlying_label: BTC / USD spot
+      underlying_unit: "$"
+      underlying_decimals: 0
+      unit_position: prefix
+      # 1-min underlying chart — BTC moves continuously, hourly candles
+      # would mask the per-tick momentum the bot actually trades.
+      chart_period_minutes: 1
+      prediction_period_label: this contract
+
 # ---------------------------------------------------------------------------
 # Display thresholds. Mirror the gas-bot's gates so the buy-criteria panel
 # shows the actual bar each market must clear.
