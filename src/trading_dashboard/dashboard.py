@@ -3548,7 +3548,7 @@ def _render_summary_cards(out: List[str], rollup: dict,
     money_spent = rollup.get("period_money_spent_cents", 0)
     money_gained = rollup.get("period_money_gained_cents", 0)
     closed_contracts = rollup.get("period_contracts_bought", 0)
-    out.append("<div class='row'>")
+    out.append("<div class='row compact'>")
     if show_closed_contracts:
         out.append(f"<div class='card'><div class='label' "
                    f"title='Total number of contracts bought across "
@@ -6484,7 +6484,7 @@ def _render_models_panel(out: List[str], bot: dict, model: dict | None,
         except (TypeError, ValueError):
             return "—"
 
-    out.append("<div class='row'>")
+    out.append("<div class='row compact'>")
     if not model:
         out.append("<div class='card'><div class='label'>Model</div>"
                    "<div class='value'>No snapshot yet</div></div>")
