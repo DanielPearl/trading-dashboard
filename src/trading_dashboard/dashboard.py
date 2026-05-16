@@ -6488,22 +6488,7 @@ def _render_models_panel(out: List[str], bot: dict, model: dict | None,
         reverse=True,
     )
     feats_shown = kept_sorted[:TOP_N]
-    last_retrain_str = overview.get("last_retrained") or "unknown"
-    train_summary_lines = [
-        f"Walk-forward permutation importance on the historical "
-        f"training set · {n_kept}/{n_total} candidate features kept "
-        f"by the stability filter · last retrained {last_retrain_str}",
-    ]
-    out.append(
-        f"<h3 class='subhead'>Top features <span class='small gray'>"
-        f"(top {len(feats_shown)} of {n_kept} kept features)"
-        f"</span></h3>"
-    )
-    out.append(
-        "<p class='small gray' style='margin:0 0 4px 0;'>"
-        + train_summary_lines[0]
-        + ". Bars colour-coded by data source.</p>"
-    )
+    out.append("<h3 class='subhead'>Top features</h3>")
     out.append(_svg_feature_importance_vertical(feats_shown))
     # Sources legend + full-list table sit BELOW the chart so the
     # eye lands on the bars first and uses the legend to decode.
