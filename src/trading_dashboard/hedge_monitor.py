@@ -157,10 +157,19 @@ def _check_db(db_path: str, bot: Dict[str, Any],
         # they place an internal hedge — we leave it alone so we
         # don't shadow that mechanism. Our daemon only operates on
         # truly-open positions that haven't been hedged yet.
+        # Pull model_yes_prob_at_entry when the schema has it — the
+        # in-game model uses it as the pre-game prior for the
+        # divergence / reversion features. Tolerated absence via the
+        # PRAGMA probe so older sim.dbs still work.
+        col_names = {r["name"] for r in
+                      c.execute("PRAGMA table_info(positions)").fetchall()}
+        prior_col = ("model_yes_prob_at_entry"
+                      if "model_yes_prob_at_entry" in col_names else "NULL")
         rows = c.execute(
-            "SELECT id, ticker, side, entry_price_cents, contracts "
-            "FROM positions "
-            "WHERE status = 'open' AND (hedge_id IS NULL OR hedge_id = 0)"
+            f"SELECT id, ticker, side, entry_price_cents, contracts, "
+            f"  {prior_col} AS model_yes_prob_at_entry "
+            f"FROM positions "
+            f"WHERE status = 'open' AND (hedge_id IS NULL OR hedge_id = 0)"
         ).fetchall()
         if not rows:
             return []
@@ -205,6 +214,51 @@ def _check_db(db_path: str, bot: Dict[str, Any],
                         bot_name, ticker, reason, gate_reason,
                     )
                     continue
+
+            # In-game model advisory layer. For sport bots that are
+            # past the start-gate, consult the live model. It can:
+            #   • pre-empt a close (ACTION_EXIT_NOW + confidence) when
+            #     no threshold has fired yet — closes with reason
+            #     ``ingame_exit``.
+            #   • suppress a threshold close (ACTION_LET_RUN / HOLD)
+            #     when the model expects the move to reverse or sees
+            #     a market overreaction.
+            # Non-sport bots get None from in_game.predict and skip
+            # this block entirely. Settled_auto closes always proceed.
+            from . import in_game as _in_game
+            position_for_model = {
+                "ticker": ticker,
+                "side": side,
+                "entry_price_cents": entry,
+                "model_yes_prob_at_entry": row["model_yes_prob_at_entry"],
+            }
+            prediction = _in_game.predict(bot, position_for_model)
+            if prediction is not None and prediction.confidence >= 0.5:
+                from . import in_game as _ig  # noqa: F401
+                from .in_game.base import (
+                    ACTION_EXIT_NOW as _EXIT, ACTION_LET_RUN as _LET,
+                    ACTION_HOLD as _HOLD,
+                )
+                if reason in ("hedge_pl", "hedge_sl") and \
+                        prediction.recommended_action in (_LET, _HOLD):
+                    log.info(
+                        "[hedge] suppress %s %s reason=%s — in-game: %s",
+                        bot_name, ticker, reason, prediction.reason,
+                    )
+                    continue
+                if reason is None and \
+                        prediction.recommended_action == _EXIT:
+                    log.info(
+                        "[hedge] pre-empt %s %s — in-game says exit: %s",
+                        bot_name, ticker, prediction.reason,
+                    )
+                    reason = "ingame_exit"
+                    if mark is None:
+                        # If we don't have a mark, exit at entry — same
+                        # idiom the stale path uses so the position lands
+                        # in History with zero realized P&L rather than
+                        # being stranded indefinitely.
+                        pnl = 0
             exit_mark = mark if mark is not None else entry
             realized = _close_position(
                 c, position_id=pos_id, entry=entry,
@@ -329,6 +383,38 @@ def _check_tennis_state(sim_state_path: str | None, bot: Dict[str, Any],
                 )
                 still_open.append(pos)
                 continue
+        # In-game model advisory layer. The tennis-shape bot already
+        # produces a live probability per match (live_prob_a / _b);
+        # the model here overlays market-state checks on top.
+        from . import in_game as _in_game
+        position_for_model = {
+            "ticker": ticker,
+            "match_id": pos.get("match_id"),
+            "side": pos.get("side"),
+            "entry_market_prob": pos.get("entry_market_prob"),
+            "entry_price_cents": pos.get("entry_price_cents"),
+        }
+        prediction = _in_game.predict(bot, position_for_model)
+        if prediction is not None and prediction.confidence >= 0.5:
+            from .in_game.base import (
+                ACTION_EXIT_NOW as _EXIT, ACTION_LET_RUN as _LET,
+                ACTION_HOLD as _HOLD,
+            )
+            if reason in ("hedge_pl", "hedge_sl") and \
+                    prediction.recommended_action in (_LET, _HOLD):
+                log.info(
+                    "[hedge] suppress %s %s reason=%s — in-game: %s",
+                    bot_name, ticker, reason, prediction.reason,
+                )
+                still_open.append(pos)
+                continue
+            if reason is None and \
+                    prediction.recommended_action == _EXIT:
+                log.info(
+                    "[hedge] pre-empt %s %s — in-game says exit: %s",
+                    bot_name, ticker, prediction.reason,
+                )
+                reason = "ingame_exit"
         stake = float(pos.get("stake", 1.0) or 1.0)
         slippage = float(pos.get("slippage", 0.0) or 0.0)
         realized = stake * (mark_f - entry_f - slippage)

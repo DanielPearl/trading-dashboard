@@ -2266,6 +2266,22 @@ td.num.red, td.num.green { white-space: nowrap; }
    training accuracy and live actual-win-% diverge by >10pp on n≥10
    closed bets. Surfaces "this model may have drifted" as a one-look
    signal without forcing users to compare two cells. */
+/* In-game model pill — appears in the active-bets table next to the
+   YES/NO badge when the live model has a confident view of the
+   position. EXIT = red (model expects loss), RUN = green (model
+   expects win and you should hold), HOLD = yellow (market may be
+   overreacting; defer to thresholds). */
+.in-game-pill { display: inline-block; margin-left: 6px;
+    padding: 1px 6px; border-radius: 4px;
+    font-size: 9px; font-weight: 700; text-transform: uppercase;
+    letter-spacing: 0.04em; line-height: 1.5;
+    vertical-align: 2px; cursor: help; }
+.in-game-pill.ig-green { background: rgba(63, 185, 80, 0.18);
+    color: #3fb950; border: 1px solid rgba(63, 185, 80, 0.35); }
+.in-game-pill.ig-red { background: rgba(248, 81, 73, 0.18);
+    color: #f85149; border: 1px solid rgba(248, 81, 73, 0.35); }
+.in-game-pill.ig-yellow { background: rgba(227, 179, 65, 0.18);
+    color: #e3b341; border: 1px solid rgba(227, 179, 65, 0.35); }
 .drift-badge { display: inline-block; margin-left: 6px;
     padding: 1px 6px; border-radius: 4px;
     background: rgba(212, 153, 0, 0.18);
@@ -4644,6 +4660,33 @@ def _render_active_bets_table(out: List[str], bets: List[dict],
             side_cell = (
                 f"<td><span class='badge {badge_cls}'>{side}</span></td>"
             )
+        # In-game model pill — only renders when the live model has a
+        # confident view. Sits inline with the Side cell so it reads
+        # as additional context on what we're holding.
+        in_game = b.get("_in_game") or {}
+        ig_action = (in_game.get("action") or "").lower()
+        ig_pill = ""
+        if in_game and ig_action in {"exit_now", "let_run", "hold"}:
+            cls_map = {
+                "exit_now": "ig-red",
+                "let_run": "ig-green",
+                "hold": "ig-yellow",
+            }
+            label_map = {
+                "exit_now": "EXIT",
+                "let_run": "RUN",
+                "hold": "HOLD",
+            }
+            ig_pill = (
+                f"<span class='in-game-pill {cls_map[ig_action]}' "
+                f"title='{html.escape(in_game.get('reason') or '')}'>"
+                f"{label_map[ig_action]}</span>"
+            )
+        # Inject the pill into the side cell so the table doesn't
+        # gain a column.
+        if ig_pill:
+            side_cell = side_cell.replace("</td>", f" {ig_pill}</td>", 1)
+
         out.append(
             f"<tr{tr_attrs}><td>{html.escape(opened)}</td>"
             f"{bot_td}"
@@ -8925,6 +8968,18 @@ class Handler(BaseHTTPRequestHandler):
                                 ab["_bot_key"] = b["key"]
                                 ab["_dashboard_type"] = b.get("dashboard_type") or "standard"
                                 ab["_display"] = b.get("display") or {}
+                                try:
+                                    from . import in_game as _ig
+                                    _pred = _ig.predict(b, ab)
+                                    if _pred is not None:
+                                        ab["_in_game"] = {
+                                            "live_prob_yes": _pred.live_prob_yes,
+                                            "confidence": _pred.confidence,
+                                            "action": _pred.recommended_action,
+                                            "reason": _pred.reason,
+                                        }
+                                except Exception:  # noqa: BLE001
+                                    log.exception("in_game.predict in enrich failed")
                                 global_active_bets.append(ab)
                         # Closed paper bets into the cross-bot history
                         # so hedge exits + natural settles surface on
@@ -8949,6 +9004,21 @@ class Handler(BaseHTTPRequestHandler):
                         # question column can be formatted in the bot's
                         # native units (K claims vs $ vs ...).
                         ab["_display"] = b.get("display") or {}
+                        # In-game model advisory — attached for the
+                        # active-bets table renderer. None for non-
+                        # sport bots; harmless to read.
+                        try:
+                            from . import in_game as _ig
+                            _pred = _ig.predict(b, ab)
+                            if _pred is not None:
+                                ab["_in_game"] = {
+                                    "live_prob_yes": _pred.live_prob_yes,
+                                    "confidence": _pred.confidence,
+                                    "action": _pred.recommended_action,
+                                    "reason": _pred.reason,
+                                }
+                        except Exception:  # noqa: BLE001
+                            log.exception("in_game.predict in enrich failed")
                         global_active_bets.append(ab)
                     for h in fetch_bet_history(b["db_path"], limit=50):
                         h["_bot_name"] = b["name"]
