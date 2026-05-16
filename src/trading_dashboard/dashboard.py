@@ -2441,15 +2441,13 @@ _HISTORY_CHART_JS = """<script>
         'font-size': '10', 'text-anchor': 'end'
       }, fmtSignedDollars(yv)));
     }
-    // Zero baseline emphasized.
-    if (yMin < 0 && yMax > 0) {
-      const py0 = y(0);
-      svg.appendChild(el('line', {
-        x1: PAD_L, y1: py0, x2: W - PAD_R, y2: py0,
-        stroke: '#30363d', 'stroke-width': '1',
-        'stroke-dasharray': '3,3'
-      }));
-    }
+    // Zero baseline — always drawn so the user can see at a glance
+    // when the daily line is above (gains) vs. below (losses).
+    const py0 = y(0);
+    svg.appendChild(el('line', {
+      x1: PAD_L, y1: py0, x2: W - PAD_R, y2: py0,
+      stroke: '#6e7681', 'stroke-width': '1'
+    }));
     // X-axis date ticks — up to 6 evenly spaced labels across the
     // visible time span.
     const N_TICKS = 5;
@@ -2463,25 +2461,48 @@ _HISTORY_CHART_JS = """<script>
           (i === N_TICKS ? 'end' : 'middle')
       }, fmtDate(t)));
     }
-    // Polyline of daily net P&L. Color reflects net result across
-    // the visible range: green if total > 0, red if < 0, gray if 0.
-    const total = series.reduce(function (a, s) { return a + s[1]; }, 0);
-    const color = total > 0 ? '#3fb950' :
-      (total < 0 ? '#f85149' : '#8b949e');
-    const path = series.map(function (s) {
-      return x(s[0]).toFixed(1) + ',' + y(s[1]).toFixed(1);
-    }).join(' ');
-    svg.appendChild(el('polyline', {
-      points: path, fill: 'none',
-      stroke: color, 'stroke-width': '2',
-      'stroke-linejoin': 'round', 'stroke-linecap': 'round'
-    }));
-    // Dots on each closed-bet point so single trades are still
-    // visible.
+    // Split the line into colored segments — green when the value is
+    // >= 0 (gains), red when < 0 (losses). When two consecutive points
+    // straddle zero, interpolate the crossing so the color flips
+    // exactly at the baseline.
+    const GREEN = '#3fb950', RED = '#f85149';
+    const colorOf = function (v) { return v >= 0 ? GREEN : RED; };
+    for (let i = 1; i < series.length; i++) {
+      const a = series[i - 1], b = series[i];
+      const sameSide = (a[1] >= 0) === (b[1] >= 0);
+      if (sameSide) {
+        svg.appendChild(el('polyline', {
+          points: x(a[0]).toFixed(1) + ',' + y(a[1]).toFixed(1) + ' ' +
+            x(b[0]).toFixed(1) + ',' + y(b[1]).toFixed(1),
+          fill: 'none', stroke: colorOf(a[1]),
+          'stroke-width': '2',
+          'stroke-linejoin': 'round', 'stroke-linecap': 'round'
+        }));
+      } else {
+        // Interpolate t where the line crosses zero.
+        const t = a[1] / (a[1] - b[1]);
+        const xc = a[0] + t * (b[0] - a[0]);
+        svg.appendChild(el('polyline', {
+          points: x(a[0]).toFixed(1) + ',' + y(a[1]).toFixed(1) + ' ' +
+            x(xc).toFixed(1) + ',' + y(0).toFixed(1),
+          fill: 'none', stroke: colorOf(a[1]),
+          'stroke-width': '2',
+          'stroke-linejoin': 'round', 'stroke-linecap': 'round'
+        }));
+        svg.appendChild(el('polyline', {
+          points: x(xc).toFixed(1) + ',' + y(0).toFixed(1) + ' ' +
+            x(b[0]).toFixed(1) + ',' + y(b[1]).toFixed(1),
+          fill: 'none', stroke: colorOf(b[1]),
+          'stroke-width': '2',
+          'stroke-linejoin': 'round', 'stroke-linecap': 'round'
+        }));
+      }
+    }
+    // Dots on each daily point, colored by sign of that day's net.
     series.forEach(function (s) {
       svg.appendChild(el('circle', {
         cx: x(s[0]), cy: y(s[1]), r: '2.5',
-        fill: color
+        fill: colorOf(s[1])
       }));
     });
   }
