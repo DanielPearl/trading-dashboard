@@ -7715,6 +7715,39 @@ class Handler(BaseHTTPRequestHandler):
                             h["_display"] = b.get("display") or {}
                             global_history.append(h)
                         continue
+                    # Bitcoin Live Forecast writes the standard schema
+                    # (positions / position_marks / model_snapshots), so
+                    # the existing fetch_* helpers work against it. Fall
+                    # through to the standard branch below — but pull
+                    # closed paper bets via the BTC adapter first so the
+                    # cross-bot history table reads from btc_paper_trades
+                    # (richer entry/exit reason fields than ``positions``
+                    # alone).
+                    if b.get("dashboard_type") == "bitcoin":
+                        from . import bitcoin_live_forecast as _btc_adapter
+                        for ab in _btc_adapter.active_bets_for_rollup(
+                                b["db_path"]):
+                            ab["_bot_name"] = b["name"]
+                            ab["_bot_key"] = b["key"]
+                            ab["_dashboard_type"] = "bitcoin"
+                            ab["_display"] = b.get("display") or {}
+                            global_active_bets.append(ab)
+                        for h in _btc_adapter.closed_positions_for_rollup(
+                                b["db_path"], limit=50):
+                            h["_bot_name"] = b["name"]
+                            h["_bot_key"] = b["key"]
+                            h["_dashboard_type"] = "bitcoin"
+                            h["_display"] = b.get("display") or {}
+                            global_history.append(h)
+                        m = fetch_latest_model(b["db_path"])
+                        bot_models.append({
+                            "bot": b,
+                            "model": m,
+                            "rules_text": "",
+                            "strike_count": 0,
+                            "strike_lo": None, "strike_hi": None,
+                        })
+                        continue
                     if b.get("dashboard_type") and b["dashboard_type"] != "standard":
                         continue
                     for ab in fetch_active_bets_with_marks(b["db_path"]):
