@@ -122,6 +122,7 @@ def fetch_summary(db_path: str, period_days: int | None = None) -> dict:
     """
     empty = {
         "total_bets": 0, "open_count": 0, "exposure_cents": 0,
+        "active_contracts": 0,
         "closed_count": 0, "realized_pnl_cents": 0,
         "wins_lifetime": 0, "losses_lifetime": 0,
         "avg_win_cents": 0, "avg_loss_cents": 0,
@@ -142,7 +143,8 @@ def fetch_summary(db_path: str, period_days: int | None = None) -> dict:
                 "SELECT COUNT(*) n FROM positions"
             ).fetchone()
             open_row = c.execute(
-                "SELECT COUNT(*) n, COALESCE(SUM(entry_price_cents * contracts), 0) exp "
+                "SELECT COUNT(*) n, COALESCE(SUM(entry_price_cents * contracts), 0) exp, "
+                "COALESCE(SUM(contracts), 0) ctr "
                 "FROM positions WHERE status = 'open'"
             ).fetchone()
             closed_row = c.execute(
@@ -263,6 +265,7 @@ def fetch_summary(db_path: str, period_days: int | None = None) -> dict:
         "total_bets": int(total["n"] or 0),
         "open_count": int(open_row["n"] or 0),
         "exposure_cents": int(open_row["exp"] or 0),
+        "active_contracts": int(open_row["ctr"] or 0),
         "closed_count": int(closed_row["n"] or 0),
         "realized_pnl_cents": int(closed_row["pnl"] or 0),
         "wins_lifetime": int(closed_row["wins"] or 0),
@@ -444,6 +447,8 @@ def fetch_global_summary(bots: List[dict],
     """
     rollup = {
         "active_bets": 0,            # always current — never period-scoped
+        "active_contracts": 0,       # always current — sum of contracts open
+        "active_bots": 0,            # always current — bots enabled & with data
         "period_bets_made": 0,
         "period_net_pnl_cents": 0,
         "period_wins": 0,
@@ -452,6 +457,7 @@ def fetch_global_summary(bots: List[dict],
         "period_money_gained_cents": 0,
         "period_contracts_bought": 0,
         "potential_gain_cents": 0,    # always current
+        "this_week_pnl_cents": 0,     # always lifetime-of-last-7-days
         # Lifetime fields kept for callers that still want them.
         "total_bets": 0,
         "net_pnl_cents": 0,
@@ -461,6 +467,12 @@ def fetch_global_summary(bots: List[dict],
         "best_bot_pnl_cents": 0,
         "per_bot": [],
     }
+    # Bots that are both available (have data) and enabled (user
+    # toggle on the homepage card grid is on). Used for the
+    # "Active bots" headline card.
+    from . import bot_state
+    enabled_map = {k: bool((v or {}).get("enabled", True))
+                   for k, v in (bot_state.get_all_states() or {}).items()}
     for b in bots:
         if not b.get("available"):
             continue
@@ -479,6 +491,9 @@ def fetch_global_summary(bots: List[dict],
         else:
             s = fetch_summary(b["db_path"], period_days=period_days)
         rollup["active_bets"] += s.get("open_count", 0)
+        rollup["active_contracts"] += s.get("active_contracts", 0)
+        if enabled_map.get(b["key"], True):
+            rollup["active_bots"] += 1
         rollup["period_bets_made"] += s.get("period_bets_made", 0)
         rollup["period_net_pnl_cents"] += s.get("period_net_pnl_cents", 0)
         rollup["period_wins"] += s.get("period_wins", 0)
@@ -487,6 +502,7 @@ def fetch_global_summary(bots: List[dict],
         rollup["period_money_gained_cents"] += s.get("period_money_gained_cents", 0)
         rollup["period_contracts_bought"] += s.get("period_contracts_bought", 0)
         rollup["potential_gain_cents"] += s.get("potential_gain_cents", 0)
+        rollup["this_week_pnl_cents"] += s.get("this_week_pnl_cents", 0)
         rollup["total_bets"] += s.get("total_bets", 0)
         rollup["net_pnl_cents"] += s.get("realized_pnl_cents", 0)
         rollup["wins"] += s.get("wins_lifetime", 0)
@@ -853,6 +869,8 @@ def build_snapshot(db_path: str, bots: List[dict],
     return {
         "summary": {
             "active_bets": summary.get("active_bets"),
+            "active_contracts": summary.get("active_contracts"),
+            "active_bots": summary.get("active_bots"),
             "period_closed_bets": period_closed,
             "period_money_spent_cents": summary.get("period_money_spent_cents"),
             "period_money_gained_cents": summary.get("period_money_gained_cents"),
@@ -860,6 +878,8 @@ def build_snapshot(db_path: str, bots: List[dict],
             "period_net_pnl_cents": summary.get("period_net_pnl_cents"),
             "period_win_pct": summary.get("period_win_pct"),
             "period_has_closed": period_closed > 0,
+            "this_week_pnl_cents": summary.get("this_week_pnl_cents"),
+            "net_pnl_cents": summary.get("net_pnl_cents"),
         },
         "watchlist": rows,
         "active_bets": actives,
@@ -928,6 +948,8 @@ def _tennis_like_snapshot(
     return {
         "summary": {
             "active_bets": summary.get("active_bets"),
+            "active_contracts": summary.get("active_contracts"),
+            "active_bots": summary.get("active_bots"),
             "period_closed_bets": period_closed,
             "period_money_spent_cents": summary.get("period_money_spent_cents"),
             "period_money_gained_cents": summary.get("period_money_gained_cents"),
@@ -935,6 +957,8 @@ def _tennis_like_snapshot(
             "period_net_pnl_cents": summary.get("period_net_pnl_cents"),
             "period_win_pct": summary.get("period_win_pct"),
             "period_has_closed": period_closed > 0,
+            "this_week_pnl_cents": summary.get("this_week_pnl_cents"),
+            "net_pnl_cents": summary.get("net_pnl_cents"),
         },
         "watchlist": rows,
         "active_bets": actives,
@@ -2567,26 +2591,37 @@ def _live_update_script(current_bot: str, period_key: str = "all") -> str:
 
   function applySnapshot(snap) {{
     // ── Summary cards ──────────────────────────────────────────────
-    // 6 cards: Active bets (live) | Closed bets | Money spent
-    // | Money gained | Net gain/loss | Win %. The middle four reflect
-    // the period filter; the snapshot was already fetched with the
-    // right window so we just patch in.
+    // Home tab: Active bets | Active contracts | Active bots
+    // | Money spent | Potential earnings | Week change %.
+    // All values are live, never period-scoped.
     const s = snap.summary || {{}};
     patch("card-active-bets", String(s.active_bets ?? 0));
-    patch("card-closed-bets", String(s.period_closed_bets ?? 0));
+    patch("card-active-contracts", String(s.active_contracts ?? 0));
+    patch("card-active-bots", String(s.active_bots ?? 0));
     patch("card-money-spent",
           (s.period_money_spent_cents ?? 0) === 0
             ? "$0.00"
             : fmtSignedCents(-(s.period_money_spent_cents ?? 0)));
-    patch("card-money-gained",
-          "+" + fmtSignedCents(s.period_money_gained_cents).replace(/^[+−-]/, ""),
+    patch("card-potential-earnings",
+          "+" + fmtSignedCents(s.potential_gain_cents).replace(/^[+−-]/, ""),
           "green");
-    patch("card-net-pnl", fmtSignedCents(s.period_net_pnl_cents),
-          (s.period_net_pnl_cents > 0) ? "green"
-            : (s.period_net_pnl_cents < 0 ? "red" : "gray"));
-    patch("card-win-pct", fmtPct(s.period_win_pct, !!s.period_has_closed),
-          (s.period_win_pct > 0.5) ? "green"
-            : (s.period_has_closed && s.period_win_pct < 0.5 ? "red" : "gray"));
+    // Week change %: (this_week / |net - this_week|) * 100. Mirrors
+    // the Python _week_change_pct so the polled value matches the
+    // server-rendered first paint.
+    {{
+      const tw = s.this_week_pnl_cents ?? 0;
+      const lt = s.net_pnl_cents ?? 0;
+      const wa = lt - tw;
+      let text, cls;
+      if (wa === 0) {{ text = "—"; cls = "gray"; }}
+      else {{
+        const pct = (tw / Math.abs(wa)) * 100;
+        const sign = pct > 0 ? "+" : (pct < 0 ? "−" : "");
+        text = sign + Math.abs(pct).toFixed(1) + "%";
+        cls = pct > 0 ? "green" : (pct < 0 ? "red" : "gray");
+      }}
+      patch("card-week-change", text, cls);
+    }}
 
     // ── Watchlist rows ─────────────────────────────────────────────
     const minEv = snap.min_ev || 0.03;
@@ -3336,6 +3371,79 @@ def _render_period_filter(out: List[str], period_key: str,
     out.append("</div>")
 
 
+def _week_change_pct(rollup: dict) -> Tuple[str, str]:
+    """Return (text, css_class) for the Home tab's "Week change" card.
+
+    Compares lifetime net P&L now to where it stood seven days ago
+    (now − this_week_pnl). Positive = account is up vs. last week.
+    Returns ('—', 'gray') when there's no baseline to compare against
+    (week-ago P&L was zero) so the card doesn't show a misleading ∞%.
+    """
+    this_week = rollup.get("this_week_pnl_cents", 0) or 0
+    lifetime = rollup.get("net_pnl_cents", 0) or 0
+    week_ago = lifetime - this_week
+    if week_ago == 0:
+        return ("—", "gray")
+    pct = (this_week / abs(week_ago)) * 100.0
+    cls = "green" if pct > 0 else ("red" if pct < 0 else "gray")
+    sign = "+" if pct > 0 else ("−" if pct < 0 else "")
+    return (f"{sign}{abs(pct):.1f}%", cls)
+
+
+def _render_home_summary_cards(out: List[str], rollup: dict) -> None:
+    """Emit the Home tab's 6 headline cards: Active bets, Active
+    contracts, Active bots, Money spent (lifetime), Potential
+    earnings, Week change %. All values are always-current — the Home
+    tab has no period filter.
+    """
+    active_bets = rollup.get("active_bets", 0)
+    active_contracts = rollup.get("active_contracts", 0)
+    active_bots = rollup.get("active_bots", 0)
+    money_spent = rollup.get("period_money_spent_cents", 0)
+    potential = rollup.get("potential_gain_cents", 0)
+    week_text, week_cls = _week_change_pct(rollup)
+    out.append("<div class='row'>")
+    out.append(f"<div class='card'><div class='label' "
+               f"title='Live count of currently-open positions across "
+               f"all bots.'>"
+               f"Active bets</div>"
+               f"<div class='value' id='card-active-bets'>"
+               f"{active_bets}</div></div>")
+    out.append(f"<div class='card'><div class='label' "
+               f"title='Total number of contracts held across "
+               f"currently-open positions.'>"
+               f"Active contracts</div>"
+               f"<div class='value' id='card-active-contracts'>"
+               f"{active_contracts}</div></div>")
+    out.append(f"<div class='card'><div class='label' "
+               f"title='Bots that have data and are currently enabled "
+               f"(toggle on).'>"
+               f"Active bots</div>"
+               f"<div class='value' id='card-active-bots'>"
+               f"{active_bots}</div></div>")
+    out.append(f"<div class='card'><div class='label' "
+               f"title='Lifetime cost basis of every position opened "
+               f"(entry × contracts).'>"
+               f"Money spent</div>"
+               f"<div class='value' id='card-money-spent'>"
+               f"{fmt_signed_cents(-money_spent)}</div></div>")
+    out.append(f"<div class='card'><div class='label' "
+               f"title='Maximum payout if every currently-open "
+               f"position resolves on our side. (100 − entry) × "
+               f"contracts.'>"
+               f"Potential earnings</div>"
+               f"<div class='value green' id='card-potential-earnings'>"
+               f"+{fmt_signed_cents(potential).lstrip('+')}</div></div>")
+    out.append(f"<div class='card'><div class='label' "
+               f"title='Change in lifetime net P&amp;L over the last "
+               f"7 days, expressed as a percent of what it was a "
+               f"week ago.'>"
+               f"Week change</div>"
+               f"<div class='value {week_cls}' id='card-week-change'>"
+               f"{week_text}</div></div>")
+    out.append("</div>")
+
+
 def _render_summary_cards(out: List[str], rollup: dict,
                            id_suffix: str = "",
                            show_closed_contracts: bool = False) -> None:
@@ -3449,7 +3557,7 @@ def _render_summary(out: List[str], rollup: dict, active_bets: List[dict],
     # it applies to every tab in one place.
 
     # ── Headline cards ────────────────────────────────────────────────
-    _render_summary_cards(out, rollup)
+    _render_home_summary_cards(out, rollup)
 
     # Active bets list — same table used in the per-bot view below.
     # Same circle-i info button as on the Watchlist tab — opens the
