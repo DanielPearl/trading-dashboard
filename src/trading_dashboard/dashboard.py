@@ -7094,7 +7094,10 @@ def _render_watchlist(out: List[str], watchlist: List[dict],
         enriched_rows.sort(key=lambda r: r.get("opened_at", ""), reverse=True)
         # Pass the watchlist + event title + sport-bot flag through so
         # the active-bets row mirrors the title and side text of the
-        # ticker table directly underneath.
+        # ticker table directly underneath. Wrap in the same scroll
+        # container the Home tab's aggregate active-bets table uses
+        # so a long list doesn't push the chart / ladder off screen.
+        out.append("<div class='summary-active-scroll'>")
         _render_active_bets_table(
             out, enriched_rows, show_bot=False,
             chart_link=True, hedge_cfg=hedge_cfg,
@@ -7103,6 +7106,7 @@ def _render_watchlist(out: List[str], watchlist: List[dict],
             is_sport_bot=(current_bot in
                           {"nba", "tennis", "table-tennis", "darts"}),
             display=display)
+        out.append("</div>")
     else:
         out.append("<div class='empty'>No active bets right now.</div>")
 
