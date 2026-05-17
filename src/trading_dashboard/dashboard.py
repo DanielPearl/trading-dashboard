@@ -8320,6 +8320,17 @@ def _render_models_panel(out: List[str], bot: dict, model: dict | None,
         ))
         out.append("</div></div>")
         return
+    # Billboard also has no sim.db — same JSON-source pattern as
+    # tennis. The billboard renderer reproduces the SAME visual
+    # sections this function produces for sim.db bots (headline
+    # metrics cards → top features → ROC → calibration → empty-state
+    # stubs for the closed-bet-driven sections), so the Models tab
+    # is visually identical to retail-gas-prices'.
+    if bot.get("dashboard_type") == "billboard":
+        from . import billboard as _billboard
+        _billboard.render_models_panel(out, bot)
+        out.append("</div></div>")
+        return
     db_path = bot.get("db_path") or ""
     if not db_path or not Path(db_path).exists():
         _render_bot_unavailable(out, bot.get("key", ""))
@@ -9020,9 +9031,13 @@ def _render_watchlist(out: List[str], watchlist: List[dict],
         v["_best_side"] = best_side
         v["_best_ev"] = best_ev
     # Filter to rows that have at least 1 open contract — markets with
-    # zero open interest aren't tradeable and clutter the table.
+    # zero open interest aren't tradeable and clutter the table. Rows
+    # that set ``_skip_oi_filter`` (e.g. billboard markets that may
+    # have null Kalshi-side OI early in the chart week but are still
+    # the correct surface to show on the dashboard) opt out.
     watchlist = [r for r in watchlist
-                 if (r.get("open_interest") or 0) > 0]
+                 if r.get("_skip_oi_filter")
+                 or (r.get("open_interest") or 0) > 0]
     # Sort: sport bots (one row per game / match) have no strike axis,
     # so order by actionability — BUY-eligible verdicts first, then by
     # |best EV| descending — mirroring the tennis-specific table the
@@ -9746,30 +9761,6 @@ class Handler(BaseHTTPRequestHandler):
                     self.wfile.write(payload)
                     return
 
-                # Billboard Charts is the same JSON-source shape as
-                # survivor (watchlist.json + metrics.json +
-                # coefficients.json) but with per-album rows.
-                if bot.get("dashboard_type") == "billboard":
-                    from . import billboard as _billboard
-                    billboard_tab = "models" if tab_key == "models" else "watchlist"
-                    body = _billboard.render_page(
-                        metrics_path=bot.get("metrics_path"),
-                        coefficients_path=bot.get("coefficients_path"),
-                        watchlist_path=bot.get("watchlist_json_path"),
-                        sim_state_path=bot.get("sim_state_path"),
-                        available_bots=self.bots,
-                        current_bot_key=bot["key"],
-                        tab_key=billboard_tab,
-                    )
-                    payload = body.encode("utf-8")
-                    self.send_response(200)
-                    self.send_header("Content-Type", "text/html; charset=utf-8")
-                    self.send_header("Cache-Control", "no-store")
-                    self.send_header("Content-Length", str(len(payload)))
-                    self.end_headers()
-                    self.wfile.write(payload)
-                    return
-
                 # Tennis-shape bots (tennis / table-tennis / darts) used
                 # to dispatch into their own ``tennis.render_page`` here.
                 # Phase 2a routes them through the standard render path
@@ -9802,6 +9793,24 @@ class Handler(BaseHTTPRequestHandler):
                     # truth.
                     latest_active = (bot_active_bets[0]
                                       if bot_active_bets else None)
+                    model = None
+                elif bot.get("dashboard_type") == "billboard":
+                    # Billboard mirrors the tennis pattern: watchlist
+                    # rows come from watchlist.json (synthesised into
+                    # the standard schema by the billboard adapter),
+                    # active bets / latest_active are always empty
+                    # (the bot is advisory-only), and model is None so
+                    # the standard _render_current_prediction returns
+                    # early. Everything else flows through the shared
+                    # render_page so the page is visually identical to
+                    # retail-gas-prices.
+                    from . import billboard as _billboard
+                    payload_wl = _billboard.load_watchlist(
+                        bot.get("watchlist_json_path"))
+                    watchlist = _billboard.build_standard_watchlist_rows(
+                        payload_wl)
+                    bot_active_bets = []
+                    latest_active = None
                     model = None
                 else:
                     # Bot-scoped fetches for standard sim.db bots.
@@ -9854,7 +9863,9 @@ class Handler(BaseHTTPRequestHandler):
                 # series — the watchlist is per-match. Skip the Kalshi
                 # candlestick fetch entirely so the hero renders an
                 # empty chart frame rather than 500ing.
-                if series_ticker and bot.get("dashboard_type") != "tennis":
+                if (series_ticker
+                        and bot.get("dashboard_type") not in ("tennis",
+                                                              "billboard")):
                     from . import kalshi_client
                     try:
                         (kalshi_history, atm_market, kalshi_markets,
