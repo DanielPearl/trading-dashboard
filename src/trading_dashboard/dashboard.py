@@ -3249,6 +3249,12 @@ def _live_update_script(current_bot: str, period_key: str = "all") -> str:
         if (side) {{
           tr.classList.add("row-bought", "bought-" + side);
           tr.classList.remove("row-suspect");
+        }} else {{
+          // Per user request: only HOLDING rows render full-bright
+          // white. When a position closes mid-poll, re-apply the
+          // greyed style so the row drops back to dimmed without
+          // a full page reload.
+          tr.classList.add("row-suspect");
         }}
       }});
       // Patch a single side-span inside one of the combined cells
@@ -9349,16 +9355,25 @@ def _render_watchlist(out: List[str], watchlist: List[dict],
                 tip_parts.append(f"(entry {entry_c}c)")
             title_attr = (" title='"
                           + html.escape(" ".join(tip_parts)) + "'")
-        elif not is_buyable:
-            # Not a buy opportunity — grey the whole row. Tooltip
-            # explains why it's de-emphasized.
+        else:
+            # Per user request: only HOLDING rows get full-bright
+            # white text. Every other row — buyable or not — renders
+            # dimmed via .row-suspect so the holdings stand out at
+            # a glance against the rest of the watchlist.
             classes.append("row-suspect")
             if flags:
                 reason = "Validator flags: " + ", ".join(flags)
             elif best_ev_v is None or best_ev_v <= 0:
                 reason = "No positive edge"
-            else:
+            elif not is_buyable:
                 reason = "Bot verdict not actionable"
+            elif best_side_v in ("YES", "NO"):
+                _ev_sign = "+" if (best_ev_v or 0) > 0 else "−"
+                reason = (f"Model favours {best_side_v} "
+                            f"(EV {_ev_sign}${abs(best_ev_v or 0):.2f}) — "
+                            f"no position held")
+            else:
+                reason = "No position held"
             title_attr = (" title='" + html.escape(reason) + "'")
         row_cls = (f" class='{' '.join(classes)}'" if classes else "") + title_attr
 
