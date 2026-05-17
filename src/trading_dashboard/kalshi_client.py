@@ -203,6 +203,24 @@ class KalshiClient:
             log.warning("candlesticks(%s) failed: %s", ticker, e)
             return None
 
+    def get_balance(self) -> Optional[dict]:
+        """Authenticated /portfolio/balance pull. Returns the raw
+        Kalshi response dict (typically ``{"balance": <cents>,
+        "payout": <cents>}``), or None if the SDK isn't available or
+        the call errored. Errors are logged at warning-level — the
+        renderer treats None as "no live balance" and falls back to
+        the configured default.
+        """
+        self._init()
+        if not self._available:
+            return None
+        try:
+            assert self._sdk is not None
+            return self._sdk.get_balance()
+        except Exception as e:  # noqa: BLE001
+            log.warning("get_balance() failed: %s", e)
+            return None
+
 
 def get_client() -> KalshiClient:
     """Process-wide singleton — keeps the loaded RSA key in memory."""
@@ -213,6 +231,77 @@ def get_client() -> KalshiClient:
         if _cached is None:
             _cached = KalshiClient()
         return _cached
+
+
+# ---------------------------------------------------------------------------
+# Live account balance — drives the Size column's Kelly bankroll.
+# ---------------------------------------------------------------------------
+#
+# Kalshi's /portfolio/balance is cheap (~80ms over the wire) but every
+# dashboard page render would issue one call per panel without caching.
+# We cache the last successful pull for 60 seconds — long enough to
+# absorb a tab full of opened-at-once snapshot polls, short enough that
+# a real deposit / withdrawal shows up on the next refresh after.
+#
+# Returns the *settled* balance in cents (Kalshi's "balance" field).
+# We deliberately ignore the "payout" field (max possible win across
+# open positions) — for Kelly sizing you want the cash you can deploy
+# right now, not the optimistic upper bound on existing positions.
+
+_BALANCE_CACHE: dict[str, Any] = {"ts": 0.0, "cents": None,
+                                     "error": None}
+_BALANCE_TTL_SECONDS = 60.0
+_balance_lock = threading.Lock()
+
+
+def get_balance_cents(force_refresh: bool = False
+                       ) -> tuple[Optional[int], Optional[str]]:
+    """Return (balance_cents, error_or_none).
+
+    On success: (int cents, None).
+    On no-creds / API failure: (None, "human-readable reason").
+
+    Cached for 60 seconds. Pass ``force_refresh=True`` to bypass the
+    cache (e.g. for a "Refresh balance" button in the future).
+    """
+    import time as _time
+    now = _time.monotonic()
+    with _balance_lock:
+        cached = _BALANCE_CACHE.get("cents")
+        ts = _BALANCE_CACHE.get("ts") or 0.0
+        if (not force_refresh
+                and cached is not None
+                and now - ts < _BALANCE_TTL_SECONDS):
+            return int(cached), None
+
+    client = get_client()
+    if not client.available:
+        with _balance_lock:
+            _BALANCE_CACHE["error"] = (
+                "Kalshi API key not configured — Size uses default bankroll."
+            )
+        return None, _BALANCE_CACHE["error"]
+
+    resp = client.get_balance()
+    if not resp or "balance" not in resp:
+        err = "Kalshi /portfolio/balance returned no balance field."
+        with _balance_lock:
+            _BALANCE_CACHE["error"] = err
+        return None, err
+
+    try:
+        cents = int(resp["balance"])
+    except (TypeError, ValueError) as e:
+        err = f"Could not parse Kalshi balance ({e})."
+        with _balance_lock:
+            _BALANCE_CACHE["error"] = err
+        return None, err
+
+    with _balance_lock:
+        _BALANCE_CACHE["ts"] = now
+        _BALANCE_CACHE["cents"] = cents
+        _BALANCE_CACHE["error"] = None
+    return cents, None
 
 
 # ============================================================================ #

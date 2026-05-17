@@ -635,12 +635,55 @@ def fetch_hedge_audit(db_path: str) -> dict:
     }
 
 
-# Paper-trading bankroll used when the bot's display config doesn't
-# specify one. The Kelly sizing column on the watchlist multiplies
-# half-Kelly fractions against this — change it via display.bankroll_cents
-# in dashboard.yaml if a particular bot deserves a bigger or smaller
-# stake size.
-DEFAULT_BANKROLL_CENTS = 100_000  # $1,000 per bot
+# Fallback bankroll used when neither display.bankroll_cents nor a
+# live Kalshi balance is available. The Kelly sizing column on the
+# watchlist multiplies half-Kelly fractions against this — change it
+# via display.bankroll_cents in dashboard.yaml if a particular bot
+# deserves a bigger or smaller stake size, or set the Kalshi API
+# creds on the dashboard host to drive Size off the real balance.
+DEFAULT_BANKROLL_CENTS = 100_000  # $1,000 fallback
+
+
+def _resolve_bankroll(display: dict | None
+                       ) -> tuple[int, str]:
+    """Pick the Kelly-sizing bankroll for one watchlist render.
+
+    Priority:
+      1) ``display['bankroll_cents']`` — per-bot YAML override.
+      2) Live Kalshi /portfolio/balance — cached 60s. Drives Size off
+         the real account balance the user can actually deploy.
+      3) ``DEFAULT_BANKROLL_CENTS`` — fallback when no creds or the
+         Kalshi balance call fails.
+
+    Returns ``(cents, human_readable_source_string)``. The source
+    string is used inside Size-cell tooltips so the user can see at
+    a glance *why* a particular Size value was suggested.
+    """
+    # Per-bot override wins unconditionally. Lets us pin a bot to a
+    # smaller stake (or a paper amount) without touching the live
+    # account balance for the rest of the dashboard.
+    override = (display or {}).get("bankroll_cents")
+    if override is not None:
+        try:
+            cents = int(override)
+            return cents, f"${cents/100:,.0f} (bot override)"
+        except (TypeError, ValueError):
+            pass
+
+    try:
+        from . import kalshi_client
+        live_cents, err = kalshi_client.get_balance_cents()
+    except Exception as exc:  # noqa: BLE001
+        log.warning("kalshi balance lookup raised: %s", exc)
+        live_cents, err = None, str(exc)
+
+    if live_cents is not None:
+        return live_cents, f"${live_cents/100:,.2f} Kalshi balance"
+
+    return DEFAULT_BANKROLL_CENTS, (
+        f"${DEFAULT_BANKROLL_CENTS/100:,.0f} default "
+        f"({err or 'no live balance'})"
+    )
 
 
 def kelly_contracts(price_cents: float | int | None,
@@ -8867,6 +8910,12 @@ def _render_watchlist(out: List[str], watchlist: List[dict],
                       available_bots: List[dict] | None = None,
                       current_bot: str = "",
                       period_key: str = "all") -> None:
+    # Resolve the Kelly-sizing bankroll ONCE per render so every row
+    # in the table prices Size against the same number. Priority:
+    #   1) display.bankroll_cents (per-bot YAML override)
+    #   2) live Kalshi account balance (cached 60s)
+    #   3) DEFAULT_BANKROLL_CENTS fallback (no creds / API down)
+    bankroll_cents, bankroll_source_str = _resolve_bankroll(display)
     out.append("<div class='section'><h2>"
                "Watchlist — model vs market</h2>"
                "<div class='body'>")
@@ -9095,7 +9144,7 @@ def _render_watchlist(out: List[str], watchlist: List[dict],
                "<th class='num' title='Bot model probability for YES | NO.'>My %<div class='th-side-row small gray'><span data-side='yes'>yes</span><span class='cell-sep'> | </span><span data-side='no'>no</span></div></th>"
                "<th class='num' title='Edge = my probability − Kalshi price, per side. Positive means the bot disagrees with Kalshi in that direction.'>Edge<div class='th-side-row small gray'><span data-side='yes'>yes</span><span class='cell-sep'> | </span><span data-side='no'>no</span></div></th>"
                "<th class='num' title='Expected value per $1 contract for YES | NO, net of half-spread.'>EV<div class='th-side-row small gray'><span data-side='yes'>yes</span><span class='cell-sep'> | </span><span data-side='no'>no</span></div></th>"
-               "<th class='num' title='Half-Kelly suggested contracts for the best side at the bot&apos;s configured bankroll. A ⚠ marks rows where the suggested size exceeds the order book&apos;s visible depth — the price you&apos;d actually fill at would be worse than quoted.'>Size</th>"
+               f"<th class='num' title='Half-Kelly suggested contracts for the best side, sized against {html.escape(bankroll_source_str)}. A ⚠ marks rows where the suggested size exceeds the order book&apos;s visible depth — the price you&apos;d actually fill at would be worse than quoted.'>Size</th>"
                "<th>Verdict</th></tr></thead><tbody id='watchlist-tbody'>")
     for v in watchlist:
         ticker = v.get("ticker", "")
@@ -9418,10 +9467,10 @@ def _render_watchlist(out: List[str], watchlist: List[dict],
         # When the suggested contract count exceeds the visible book
         # depth, append a ⚠ — the price you'd actually fill at would
         # slip past the quoted ask, eroding the predicted edge.
-        bankroll_cents = int(
-            (display or {}).get("bankroll_cents")
-            or DEFAULT_BANKROLL_CENTS
-        )
+        # ``bankroll_cents`` + ``bankroll_source_str`` were resolved
+        # once at the top of this function (see _resolve_bankroll
+        # below) — using a single value across the whole table keeps
+        # the suggested sizes internally consistent within one render.
         size_str = "—"
         size_cls = "gray"
         size_tt = "No positive-edge side on this row."
@@ -9437,8 +9486,8 @@ def _render_watchlist(out: List[str], watchlist: List[dict],
                            "best side after odds adjustment.")
             else:
                 cost_cents = n_contracts * (price or 0)
-                size_tt = (f"Half-Kelly @ ${bankroll_cents/100:.0f} "
-                            f"bankroll · cost ≈ "
+                size_tt = (f"Half-Kelly @ "
+                            f"{bankroll_source_str} · cost ≈ "
                             f"${cost_cents/100:.2f} · side {best_side_v}")
                 # Liquidity reality check: visible book depth.
                 depth = v.get("book_depth")
