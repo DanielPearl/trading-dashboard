@@ -2598,13 +2598,15 @@ tr.row-bought td.mono { color: #f0f6fc; font-weight: 600; }
     gap: 12px; margin-bottom: 12px; }
 .wl-hero-stats { display: flex; align-items: baseline; gap: 14px;
     flex-wrap: wrap; }
-.wl-hero-price { font-size: 24px; font-weight: 700; color: #f0f6fc;
+/* Watchlist chart hero top-left — the forecast price + change
+   indicator that lived here previously were removed per user
+   request. The replacement is the volume of the contract the
+   chart line represents (atm market), matching the same large-
+   number + small-label visual rhythm. */
+.wl-hero-volume { font-size: 24px; font-weight: 700; color: #f0f6fc;
     letter-spacing: -0.3px; }
-.wl-hero-price-label { font-size: 12px; font-weight: 500; color: #8b949e;
+.wl-hero-volume-label { font-size: 12px; font-weight: 500; color: #8b949e;
     text-transform: lowercase; margin-left: 4px; letter-spacing: 0.02em; }
-.wl-hero-change { font-size: 14px; font-weight: 600; color: #8b949e; }
-.wl-hero-change.pos { color: #3fb950; }
-.wl-hero-change.neg { color: #f85149; }
 .wl-hero-mtc { font-size: 12px; color: #8b949e; flex: 0 0 auto; }
 .wl-hero-mtc .label { color: #8b949e; text-transform: uppercase;
     letter-spacing: 0.04em; margin-right: 6px; font-size: 10px; }
@@ -8831,35 +8833,48 @@ def _render_watchlist_hero(out: List[str],
                     pass
         active_side = (latest_active.get("side") or "").upper() or None
 
-    # Header: big price + change on the left, time-to-close on the right.
-    # Title and volume removed per user request — title is in the chart's
-    # underlying ladder anyway and volume duplicates per-row Contracts.
+    # Header layout (per user request): top-left is the volume of the
+    # contract the chart line represents (the ATM market) — the
+    # forecast value + arrow/change indicator that used to live here
+    # were removed because they duplicate the information the chart's
+    # right-edge already conveys visually. Top-right keeps the
+    # time-to-close on the soonest market.
+    contract_volume: float | None = None
+    if atm_market:
+        v = (atm_market.get("volume_fp")
+             if atm_market.get("volume_fp") is not None
+             else atm_market.get("volume"))
+        if v is not None:
+            try:
+                contract_volume = float(v)
+            except (TypeError, ValueError):
+                contract_volume = None
+    if contract_volume is None and total_volume:
+        # No specific chart contract — show the visible watchlist's
+        # aggregate Kalshi volume instead. Keeps the panel populated
+        # for bots where the ATM lookup didn't return a market (e.g.
+        # JSON-source bots with no per-ticker volume field).
+        contract_volume = float(total_volume)
+    if contract_volume is None:
+        volume_str = "—"
+    elif contract_volume >= 1e6:
+        volume_str = f"{contract_volume/1e6:.2f}M"
+    elif contract_volume >= 1e3:
+        volume_str = f"{contract_volume/1e3:.1f}K"
+    else:
+        volume_str = f"{int(contract_volume):,}"
+
     out.append("<div class='wl-hero'>")
     out.append("<div class='wl-hero-top'>")
     out.append("<div class='wl-hero-stats'>")
-    # data-current-text holds the live forecast in display form. The
-    # hover JS swaps the price span's text for the value at the cursor
-    # while scrubbing, then restores this string on mouseleave.
+    # Static volume display — no hover-swap behaviour (the chart
+    # hover JS only swaps elements when it finds them; the legacy
+    # .wl-hero-price / .wl-hero-change selectors are gone so the JS
+    # cleanly no-ops on the swap step).
     out.append(
-        f"<div class='wl-hero-price' data-current-text='"
-        f"{html.escape(current_str)}'>"
-        f"<span class='wl-hero-price-text'>{html.escape(current_str)}</span>"
-        f"<span class='wl-hero-price-label'>forecast</span>"
-        f"</div>"
-    )
-    arrow = ""
-    if value_change is not None:
-        arrow = "▲" if value_change >= 0 else "▼"
-    change_display = (change_body if not arrow
-                      else f"{arrow} {change_body}")
-    # Tag the change indicator with its live text + class so the hover
-    # JS can swap to (cursor − earliest) while scrubbing and restore
-    # the live current on leave. The class encodes pos/neg coloring.
-    out.append(
-        f"<div class='wl-hero-change {change_cls}' "
-        f"data-current-text='{html.escape(change_display)}' "
-        f"data-current-class='{html.escape(change_cls)}'>"
-        f"{html.escape(change_display)}"
+        f"<div class='wl-hero-volume'>"
+        f"<span class='wl-hero-volume-text'>{html.escape(volume_str)}</span>"
+        f"<span class='wl-hero-volume-label'>volume</span>"
         f"</div>"
     )
     out.append("</div>")  # /wl-hero-stats
