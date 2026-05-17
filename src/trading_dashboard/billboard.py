@@ -1,4 +1,4 @@
-"""Billboard Charts dashboard adapter.
+"""Billboard Hot 100 dashboard adapter.
 
 The bot writes watchlist.json + metrics.json + model_coefficients.json +
 holdout_predictions.csv + feature_importance.csv on every tick. This
@@ -137,11 +137,11 @@ def build_standard_watchlist_rows(payload: Dict[str, Any]
 
     One row per active Kalshi Billboard market. Mapping notes:
 
-    - ``direction`` carries the album name so the standard renderer's
-      ``question_str`` returns "<album>" in the Question column.
+    - ``direction`` carries the song title so the standard renderer's
+      ``question_str`` returns "<song>" in the Question column.
       ``strike_low`` / ``strike_high`` stay None so question_str
       doesn't append a strike clause.
-    - ``model_prob_yes`` = billboard's P(album hits #1).
+    - ``model_prob_yes`` = billboard's P(song is in Hot 100 top 10).
     - ``bot_verdict`` maps the billboard vocabulary to the standard
       one (BUY YES → BUY_YES, BUY NO → BUY_NO, WATCH / SKIP → SKIP).
     - ``_skip_oi_filter`` = True so the renderer's
@@ -162,7 +162,7 @@ def build_standard_watchlist_rows(payload: Dict[str, Any]
         out.append({
             "ticker": r.get("ticker") or "",
             "title": r.get("title") or "",
-            "direction": r.get("album") or "",
+            "direction": r.get("song") or r.get("album") or "",
             "strike_low": None,
             "strike_high": None,
             "yes_ask_cents": r.get("yes_ask_cents"),
@@ -192,10 +192,15 @@ def build_standard_watchlist_rows(payload: Dict[str, Any]
 
 def _read_billboard_holdout(csv_path: str) -> List[Tuple[float, int]]:
     """Read holdout_predictions.csv. Trainer writes columns:
-    chart_date, album, artist, rank, is_billboard_200_number_1,
+    chart_date, title, artist, rank, is_song_in_top_10_hot_100,
     predicted_prob_no1.
+    (``predicted_prob_no1`` is a legacy column name kept across the
+    Billboard-200-#1 → Hot-100-top-10 retarget; the value is now
+    P(song hits Hot 100 top 10), not P(album hits #1).)
     Returns [(prob, label)] pairs the standard ROC / calibration
-    helpers consume.
+    helpers consume. Also reads the legacy
+    ``is_billboard_200_number_1`` column for old CSVs so a stale
+    artifact on disk doesn't break the page until the next retrain.
     """
     p = Path(csv_path)
     if not p.exists():
@@ -207,8 +212,10 @@ def _read_billboard_holdout(csv_path: str) -> List[Tuple[float, int]]:
             for row in rd:
                 try:
                     prob = float(row.get("predicted_prob_no1") or 0.0)
-                    label = int(float(
-                        row.get("is_billboard_200_number_1") or 0))
+                    raw_label = (row.get("is_song_in_top_10_hot_100")
+                                 or row.get("is_billboard_200_number_1")
+                                 or 0)
+                    label = int(float(raw_label))
                 except (TypeError, ValueError):
                     continue
                 out.append((prob, 1 if label else 0))
@@ -412,7 +419,7 @@ def render_models_panel(out: List[str], bot: Dict[str, Any]) -> None:
         "learn their weights without point-in-time historical "
         "snapshots. By design (avoids leakage from today's signals "
         "predicting past charts).</li>"
-        "<li>The Billboard 200 history loader falls back to a "
+        "<li>The Billboard Hot 100 history loader falls back to a "
         "<strong>synthetic panel</strong> on a fresh checkout. "
         "Cache <code>data/raw/billboard_200_history.csv</code> to "
         "upgrade — real-data F1 is expected to land in the 0.2–0.5 "
