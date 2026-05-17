@@ -2270,16 +2270,26 @@ td.num.red, td.num.green { white-space: nowrap; }
    muted so the per-side numbers (which keep their own colour
    spans) stay the visual focus, with the "/" reading as a divider. */
 .cell-sep { color: #6e7681; padding: 0 2px; }
-/* Align the YES | NO split inside watchlist .num cells so the
-   pipe character lands on the same x-coordinate across rows. Each
-   side becomes a fixed-width inline-block; YES right-aligned,
-   NO left-aligned, separator fixed in the middle. */
-td.num [data-side='yes'] {
+/* Align the YES | NO split inside watchlist .num cells AND the
+   matching header sub-row so the pipe character lands on the
+   same x-coordinate across header + every row. Each side becomes
+   a fixed-width inline-block; YES right-aligned, NO left-aligned,
+   separator fixed in the middle. */
+td.num [data-side='yes'],
+th.num [data-side='yes'] {
     display: inline-block; min-width: 3.5em;
     text-align: right; font-variant-numeric: tabular-nums; }
-td.num [data-side='no'] {
+td.num [data-side='no'],
+th.num [data-side='no'] {
     display: inline-block; min-width: 3.5em;
     text-align: left; font-variant-numeric: tabular-nums; }
+/* Stack the header label on top and the "yes | no" sub-row
+   beneath so the sub-row's pipe column-aligns with the data
+   pipes in the same column. Lowercase + small + gray so the
+   header label visually dominates. */
+th.num .th-side-row { display: block; line-height: 1.3;
+    margin-top: 2px; font-weight: 400; text-transform: none;
+    letter-spacing: 0; }
 /* Bot card drift badge — amber pill that lights up when the model's
    training accuracy and live actual-win-% diverge by >10pp on n≥10
    closed bets. Surfaces "this model may have drifted" as a one-look
@@ -9063,10 +9073,10 @@ def _render_watchlist(out: List[str], watchlist: List[dict],
                "<th>Ticker</th>"
                f"{head_cols}"
                "<th class='num' title='Open interest — total contracts currently held open across all traders on this strike.'>Total contracts</th>"
-               "<th class='num' title='Kalshi market price for YES | NO sides — implied probability each side wins.'>Kalshi % <span class='small gray'>(yes | no)</span></th>"
-               "<th class='num' title='Bot model probability for YES | NO.'>My % <span class='small gray'>(yes | no)</span></th>"
-               "<th class='num' title='Edge = my probability − Kalshi price, per side. Positive means the bot disagrees with Kalshi in that direction.'>Edge <span class='small gray'>(yes | no)</span></th>"
-               "<th class='num' title='Expected value per $1 contract for YES | NO, net of half-spread.'>EV <span class='small gray'>(yes | no)</span></th>"
+               "<th class='num' title='Kalshi market price for YES | NO sides — implied probability each side wins.'>Kalshi %<div class='th-side-row small gray'><span data-side='yes'>yes</span><span class='cell-sep'> | </span><span data-side='no'>no</span></div></th>"
+               "<th class='num' title='Bot model probability for YES | NO.'>My %<div class='th-side-row small gray'><span data-side='yes'>yes</span><span class='cell-sep'> | </span><span data-side='no'>no</span></div></th>"
+               "<th class='num' title='Edge = my probability − Kalshi price, per side. Positive means the bot disagrees with Kalshi in that direction.'>Edge<div class='th-side-row small gray'><span data-side='yes'>yes</span><span class='cell-sep'> | </span><span data-side='no'>no</span></div></th>"
+               "<th class='num' title='Expected value per $1 contract for YES | NO, net of half-spread.'>EV<div class='th-side-row small gray'><span data-side='yes'>yes</span><span class='cell-sep'> | </span><span data-side='no'>no</span></div></th>"
                "<th class='num' title='Half-Kelly suggested contracts for the best side at the bot&apos;s configured bankroll. A ⚠ marks rows where the suggested size exceeds the order book&apos;s visible depth — the price you&apos;d actually fill at would be worse than quoted.'>Size</th>"
                "<th>Verdict</th></tr></thead><tbody id='watchlist-tbody'>")
     for v in watchlist:
