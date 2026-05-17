@@ -304,6 +304,145 @@ def get_balance_cents(force_refresh: bool = False
     return cents, None
 
 
+# ---------------------------------------------------------------------------
+# Live "implied spot" for above-$X bot series — drives the Home grid's
+# stale-forecast badge.
+# ---------------------------------------------------------------------------
+#
+# For an "above $X" market priced at YES = 50¢, the market is saying
+# "50/50 the underlying is above X" — i.e. underlying ≈ X. We find the
+# strike where YES crosses 50¢ on the most-imminent event of a given
+# series and return it as the market-implied current value of the
+# underlying.
+#
+# Used by the natural-gas card to flag the bot's stored forecast when
+# it has drifted away from the live Kalshi-implied price (typically a
+# sign of EIA-feed lag or a missed retrain).
+#
+# Cached for 60s — the same cadence as the balance helper above. Long
+# enough to absorb a tab full of card grids hitting it simultaneously,
+# short enough that a real intra-day move shows up on the next refresh.
+
+_IMPLIED_SPOT_CACHE: dict = {}
+_IMPLIED_SPOT_TTL_SECONDS = 60.0
+_implied_spot_lock = threading.Lock()
+
+
+def _parse_threshold(ticker: str) -> Optional[float]:
+    """Parse the numeric strike out of an above-$X ticker — accepts
+    both the -T2.750 (top) and -B2.750 (bottom) conventions."""
+    import re
+    m = re.search(r"-[BT](\d+(?:\.\d+)?)$", ticker or "")
+    if not m:
+        return None
+    try:
+        return float(m.group(1))
+    except ValueError:
+        return None
+
+
+def _yes_ask_cents(market: dict) -> Optional[int]:
+    """Read yes_ask from either legacy int (yes_ask) or new float
+    (yes_ask_dollars) — same convention the bots use."""
+    legacy = market.get("yes_ask")
+    if legacy not in (None, ""):
+        try:
+            return int(legacy)
+        except (TypeError, ValueError):
+            pass
+    dollars = market.get("yes_ask_dollars")
+    if dollars not in (None, ""):
+        try:
+            return int(round(float(dollars) * 100))
+        except (TypeError, ValueError):
+            pass
+    return None
+
+
+def get_implied_spot(series_ticker: str,
+                       force_refresh: bool = False
+                       ) -> tuple[Optional[float], Optional[str]]:
+    """Return (implied_spot_usd, error_or_none) for a series.
+
+    Finds the 50¢-crossover strike on the most-imminent open event of
+    ``series_ticker``. Per-series cached for 60s so the home grid's
+    bot-card pass doesn't issue duplicate Kalshi calls.
+
+    Returns (None, "reason") when the SDK is unavailable, no markets
+    are returned, or the YES-curve doesn't cross 50¢ in the visible
+    strike range.
+    """
+    import time as _time
+    now = _time.monotonic()
+    with _implied_spot_lock:
+        cached = _IMPLIED_SPOT_CACHE.get(series_ticker)
+        if (not force_refresh and cached
+                and now - cached.get("ts", 0.0) < _IMPLIED_SPOT_TTL_SECONDS):
+            return cached.get("spot"), cached.get("error")
+
+    client = get_client()
+    if not client.available:
+        return None, "Kalshi API key not configured."
+
+    markets = client.list_markets(series_ticker=series_ticker, limit=400) or []
+    if not markets:
+        return None, f"No open {series_ticker} markets."
+
+    # Group by event so we can pick the soonest-closing one — Kalshi
+    # may return strikes across multiple events when a series has
+    # overlap (e.g. daily natgas with both today + tomorrow open).
+    by_event: dict[str, list] = {}
+    for m in markets:
+        ev = m.get("event_ticker") or ""
+        by_event.setdefault(ev, []).append(m)
+
+    def _event_close_ts(ms: list) -> float:
+        for m in ms:
+            ts = m.get("close_time") or m.get("expected_expiration_time")
+            if ts:
+                try:
+                    from datetime import datetime as _dt
+                    return _dt.fromisoformat(ts.replace("Z", "+00:00")).timestamp()
+                except (TypeError, ValueError):
+                    continue
+        return float("inf")
+
+    soonest = min(by_event.values(), key=_event_close_ts)
+
+    # Build sorted (strike, yes_ask) pairs and find the 50¢ crossover.
+    pairs: list[tuple[float, int]] = []
+    for m in soonest:
+        thr = _parse_threshold(m.get("ticker", ""))
+        ya = _yes_ask_cents(m)
+        if thr is not None and ya is not None:
+            pairs.append((thr, ya))
+    pairs.sort(key=lambda x: x[0])
+    if len(pairs) < 2:
+        return None, "Not enough priced strikes to interpolate spot."
+
+    spot: Optional[float] = None
+    for (lo_s, lo_y), (hi_s, hi_y) in zip(pairs, pairs[1:]):
+        if lo_y >= 50 >= hi_y:
+            span = lo_y - hi_y
+            spot = (lo_s if span <= 0
+                    else lo_s + ((lo_y - 50) / span) * (hi_s - lo_s))
+            break
+    if spot is None:
+        # 50¢ outside the visible strike range — anchor to the
+        # closer endpoint so the badge still has SOMETHING to
+        # compare against rather than dashing out.
+        lo_s, lo_y = pairs[0]
+        hi_s, hi_y = pairs[-1]
+        spot = float(lo_s) if lo_y < 50 else float(hi_s) if hi_y > 50 else None
+
+    with _implied_spot_lock:
+        _IMPLIED_SPOT_CACHE[series_ticker] = {
+            "ts": now, "spot": spot,
+            "error": None if spot is not None else "no crossover",
+        }
+    return spot, (None if spot is not None else "no 50¢ crossover")
+
+
 # ============================================================================ #
 # Module-level helpers used by the dashboard's render path.
 #

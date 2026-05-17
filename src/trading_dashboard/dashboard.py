@@ -2399,6 +2399,19 @@ td.num.cell-stack .side-no  { color: #f85149 !important; }  /* red   */
     font-size: 9px; font-weight: 700; text-transform: uppercase;
     letter-spacing: 0.04em; line-height: 1.5;
     vertical-align: 2px; }
+/* Forecast-staleness badge — fires when the bot's stored
+   current_gas_price has drifted away from the live Kalshi-implied
+   spot by more than $0.20, which usually means the bot is reading
+   a stale upstream data feed (EIA publishing lag, missed retrain,
+   etc.). Shares the drift-badge typography so the two pills sit
+   visually consistent next to the bot name. */
+.stale-badge { display: inline-block; margin-left: 6px;
+    padding: 1px 6px; border-radius: 4px;
+    background: rgba(227, 179, 65, 0.18);
+    color: #e3b341; border: 1px solid rgba(227, 179, 65, 0.35);
+    font-size: 9px; font-weight: 700; text-transform: uppercase;
+    letter-spacing: 0.04em; line-height: 1.5;
+    vertical-align: 2px; }
 /* Auto-pause notifications panel — surfaced above the bot-card
    grid on Home when the regime monitor has flipped a bot off in the
    recent past. Silent (no DOM) when the audit log is empty so the
@@ -4341,6 +4354,55 @@ def _render_bot_cards(out: List[str], rollup: dict,
                     f"title='{html.escape(regime.get('reason') or '')}'>"
                     f"{html.escape(regime.get('label') or '')}</span>"
                 )
+
+        # Forecast-staleness badge — flags when the bot's stored
+        # ``current_gas_price`` model snapshot has drifted away from
+        # the live Kalshi-implied spot (50¢-crossover strike on the
+        # series' most-imminent event). Triggered above a $0.20
+        # gap, which is roughly 1σ for the natgas residual and well
+        # outside normal noise. Catches the "EIA feed lag" failure
+        # mode where the bot's price-input is days behind reality
+        # and its forecast (and every model_prob_yes) is anchored
+        # to a stale level.
+        #
+        # Only applies to sim.db-style bots that record a scalar
+        # underlying — same exclusion as the regime pill above.
+        staleness_html = ""
+        if (b.get("dashboard_type") not in
+                ("tennis", "survivor", "billboard", "whale", "rules-parser")
+                and m and m.get("current_gas_price") is not None
+                and b.get("series_ticker")):
+            try:
+                bot_price = float(m["current_gas_price"])
+                divisor = float((b.get("display") or {}).get("divisor", 1.0)) or 1.0
+                bot_price_in_market_units = bot_price / divisor
+                from . import kalshi_client as _kc
+                implied, _err = _kc.get_implied_spot(b["series_ticker"])
+            except Exception:  # noqa: BLE001
+                bot_price_in_market_units = None
+                implied = None
+            if implied is not None and bot_price_in_market_units is not None:
+                # Use $0.20 absolute threshold for natgas-shape series;
+                # this is roughly 1σ of the bot's residual and well
+                # outside normal intra-day noise. For markets where
+                # the scalar isn't a $/MMBTU price (e.g. jobless claims
+                # in thousands), the same absolute gap reads as a
+                # different number of "units" — acceptable as a v1
+                # heuristic, can be refined per-bot later.
+                gap = abs(implied - bot_price_in_market_units)
+                if gap >= 0.20:
+                    fmt = lambda v: f"{v:.2f}"  # noqa: E731
+                    tip = (
+                        f"Bot's stored current value: "
+                        f"{fmt(bot_price_in_market_units)} · "
+                        f"Live Kalshi-implied: {fmt(implied)} · "
+                        f"Gap: {gap:+.2f} — model may be reading a "
+                        f"stale upstream data feed."
+                    )
+                    staleness_html = (
+                        f"<span class='stale-badge' "
+                        f"title='{html.escape(tip)}'>⚠ stale</span>"
+                    )
         # Toggle state for this bot — defaults to enabled = True.
         bot_state_entry = bot_states.get(bot_key) or {}
         bot_enabled = bool(bot_state_entry.get("enabled", True))
@@ -4367,7 +4429,7 @@ def _render_bot_cards(out: List[str], rollup: dict,
         out.append("<div class='bot-card-head-left'>")
         out.append(
             f"<div class='bot-name'>{html.escape(name)}{regime_html}"
-            f"{drift_html}{paused_badge}</div>"
+            f"{drift_html}{staleness_html}{paused_badge}</div>"
         )
         out.append(
             f"<div class='bot-meta'>{html.escape(series_ticker)}</div>"
