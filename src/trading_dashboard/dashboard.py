@@ -2270,6 +2270,16 @@ td.num.red, td.num.green { white-space: nowrap; }
    muted so the per-side numbers (which keep their own colour
    spans) stay the visual focus, with the "/" reading as a divider. */
 .cell-sep { color: #6e7681; padding: 0 2px; }
+/* Align the YES | NO split inside watchlist .num cells so the
+   pipe character lands on the same x-coordinate across rows. Each
+   side becomes a fixed-width inline-block; YES right-aligned,
+   NO left-aligned, separator fixed in the middle. */
+td.num [data-side='yes'] {
+    display: inline-block; min-width: 3.5em;
+    text-align: right; font-variant-numeric: tabular-nums; }
+td.num [data-side='no'] {
+    display: inline-block; min-width: 3.5em;
+    text-align: left; font-variant-numeric: tabular-nums; }
 /* Bot card drift badge — amber pill that lights up when the model's
    training accuracy and live actual-win-% diverge by >10pp on n≥10
    closed bets. Surfaces "this model may have drifted" as a one-look
