@@ -148,6 +148,20 @@ bots:
     coefficients_path: /root/table-tennis-forecast/data/processed/artifacts/model_coefficients.json
     sim_state_path: /root/table-tennis-forecast/data/outputs/sim_state.json
 
+  - key: billboard
+    name: Billboard Charts
+    # Billboard 200 #1 forecaster. Same JSON-source shape as the
+    # survivor / tennis bots — watchlist.json + metrics.json +
+    # coefficients.json, rendered via trading_dashboard/billboard.py.
+    dashboard_type: billboard
+    series_ticker: KXTOPALBUM
+    db_path: /root/billboard-charts/data/outputs/watchlist.json
+    decisions_path: /root/billboard-charts/data/outputs/watchlist.json
+    watchlist_json_path: /root/billboard-charts/data/outputs/watchlist.json
+    metrics_path: /root/billboard-charts/data/processed/artifacts/metrics.json
+    coefficients_path: /root/billboard-charts/data/processed/artifacts/model_coefficients.json
+    sim_state_path: /root/billboard-charts/data/outputs/sim_state.json
+
   - key: darts
     name: Darts Forecast
     # Darts bot writes the same JSON output schema as tennis (one row

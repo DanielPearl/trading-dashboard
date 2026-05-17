@@ -816,6 +816,9 @@ def fetch_global_summary(bots: List[dict],
         elif b.get("dashboard_type") == "survivor":
             from . import survivor as _survivor
             s = _survivor.summary_for_rollup(b.get("sim_state_path"))
+        elif b.get("dashboard_type") == "billboard":
+            from . import billboard as _billboard
+            s = _billboard.summary_for_rollup(b.get("sim_state_path"))
         elif b.get("dashboard_type") and b["dashboard_type"] != "standard":
             continue
         else:
@@ -4211,7 +4214,7 @@ def _render_bot_cards(out: List[str], rollup: dict,
         # through its own page since its model has its own renderer.
         if not bot_key:
             href = "#"
-        elif b.get("dashboard_type") in ("tennis", "survivor"):
+        elif b.get("dashboard_type") in ("tennis", "survivor", "billboard"):
             href = f"?bot={html.escape(bot_key)}&tab=models"
         else:
             href = f"?tab=models&bot={html.escape(bot_key)}"
@@ -4230,7 +4233,7 @@ def _render_bot_cards(out: List[str], rollup: dict,
         # "training accuracy" is a per-strike grid average that doesn't
         # line up apples-to-apples with the live actual-win-%, so the
         # drift badge fires spuriously on every load.
-        _drift_exempt = b.get("dashboard_type") in ("tennis", "survivor") \
+        _drift_exempt = b.get("dashboard_type") in ("tennis", "survivor", "billboard") \
             or bot_key == "natural-gas"
         if m and not _drift_exempt:
             a_wins_pre = int(m.get("actual_wins") or 0)
@@ -4259,7 +4262,7 @@ def _render_bot_cards(out: List[str], rollup: dict,
         # the schema we need, so they get no pill (rather than a
         # misleading "no data" badge on every load).
         regime_html = ""
-        if b.get("dashboard_type") not in ("tennis", "survivor"):
+        if b.get("dashboard_type") not in ("tennis", "survivor", "billboard"):
             regime = bot_regime_status(b.get("db_path") or "")
             if regime.get("status") and regime["status"] != "gray":
                 regime_html = (
@@ -9743,6 +9746,30 @@ class Handler(BaseHTTPRequestHandler):
                     self.wfile.write(payload)
                     return
 
+                # Billboard Charts is the same JSON-source shape as
+                # survivor (watchlist.json + metrics.json +
+                # coefficients.json) but with per-album rows.
+                if bot.get("dashboard_type") == "billboard":
+                    from . import billboard as _billboard
+                    billboard_tab = "models" if tab_key == "models" else "watchlist"
+                    body = _billboard.render_page(
+                        metrics_path=bot.get("metrics_path"),
+                        coefficients_path=bot.get("coefficients_path"),
+                        watchlist_path=bot.get("watchlist_json_path"),
+                        sim_state_path=bot.get("sim_state_path"),
+                        available_bots=self.bots,
+                        current_bot_key=bot["key"],
+                        tab_key=billboard_tab,
+                    )
+                    payload = body.encode("utf-8")
+                    self.send_response(200)
+                    self.send_header("Content-Type", "text/html; charset=utf-8")
+                    self.send_header("Cache-Control", "no-store")
+                    self.send_header("Content-Length", str(len(payload)))
+                    self.end_headers()
+                    self.wfile.write(payload)
+                    return
+
                 # Tennis-shape bots (tennis / table-tennis / darts) used
                 # to dispatch into their own ``tennis.render_page`` here.
                 # Phase 2a routes them through the standard render path
@@ -9859,7 +9886,8 @@ class Handler(BaseHTTPRequestHandler):
                 prob_history: List[dict] = []
                 if (db_path
                         and bot.get("dashboard_type") not in ("tennis",
-                                                              "survivor")):
+                                                              "survivor",
+                                                              "billboard")):
                     candidates: List[str] = []
                     if latest_active and latest_active.get("ticker"):
                         candidates.append(latest_active["ticker"])
@@ -9917,19 +9945,23 @@ class Handler(BaseHTTPRequestHandler):
                     # metrics.json / coefficients.json. Synthesize a model
                     # dict for the card grid so the tennis bot shows up
                     # alongside the Kalshi bots on the home page.
-                    if b.get("dashboard_type") in ("tennis", "survivor"):
-                        # Tennis and survivor share the sim_state.json
-                        # shape — the survivor adapter's
-                        # closed_positions_for_rollup delegates to the
-                        # tennis adapter under the hood. The tennis-
-                        # specific model_summary_for_card path is fine
-                        # for both (survivor's adapter has the same
-                        # signature).
+                    if b.get("dashboard_type") in ("tennis", "survivor", "billboard"):
+                        # Tennis, survivor, and billboard share the
+                        # sim_state.json shape — the survivor and
+                        # billboard adapters delegate
+                        # closed_positions_for_rollup to the tennis
+                        # adapter under the hood. The
+                        # model_summary_for_card signature is the
+                        # same across all three.
                         from . import tennis as _tennis
                         from . import survivor as _survivor
-                        adapter = (_survivor
-                                    if b.get("dashboard_type") == "survivor"
-                                    else _tennis)
+                        from . import billboard as _billboard
+                        if b.get("dashboard_type") == "survivor":
+                            adapter = _survivor
+                        elif b.get("dashboard_type") == "billboard":
+                            adapter = _billboard
+                        else:
+                            adapter = _tennis
                         m = adapter.model_summary_for_card(
                             b.get("metrics_path"),
                             b.get("sim_state_path"),
@@ -10160,6 +10192,12 @@ class Handler(BaseHTTPRequestHandler):
                     # Survivor page also uses page reloads; the live
                     # monitor rewrites watchlist.json every few minutes.
                     payload_dict = {"bot": bot["key"], "type": "survivor"}
+                elif bot.get("dashboard_type") == "billboard":
+                    # Billboard renders fully server-side from
+                    # watchlist.json; the live monitor rewrites it
+                    # every 5 minutes so a simple page reload is
+                    # enough to refresh the UI.
+                    payload_dict = {"bot": bot["key"], "type": "billboard"}
                 else:
                     db_path = bot["db_path"]
                     payload_dict = build_snapshot(db_path, self.bots,
@@ -10332,6 +10370,13 @@ def main(argv: list[str] | None = None) -> int:
             # active "Will X be eliminated" markets — the watchlist
             # page itself surfaces the "no active elimination
             # contracts" empty state inside the standard chrome.
+            available = bool(b.metrics_path
+                             and Path(b.metrics_path).exists())
+        elif b.dashboard_type == "billboard":
+            # Same idiom as survivor — available whenever the trained
+            # metrics file is on disk, even if no Billboard markets
+            # are currently open. The watchlist page surfaces an
+            # empty-state placeholder when rows is empty.
             available = bool(b.metrics_path
                              and Path(b.metrics_path).exists())
         else:
