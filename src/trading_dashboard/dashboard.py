@@ -2336,6 +2336,26 @@ th.num [data-side='no'] {
 th.num .th-side-row { display: block; line-height: 1.3;
     margin-top: 2px; font-weight: 400; text-transform: none;
     letter-spacing: 0; }
+/* Vertical YES-on-top / NO-on-bottom layout for the side-paired
+   columns (My %, Kalshi %, Edge, EV). YES always renders green,
+   NO always renders red — the side is conveyed by colour AND
+   position, replacing the old horizontal "yes | no" rendering.
+   ``.side-yes`` / ``.side-no`` use !important to override the
+   per-row tinting rules (.row-bought etc.) that previously
+   dimmed cells inside acted-on rows — the side colour should
+   stay legible regardless of row state. */
+td.num.cell-stack { padding-top: 2px; padding-bottom: 2px;
+    line-height: 1.2; }
+td.num.cell-stack .side-yes,
+td.num.cell-stack .side-no {
+    display: block; text-align: right;
+    font-variant-numeric: tabular-nums;
+    /* drop the inline-block min-width set by the [data-side]
+       rules above — vertical cells don't need horizontal
+       alignment between YES and NO. */
+    min-width: 0; }
+td.num.cell-stack .side-yes { color: #3fb950 !important; }  /* green */
+td.num.cell-stack .side-no  { color: #f85149 !important; }  /* red   */
 /* Bot card drift badge — amber pill that lights up when the model's
    training accuracy and live actual-win-% diverge by >10pp on n≥10
    closed bets. Surfaces "this model may have drifted" as a one-look
@@ -9140,10 +9160,18 @@ def _render_watchlist(out: List[str], watchlist: List[dict],
                "<th>Ticker</th>"
                f"{head_cols}"
                "<th class='num' title='Open interest — total contracts currently held open across all traders on this strike.'>Total contracts</th>"
-               "<th class='num' title='Kalshi market price for YES | NO sides — implied probability each side wins.'>Kalshi %<div class='th-side-row small gray'><span data-side='yes'>yes</span><span class='cell-sep'> | </span><span data-side='no'>no</span></div></th>"
-               "<th class='num' title='Bot model probability for YES | NO.'>My %<div class='th-side-row small gray'><span data-side='yes'>yes</span><span class='cell-sep'> | </span><span data-side='no'>no</span></div></th>"
-               "<th class='num' title='Edge = my probability − Kalshi price, per side. Positive means the bot disagrees with Kalshi in that direction.'>Edge<div class='th-side-row small gray'><span data-side='yes'>yes</span><span class='cell-sep'> | </span><span data-side='no'>no</span></div></th>"
-               "<th class='num' title='Expected value per $1 contract for YES | NO, net of half-spread.'>EV<div class='th-side-row small gray'><span data-side='yes'>yes</span><span class='cell-sep'> | </span><span data-side='no'>no</span></div></th>"
+               # My % sits to the left of Kalshi %. Both columns (plus
+               # Edge + EV) render their YES value stacked on top in
+               # green and their NO value on the bottom in red — the
+               # row-cell renderer (_stacked() below) emits the
+               # .cell-stack td that the CSS prints two rows tall.
+               # The legacy "yes | no" sub-label is dropped from the
+               # header now that vertical position + colour convey
+               # the side.
+               "<th class='num' title='Bot model probability — YES on top (green), NO on bottom (red).'>My %</th>"
+               "<th class='num' title='Kalshi market price — YES on top (green), NO on bottom (red). Each side&apos;s implied probability that side wins.'>Kalshi %</th>"
+               "<th class='num' title='Edge = my probability − Kalshi price, per side. YES on top (green), NO on bottom (red).'>Edge</th>"
+               "<th class='num' title='Expected value per $1 contract, per side, net of half-spread. YES on top (green), NO on bottom (red).'>EV</th>"
                f"<th class='num' title='Half-Kelly suggested contracts for the best side, sized against {html.escape(bankroll_source_str)}. A ⚠ marks rows where the suggested size exceeds the order book&apos;s visible depth — the price you&apos;d actually fill at would be worse than quoted.'>Size</th>"
                "<th>Verdict</th></tr></thead><tbody id='watchlist-tbody'>")
     for v in watchlist:
@@ -9433,34 +9461,26 @@ def _render_watchlist(out: List[str], watchlist: List[dict],
                 f"<td>{html.escape(title_text)}</td>"
                 f"<td>{html.escape(qstr)}</td>"
             )
-        # Combined Kalshi / My / Edge / EV cells render the YES side on
-        # the left of the slash and the NO side on the right, each
-        # span carrying its own colour class so the visual cue per
-        # side survives the merge.
-        kalshi_cell = (
-            f"<td class='num' data-field='kalshi'>"
-            f"<span data-side='yes'>{kyes_str}</span>"
-            f"<span class='cell-sep'> | </span>"
-            f"<span data-side='no'>{kno_str}</span></td>"
-        )
-        my_cell = (
-            f"<td class='num' data-field='my'{my_yes_tt or my_no_tt}>"
-            f"<span class='{my_yes_cls}' data-side='yes'>{my_yes_str}</span>"
-            f"<span class='cell-sep'> | </span>"
-            f"<span class='{my_no_cls}' data-side='no'>{my_no_str}</span></td>"
-        )
-        edge_cell = (
-            f"<td class='num' data-field='edge'>"
-            f"<span class='{edge_yes_cls}' data-side='yes'>{edge_yes_str}</span>"
-            f"<span class='cell-sep'> | </span>"
-            f"<span class='{edge_no_cls}' data-side='no'>{edge_no_str}</span></td>"
-        )
-        ev_cell = (
-            f"<td class='num' data-field='ev'>"
-            f"<span class='{ev_yes_cls}' data-side='yes'>{ev_yes_str}</span>"
-            f"<span class='cell-sep'> | </span>"
-            f"<span class='{ev_no_cls}' data-side='no'>{ev_no_str}</span></td>"
-        )
+        # User-requested layout: YES on top in green, NO on bottom in
+        # red — across every side-paired column (My %, Kalshi %, Edge,
+        # EV). Replaces the previous horizontal "yes | no" rendering.
+        # The side is conveyed by vertical position + colour; we drop
+        # the per-value green/yellow/red EV-magnitude tinting since
+        # the side colour now dominates the cell.
+        def _stacked(yes_val: str, no_val: str,
+                       field: str, extra_tt: str = "") -> str:
+            return (
+                f"<td class='num cell-stack' "
+                f"data-field='{field}'{extra_tt}>"
+                f"<div class='side-yes green' data-side='yes'>{yes_val}</div>"
+                f"<div class='side-no red' data-side='no'>{no_val}</div>"
+                f"</td>"
+            )
+        kalshi_cell = _stacked(kyes_str, kno_str, "kalshi")
+        my_cell     = _stacked(my_yes_str, my_no_str, "my",
+                                  extra_tt=(my_yes_tt or my_no_tt))
+        edge_cell   = _stacked(edge_yes_str, edge_no_str, "edge")
+        ev_cell     = _stacked(ev_yes_str, ev_no_str, "ev")
 
         # Half-Kelly suggested size for the best-EV side. Skip the
         # column for rows with no positive-EV side (renders as "—").
@@ -9514,8 +9534,8 @@ def _render_watchlist(out: List[str], watchlist: List[dict],
                    f"<td class='mono'>{ticker_cell}</td>"
                    f"{middle_cells}"
                    f"<td class='num' data-field='oi'>{oi_str}</td>"
-                   f"{kalshi_cell}"
                    f"{my_cell}"
+                   f"{kalshi_cell}"
                    f"{edge_cell}"
                    f"{ev_cell}"
                    f"{size_cell}"
