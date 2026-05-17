@@ -333,7 +333,6 @@ def _check_tennis_state(sim_state_path: str | None, bot: Dict[str, Any],
         entry = pos.get("entry_market_prob")
         mark = pos.get("current_market_prob")
         ticker = pos.get("match_id") or pos.get("ticker")
-        is_stale = _ticker_is_stale(ticker)
         if entry is None:
             still_open.append(pos)
             continue
@@ -342,26 +341,33 @@ def _check_tennis_state(sim_state_path: str | None, bot: Dict[str, Any],
         except (TypeError, ValueError):
             still_open.append(pos)
             continue
-        # For stale positions without a current mark, exit at entry —
-        # P&L is zero but the position lands in History instead of
-        # lingering forever.
+        # No mark → no hedge action. (We used to fall through to a
+        # stale/settled_auto path here; that produced false-positive
+        # closes on tennis positions whose encoded match date had
+        # passed but whose contract was still live. Tennis-shape
+        # bots manage their own settlement.)
         if mark is None:
-            if is_stale:
-                mark_f = entry_f
-            else:
-                still_open.append(pos)
-                continue
-        else:
-            try:
-                mark_f = float(mark)
-            except (TypeError, ValueError):
-                still_open.append(pos)
-                continue
+            still_open.append(pos)
+            continue
+        try:
+            mark_f = float(mark)
+        except (TypeError, ValueError):
+            still_open.append(pos)
+            continue
         pnl_cents = (mark_f - entry_f) * 100.0
         reason: str | None = None
-        if is_stale:
-            reason = "settled_auto"
-        elif profit_lock_cents > 0 and pnl_cents >= profit_lock_cents:
+        # NOTE: the stale/settled_auto cleanup is intentionally
+        # NOT applied to tennis-shape positions. The _ticker_is_stale
+        # heuristic parses YYMMMDD from the ticker and treats that
+        # date as the contract close — correct for sim.db bots but
+        # wrong for KXATPMATCH / KXWTAMATCH where the encoded date
+        # is the match DAY, not when the contract closes. Auto-
+        # closing on that date created a feedback loop with the
+        # tennis bot's own logic (bot re-opens the position every
+        # tick, daemon closes it ~60s later, duplicate "lost"
+        # entries pile up in History). Tennis-shape bots manage
+        # their own settlement via watchlist status updates.
+        if profit_lock_cents > 0 and pnl_cents >= profit_lock_cents:
             reason = "hedge_pl"
         elif stop_loss_cents > 0 and pnl_cents <= -stop_loss_cents:
             reason = "hedge_sl"
