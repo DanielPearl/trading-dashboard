@@ -340,7 +340,11 @@ def render_models_panel(out: List[str], bot: Dict[str, Any]) -> None:
         "Sourced from the trainer's held-out historical test set — "
         "predictions the model never saw during training, so the "
         "numbers below are its honest evaluation against past reality, "
-        "not a re-run of the live closed-bet ledger."
+        "not a re-run of the live closed-bet ledger. Numbers reflect "
+        "the post-leakage-fix feature builder (see Limitations below) "
+        "— test F1 dropped from 0.93 → 0.09 on synthetic data after "
+        "the audit, because the previous version was scoring labels "
+        "via shortcut paths rather than learning real signal."
     )
     out.append(f"<p class='small gray' style='margin:0 0 6px 0;'>"
                 f"{html.escape(holdout_blurb)}</p>")
@@ -376,6 +380,48 @@ def render_models_panel(out: List[str], bot: Dict[str, Any]) -> None:
     out.append("<h3 class='subhead'>Hedge effectiveness audit "
                 "<span class='small gray'>(closed bets only)</span></h3>")
     out.append("<div class='empty'>No hedge events fired yet.</div>")
+
+    # ── 6. Limitations & audit history (Billboard-specific) ──────────
+    # Sits at the bottom of the Models tab so a user can scan the
+    # headline metrics first, then read the context behind them.
+    # Honest disclosure of where the model still has gaps (synthetic
+    # history fallback, zero-filled external signals at train time)
+    # and what's been audited (the four leakage paths we fixed in
+    # the post-v1 patch — without this note a user revisiting the
+    # page after the fix would see the test F1 drop from 0.93 → 0.09
+    # and assume the model got worse, when it actually just got
+    # honest).
+    out.append("<h3 class='subhead'>Limitations &amp; audit history</h3>")
+    out.append(
+        "<ul class='small gray' style='margin:0 0 12px 18px; "
+        "line-height:1.6;'>"
+        "<li><strong>Leakage audit (post-v1):</strong> Four label-"
+        "leakage paths were found and fixed in the feature builder "
+        "(<code>peak_position_so_far</code> debut-week fillna, "
+        "<code>debut_rank</code> on debut rows, <code>best_3wk_rank</code> "
+        "unshifted rolling min, <code>competition_count</code> "
+        "self-inclusion). Test F1 on synthetic data dropped from "
+        "<strong>0.93 → 0.09</strong> after the fix, because the "
+        "previous version was scoring labels via shortcut paths "
+        "rather than learning real signal. The current metrics are "
+        "the honest holdout numbers.</li>"
+        "<li><strong>External-signal features</strong> (Spotify "
+        "popularity, Reddit chatter, Google Trends, YouTube views) "
+        "are scored LIVE for current Kalshi candidates, but are "
+        "zero-filled for historical training rows — the model can't "
+        "learn their weights without point-in-time historical "
+        "snapshots. By design (avoids leakage from today's signals "
+        "predicting past charts).</li>"
+        "<li>The Billboard 200 history loader falls back to a "
+        "<strong>synthetic panel</strong> on a fresh checkout. "
+        "Cache <code>data/raw/billboard_200_history.csv</code> to "
+        "upgrade — real-data F1 is expected to land in the 0.2–0.5 "
+        "range once a proper pull is in place.</li>"
+        "<li>Backtest is currently a stub against a constant market "
+        "probability — the dashboard's edge column is the live "
+        "signal until Kalshi price-history caching lands.</li>"
+        "</ul>"
+    )
 
 
 def _default_holdout_path(metrics_path: str | None) -> str:
