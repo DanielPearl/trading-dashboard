@@ -200,10 +200,13 @@ def _check_db(db_path: str, bot: Dict[str, Any],
                     reason = "hedge_sl"
             if not reason:
                 continue
-            # Sport bots: skip pre-game / "warming up" hedge closes.
-            # Settled_auto exits still proceed — zombie positions need
-            # cleanup regardless of game state.
-            if reason in ("hedge_pl", "hedge_sl"):
+            # Sport bots: pre-game stop-loss is blocked — pre-game
+            # price drops are usually noise (injury rumors, lineup
+            # leaks) that reverse by tip-off. Profit-lock is NOT
+            # blocked: if the line moves heavily our way before the
+            # game (we're sitting on real gains), lock them in.
+            # Settled_auto exits proceed regardless.
+            if reason == "hedge_sl":
                 from . import sport_game_state
                 allowed, gate_reason = sport_game_state.is_hedge_allowed(
                     bot, ticker,
@@ -374,10 +377,12 @@ def _check_tennis_state(sim_state_path: str | None, bot: Dict[str, Any],
         if not reason:
             still_open.append(pos)
             continue
-        # Sport gate: skip pre-match / "warming up" hedge closes on
-        # tennis-shape bots. Settled_auto still proceeds so zombie
-        # matches get cleaned up regardless of game state.
-        if reason in ("hedge_pl", "hedge_sl"):
+        # Sport gate: pre-match stop-loss is blocked — pre-match
+        # price action is noisy (injury chatter, lineup news) and
+        # often reverses. Profit-lock is NOT blocked: if the line
+        # has moved heavily in our favour before the match, take
+        # the win.
+        if reason == "hedge_sl":
             from . import sport_game_state
             allowed, gate_reason = sport_game_state.is_hedge_allowed(
                 bot, ticker,
