@@ -254,133 +254,247 @@ def _render_bot_dropdown(available_bots: List[dict], current_key: str) -> str:
 
 def _render_current_prediction(payload: Dict[str, Any],
                                 metrics: Dict[str, Any]) -> str:
+    """Top-of-watchlist card row. Same .row.compact / .card structure
+    the standard renderer uses for retail-gas-prices' "Current price /
+    Predicted next week" row, with billboard-appropriate labels.
+    """
     blended = metrics.get("blended") or {}
     rows = payload.get("rows") or []
     top = rows[0] if rows else {}
+    n_buys = sum(1 for r in rows if r.get("verdict") in ("BUY YES", "BUY NO"))
     cards = [
-        ("Top predicted album", str(top.get("album") or "—"), ""),
-        ("Artist", str(top.get("artist") or "—"), ""),
-        ("Model P(#1)", _fmt_pct(top.get("model_prob"), 1), ""),
-        ("Kalshi implied", _fmt_pct(top.get("market_prob"), 1), ""),
-        ("Edge", _fmt_signed_pp(top.get("edge")), "model − market"),
-        ("Updated", _last_updated_age(payload.get("generated_at")), ""),
+        ("Top predicted album",   str(top.get("album") or "—")),
+        ("Model P(#1)",           _fmt_pct(top.get("model_prob"), 1)),
+        ("Kalshi implied",        _fmt_pct(top.get("market_prob"), 1)),
+        ("Edge",                  _fmt_signed_pp(top.get("edge"))),
+        ("Active markets",        str(len(rows))),
+        ("BUY candidates",        str(n_buys)),
     ]
-    out = ["<div class='row'>"]
-    for label, value, sub in cards:
-        sub_html = (f"<div class='small gray'>{html.escape(sub)}</div>"
-                    if sub else "")
+    out = ["<div class='row compact'>"]
+    for label, value in cards:
         out.append(
             f"<div class='card'><div class='label'>{html.escape(label)}</div>"
-            f"<div class='value'>{html.escape(str(value))}</div>"
-            f"{sub_html}</div>"
+            f"<div class='value'>{html.escape(str(value))}</div></div>"
         )
     out.append("</div>")
     return "".join(out)
 
 
 def _render_watchlist_table(payload: Dict[str, Any]) -> str:
+    """Per-album table styled to match the standard renderer's
+    retail-gas-prices watchlist:
+
+      Ticker | Title | Question | Total contracts |
+      Kalshi % (yes|no) | My % (yes|no) | Edge (yes|no) |
+      EV (yes|no) | Verdict
+
+    The Kalshi/My/Edge/EV cells use the same two-side cell-sep idiom
+    (".cell-sep") and side-coloured spans the standard renderer uses,
+    so the visual presentation is indistinguishable from retail gas.
+    The Size column is dropped because Billboard has no bot bankroll
+    concept — the bot is advisory-only.
+    """
     rows = payload.get("rows") or []
     if not rows:
-        return ("<div class='empty'>No active Billboard markets right "
-                "now. The watchlist will populate as soon as the next "
-                "chart-week's Kalshi contracts open.</div>")
+        return ("<div class='empty'>No fully-priced markets right now.</div>")
 
-    out = ["<div class='watchlist-scroll'>",
-           "<table id='billboard-watchlist-table'>",
-           "<thead><tr>"
-           "<th>Ticker</th>"
-           "<th>Title</th>"
-           "<th>Album</th>"
-           "<th>Artist</th>"
-           "<th class='num' title='Yes bid in cents.'>Yes bid</th>"
-           "<th class='num' title='Yes ask in cents.'>Yes ask</th>"
-           "<th class='num' title='No bid in cents.'>No bid</th>"
-           "<th class='num' title='No ask in cents.'>No ask</th>"
-           "<th class='num' title='Last trade price in cents.'>Last</th>"
-           "<th class='num' title='Kalshi YES-side implied probability.'>Kalshi %</th>"
-           "<th class='num' title='Model probability album hits #1.'>Model %</th>"
-           "<th class='num' title='Edge = model − market (percentage points).'>Edge</th>"
-           "<th class='num' title='Expected value per $1 contract for YES (net of slippage).'>EV YES</th>"
-           "<th class='num' title='Expected value per $1 contract for NO.'>EV NO</th>"
-           "<th class='num' title='Cumulative open interest on this market.'>OI</th>"
-           "<th class='num' title='Cumulative volume on this market.'>Vol</th>"
-           "<th class='num' title='Model confidence on this row (0..1).'>Conf</th>"
-           "<th>Verdict</th>"
-           "</tr></thead><tbody>"]
+    out = ["<div class='watchlist-scroll'>"
+            "<table><thead><tr>"
+            "<th>Ticker</th>"
+            "<th title='Kalshi-published contract title — the YES question "
+            "shown on the market page.'>Title</th>"
+            "<th title='Album the contract is asking about.'>Question</th>"
+            "<th class='num' title='Open interest — total contracts "
+            "currently held open across all traders on this market.'>"
+            "Total contracts</th>"
+            "<th class='num' title='Kalshi market price for YES | NO "
+            "sides — implied probability each side wins.'>Kalshi %"
+            "<div class='th-side-row small gray'>"
+            "<span data-side='yes'>yes</span>"
+            "<span class='cell-sep'> | </span>"
+            "<span data-side='no'>no</span></div></th>"
+            "<th class='num' title='Bot model probability for YES | NO. "
+            "YES = album hits #1.'>My %"
+            "<div class='th-side-row small gray'>"
+            "<span data-side='yes'>yes</span>"
+            "<span class='cell-sep'> | </span>"
+            "<span data-side='no'>no</span></div></th>"
+            "<th class='num' title='Edge = my probability − Kalshi price, "
+            "per side. Positive means the bot disagrees with Kalshi in "
+            "that direction.'>Edge"
+            "<div class='th-side-row small gray'>"
+            "<span data-side='yes'>yes</span>"
+            "<span class='cell-sep'> | </span>"
+            "<span data-side='no'>no</span></div></th>"
+            "<th class='num' title='Expected value per $1 contract for "
+            "YES | NO, net of slippage.'>EV"
+            "<div class='th-side-row small gray'>"
+            "<span data-side='yes'>yes</span>"
+            "<span class='cell-sep'> | </span>"
+            "<span data-side='no'>no</span></div></th>"
+            "<th>Verdict</th>"
+            "</tr></thead><tbody>"]
 
     for r in rows:
         ticker = r.get("ticker") or ""
         title_text = r.get("title") or ""
         album = r.get("album") or "—"
-        artist = r.get("artist") or "—"
-        mkt = r.get("market_prob")
         mdl = r.get("model_prob")
-        edge = r.get("edge")
+        mkt = r.get("market_prob")
+        ya_c = r.get("yes_ask_cents")
+        na_c = r.get("no_ask_cents")
         ev_yes = r.get("ev_yes")
         ev_no = r.get("ev_no")
-        conf = r.get("confidence_score")
         oi = r.get("open_interest")
-        vol = r.get("volume")
-
-        edge_cls = ("green" if edge is not None and edge >= 0.06 else
-                    "yellow" if edge is not None and edge > 0 else
-                    "red" if edge is not None and edge <= -0.06 else "gray")
-        ev_yes_cls = ("green" if ev_yes is not None and ev_yes >= 0.03 else
-                       "red" if ev_yes is not None and ev_yes <= 0 else
-                       "yellow" if ev_yes is not None else "gray")
-        ev_no_cls = ("green" if ev_no is not None and ev_no >= 0.03 else
-                      "red" if ev_no is not None and ev_no <= 0 else
-                      "yellow" if ev_no is not None else "gray")
-
         verdict = r.get("verdict") or "SKIP"
-        verdict_pill = _verdict_badge(verdict, r.get("buy_blockers") or [])
 
-        row_classes = []
+        oi_str = (f"{int(oi):,}" if oi is not None else "—")
+
+        # Kalshi YES / NO. Derive each side from the other when one
+        # is missing — same logic the standard renderer uses.
+        if ya_c is not None:
+            kyes_str = f"{int(ya_c)}%"
+        elif na_c is not None:
+            kyes_str = f"{100 - int(na_c)}%"
+        else:
+            kyes_str = "—"
+        if na_c is not None:
+            kno_str = f"{int(na_c)}%"
+        elif ya_c is not None:
+            kno_str = f"{100 - int(ya_c)}%"
+        else:
+            kno_str = "—"
+
+        # Model YES / NO (binary).
+        if mdl is None:
+            my_yes_str = my_no_str = "—"
+        else:
+            my_yes_str = f"{int(round(float(mdl) * 100))}%"
+            my_no_str  = f"{int(round((1 - float(mdl)) * 100))}%"
+
+        # Edge per side (model − market ask, per side). Same shape
+        # the standard renderer uses; positive means the bot's view
+        # is above Kalshi's price for that side.
+        def _edge(p, ask_c):
+            if p is None or ask_c is None:
+                return None
+            return float(p) - (int(ask_c) / 100.0)
+        edge_yes = _edge(mdl, ya_c)
+        edge_no  = _edge((1 - float(mdl)) if mdl is not None else None, na_c)
+
+        def _edge_cell(e):
+            if e is None:
+                return "0", "gray"
+            pp = e * 100.0
+            if round(pp) == 0:
+                return "0", "gray"
+            cls_ = ("green" if e >= 0.05 else
+                    "yellow" if e > 0 else
+                    "red" if e <= -0.02 else "gray")
+            return f"{pp:+.0f}%", cls_
+        edge_yes_str, edge_yes_cls = _edge_cell(edge_yes)
+        edge_no_str,  edge_no_cls  = _edge_cell(edge_no)
+
+        def _ev_cell(ev):
+            if ev is None or round(float(ev), 2) == 0:
+                return "0", "gray"
+            cls_ = ("green" if ev >= 0.03 else
+                    "red" if ev <= 0 else "yellow")
+            sign = "+" if ev > 0 else "−"
+            return f"{sign}${abs(ev):.2f}", cls_
+        ev_yes_str, ev_yes_cls = _ev_cell(ev_yes)
+        ev_no_str,  ev_no_cls  = _ev_cell(ev_no)
+
+        # Row-level classes — match the standard renderer's vocabulary.
+        # BUY rows get the side-coloured row-bought tint; WATCH rows
+        # render greyed; SKIP rows render plain.
+        flags = []
+        if ya_c is None or na_c is None:
+            flags.append("one-sided book")
+        spread = r.get("spread_cents")
+        if spread is not None and spread > 8:
+            flags.append("wide spread")
+        if mdl is not None and 0.40 <= float(mdl) <= 0.60:
+            flags.append("low confidence")
+        if (r.get("volume") or 0) < 50:
+            flags.append("thin volume")
+
+        classes: List[str] = []
+        title_attr = ""
         if verdict == "BUY YES":
-            row_classes += ["row-bought", "bought-yes"]
+            classes += ["row-bought", "bought-yes"]
         elif verdict == "BUY NO":
-            row_classes += ["row-bought", "bought-no"]
-        elif verdict == "WATCH":
-            row_classes += ["row-suspect"]
-        row_cls = " ".join(row_classes)
+            classes += ["row-bought", "bought-no"]
+        elif verdict in ("WATCH", "SKIP"):
+            classes.append("row-suspect")
+            reason_parts = []
+            if r.get("buy_blockers"):
+                reason_parts.append("Blockers: "
+                                       + ", ".join(r["buy_blockers"]))
+            if flags:
+                reason_parts.append("Flags: " + ", ".join(flags))
+            if reason_parts:
+                title_attr = (" title='"
+                                + html.escape(" · ".join(reason_parts))
+                                + "'")
+        row_cls = (f" class='{' '.join(c for c in classes if c)}'"
+                    if classes else "") + title_attr
 
-        title_cell = (
-            f"<td title='{html.escape(str(title_text))}' "
-            f"style='max-width:280px;'>"
-            f"<span class='small gray' style='display:block;overflow:hidden;"
-            f"text-overflow:ellipsis;white-space:nowrap;'>"
-            f"{html.escape(str(title_text))}</span></td>"
+        # Ticker link to Kalshi.
+        tt_esc = html.escape(ticker)
+        series_lower = (ticker.split("-", 1)[0] if ticker else "").lower()
+        ticker_url = (f"https://kalshi.com/markets/{series_lower}"
+                      if series_lower else "")
+        ticker_cell = (
+            f"<a href='{html.escape(ticker_url)}' target='_blank' "
+            f"rel='noopener noreferrer' class='ticker-link'>{tt_esc}</a>"
+            if ticker_url else tt_esc
         )
 
-        def _cents(v):
-            return "—" if v is None else f"{int(v)}"
+        # Verdict pill — only HOLDING / SKIP states in the standard
+        # renderer, but Billboard's BUY YES / BUY NO / WATCH / SKIP
+        # vocabulary is more informative on an advisory-only watchlist.
+        # Keep both: badge text matches the bot's verdict, badge colour
+        # uses the same .badge-yes / .badge-no / .badge-hedge / .badge-skip
+        # vocabulary so the visual tint is identical.
+        verdict_pill = _verdict_badge(verdict, r.get("buy_blockers") or [])
 
-        def _intnum(v):
-            try:
-                return f"{int(v):,}" if v is not None else "—"
-            except (TypeError, ValueError):
-                return "—"
+        kalshi_cell = (
+            f"<td class='num' data-field='kalshi'>"
+            f"<span data-side='yes'>{kyes_str}</span>"
+            f"<span class='cell-sep'> | </span>"
+            f"<span data-side='no'>{kno_str}</span></td>"
+        )
+        my_cell = (
+            f"<td class='num' data-field='my'>"
+            f"<span data-side='yes'>{my_yes_str}</span>"
+            f"<span class='cell-sep'> | </span>"
+            f"<span data-side='no'>{my_no_str}</span></td>"
+        )
+        edge_cell = (
+            f"<td class='num' data-field='edge'>"
+            f"<span class='{edge_yes_cls}' data-side='yes'>{edge_yes_str}</span>"
+            f"<span class='cell-sep'> | </span>"
+            f"<span class='{edge_no_cls}' data-side='no'>{edge_no_str}</span></td>"
+        )
+        ev_cell = (
+            f"<td class='num' data-field='ev'>"
+            f"<span class='{ev_yes_cls}' data-side='yes'>{ev_yes_str}</span>"
+            f"<span class='cell-sep'> | </span>"
+            f"<span class='{ev_no_cls}' data-side='no'>{ev_no_str}</span></td>"
+        )
 
         out.append(
-            f"<tr class='{row_cls}'>"
-            f"<td class='mono small'>{_ticker_cell(ticker)}</td>"
-            f"{title_cell}"
+            f"<tr{row_cls} data-ticker='{tt_esc}'>"
+            f"<td class='mono'>{ticker_cell}</td>"
+            f"<td>{html.escape(str(title_text))}</td>"
             f"<td><strong>{html.escape(str(album))}</strong></td>"
-            f"<td>{html.escape(str(artist))}</td>"
-            f"<td class='num'>{_cents(r.get('yes_bid_cents'))}</td>"
-            f"<td class='num'>{_cents(r.get('yes_ask_cents'))}</td>"
-            f"<td class='num'>{_cents(r.get('no_bid_cents'))}</td>"
-            f"<td class='num'>{_cents(r.get('no_ask_cents'))}</td>"
-            f"<td class='num'>{_cents(r.get('last_price_cents'))}</td>"
-            f"<td class='num'>{_fmt_pct(mkt, 0)}</td>"
-            f"<td class='num'>{_fmt_pct(mdl, 0)}</td>"
-            f"<td class='num {edge_cls}'>{_fmt_signed_pp(edge)}</td>"
-            f"<td class='num {ev_yes_cls}'>{_fmt_signed_ev(ev_yes)}</td>"
-            f"<td class='num {ev_no_cls}'>{_fmt_signed_ev(ev_no)}</td>"
-            f"<td class='num'>{_intnum(oi)}</td>"
-            f"<td class='num'>{_intnum(vol)}</td>"
-            f"<td class='num'>{conf if conf is not None else '—'}</td>"
-            f"<td>{verdict_pill}</td>"
+            f"<td class='num' data-field='oi'>{oi_str}</td>"
+            f"{kalshi_cell}"
+            f"{my_cell}"
+            f"{edge_cell}"
+            f"{ev_cell}"
+            f"<td data-field='verdict'>{verdict_pill}</td>"
             f"</tr>"
         )
     out.append("</tbody></table></div>")
@@ -723,6 +837,14 @@ def render_page(*, metrics_path: str | None, coefficients_path: str | None,
         out.append(_render_models_section(metrics, coefficients))
         out.append("</div></div>")
     else:
+        # Watchlist tab layout mirrors retail-gas-prices'
+        # _render_watchlist:
+        #   section header → current-prediction card row →
+        #   "Active bet" h3 (empty state) → watchlist table →
+        #   validators / external-signals panels below.
+        # CSS classes are deliberately the same so the visual
+        # presentation is indistinguishable from the standard
+        # renderer.
         out.append("<div class='section'><h2>Watchlist — model vs market</h2>"
                     "<div class='body'>")
 
@@ -737,13 +859,20 @@ def render_page(*, metrics_path: str | None, coefficients_path: str | None,
             return "".join(out)
 
         out.append(_render_current_prediction(payload, metrics))
-        out.append(_render_price_chart(payload))
+
+        # Active-bet section header. Billboard is advisory-only — no
+        # automated positions — so the section always renders the
+        # empty state. The standard renderer would show a positions
+        # table here for sim.db bots.
+        out.append("<h3 class='subhead'>Active bet</h3>")
+        out.append("<div class='empty'>Billboard Charts is "
+                    "advisory-only — no automated positions.</div>")
 
         age = _last_updated_age(payload.get("generated_at"))
         out.append(
-            f"<h3 class='subhead'>Active Billboard markets · "
-            f"{len(rows)} <span class='small gray'>"
-            f"generated {html.escape(age)}</span></h3>"
+            f"<h3 class='subhead'>Watchlist "
+            f"<span class='small gray'>(generated "
+            f"{html.escape(age)})</span></h3>"
         )
         out.append(_render_watchlist_table(payload))
 
