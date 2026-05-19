@@ -8829,13 +8829,24 @@ def _render_models_panel(out: List[str], bot: dict, model: dict | None,
     # Every model page uses the same section-header layout so the
     # "Model" title and the body content sit at the same vertical
     # position regardless of bot. Sport bots fill the right-hand
-    # slot with the Pre-game / In-game toggle; all other bots leave
-    # it empty (the min-height on .section-header keeps the row at
-    # the same height so flipping between bots doesn't shift content).
+    # slot with the real Pre-game / In-game toggle; non-sport bots
+    # render an invisible toggle of identical dimensions so the
+    # header row has the same height byte-for-byte. (A bare
+    # min-height won't do it — the toggle's actual rendered height
+    # depends on the page's font / line-height, which we can't
+    # predict precisely from CSS alone.)
     out.append("<div class='section'>")
     out.append("<div class='section-header'><h2>Model</h2>")
     if is_sport_bot and bot:
         _render_model_view_toggle(out, bot_key, model_view, current_bot)
+    else:
+        out.append(
+            "<div class='model-view-toggle' "
+            "style='visibility:hidden;' aria-hidden='true'>"
+            "<span class='model-view-pill'>Pre-game</span>"
+            "<span class='model-view-pill'>In-game</span>"
+            "</div>"
+        )
     out.append("</div>")
     out.append("<div class='body'>")
     # Bot filter moved above the tab bar (per user request).
