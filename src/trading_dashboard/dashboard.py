@@ -9702,18 +9702,14 @@ def _render_watchlist(out: List[str], watchlist: List[dict],
         v["_be_no"] = be_no
         v["_best_side"] = best_side
         v["_best_ev"] = best_ev
-    # Filter to rows that are tradeable. "Tradeable" means either
-    # (a) someone is already holding contracts (open_interest > 0), or
-    # (b) Kalshi has a quote on either side (yes_ask / no_ask) — the
-    # latter covers brand-new listings (KXDARTSMATCH events, new
-    # tennis quals) whose first trade hasn't settled yet but already
-    # have a market-maker price on the book. Rows that set
-    # ``_skip_oi_filter`` (e.g. billboard) opt out entirely.
+    # Filter to rows that have at least 1 open contract — markets with
+    # zero open interest aren't tradeable and clutter the table. Rows
+    # that set ``_skip_oi_filter`` (e.g. billboard markets that may
+    # have null Kalshi-side OI early in the chart week but are still
+    # the correct surface to show on the dashboard) opt out.
     watchlist = [r for r in watchlist
                  if r.get("_skip_oi_filter")
-                 or (r.get("open_interest") or 0) > 0
-                 or r.get("yes_ask_cents") is not None
-                 or r.get("no_ask_cents") is not None]
+                 or (r.get("open_interest") or 0) > 0]
     # Sort: sport bots (one row per game / match) have no strike axis,
     # so order by actionability — BUY-eligible verdicts first, then by
     # |best EV| descending — mirroring the tennis-specific table the
