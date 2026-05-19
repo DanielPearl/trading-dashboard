@@ -10840,11 +10840,24 @@ class Handler(BaseHTTPRequestHandler):
                     # monitor rewrites watchlist.json every few minutes.
                     payload_dict = {"bot": bot["key"], "type": "survivor"}
                 elif bot.get("dashboard_type") == "billboard":
-                    # Billboard renders fully server-side from
-                    # watchlist.json; the live monitor rewrites it
-                    # every 5 minutes so a simple page reload is
-                    # enough to refresh the UI.
-                    payload_dict = {"bot": bot["key"], "type": "billboard"}
+                    # Billboard's per-bot watchlist renders fully
+                    # server-side, but the shared Home tab still
+                    # polls /api/snapshot for live cross-bot summary
+                    # cards. Returning {bot, type} alone makes the JS
+                    # poller patch every Home card to 0 (because
+                    # ``snap.summary || {}`` evaluates to {} on this
+                    # payload), so the Billboard Home page diverges
+                    # from every other bot's Home page after 5s. Feed
+                    # the same cross-bot summary the tennis snapshot
+                    # builds — watchlist/active_bets stay empty since
+                    # there's nothing per-bot to live-patch.
+                    payload_dict = _tennis_like_snapshot(
+                        [], [], self.bots,
+                        edge_cfg=self.edge_cfg,
+                        period_days=snap_period_days,
+                    )
+                    payload_dict["bot"] = bot["key"]
+                    payload_dict["type"] = "billboard"
                 else:
                     db_path = bot["db_path"]
                     payload_dict = build_snapshot(db_path, self.bots,
