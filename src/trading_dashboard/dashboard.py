@@ -3587,29 +3587,35 @@ def _live_update_script(current_bot: str, period_key: str = "all") -> str:
     sel.addEventListener("change", function () {{
       let target = sel.value;
       if (!target) return;
+      // The visible tab pill is the authoritative source of truth for
+      // what panel the user is looking at — tab clicks swap panels
+      // client-side and then call history.replaceState, but that
+      // replaceState can lag or skip in edge cases (modal interaction,
+      // browser quirks). The pill's .tab-pill-active class is always
+      // in sync with the visible panel.
       let currentTab = null;
-      try {{
-        currentTab = new URL(window.location.href).searchParams.get("tab");
-      }} catch (err) {{ /* old browser */ }}
+      const activePill = document.querySelector(".tab-pill-active");
+      if (activePill) currentTab = activePill.getAttribute("data-tab");
       if (!currentTab) {{
-        const activePill = document.querySelector(".tab-pill-active");
-        if (activePill) currentTab = activePill.getAttribute("data-tab");
-      }}
-      if (currentTab) {{
         try {{
-          // Resolve against the current origin so we can use
-          // URLSearchParams regardless of whether the option value
-          // starts with "?" or "/". Only override the tab when the
-          // option already carries one (per-bot URLs); leave the
-          // "All bots" / cross-bot URL alone so it lands on the
-          // cross-bot Home view.
-          const u = new URL(target, window.location.origin);
-          if (u.searchParams.has("tab")) {{
-            u.searchParams.set("tab", currentTab);
-            target = u.pathname + u.search;
-          }}
-        }} catch (err) {{ /* fall through to raw target */ }}
+          currentTab = new URL(window.location.href)
+            .searchParams.get("tab");
+        }} catch (err) {{ /* old browser */ }}
       }}
+      try {{
+        // Resolve against the current origin so we can use
+        // URLSearchParams regardless of whether the option value
+        // starts with "?" or "/". Per-bot options carry ?bot=X — for
+        // those we always inject the active tab (overwriting whatever
+        // tab the server rendered into the option) so the user stays
+        // on the same tab. The "All bots" entry has no ?bot= and is
+        // intentionally left alone — it lands on the cross-bot Home.
+        const u = new URL(target, window.location.origin);
+        if (currentTab && u.searchParams.has("bot")) {{
+          u.searchParams.set("tab", currentTab);
+          target = u.pathname + u.search;
+        }}
+      }} catch (err) {{ /* fall through to raw target */ }}
       try {{
         sessionStorage.setItem(_SCROLL_KEY, String(window.scrollY));
       }} catch (err) {{ /* ignore */ }}
