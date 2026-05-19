@@ -138,7 +138,7 @@ def model_summary_for_card(metrics_path: str | None,
         "feature_count": 12,
         # Holdout test-set size — the sample these metrics are computed
         # on. Surfaces on the Home tab's bot card as "Sample size".
-        "training_rows_test": metrics.get("rows_test"),
+        "rows_test": metrics.get("rows_test"),
         "actual_wins": int(stats.get("wins", 0) or 0),
         "actual_losses": int(stats.get("losses", 0) or 0),
     }

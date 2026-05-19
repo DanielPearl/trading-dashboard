@@ -4939,14 +4939,13 @@ def _render_bot_cards(out: List[str], rollup: dict,
             except (TypeError, ValueError):
                 brier_str = "—"
             # Sample size: count of observations the headline metrics
-            # were measured on. Tennis-style bots persist this as
-            # ``training_rows_test`` in metrics.json. Sqlite bots
-            # don't store a training/test sample size on their
-            # model_snapshots row, so the cell stays "—" rather than
-            # falling back to training_pairs_count (which is the
-            # closed-bets feedback pool — a different concept and
-            # misleading next to training-time metrics).
-            sample_n = m.get("training_rows_test")
+            # were measured on. Both code paths now persist this under
+            # ``rows_test`` — tennis-style adapters pull it from
+            # metrics.json; sqlite bots ALTER it onto model_snapshots
+            # and fetch_latest_model returns it via dict(row). The
+            # cell reads "—" only when the bot hasn't been retrained
+            # since the schema migration.
+            sample_n = m.get("rows_test")
             try:
                 sample_str = f"{int(sample_n):,}" if sample_n else "—"
             except (TypeError, ValueError):
