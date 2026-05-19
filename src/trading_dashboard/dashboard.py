@@ -994,6 +994,81 @@ def fetch_global_summary(bots: List[dict],
     return rollup
 
 
+def _compute_active_bets_totals(active_bets: List[dict],
+                                  hide_settled: bool = True) -> dict:
+    """Compute the Active-bets headline values directly from the same
+    list that feeds ``_render_active_bets_table`` — guarantees the
+    Home-tab cards match the table column totals cell-for-cell
+    regardless of how each bot's data is sourced.
+
+    Returns dict with: ``open_count``, ``active_contracts``,
+    ``active_bots`` (distinct bots in the table), ``active_money_spent_cents``
+    (sum of Entry cost column, = entry × contracts + Kalshi fee per row),
+    ``potential_gain_cents`` (sum of Potential gain column, = (100 −
+    entry) × contracts − Kalshi fee per row).
+    """
+    if hide_settled:
+        active_bets = [
+            b for b in active_bets
+            if (
+                (b.get("minutes_to_close")
+                 if b.get("minutes_to_close") is not None
+                 else minutes_to_close_from_ticker(b.get("ticker"))) or 0
+            ) >= -60
+        ]
+    contracts_total = 0
+    money_spent_cents = 0
+    potential_gain_cents = 0
+    bots_in_table = set()
+    for b in active_bets:
+        entry = b.get("entry_price_cents") or 0
+        ctr = b.get("contracts") or 0
+        fee_c = kalshi_fee_cents(entry, ctr)
+        contracts_total += ctr
+        money_spent_cents += entry * ctr + fee_c
+        potential_gain_cents += (100 - entry) * ctr - fee_c
+        bk = b.get("_bot_key") or b.get("_bot_name") or ""
+        if bk:
+            bots_in_table.add(bk)
+    return {
+        "open_count": len(active_bets),
+        "active_contracts": int(contracts_total),
+        "active_bots": len(bots_in_table),
+        "active_money_spent_cents": int(money_spent_cents),
+        "potential_gain_cents": int(potential_gain_cents),
+    }
+
+
+def _build_global_active_bets(bots: List[dict]) -> List[dict]:
+    """Cross-bot list of active-bet dicts in the shape the active-bets
+    table renderer (and ``_compute_active_bets_totals``) expects.
+    Tagged with ``_bot_key`` so the distinct-bots count works. Skips
+    bots whose data source isn't available, matching the page-render
+    bot iteration.
+    """
+    out: List[dict] = []
+    for b in bots:
+        if not b.get("available"):
+            continue
+        dt = b.get("dashboard_type") or "standard"
+        if dt == "tennis":
+            from . import tennis as _tennis
+            rows = _tennis.active_bets_for_rollup(
+                b.get("sim_state_path"),
+                watchlist_path=b.get("watchlist_json_path"))
+        elif dt in ("survivor", "billboard"):
+            continue  # advisory bots — no positions
+        elif dt != "standard":
+            continue
+        else:
+            rows = fetch_active_bets_with_marks(b["db_path"])
+        for ab in rows:
+            ab["_bot_key"] = b["key"]
+            ab["_bot_name"] = b["name"]
+            out.append(ab)
+    return out
+
+
 def fetch_watchlist(db_path: str) -> List[dict]:
     """Latest market_view per ticker, filtered to markets with at least
     one of (Kalshi YES ask, Kalshi NO ask) populated AND still open.
@@ -1339,6 +1414,11 @@ def build_snapshot(db_path: str, bots: List[dict],
         skipped updates.
     """
     summary = fetch_global_summary(bots, period_days=period_days)
+    # Override the active-bets headline fields with values computed
+    # directly from the global active-bets list — guarantees the cards
+    # equal the table column totals cell-for-cell, even when a bot's
+    # ``summary_for_rollup`` shape drifts.
+    summary.update(_compute_active_bets_totals(_build_global_active_bets(bots)))
     watchlist = fetch_watchlist(db_path)
     active_bets = fetch_active_bets_with_marks(db_path)
 
@@ -1428,6 +1508,8 @@ def _tennis_like_snapshot(
     rollup the sim.db bots use so the Home tab cards stay live.
     """
     summary = fetch_global_summary(bots, period_days=period_days)
+    # Same override as the standard snapshot — see ``build_snapshot``.
+    summary.update(_compute_active_bets_totals(_build_global_active_bets(bots)))
     rows = []
     for v in watchlist_rows:
         ya = v.get("yes_ask_cents")
@@ -3313,7 +3395,7 @@ def _live_update_script(current_bot: str, period_key: str = "all") -> str:
   function applySnapshot(snap) {{
     // ── Summary cards ──────────────────────────────────────────────
     // Home tab: Active bets | Active contracts | Active bots
-    // | Money spent | Potential earnings | Week change %.
+    // | Money spent | Potential gain | Week change %.
     // All values are live, never period-scoped.
     const s = snap.summary || {{}};
     patch("card-active-bets", String(s.active_bets ?? 0));
@@ -4263,7 +4345,7 @@ def _render_home_summary_cards(out: List[str], rollup: dict) -> None:
                f"title='Sum of the Potential gain column across the "
                f"Active bets table ((100 − entry) × contracts − "
                f"entry fee).'>"
-               f"Potential earnings</div>"
+               f"Potential gain</div>"
                f"<div class='value green' id='card-potential-earnings'>"
                f"+{fmt_signed_cents(potential).lstrip('+')}</div></div>")
     out.append(f"<div class='card'><div class='label' "
@@ -10614,6 +10696,14 @@ class Handler(BaseHTTPRequestHandler):
                     })
                 global_active_bets.sort(key=lambda x: x.get("opened_at", ""), reverse=True)
                 global_history.sort(key=lambda x: x.get("exited_at", ""), reverse=True)
+                # Override the Summary's active-bets headline fields
+                # with values computed straight from the global active
+                # bets list (post-hide-settled, same per-row math as
+                # the table renderer). Guarantees the Money spent /
+                # Potential gain / Active bots / Active contracts
+                # cards equal the column totals of the table just
+                # below them.
+                global_summary.update(_compute_active_bets_totals(global_active_bets))
                 # Period-filter the history so the History tab agrees
                 # with the rest of the period-aware UI. None → keep all.
                 if period_days is not None:
