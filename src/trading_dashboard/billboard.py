@@ -409,9 +409,14 @@ def render_models_panel(out: List[str], bot: Dict[str, Any]) -> None:
         "<code>debut_rank</code> on debut rows, <code>best_3wk_rank</code> "
         "unshifted rolling min, <code>competition_count</code> "
         "self-inclusion).</li>"
-        "<li>Backtest is currently a stub against a constant market "
-        "probability — the dashboard's edge column is the live "
-        "signal until Kalshi price-history caching lands.</li>"
+        "<li><strong>No historical backtest yet.</strong> The model's "
+        "held-out metrics above (accuracy, F1, ROC AUC, calibration) "
+        "come from real Hot 100 outcomes on the trainer's holdout "
+        "weeks — those numbers are honest. There is no P&amp;L "
+        "backtest because Kalshi price-history snapshots aren't "
+        "cached yet, and we won't fabricate a market probability to "
+        "compute one. The Watchlist tab's edge column uses live "
+        "current Kalshi prices.</li>"
         "</ul>"
     )
 
