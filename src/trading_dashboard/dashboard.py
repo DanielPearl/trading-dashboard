@@ -9368,12 +9368,6 @@ def _render_watchlist(out: List[str], watchlist: List[dict],
                       available_bots: List[dict] | None = None,
                       current_bot: str = "",
                       period_key: str = "all") -> None:
-    # Resolve the Kelly-sizing bankroll ONCE per render so every row
-    # in the table prices Size against the same number. Priority:
-    #   1) display.bankroll_cents (per-bot YAML override)
-    #   2) live Kalshi account balance (cached 60s)
-    #   3) DEFAULT_BANKROLL_CENTS fallback (no creds / API down)
-    bankroll_cents, bankroll_source_str = _resolve_bankroll(display)
     out.append("<div class='section'><h2>"
                "Watchlist — model vs market</h2>"
                "<div class='body'>")
@@ -9613,7 +9607,6 @@ def _render_watchlist(out: List[str], watchlist: List[dict],
                "<th class='num' title='Kalshi market price — YES on top (green), NO on bottom (red). Each side&apos;s implied probability that side wins.'>Kalshi %</th>"
                "<th class='num' title='Edge = my probability − Kalshi price, per side. YES on top (green), NO on bottom (red).'>Edge</th>"
                "<th class='num' title='Expected value per $1 contract, per side, net of half-spread. YES on top (green), NO on bottom (red).'>EV</th>"
-               f"<th class='num' title='Half-Kelly suggested contracts for the best side, sized against {html.escape(bankroll_source_str)}. A ⚠ marks rows where the suggested size exceeds the order book&apos;s visible depth — the price you&apos;d actually fill at would be worse than quoted.'>Size</th>"
                "<th>Verdict</th></tr></thead><tbody id='watchlist-tbody'>")
     for v in watchlist:
         ticker = v.get("ticker", "")
@@ -9932,54 +9925,6 @@ def _render_watchlist(out: List[str], watchlist: List[dict],
         edge_cell   = _stacked(edge_yes_str, edge_no_str, "edge")
         ev_cell     = _stacked(ev_yes_str, ev_no_str, "ev")
 
-        # Half-Kelly suggested size for the best-EV side. Skip the
-        # column for rows with no positive-EV side (renders as "—").
-        # When the suggested contract count exceeds the visible book
-        # depth, append a ⚠ — the price you'd actually fill at would
-        # slip past the quoted ask, eroding the predicted edge.
-        # ``bankroll_cents`` + ``bankroll_source_str`` were resolved
-        # once at the top of this function (see _resolve_bankroll
-        # below) — using a single value across the whole table keeps
-        # the suggested sizes internally consistent within one render.
-        size_str = "—"
-        size_cls = "gray"
-        size_tt = "No positive-edge side on this row."
-        if best_side_v in ("YES", "NO") and (best_ev_v or 0) > 0:
-            price = ya_c if best_side_v == "YES" else na_c
-            prob = (float(p) if best_side_v == "YES"
-                     else (1.0 - float(p)) if p is not None else None)
-            n_contracts = kelly_contracts(price, prob, bankroll_cents)
-            if n_contracts <= 0:
-                size_str = "0"
-                size_cls = "gray"
-                size_tt = ("Kelly fraction is zero or negative for the "
-                           "best side after odds adjustment.")
-            else:
-                cost_cents = n_contracts * (price or 0)
-                size_tt = (f"Half-Kelly @ "
-                            f"{bankroll_source_str} · cost ≈ "
-                            f"${cost_cents/100:.2f} · side {best_side_v}")
-                # Liquidity reality check: visible book depth.
-                depth = v.get("book_depth")
-                try:
-                    depth_n = int(depth) if depth is not None else None
-                except (TypeError, ValueError):
-                    depth_n = None
-                if depth_n is not None and depth_n > 0 and n_contracts > depth_n:
-                    size_str = f"{n_contracts} ⚠"
-                    size_cls = "yellow"
-                    size_tt = (f"Suggested {n_contracts} but only "
-                                f"{depth_n} contracts visible at the "
-                                f"quoted ask — actual fill would slip "
-                                f"past the price you see.")
-                else:
-                    size_str = str(n_contracts)
-                    size_cls = "green"
-        size_cell = (
-            f"<td class='num {size_cls}' "
-            f"title='{html.escape(size_tt)}'>{size_str}</td>"
-        )
-
         out.append(f"<tr{row_cls} data-ticker='{tt_esc}'{strike_attr}{yes_attr}>"
                    f"<td class='mono'>{ticker_cell}</td>"
                    f"{middle_cells}"
@@ -9988,7 +9933,6 @@ def _render_watchlist(out: List[str], watchlist: List[dict],
                    f"{kalshi_cell}"
                    f"{edge_cell}"
                    f"{ev_cell}"
-                   f"{size_cell}"
                    f"<td data-field='verdict'>{badge}</td></tr>")
     out.append("</tbody></table></div>")
     # Append the row-click JS hook so clicks on a watchlist row draw a
