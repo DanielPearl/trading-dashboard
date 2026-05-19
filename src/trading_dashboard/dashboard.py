@@ -2436,10 +2436,24 @@ code { background: #161b22; padding: 1px 6px; border-radius: 3px; color: #c9d1d9
     margin-bottom: -1px; font-weight: 600; }
 .tab-panel { display: none; }
 .tab-panel-active { display: block; }
-/* Seasons tab — one card per bot. Two columns at desktop widths,
-   collapses to a single column when narrow. Matches the .card /
-   .section visual language so it sits naturally next to the Home
-   tab's bot-card grid. */
+/* Seasons tab — grouped by league (= bot). Each league is one
+   section header + a grid of tournament cards. Live leagues sort
+   above idle ones; cards inside a league sort in-season → upcoming
+   → over. */
+.season-league { margin-bottom: 22px; }
+.season-league:last-child { margin-bottom: 0; }
+.season-league-head { display: flex; align-items: baseline;
+   gap: 10px; flex-wrap: wrap; padding: 0 2px 10px;
+   border-bottom: 1px solid #21262d; margin-bottom: 12px; }
+.season-league-name { color: #f0f6fc; font-size: 16px;
+   font-weight: 600; text-decoration: none; }
+.season-league-name:hover { color: #58a6ff;
+   text-decoration: underline; }
+.season-league-subtitle { color: #8b949e; font-size: 12px;
+   margin-left: auto; text-align: right; }
+/* Two columns at desktop widths, collapses to a single column when
+   narrow. Matches the .card / .section visual language so it sits
+   naturally next to the Home tab's bot-card grid. */
 .season-grid { display: grid; gap: 14px;
    grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); }
 .season-card { background: #1d232c; border: 1px solid #30363d;
@@ -2448,10 +2462,8 @@ code { background: #161b22; padding: 1px 6px; border-radius: 3px; color: #c9d1d9
    flex-direction: column; gap: 10px; }
 .season-card-head { display: flex; align-items: center;
    justify-content: space-between; gap: 8px; }
-.season-bot { color: #f0f6fc; font-weight: 600; font-size: 14px;
-   text-decoration: none; }
-.season-bot:hover { color: #58a6ff; text-decoration: underline; }
-.season-name { color: #c9d1d9; font-size: 12px; }
+.season-name { color: #f0f6fc; font-size: 14px; font-weight: 600;
+   line-height: 1.3; }
 .season-countdown { display: flex; align-items: baseline; gap: 8px;
    margin-top: 4px; flex-wrap: wrap; }
 .season-countdown-label { font-size: 11px; text-transform: uppercase;
@@ -5398,42 +5410,78 @@ def _humanize_duration(delta_seconds: float) -> str:
 
 
 def _render_seasons_panel(out: List[str], available_bots: List[dict]) -> None:
-    """One card per (bot, tournament) window. Each card shows the
-    tournament name, start, end, total length, and a live countdown
-    that flips from "Starts in …" to "Ends in …" to "Season over" as
-    time crosses the boundaries (see ``_SEASON_COUNTDOWN_JS``).
+    """Seasons grouped by league (one section per bot). Each section
+    is a row of tournament cards; cards inside a section are sorted
+    in-season → upcoming → over. Sections themselves are ordered with
+    *live* leagues (any tournament currently in season) above the
+    rest so the user lands on what's actually trading right now.
 
-    Sports bots that declare multiple tournaments (NBA regular season
-    + playoffs, the ATP/WTA Grand Slam set, the PDC darts calendar,
-    etc.) produce one card per tournament. Survivor / similar bots
-    with a single window produce one card."""
+    Each card shows the tournament name, start, end, total length,
+    and a live countdown that flips from "Starts in …" to "Ends in
+    …" to "Season over" as time crosses the boundaries (see
+    ``_SEASON_COUNTDOWN_JS``)."""
     now = datetime.now(timezone.utc)
-    cards: List[tuple[dict, dict, datetime, datetime]] = []
+
+    # Group tournaments by bot (league). Drop bots that have no
+    # parseable windows so a half-filled config doesn't render an
+    # empty league header.
+    leagues: List[dict] = []
     for bot in available_bots:
+        items: List[tuple[dict, datetime, datetime]] = []
         for season in (bot.get("seasons") or []):
             start = _parse_season_dt(season.get("start"))
             end = _parse_season_dt(season.get("end"))
             if not start or not end:
                 continue
-            cards.append((bot, season, start, end))
+            items.append((season, start, end))
+        if not items:
+            continue
+        # In-season → upcoming → over, with each cohort sorted by
+        # the most relevant date (soonest to flip).
+        def _card_sort(item: tuple[dict, datetime, datetime]) -> tuple:
+            _, s, e = item
+            if s <= now <= e:
+                return (0, e)
+            if now < s:
+                return (1, s)
+            return (2, -e.timestamp())
+        items.sort(key=_card_sort)
+        is_live = any(s <= now <= e for _, s, e in items)
+        # Soonest upcoming tournament for an "idle" league's header
+        # subtitle ("Next: Wimbledon 2026 in 41d").
+        next_up = next(((sea, s, e) for sea, s, e in items if now < s), None)
+        leagues.append({
+            "bot": bot,
+            "items": items,
+            "is_live": is_live,
+            "next_up": next_up,
+        })
 
-    # Sort: in-season first (by end date), then upcoming (by start),
-    # then finished (most recent first). Keeps the "what's live now"
-    # cluster at the top, with each bot's individual tournaments
-    # interleaved in the timeline rather than grouped.
-    def _sort_key(item: tuple[dict, dict, datetime, datetime]) -> tuple:
-        _, _, s, e = item
-        if s <= now <= e:
-            return (0, e)
-        if now < s:
-            return (1, s)
-        return (2, -e.timestamp())
-    cards.sort(key=_sort_key)
+    # Live leagues first, then idle. Within each cohort, sort by the
+    # most relevant date: live leagues by the soonest in-season end
+    # (= which league wraps up next), idle leagues by the soonest
+    # upcoming start (= which league lights up next).
+    def _league_sort(lg: dict) -> tuple:
+        items = lg["items"]
+        if lg["is_live"]:
+            soonest_end = min(
+                (e for _, s, e in items if s <= now <= e),
+                default=now,
+            )
+            return (0, soonest_end)
+        if lg["next_up"]:
+            return (1, lg["next_up"][1])
+        # No live, no upcoming → everything ended. Surface
+        # most-recent-first so the latest finished league appears
+        # above older ones.
+        latest_end = max((e for _, _, e in items), default=now)
+        return (2, -latest_end.timestamp())
+    leagues.sort(key=_league_sort)
 
     out.append(
         "<div class='section'><h2>Seasons</h2><div class='body'>"
     )
-    if not cards:
+    if not leagues:
         out.append(
             "<div class='empty'>No bots have a season window "
             "configured. Add a <code>seasons:</code> block to a bot "
@@ -5445,86 +5493,118 @@ def _render_seasons_panel(out: List[str], available_bots: List[dict]) -> None:
 
     out.append(
         "<p class='small gray' style='margin: 0 0 14px 0;'>"
-        "Schedule for the bots whose markets follow a real-world "
-        "calendar. The countdown ticks live and flips from "
+        "Schedule grouped by league. Live leagues "
+        "(<span class='green'>any tournament in season</span>) sit "
+        "above idle ones. Each tournament's countdown flips from "
         "<span class='yellow'>Starts in</span> to "
         "<span class='green'>Ends in</span> to "
         "<span class='gray'>Season over</span>."
         "</p>"
     )
-    out.append("<div class='season-grid'>")
-    for bot, season, start, end in cards:
-        season_name = season.get("name") or bot.get("name") or bot.get("key")
-        length = _humanize_duration((end - start).total_seconds())
-        start_ms = int(start.timestamp() * 1000)
-        end_ms = int(end.timestamp() * 1000)
-        start_str = start.strftime("%b %-d, %Y")
-        end_str = end.strftime("%b %-d, %Y")
-        # Initial label/value computed server-side so the card reads
-        # correctly even before the JS countdown takes over. The JS
-        # below ticks the value every second and re-applies these same
-        # three states (Upcoming → In season → Season over).
-        if now < start:
-            init_status, init_color = "Upcoming", "yellow"
-            init_label, init_value = "Starts in", _humanize_countdown(
-                (start - now).total_seconds())
-        elif now < end:
-            init_status, init_color = "In season", "green"
-            init_label, init_value = "Ends in", _humanize_countdown(
-                (end - now).total_seconds())
-        else:
-            init_status, init_color = "Season over", "gray"
-            init_label, init_value = "Ended", _humanize_countdown(
-                (now - end).total_seconds()) + " ago"
-        # Progress fill so the bar reads correctly pre-JS too.
-        total = (end - start).total_seconds()
-        if now <= start or total <= 0:
-            init_pct = 0.0
-        elif now >= end:
-            init_pct = 100.0
-        else:
-            init_pct = max(0.0, min(100.0,
-                ((now - start).total_seconds() / total) * 100.0))
-        # The bot's home card already links to Watchlist — match the
-        # idiom so users can click through from a season card to the
-        # corresponding bot view.
+
+    for lg in leagues:
+        bot = lg["bot"]
+        items = lg["items"]
+        bot_label = bot.get("name") or bot.get("key")
         bot_href = f"?bot={html.escape(bot['key'])}&tab=watchlist"
+        # League header: name + Live/Idle pill + a subtitle that
+        # summarises the league's calendar state at a glance.
+        if lg["is_live"]:
+            league_status = ("Live", "green")
+            in_season = [sea for sea, s, e in items if s <= now <= e]
+            names = ", ".join(sea.get("name") or "" for sea in in_season)
+            subtitle = f"{len(in_season)} live · {html.escape(names)}"
+        elif lg["next_up"]:
+            sea, s, _ = lg["next_up"]
+            league_status = ("Idle", "gray")
+            subtitle = (
+                f"Next: {html.escape(sea.get('name') or '')} on "
+                f"{s.strftime('%b %-d, %Y')}"
+            )
+        else:
+            league_status = ("Idle", "gray")
+            subtitle = "All listed tournaments have ended"
+
+        out.append("<div class='season-league'>")
         out.append(
-            f"<div class='season-card' data-season-card "
-            f"data-start='{start_ms}' data-end='{end_ms}'>"
-            f"<div class='season-card-head'>"
-            f"<a class='season-bot' href='{bot_href}'>"
-            f"{html.escape(bot.get('name') or bot['key'])}"
-            f"</a>"
-            f"<span class='status-pill {init_color}' "
-            f"data-season-status>{html.escape(init_status)}</span>"
-            f"</div>"
-            f"<div class='season-name'>{html.escape(season_name)}</div>"
-            f"<div class='season-countdown'>"
-            f"<div class='season-countdown-label' "
-            f"data-season-countdown-label>{html.escape(init_label)}</div>"
-            f"<div class='season-countdown-value {init_color}' "
-            f"data-season-countdown-value>{html.escape(init_value)}</div>"
-            f"</div>"
-            f"<div class='season-progress'>"
-            f"<div class='season-progress-fill' "
-            f"data-season-progress-fill "
-            f"style='width: {init_pct:.2f}%;'></div>"
-            f"</div>"
-            f"<div class='season-meta'>"
-            f"<div><span class='season-meta-label'>Start</span>"
-            f"<span class='season-meta-value'>{html.escape(start_str)}"
-            f"</span></div>"
-            f"<div><span class='season-meta-label'>End</span>"
-            f"<span class='season-meta-value'>{html.escape(end_str)}"
-            f"</span></div>"
-            f"<div><span class='season-meta-label'>Length</span>"
-            f"<span class='season-meta-value'>{html.escape(length)}"
-            f"</span></div>"
-            f"</div>"
-            f"</div>"
+            "<div class='season-league-head'>"
+            f"<a class='season-league-name' href='{bot_href}'>"
+            f"{html.escape(bot_label)}</a>"
+            f"<span class='status-pill {league_status[1]}'>"
+            f"{html.escape(league_status[0])}</span>"
+            f"<span class='season-league-subtitle'>{subtitle}</span>"
+            "</div>"
         )
-    out.append("</div>")  # /season-grid
+        out.append("<div class='season-grid'>")
+        for season, start, end in items:
+            season_name = season.get("name") or bot_label
+            length = _humanize_duration((end - start).total_seconds())
+            start_ms = int(start.timestamp() * 1000)
+            end_ms = int(end.timestamp() * 1000)
+            start_str = start.strftime("%b %-d, %Y")
+            end_str = end.strftime("%b %-d, %Y")
+            # Initial label/value computed server-side so the card
+            # reads correctly even before the JS countdown takes over.
+            # The JS below ticks the value every second and re-applies
+            # the same three states (Upcoming → In season → Over).
+            if now < start:
+                init_status, init_color = "Upcoming", "yellow"
+                init_label, init_value = "Starts in", _humanize_countdown(
+                    (start - now).total_seconds())
+            elif now < end:
+                init_status, init_color = "In season", "green"
+                init_label, init_value = "Ends in", _humanize_countdown(
+                    (end - now).total_seconds())
+            else:
+                init_status, init_color = "Season over", "gray"
+                init_label, init_value = "Ended", _humanize_countdown(
+                    (now - end).total_seconds()) + " ago"
+            # Progress fill so the bar reads correctly pre-JS too.
+            total = (end - start).total_seconds()
+            if now <= start or total <= 0:
+                init_pct = 0.0
+            elif now >= end:
+                init_pct = 100.0
+            else:
+                init_pct = max(0.0, min(100.0,
+                    ((now - start).total_seconds() / total) * 100.0))
+            out.append(
+                f"<div class='season-card' data-season-card "
+                f"data-start='{start_ms}' data-end='{end_ms}'>"
+                f"<div class='season-card-head'>"
+                f"<div class='season-name'>{html.escape(season_name)}"
+                f"</div>"
+                f"<span class='status-pill {init_color}' "
+                f"data-season-status>{html.escape(init_status)}</span>"
+                f"</div>"
+                f"<div class='season-countdown'>"
+                f"<div class='season-countdown-label' "
+                f"data-season-countdown-label>"
+                f"{html.escape(init_label)}</div>"
+                f"<div class='season-countdown-value {init_color}' "
+                f"data-season-countdown-value>"
+                f"{html.escape(init_value)}</div>"
+                f"</div>"
+                f"<div class='season-progress'>"
+                f"<div class='season-progress-fill' "
+                f"data-season-progress-fill "
+                f"style='width: {init_pct:.2f}%;'></div>"
+                f"</div>"
+                f"<div class='season-meta'>"
+                f"<div><span class='season-meta-label'>Start</span>"
+                f"<span class='season-meta-value'>"
+                f"{html.escape(start_str)}</span></div>"
+                f"<div><span class='season-meta-label'>End</span>"
+                f"<span class='season-meta-value'>"
+                f"{html.escape(end_str)}</span></div>"
+                f"<div><span class='season-meta-label'>Length</span>"
+                f"<span class='season-meta-value'>"
+                f"{html.escape(length)}</span></div>"
+                f"</div>"
+                f"</div>"
+            )
+        out.append("</div>")  # /season-grid
+        out.append("</div>")  # /season-league
     out.append("</div></div>")  # /body /section
 
 
