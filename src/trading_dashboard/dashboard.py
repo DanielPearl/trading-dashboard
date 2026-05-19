@@ -2452,11 +2452,18 @@ td.num.cell-stack .side-no  { color: #f85149 !important; }  /* red   */
    training accuracy and live actual-win-% diverge by >10pp on n≥10
    closed bets. Surfaces "this model may have drifted" as a one-look
    signal without forcing users to compare two cells. */
-/* Pre-game / In-game toggle that lives at the top of the Models
-   panel for sport bots. Pills mimic the existing tab-pill idiom
-   but live inside one section instead of the page-level tab bar. */
+/* Sport-bot Models panel header — the section title sits on the
+   same row as the Pre-game / In-game toggle (instead of stacked
+   above it). */
+.section .section-header { display: flex; align-items: center;
+    justify-content: space-between; gap: 12px;
+    padding: 14px 22px 10px; }
+.section .section-header h2 { padding: 0; margin: 0; }
+/* Pre-game / In-game toggle that lives in the Models panel header
+   for sport bots. Pills mimic the existing tab-pill idiom but
+   live inside one section instead of the page-level tab bar. */
 .model-view-toggle { display: inline-flex; gap: 4px;
-    margin-bottom: 14px; padding: 4px; background: #0d1117;
+    padding: 4px; background: #0d1117;
     border: 1px solid #21262d; border-radius: 8px; }
 .model-view-toggle .model-view-pill {
     text-decoration: none; color: #8b949e; font-size: 12px;
@@ -8814,16 +8821,23 @@ def _render_models_panel(out: List[str], bot: dict, model: dict | None,
     The two are completely separate — toggling never mixes the
     populations.
     """
-    out.append("<div class='section'><h2>Model</h2><div class='body'>")
+    bot_key = (bot or {}).get("key", "")
+    is_sport_bot = bot_key in {"nba", "tennis", "table-tennis", "darts"}
+    # Sport bots get the Pre-game / In-game toggle inline with the
+    # "Model" title; all other bots just get the plain h2.
+    out.append("<div class='section'>")
+    if is_sport_bot and bot:
+        out.append("<div class='section-header'><h2>Model</h2>")
+        _render_model_view_toggle(out, bot_key, model_view, current_bot)
+        out.append("</div>")
+    else:
+        out.append("<h2>Model</h2>")
+    out.append("<div class='body'>")
     # Bot filter moved above the tab bar (per user request).
     if not bot:
         out.append("<div class='empty'>Bot not found.</div>")
         out.append("</div></div>")
         return
-    bot_key = bot.get("key", "")
-    is_sport_bot = bot_key in {"nba", "tennis", "table-tennis", "darts"}
-    if is_sport_bot:
-        _render_model_view_toggle(out, bot_key, model_view, current_bot)
     if is_sport_bot and model_view == "ingame":
         _render_ingame_model_view(out, bot, bot_active_bets or [],
                                      bot_closed_positions or [])
