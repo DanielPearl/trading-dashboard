@@ -4942,6 +4942,25 @@ def _render_bot_cards(out: List[str], rollup: dict,
                 a_str = "—"
                 a_cls = "gray"
             features = int(m.get("feature_count") or 0)
+            # Brier: lower is better; only the tennis-style adapters
+            # populate this — sqlite bots' model_snapshots table doesn't
+            # carry Brier, so the cell renders "—" for them.
+            brier_val = m.get("training_brier")
+            try:
+                brier_str = f"{float(brier_val):.3f}" if brier_val is not None else "—"
+            except (TypeError, ValueError):
+                brier_str = "—"
+            # Sample size: the count of examples the headline metrics
+            # were measured on. Tennis-style bots expose the test-set
+            # size as ``training_rows_test``; sqlite bots have
+            # ``training_pairs_count`` from the training_pairs table.
+            sample_n = m.get("training_rows_test")
+            if sample_n is None:
+                sample_n = m.get("training_pairs_count")
+            try:
+                sample_str = f"{int(sample_n):,}" if sample_n else "—"
+            except (TypeError, ValueError):
+                sample_str = "—"
             out.append("<dl>")
             out.append(f"<dt>Accuracy</dt><dd>{_fmt_pct(m.get('classifier_accuracy'), 1)}</dd>"
                         f"<dt>F1</dt><dd>{_fmt_pct(m.get('training_f1'))}</dd>")
@@ -4949,6 +4968,10 @@ def _render_bot_cards(out: List[str], rollup: dict,
                         f"<dt>ROC AUC</dt><dd>{_fmt_pct(m.get('training_roc_auc'))}</dd>")
             out.append(f"<dt>Recall</dt><dd>{_fmt_pct(m.get('training_recall'))}</dd>"
                         f"<dt>Features</dt><dd>{features}</dd>")
+            out.append(f"<dt title='Brier score — mean squared error of probability predictions; 0 is perfect, 0.25 is a coin flip. Lower is better.'>Brier</dt>"
+                        f"<dd>{brier_str}</dd>"
+                        f"<dt title='Number of observations the headline metrics were measured on (holdout test set for sport bots, training pairs for the rest).'>Sample size</dt>"
+                        f"<dd>{sample_str}</dd>")
             out.append(f"<dt>Actual win %</dt><dd class='{a_cls}'>{a_str}</dd>"
                         f"<dt>Gain / loss</dt><dd class='{gl_cls}'>{gl_str}</dd>")
             out.append("</dl>")

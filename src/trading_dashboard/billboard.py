@@ -97,6 +97,8 @@ def model_summary_for_card(metrics_path: str | None,
         "training_roc_auc": blended.get("roc_auc"),
         "threshold": blended.get("threshold"),
         "feature_count": int(metrics.get("feature_count", 0) or 0),
+        # Holdout test-set size — surfaces on the Home bot card as "Sample size".
+        "training_rows_test": metrics.get("rows_test"),
         "actual_wins": 0,
         "actual_losses": 0,
     }
