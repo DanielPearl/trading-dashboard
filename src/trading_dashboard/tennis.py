@@ -162,12 +162,12 @@ def build_standard_watchlist_rows(
         match_id = str(r.get("match_id") or "")
         if not match_id:
             continue
-        oi = r.get("open_interest")
-        try:
-            if oi is None or float(oi) <= 0:
-                continue
-        except (TypeError, ValueError):
+        # Drop unquoted upcoming matches (no Kalshi bid/ask yet). Show
+        # quoted matches even with zero open interest — brand-new
+        # listings have OI=0 until the first trade settles.
+        if r.get("market_prob_a") is None:
             continue
+        oi = r.get("open_interest")
         # Prefer the live (in-play adjusted) probability since that's what
         # the bot actually trades on; fall back to the pre-match prior.
         p_a = r.get("live_prob_a")
@@ -670,16 +670,22 @@ def _render_watchlist_table(payload: dict,
     raw_rows = payload.get("rows") or []
     if not raw_rows:
         return "<div class='empty'>No active tennis markets.</div>"
+    # Show rows that are either (a) actively traded (OI > 0) or
+    # (b) freshly listed with a Kalshi quote but no contracts yet
+    # (OI == 0). Brand-new darts / tennis matches surface with $0
+    # liquidity for the first few hours after listing — keeping them
+    # in the table lets the user watch the line build before kickoff.
+    # Truly unquoted upcoming matches (market_prob_a is None) are
+    # still filtered out.
     rows_all = [
         r for r in raw_rows
-        if r.get("open_interest") is not None
-        and float(r.get("open_interest") or 0) > 0
+        if r.get("market_prob_a") is not None
     ]
     if not rows_all:
-        return (f"<div class='empty'>No tennis matches with open "
-                f"contracts right now — {len(raw_rows)} match"
+        return (f"<div class='empty'>No quoted matches right now — "
+                f"{len(raw_rows)} match"
                 f"{'es' if len(raw_rows) != 1 else ''} pulled from Kalshi, "
-                f"none with depth on the book.</div>")
+                f"none with a price on the book.</div>")
     # Map of match_id → "PLAYER_A"/"PLAYER_B" for rows we already hold
     # paper positions on. Feeds the HOLDING YES / HOLDING NO verdict.
     held_sides: dict[str, str] = {}
