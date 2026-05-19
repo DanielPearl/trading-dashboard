@@ -5363,6 +5363,18 @@ def _parse_season_dt(value: str | None) -> datetime | None:
     return dt
 
 
+def _humanize_countdown(delta_seconds: float) -> str:
+    """Server-side initial value for the countdown cells, in the same
+    ``Xd Xh Xm Xs`` shape the JS tick() function renders. Floors to 0
+    on negatives so the placeholder never reads as a negative duration
+    if the JS hasn't run yet."""
+    s = max(0, int(delta_seconds))
+    days, rem = divmod(s, 86400)
+    hours, rem = divmod(rem, 3600)
+    mins, secs = divmod(rem, 60)
+    return f"{days}d {hours}h {mins}m {secs}s"
+
+
 def _humanize_duration(delta_seconds: float) -> str:
     """Render a duration as ``Xd`` or ``Xw Yd`` for season-length cells.
     Used as the static "Length" value on the Seasons tab; the live
@@ -5436,6 +5448,31 @@ def _render_seasons_panel(out: List[str], available_bots: List[dict]) -> None:
         end_ms = int(end.timestamp() * 1000)
         start_str = start.strftime("%b %-d, %Y")
         end_str = end.strftime("%b %-d, %Y")
+        # Initial label/value computed server-side so the card reads
+        # correctly even before the JS countdown takes over. The JS
+        # below ticks the value every second and re-applies these same
+        # three states (Upcoming → In season → Season over).
+        if now < start:
+            init_status, init_color = "Upcoming", "yellow"
+            init_label, init_value = "Starts in", _humanize_countdown(
+                (start - now).total_seconds())
+        elif now < end:
+            init_status, init_color = "In season", "green"
+            init_label, init_value = "Ends in", _humanize_countdown(
+                (end - now).total_seconds())
+        else:
+            init_status, init_color = "Season over", "gray"
+            init_label, init_value = "Ended", _humanize_countdown(
+                (now - end).total_seconds()) + " ago"
+        # Progress fill so the bar reads correctly pre-JS too.
+        total = (end - start).total_seconds()
+        if now <= start or total <= 0:
+            init_pct = 0.0
+        elif now >= end:
+            init_pct = 100.0
+        else:
+            init_pct = max(0.0, min(100.0,
+                ((now - start).total_seconds() / total) * 100.0))
         # The bot's home card already links to Watchlist — match the
         # idiom so users can click through from a season card to the
         # corresponding bot view.
@@ -5447,18 +5484,20 @@ def _render_seasons_panel(out: List[str], available_bots: List[dict]) -> None:
             f"<a class='season-bot' href='{bot_href}'>"
             f"{html.escape(bot.get('name') or bot['key'])}"
             f"</a>"
-            f"<span class='status-pill gray' data-season-status>—</span>"
+            f"<span class='status-pill {init_color}' "
+            f"data-season-status>{html.escape(init_status)}</span>"
             f"</div>"
             f"<div class='season-name'>{html.escape(season_name)}</div>"
             f"<div class='season-countdown'>"
             f"<div class='season-countdown-label' "
-            f"data-season-countdown-label>—</div>"
-            f"<div class='season-countdown-value gray' "
-            f"data-season-countdown-value>—</div>"
+            f"data-season-countdown-label>{html.escape(init_label)}</div>"
+            f"<div class='season-countdown-value {init_color}' "
+            f"data-season-countdown-value>{html.escape(init_value)}</div>"
             f"</div>"
             f"<div class='season-progress'>"
             f"<div class='season-progress-fill' "
-            f"data-season-progress-fill style='width: 0%;'></div>"
+            f"data-season-progress-fill "
+            f"style='width: {init_pct:.2f}%;'></div>"
             f"</div>"
             f"<div class='season-meta'>"
             f"<div><span class='season-meta-label'>Start</span>"
