@@ -2452,12 +2452,15 @@ td.num.cell-stack .side-no  { color: #f85149 !important; }  /* red   */
    training accuracy and live actual-win-% diverge by >10pp on n≥10
    closed bets. Surfaces "this model may have drifted" as a one-look
    signal without forcing users to compare two cells. */
-/* Sport-bot Models panel header — the section title sits on the
-   same row as the Pre-game / In-game toggle (instead of stacked
-   above it). */
+/* Models panel header — the section title sits on a flex row
+   that also accommodates the Pre-game / In-game toggle for sport
+   bots. ALL model pages use this header so the title + body sit
+   at the same vertical position regardless of whether the toggle
+   is present. min-height matches the toggle's natural height so
+   the row is the same size with or without it. */
 .section .section-header { display: flex; align-items: center;
     justify-content: space-between; gap: 12px;
-    padding: 14px 22px 10px; }
+    padding: 14px 22px 10px; min-height: 32px; }
 .section .section-header h2 { padding: 0; margin: 0; }
 /* Pre-game / In-game toggle that lives in the Models panel header
    for sport bots. Pills mimic the existing tab-pill idiom but
@@ -8823,15 +8826,17 @@ def _render_models_panel(out: List[str], bot: dict, model: dict | None,
     """
     bot_key = (bot or {}).get("key", "")
     is_sport_bot = bot_key in {"nba", "tennis", "table-tennis", "darts"}
-    # Sport bots get the Pre-game / In-game toggle inline with the
-    # "Model" title; all other bots just get the plain h2.
+    # Every model page uses the same section-header layout so the
+    # "Model" title and the body content sit at the same vertical
+    # position regardless of bot. Sport bots fill the right-hand
+    # slot with the Pre-game / In-game toggle; all other bots leave
+    # it empty (the min-height on .section-header keeps the row at
+    # the same height so flipping between bots doesn't shift content).
     out.append("<div class='section'>")
+    out.append("<div class='section-header'><h2>Model</h2>")
     if is_sport_bot and bot:
-        out.append("<div class='section-header'><h2>Model</h2>")
         _render_model_view_toggle(out, bot_key, model_view, current_bot)
-        out.append("</div>")
-    else:
-        out.append("<h2>Model</h2>")
+    out.append("</div>")
     out.append("<div class='body'>")
     # Bot filter moved above the tab bar (per user request).
     if not bot:
