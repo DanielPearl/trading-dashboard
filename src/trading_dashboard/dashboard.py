@@ -6252,6 +6252,34 @@ def _svg_confusion(cm: dict) -> str:
 # rather than the NBA bucket. FRED ids and ETF tickers sit above the
 # catch-all "derived transform" bucket for the same reason.
 FEATURE_RULES: List[dict] = [
+    # ── Billboard Hot 100: real weekly chart history from the
+    # utdata/rwd-billboard-data public mirror of billboard.com.
+    # All 15 features in the Hot 100 Top-10 model are derived
+    # entirely from this one source. Split into four logical groups
+    # so the chart legend and table can show users which part of
+    # the chart panel each feature came from.
+    {"patterns": ("artist_total_prior_top10s",
+                   "artist_weeks_since_last_top10",
+                   "artist_prior_top10_count"),
+     "label": "Billboard Hot 100 (artist history)", "color": "#58a6ff",
+     "description": "How often this artist has had songs in the Hot 100 top 10 in the past, and how recently. An artist who just had a top-10 hit is more likely to put another song there.",
+     "link": "https://www.billboard.com/charts/hot-100/"},
+    {"patterns": ("peak_position_so_far", "weeks_on_chart",
+                   "debut_rank", "weeks_since_debut",
+                   "best_3wk_rank", "rank_change_last_week",
+                   "weeks_in_top10_so_far", "weeks_in_top40_so_far"),
+     "label": "Billboard Hot 100 (song trajectory)", "color": "#58a6ff",
+     "description": "The song's own chart history before this week — how high it has climbed, how long it has been on the chart, how it has moved week-to-week, and how many weeks it has already spent in the top 10 or top 40.",
+     "link": "https://www.billboard.com/charts/hot-100/"},
+    {"patterns": ("debut_month_sin", "debut_month_cos", "debut_dow"),
+     "label": "Billboard Hot 100 (release timing)", "color": "#58a6ff",
+     "description": "When the song first appeared on the Hot 100 (month of the year and day of the week). Captures any seasonal pattern in which release windows tend to produce top-10 hits.",
+     "link": "https://www.billboard.com/charts/hot-100/"},
+    {"patterns": ("competition_count",),
+     "label": "Billboard Hot 100 (weekly competition)", "color": "#58a6ff",
+     "description": "How crowded the chart's top 40 is with other fresh debuts this week. A busy release week means more competition for a top-10 slot.",
+     "link": "https://www.billboard.com/charts/hot-100/"},
+
     # ── Tennis / Table tennis: Jeff Sackmann dataset + bot-computed Elo
     {"patterns": ("surface_elo", "style_elo"),
      "label": "Elo (bot-computed)", "color": "#bc8cff",
