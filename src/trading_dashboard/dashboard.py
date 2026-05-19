@@ -7371,14 +7371,13 @@ def _render_feature_source_legend(features: List[dict]) -> str:
 
 
 def _render_feature_source_table(features: List[dict]) -> str:
-    """Table listing the features the model *actually uses* to make
-    predictions — i.e. those the walk-forward stability filter kept.
+    """Master-detail view of the features the model *actually uses*.
+
+    Left column: vertical list of feature names (clickable). Right
+    column: the selected feature's name, description, and source name
+    (the source name is itself a link to the canonical source page).
     Rejected candidates are excluded; they live in the chart's muted
     bars and the source legend's "kept/considered" counts.
-
-    Wrapped in a fixed-height scrollable container with a sticky
-    header so it never grows past ~420px tall regardless of how many
-    features survived.
     """
     if not features:
         return ""
@@ -7388,51 +7387,214 @@ def _render_feature_source_table(features: List[dict]) -> str:
                 "No features survived the stability filter on the "
                 "last retrain — the model is in degenerate state.</div>")
     kept.sort(key=lambda f: f.get("mean_importance") or 0.0, reverse=True)
-    # Detect cadence once from the whole feature set so ambiguous
-    # shared bases (e.g. ``vix_zscore_3``) resolve correctly even
-    # when their own name doesn't say "monthly" or "weekly".
     cadence = _detect_bot_cadence(features)
-    parts = [
-        f"<h3 class='subhead'>Features used by the model "
-        f"<span class='small gray'>({len(kept)} kept by the "
-        f"stability filter)</span></h3>",
-        # Fixed-height scroll container — sticky thead keeps the
-        # column titles visible as the user scrolls the long list.
-        "<div class='feature-table-scroll' "
-        "style='max-height:420px;overflow-y:auto;"
-        "border:1px solid #21262d;border-radius:6px;'>",
-        "<table style='margin:0;'>"
-        "<thead style='position:sticky;top:0;z-index:1;"
-        "background:#0d1117;'><tr>"
-        "<th>Feature</th>"
-        "<th>Description</th>"
-        "<th>Source</th>"
-        "<th>Link</th>"
-        "<th class='num'>Importance</th>"
-        "</tr></thead><tbody>",
-    ]
-    for f in kept:
+
+    def _src_html(md: dict, link_url: str) -> str:
+        dot = (f"<span class='fd-dot' style='background:"
+               f"{html.escape(md['color'])};'></span>")
+        label = html.escape(md["label"])
+        if link_url:
+            return (
+                f"<a href='{html.escape(link_url)}' target='_blank' "
+                f"rel='noopener noreferrer' class='fd-src-link'>"
+                f"{dot}{label} ↗</a>"
+            )
+        return f"<span class='fd-src-link'>{dot}{label}</span>"
+
+    rows: List[str] = []
+    for i, f in enumerate(kept):
         name = f.get("feature") or ""
         imp = float(f.get("mean_importance") or 0.0)
         md = feature_metadata(name, cadence=cadence)
         link_url = md.get("link") or ""
-        if link_url:
-            link_cell = (
-                f"<a href='{html.escape(link_url)}' target='_blank' "
-                f"rel='noopener noreferrer' class='small'>source ↗</a>"
-            )
-        else:
-            link_cell = "<span class='small gray'>—</span>"
-        parts.append(
-            f"<tr><td class='mono small'>{html.escape(name)}</td>"
-            f"<td class='small'>{html.escape(md['description'])}</td>"
-            f"<td><span style='color:{md['color']};'>● </span>"
-            f"{html.escape(md['label'])}</td>"
-            f"<td>{link_cell}</td>"
-            f"<td class='num'>{imp:.4f}</td></tr>"
+        active_cls = " active" if i == 0 else ""
+        rows.append(
+            f"<li class='fd-row{active_cls}' data-idx='{i}' "
+            f"data-name='{html.escape(name)}' "
+            f"data-desc='{html.escape(md['description'])}' "
+            f"data-src-label='{html.escape(md['label'])}' "
+            f"data-src-color='{html.escape(md['color'])}' "
+            f"data-src-link='{html.escape(link_url)}' "
+            f"data-imp='{imp:.4f}'>"
+            f"<span class='fd-dot' style='background:"
+            f"{html.escape(md['color'])};'></span>"
+            f"<span class='mono small fd-row-name' "
+            f"title='{html.escape(name)}'>{html.escape(name)}</span>"
+            f"</li>"
         )
-    parts.append("</tbody></table></div>")
+
+    first = kept[0]
+    first_name = first.get("feature") or ""
+    first_md = feature_metadata(first_name, cadence=cadence)
+    first_imp = float(first.get("mean_importance") or 0.0)
+    first_link = first_md.get("link") or ""
+
+    parts = [
+        f"<h3 class='subhead'>Features used by the model "
+        f"<span class='small gray'>({len(kept)} kept by the "
+        f"stability filter)</span></h3>",
+        "<div class='fd-layout'>",
+        "<ul class='fd-list'>",
+        *rows,
+        "</ul>",
+        "<div class='fd-pane'>",
+        f"<div class='fd-name mono'>{html.escape(first_name)}</div>",
+        f"<div class='fd-imp small gray'>"
+        f"Importance: {first_imp:.4f}</div>",
+        f"<div class='fd-desc'>{html.escape(first_md['description'])}"
+        f"</div>",
+        f"<div class='fd-src-row'>"
+        f"<span class='small gray'>Source:</span> "
+        f"{_src_html(first_md, first_link)}</div>",
+        "</div>",
+        "</div>",
+        _FEATURE_DETAIL_CSS_JS,
+    ]
     return "".join(parts)
+
+
+_FEATURE_DETAIL_CSS_JS = """
+<style>
+.fd-layout {
+  display: flex;
+  gap: 0;
+  border: 1px solid #21262d;
+  border-radius: 6px;
+  overflow: hidden;
+  margin-top: 4px;
+  max-height: 420px;
+}
+.fd-layout .fd-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  width: 280px;
+  flex: 0 0 280px;
+  overflow-y: auto;
+  border-right: 1px solid #21262d;
+  background: #0d1117;
+}
+.fd-layout .fd-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  cursor: pointer;
+  border-bottom: 1px solid #161b22;
+  color: #c9d1d9;
+}
+.fd-layout .fd-row:last-child { border-bottom: none; }
+.fd-layout .fd-row:hover { background: #161b22; }
+.fd-layout .fd-row.active {
+  background: #1f2630;
+  box-shadow: inset 2px 0 0 #58a6ff;
+}
+.fd-layout .fd-row-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  flex: 1 1 auto;
+  min-width: 0;
+}
+.fd-dot {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  border-radius: 2px;
+  flex: 0 0 auto;
+}
+.fd-layout .fd-pane {
+  flex: 1 1 auto;
+  padding: 16px 20px;
+  background: #0d1117;
+  min-width: 0;
+  overflow-y: auto;
+}
+.fd-pane .fd-name {
+  font-size: 14px;
+  font-weight: 600;
+  color: #c9d1d9;
+  margin-bottom: 4px;
+  word-break: break-all;
+}
+.fd-pane .fd-imp { margin-bottom: 12px; }
+.fd-pane .fd-desc {
+  color: #c9d1d9;
+  font-size: 13px;
+  line-height: 1.5;
+  margin-bottom: 14px;
+}
+.fd-pane .fd-src-row {
+  font-size: 13px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+.fd-src-link {
+  color: #58a6ff;
+  text-decoration: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+.fd-src-link:hover { text-decoration: underline; }
+a.fd-src-link { color: #58a6ff; }
+span.fd-src-link { color: #8b949e; }
+@media (max-width: 720px) {
+  .fd-layout { flex-direction: column; max-height: none; }
+  .fd-layout .fd-list {
+    width: 100%; flex: 0 0 auto; max-height: 220px;
+    border-right: none; border-bottom: 1px solid #21262d;
+  }
+}
+</style>
+<script>
+(function() {
+  function escapeHtml(s) {
+    return String(s).replace(/[&<>"']/g, function(c) {
+      return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c];
+    });
+  }
+  document.querySelectorAll('.fd-layout').forEach(function(layout) {
+    if (layout.dataset.fdBound) return;
+    layout.dataset.fdBound = '1';
+    var list = layout.querySelector('.fd-list');
+    var pane = layout.querySelector('.fd-pane');
+    if (!list || !pane) return;
+    list.addEventListener('click', function(ev) {
+      var row = ev.target.closest('.fd-row');
+      if (!row) return;
+      list.querySelectorAll('.fd-row').forEach(function(r) {
+        r.classList.toggle('active', r === row);
+      });
+      var name = row.dataset.name || '';
+      var desc = row.dataset.desc || '';
+      var srcLabel = row.dataset.srcLabel || '';
+      var srcColor = row.dataset.srcColor || '#6e7681';
+      var srcLink = row.dataset.srcLink || '';
+      var imp = row.dataset.imp || '';
+      pane.querySelector('.fd-name').textContent = name;
+      pane.querySelector('.fd-imp').textContent = 'Importance: ' + imp;
+      pane.querySelector('.fd-desc').textContent = desc;
+      var dot = '<span class="fd-dot" style="background:' +
+        escapeHtml(srcColor) + ';"></span>';
+      var srcHtml;
+      if (srcLink) {
+        srcHtml = '<a href="' + escapeHtml(srcLink) +
+          '" target="_blank" rel="noopener noreferrer" class="fd-src-link">' +
+          dot + escapeHtml(srcLabel) + ' ↗</a>';
+      } else {
+        srcHtml = '<span class="fd-src-link">' + dot +
+          escapeHtml(srcLabel) + '</span>';
+      }
+      pane.querySelector('.fd-src-row').innerHTML =
+        '<span class="small gray">Source:</span> ' + srcHtml;
+    });
+  });
+})();
+</script>
+"""
 
 
 def _svg_roc_curve(points: List[dict],
