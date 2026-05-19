@@ -7339,37 +7339,6 @@ def _svg_feature_importance_vertical(features: List[dict]) -> str:
     return "".join(parts)
 
 
-def _render_feature_source_legend(features: List[dict]) -> str:
-    """Coloured-swatch legend row showing every distinct source the
-    feature pool draws from + how many features are sourced from
-    each. Sits above the chart so colour-coding is self-explanatory.
-    """
-    counts: dict = {}
-    for f in features:
-        label, color = feature_source(f.get("feature") or "")
-        bucket = counts.setdefault(label, {"color": color, "n": 0, "kept": 0})
-        bucket["n"] += 1
-        if f.get("selected"):
-            bucket["kept"] += 1
-    if not counts:
-        return ""
-    items = sorted(counts.items(), key=lambda kv: -kv[1]["n"])
-    parts = ["<div class='source-legend' "
-             "style='display:flex;flex-wrap:wrap;gap:14px;"
-             "margin:6px 0 12px 0;font-size:12px;color:#8b949e;'>"]
-    for label, info in items:
-        parts.append(
-            f"<span style='display:inline-flex;align-items:center;gap:6px;'>"
-            f"<span style='display:inline-block;width:10px;height:10px;"
-            f"background:{info['color']};border-radius:2px;'></span>"
-            f"<span>{html.escape(label)} "
-            f"<span style='color:#6e7681;'>"
-            f"({info['kept']}/{info['n']})</span></span></span>"
-        )
-    parts.append("</div>")
-    return "".join(parts)
-
-
 def _readable_feature_name(name: str) -> str:
     """Render a raw feature identifier in a more reader-friendly form.
 
@@ -7383,19 +7352,13 @@ def _readable_feature_name(name: str) -> str:
 
 
 def _render_feature_source_table(features: List[dict]) -> str:
-    """Side-by-side feature panel.
+    """Aligned feature table with the importance bar on the right.
 
-    Left column: horizontal bar chart, one bar per feature, stacked
-    vertically going downward. Bar length encodes mean importance,
-    bar colour encodes the data source.
-
-    Right column: aligned table giving the readable feature name,
-    its plain-English description, and the source name as a clickable
-    link to the canonical source page.
-
-    Rows are sorted by importance descending so the heaviest features
-    sit at the top; only features the walk-forward stability filter
-    kept are shown.
+    Columns: readable feature name, plain-English description, source
+    name (clickable link to the canonical source page), and importance
+    (a colour-coded horizontal bar with the scalar beside it). Rows
+    are sorted by importance descending; only features the
+    walk-forward stability filter kept are shown.
     """
     if not features:
         return ""
@@ -7437,6 +7400,11 @@ def _render_feature_source_table(features: List[dict]) -> str:
         rows.append(
             f"<div class='ft-row' "
             f"title='{html.escape(name)} · imp {imp:.4f}'>"
+            f"<div class='ft-name-cell' title='{html.escape(name)}'>"
+            f"{html.escape(readable)}</div>"
+            f"<div class='ft-desc'>{html.escape(md['description'])}"
+            f"</div>"
+            f"<div class='ft-src-cell'>{src_cell}</div>"
             f"<div class='ft-bar-cell'>"
             f"<div class='ft-bar-track'>"
             f"<div class='ft-bar-fill' style='width:{bar_pct:.1f}%;"
@@ -7444,15 +7412,6 @@ def _render_feature_source_table(features: List[dict]) -> str:
             f"</div>"
             f"<div class='ft-bar-imp'>{imp:.4f}</div>"
             f"</div>"
-            f"<div class='ft-name-cell'>"
-            f"<div class='ft-name-readable'>"
-            f"{html.escape(readable)}</div>"
-            f"<div class='ft-name-raw mono small gray'>"
-            f"{html.escape(name)}</div>"
-            f"</div>"
-            f"<div class='ft-desc'>{html.escape(md['description'])}"
-            f"</div>"
-            f"<div class='ft-src-cell'>{src_cell}</div>"
             f"</div>"
         )
 
@@ -7462,10 +7421,10 @@ def _render_feature_source_table(features: List[dict]) -> str:
         f"stability filter)</span></h3>",
         "<div class='ft-layout'>",
         "<div class='ft-head'>"
-        "<div>Importance</div>"
         "<div>Feature</div>"
         "<div>Description</div>"
         "<div>Source</div>"
+        "<div>Importance</div>"
         "</div>",
         "<div class='ft-body'>",
         *rows,
@@ -7487,7 +7446,7 @@ _FEATURE_DETAIL_CSS_JS = """
 }
 .ft-head {
   display: grid;
-  grid-template-columns: 220px 200px 1fr 170px;
+  grid-template-columns: 200px 1fr 170px 220px;
   gap: 16px;
   padding: 8px 12px;
   background: #0d1117;
@@ -7506,7 +7465,7 @@ _FEATURE_DETAIL_CSS_JS = """
 }
 .ft-row {
   display: grid;
-  grid-template-columns: 220px 200px 1fr 170px;
+  grid-template-columns: 200px 1fr 170px 220px;
   gap: 16px;
   padding: 10px 12px;
   border-bottom: 1px solid #161b22;
@@ -7514,51 +7473,12 @@ _FEATURE_DETAIL_CSS_JS = """
 }
 .ft-row:last-child { border-bottom: none; }
 .ft-row:hover { background: #161b22; }
-.ft-bar-cell {
-  display: grid;
-  grid-template-columns: 1fr 56px;
-  gap: 8px;
-  align-items: center;
-  /* visual divider so the chart side reads as its own column */
-  border-right: 1px solid #21262d;
-  padding-right: 12px;
-  margin-right: -8px;
-}
-.ft-head > div:first-child {
-  border-right: 1px solid #21262d;
-  padding-right: 12px;
-  margin-right: -8px;
-}
-.ft-bar-track {
-  position: relative;
-  height: 10px;
-  background: #161b22;
-  border-radius: 2px;
-  overflow: hidden;
-}
-.ft-bar-fill {
-  position: absolute;
-  top: 0; left: 0; bottom: 0;
-  border-radius: 2px;
-}
-.ft-bar-imp {
-  font-size: 11px;
-  color: #8b949e;
-  text-align: right;
-  font-variant-numeric: tabular-nums;
-}
-.ft-name-cell { min-width: 0; }
-.ft-name-readable {
+.ft-name-cell {
   font-size: 13px;
   color: #c9d1d9;
   font-weight: 500;
   line-height: 1.3;
-}
-.ft-name-raw {
-  margin-top: 2px;
-  font-size: 11px;
-  word-break: break-all;
-  line-height: 1.2;
+  min-width: 0;
 }
 .ft-desc {
   color: #c9d1d9;
@@ -7582,9 +7502,42 @@ _FEATURE_DETAIL_CSS_JS = """
   border-radius: 2px;
   flex: 0 0 auto;
 }
+.ft-bar-cell {
+  display: grid;
+  grid-template-columns: 1fr 56px;
+  gap: 8px;
+  align-items: center;
+  /* visual divider so the importance side reads as its own column */
+  border-left: 1px solid #21262d;
+  padding-left: 12px;
+  margin-left: -8px;
+}
+.ft-head > div:last-child {
+  border-left: 1px solid #21262d;
+  padding-left: 12px;
+  margin-left: -8px;
+}
+.ft-bar-track {
+  position: relative;
+  height: 10px;
+  background: #161b22;
+  border-radius: 2px;
+  overflow: hidden;
+}
+.ft-bar-fill {
+  position: absolute;
+  top: 0; left: 0; bottom: 0;
+  border-radius: 2px;
+}
+.ft-bar-imp {
+  font-size: 11px;
+  color: #8b949e;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
 @media (max-width: 900px) {
   .ft-head, .ft-row {
-    grid-template-columns: 160px 160px 1fr 140px;
+    grid-template-columns: 160px 1fr 140px 160px;
     gap: 10px;
   }
 }
@@ -7595,9 +7548,9 @@ _FEATURE_DETAIL_CSS_JS = """
     gap: 6px;
   }
   .ft-bar-cell {
-    border-right: none;
-    padding-right: 0;
-    margin-right: 0;
+    border-left: none;
+    padding-left: 0;
+    margin-left: 0;
   }
 }
 </style>
@@ -8911,7 +8864,6 @@ def _render_models_panel(out: List[str], bot: dict, model: dict | None,
     out.append("</div>")
 
     # ── Top features — bars + readable table in one aligned panel ───
-    out.append(_render_feature_source_legend(feats))
     out.append(_render_feature_source_table(feats))
 
     # ── ROC curve + confusion matrix — both sourced from the

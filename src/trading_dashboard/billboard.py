@@ -325,7 +325,6 @@ def render_models_panel(out: List[str], bot: Dict[str, Any]) -> None:
 
     # ── 2. Top features — bars + readable table in one aligned panel ─
     feats = _logistic_coefs_as_features(coefficients)
-    out.append(_d._render_feature_source_legend(feats))
     out.append(_d._render_feature_source_table(feats))
 
     # ── 3. ROC curve + confidence card (held-out predictions) ────────

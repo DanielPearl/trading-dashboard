@@ -1328,7 +1328,6 @@ def _render_tennis_models_page(metrics: dict, coefficients: dict,
     from .dashboard import (  # type: ignore
         _read_feature_importance, _read_holdout_predictions,
         _holdout_confidence, _render_confidence_card,
-        _render_feature_source_legend,
         _render_feature_source_table, _svg_roc_curve, _svg_confusion,
         _svg_calibration, roc_from_holdout, confusion_from_holdout,
         calibration_from_holdout,
@@ -1403,14 +1402,6 @@ def _render_tennis_models_page(metrics: dict, coefficients: dict,
 
     # ── Top features — bars + readable table in one aligned panel ──
     if feats:
-        out.append(
-            "<p class='small gray' style='margin:0 0 4px 0;'>"
-            "Gradient-boost gain importance from the historical "
-            "training set, with the Elo-only logistic features "
-            "scaled in alongside. Bars colour-coded by data source."
-            "</p>"
-        )
-        out.append(_render_feature_source_legend(feats))
         out.append(_render_feature_source_table(feats))
 
     # ── Model overview (training-set provenance) ───────────────────
