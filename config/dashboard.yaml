@@ -122,10 +122,14 @@ bots:
     metrics_path: /root/tennis-forecast/data/processed/artifacts/metrics.json
     coefficients_path: /root/tennis-forecast/data/processed/artifacts/model_coefficients.json
     sim_state_path: /root/tennis-forecast/data/outputs/sim_state.json
-    # One window per Kalshi tennis league. The bot polls KXATPMATCH
-    # and KXWTAMATCH — these are two separate tours, so each gets
-    # its own card. United Cup kickoff → tour-ending Finals; refresh
-    # dates each year as the calendar drops.
+    # Kalshi runs every ATP / WTA event as a separate competition on
+    # KXATPMATCH / KXWTAMATCH. The two tours cover the regular
+    # season (Masters 1000 + 500 + 250 + year-end Finals); the four
+    # Grand Slams stand on their own because they're run by
+    # independent bodies (Tennis Australia, FFT, AELTC, USTA) and
+    # have their own brand identities. Tour-level singles events
+    # only — Challenger / ITF Futures are tradeable but the bot
+    # is configured to stay tour-only.
     seasons:
       - name: "ATP Tour 2026"
         start: "2025-12-29T00:00:00Z"
@@ -133,6 +137,18 @@ bots:
       - name: "WTA Tour 2026"
         start: "2025-12-29T00:00:00Z"
         end:   "2026-11-15T23:59:59Z"
+      - name: "Australian Open 2026"
+        start: "2026-01-18T00:00:00Z"
+        end:   "2026-02-01T11:00:00Z"
+      - name: "Roland-Garros 2026"
+        start: "2026-05-24T09:00:00Z"
+        end:   "2026-06-07T19:00:00Z"
+      - name: "Wimbledon 2026"
+        start: "2026-06-29T10:00:00Z"
+        end:   "2026-07-12T19:00:00Z"
+      - name: "US Open 2026"
+        start: "2026-08-24T15:00:00Z"
+        end:   "2026-09-13T22:00:00Z"
   - key: survivor
     name: Survivor Elimination
     # Survivor-elimination bot writes the same JSON-output shape as the
