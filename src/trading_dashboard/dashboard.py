@@ -112,6 +112,98 @@ def _safe_query(db_path: str, query: str, params: tuple = ()) -> List[dict]:
         return []
 
 
+def fetch_bot_effective_config(db_path: str) -> dict | None:
+    """Read ``<data_dir>/effective_config.json`` next to the bot's sim.db.
+
+    Bots that use ``kalshi_sdk.write_effective_config`` at startup emit
+    this file with their *resolved* gates (post env-overrides, post
+    per-bot widens). When present, the dashboard's buy-criteria panel
+    renders these instead of the dashboard YAML's display defaults —
+    so what the panel claims is what the bot actually applies.
+
+    Returns ``None`` when the file is missing or unreadable; the caller
+    falls back to the dashboard YAML and marks the panel as "showing
+    dashboard defaults — bot has not reported its live config".
+
+    Tolerant of the bot writing JSON elsewhere — we also try the
+    sibling ``effective_config.json`` alongside the watchlist.json that
+    sport bots use as their data anchor.
+    """
+    if not db_path:
+        return None
+    candidates = [Path(db_path).parent / "effective_config.json"]
+    try:
+        for p in candidates:
+            if p.exists():
+                with open(p) as f:
+                    data = json.load(f)
+                if isinstance(data, dict):
+                    return data
+    except (OSError, ValueError, json.JSONDecodeError):
+        return None
+    return None
+
+
+def resolve_bot_thresholds(
+    bot: dict,
+    fallback_edge: dict,
+    fallback_validators: dict,
+    fallback_risk: dict,
+    fallback_hedge: dict,
+) -> Tuple[dict, dict, dict, dict, dict]:
+    """Build the per-bot edge/validators/risk/hedge dicts the renderer uses.
+
+    Priority is the bot's live ``effective_config.json`` (written at
+    startup by ``kalshi_sdk.write_effective_config``); missing fields
+    fall back to the dashboard YAML so a partially-reported config
+    still looks complete to the user.
+
+    Returns ``(edge, validators, risk, hedge, source_meta)`` where
+    ``source_meta`` carries provenance the rules modal renders:
+
+        {"source": "live" | "fallback",
+         "captured_at": "..." | None,
+         "missing_keys": [...]}    # fields the bot didn't report
+    """
+    db_path = bot.get("db_path") or bot.get("watchlist_json_path") or ""
+    live = fetch_bot_effective_config(db_path)
+    if not live:
+        return (
+            dict(fallback_edge or {}),
+            dict(fallback_validators or {}),
+            dict(fallback_risk or {}),
+            dict(fallback_hedge or {}),
+            {"source": "fallback", "captured_at": None, "missing_keys": []},
+        )
+    missing: List[str] = []
+
+    def _merge(live_section: Any, fallback: dict, section_label: str) -> dict:
+        merged = dict(fallback or {})
+        live_dict = live_section if isinstance(live_section, dict) else {}
+        for k, v in live_dict.items():
+            if v is not None:
+                merged[k] = v
+        # Track keys the dashboard expected but the bot didn't report —
+        # surfaced in the modal so the user knows the panel is mixed.
+        for k in (fallback or {}):
+            if k not in live_dict or live_dict.get(k) is None:
+                missing.append(f"{section_label}.{k}")
+        return merged
+
+    edge = _merge(live.get("edge"), fallback_edge, "edge")
+    validators = _merge(live.get("validators"), fallback_validators, "validators")
+    risk = _merge(live.get("risk"), fallback_risk, "risk")
+    hedge = _merge(live.get("hedge"), fallback_hedge, "hedge")
+    return (
+        edge, validators, risk, hedge,
+        {
+            "source": "live",
+            "captured_at": live.get("captured_at"),
+            "missing_keys": missing,
+        },
+    )
+
+
 def fetch_summary(db_path: str, period_days: int | None = None) -> dict:
     """Lifetime + recent stats used by the Summary section.
 
@@ -2735,6 +2827,7 @@ def render_page(
     bot_models: List[dict] | None = None,
     prob_history: List[dict] | None = None,
     model_view: str = "pregame",
+    threshold_source: dict | None = None,
 ) -> str:
     out: List[str] = []
     out.append("<!doctype html><html><head>")
@@ -2834,6 +2927,7 @@ def render_page(
                           validator_cfg=validator_cfg,
                           risk_caps=risk_caps,
                           hedge_cfg=hedge_cfg,
+                          threshold_source=threshold_source,
                           available_bots=available_bots,
                           current_bot=current_bot,
                           period_key=period_key)
@@ -2929,6 +3023,9 @@ def render_page(
         "validators": validator_cfg or {},
         "risk": risk_caps or {},
         "hedge": hedge_cfg or {},
+        "_source": threshold_source or {"source": "fallback",
+                                          "captured_at": None,
+                                          "missing_keys": []},
     }, separators=(",", ":"), default=str)
     out.append(
         f"<script>window.__BUY_CRITERIA__ = {buy_criteria_payload};</script>"
@@ -3476,23 +3573,98 @@ def _live_update_script(current_bot: str, period_key: str = "all") -> str:
   }}
   function buildRulesHTML(r) {{
     // Bullet-point overview of every gate the bot runs before buying
-    // and exiting. No threshold values — those are bot-specific config
-    // and live in the YAML; the modal is for explaining WHAT each gate
-    // checks for. Use the per-position Why? button to see the actual
-    // values that cleared each gate at entry-time.
+    // and exiting. Each bullet renders the gate description AND the
+    // actual numeric value the bot uses (pulled from the bot's
+    // ``data/effective_config.json`` when present, else the dashboard
+    // YAML — the source banner at the top tells the user which).
+    // Use the per-position Why? button to see the actual values that
+    // cleared each gate at entry-time for a specific bet.
+    const ed  = (r && r.edge)       || {{}};
+    const va  = (r && r.validators) || {{}};
+    const rk  = (r && r.risk)       || {{}};
+    const hg  = (r && r.hedge)      || {{}};
+    const src = (r && r._source)    || {{}};
+
+    function fmtNum(v, suffix) {{
+      if (v === null || v === undefined || (typeof v === "number" && !isFinite(v))) {{
+        return "—";
+      }}
+      if (typeof v === "boolean") return v ? "on" : "off";
+      if (Array.isArray(v))      return v.join("–");
+      return v + (suffix || "");
+    }}
+    function fmtCash(c) {{
+      if (c === null || c === undefined || !isFinite(c)) return "—";
+      return "$" + (c / 100).toFixed(2);
+    }}
+    function fmtPctF(v) {{
+      if (v === null || v === undefined || !isFinite(v)) return "—";
+      return (v * 100).toFixed(0) + "%";
+    }}
+    function fmtMinH(m) {{
+      if (m === null || m === undefined || !isFinite(m)) return "—";
+      if (m >= 1440) return (m / 1440).toFixed(0) + "d";
+      if (m >= 60)   return (m / 60).toFixed(0) + "h";
+      return m + "min";
+    }}
+    function fmtSec(s) {{
+      if (s === null || s === undefined || !isFinite(s)) return "—";
+      if (s >= 3600) return (s / 3600).toFixed(1) + "h";
+      if (s >= 60)   return (s / 60).toFixed(0) + "min";
+      return s + "s";
+    }}
+    function valSpan(s) {{
+      return "<span style='font-variant-numeric:tabular-nums;"
+           + "color:#f0f6fc;font-weight:600;'>" + s + "</span>";
+    }}
+
     function bullets(items) {{
       let h = "<ul style='margin:0 0 0 18px;padding:0;line-height:1.55;"
             + "font-size:13px;color:#c9d1d9;'>";
       for (const it of items) {{
+        // it = [label, description, value-html-or-null]
+        const label = it[0];
+        const desc  = it[1];
+        const val   = it[2];
         h += "<li style='margin:0 0 6px 0;'>"
-           + "<b>" + it[0] + "</b>"
-           + (it[1] ? " — <span class='gray'>" + it[1] + "</span>" : "")
+           + "<b>" + label + "</b>"
+           + (val ? " " + valSpan(val) : "")
+           + (desc ? " — <span class='gray'>" + desc + "</span>" : "")
            + "</li>";
       }}
       h += "</ul>";
       return h;
     }}
     let html = "";
+
+    // ── Source banner. Tells the user whether the values below come
+    //    from the bot's live config or the dashboard YAML defaults.
+    if (src.source === "live") {{
+      const ts = src.captured_at
+        ? " <span class='gray'>(reported " + src.captured_at + ")</span>"
+        : "";
+      html += "<div class='crit-section' style='font-size:11px;"
+           + "color:#3fb950;margin-bottom:10px;border:1px solid "
+           + "rgba(63,185,80,0.30);background:rgba(63,185,80,0.08);"
+           + "border-radius:4px;padding:6px 10px;'>"
+           + "● Live config — these are the gates the bot is currently "
+           + "applying" + ts
+           + (src.missing_keys && src.missing_keys.length
+              ? " · <span class='gray'>"
+                + src.missing_keys.length
+                + " field(s) fell back to dashboard defaults</span>"
+              : "")
+           + "</div>";
+    }} else {{
+      html += "<div class='crit-section' style='font-size:11px;"
+           + "color:#e3b341;margin-bottom:10px;border:1px solid "
+           + "rgba(227,179,65,0.30);background:rgba(227,179,65,0.08);"
+           + "border-radius:4px;padding:6px 10px;'>"
+           + "● Dashboard defaults — this bot hasn't reported its live "
+           + "config, so values below may not match what the bot is "
+           + "actually applying."
+           + "</div>";
+    }}
 
     html += "<div class='crit-section' style='font-size:13px;"
          + "line-height:1.55;color:#c9d1d9;margin-bottom:14px;'>"
@@ -3506,21 +3678,31 @@ def _live_update_script(current_bot: str, period_key: str = "all") -> str:
          + "drops the bet."
          + "</div>";
 
+    // Probability-bounds is stored as [low, high] in cents → render
+    // the two extremes as a price band the bot will trade in.
+    const pb = va.prob_bounds_cents;
+    const pbStr = (Array.isArray(pb) && pb.length === 2)
+      ? pb[0] + "¢–" + pb[1] + "¢" : "—";
+
     html += "<div class='crit-section'>"
          + "<h4>1 · Edge &amp; EV — does the model think the price is wrong?</h4>"
          + bullets([
-           ["Min model edge (YES side)",
-            "the model's YES probability has to clear the YES ask by a meaningful margin before the bot buys YES."],
-           ["Min model edge (NO side)",
-            "same idea on the NO side: the model's NO probability has to clear the NO ask by a meaningful margin."],
            ["Min model confidence",
-            "the model's self-rated certainty for the prediction. Filters out coin-flippy 50/50 calls where the edge is probably noise."],
-           ["Min recent model accuracy",
-            "rolling hit rate on completed contracts. If the model has been wrong lately, it doesn't get to place new bets."],
+            "skip-band around 50/50; the model's blended probability has to land outside this band before the bot considers either side.",
+            "skip if p ∈ [" + fmtPctF(ed.min_model_confidence) + ", "
+              + fmtPctF(1 - (ed.min_model_confidence || 0)) + "]"],
            ["Min expected value per contract",
-            "expected $ return on a $1 contract after subtracting half the spread. Filters thin-margin trades where slippage eats the edge."],
+            "expected $ return on a $1 contract after subtracting half the spread. Filters thin-margin trades where slippage eats the edge.",
+            "≥ $" + fmtNum(ed.min_ev_per_contract)],
            ["Min edge over break-even",
-            "buffer above the price-implied break-even probability. The model has to win meaningfully more often than the price says it has to, not just barely more often."],
+            "buffer above the price-implied break-even probability. The model has to win meaningfully more often than the price says it has to, not just barely more often.",
+            "≥ " + fmtPctF(ed.min_prob_edge_over_breakeven)],
+           ["Min raw model edge",
+            "raw (un-blended) model probability has to clear the ask by this much, so a market-dominated blend can't mask a thin underlying edge.",
+            "≥ " + fmtPctF(ed.min_raw_model_edge)],
+           ["Max entry price",
+            "hard cap on the per-contract price the bot will pay. Above this, the loss-vs-gain ratio is too punishing even on a positive-EV call.",
+            "≤ " + fmtCash(ed.max_entry_price_cents)],
          ])
          + "</div>";
 
@@ -3528,23 +3710,32 @@ def _live_update_script(current_bot: str, period_key: str = "all") -> str:
          + "<h4>2 · Market health — is the book good enough to trade?</h4>"
          + bullets([
            ["Min book depth",
-            "total contracts resting across the YES + NO order book. Avoids markets where the bot's own order would move the price."],
+            "total contracts resting across the YES + NO order book within 3¢ of the touch. Avoids markets where the bot's own order would move the price.",
+            "≥ " + fmtNum(va.min_book_depth_contracts) + " contracts"],
            ["Max spread",
-            "ceiling on YES-ask minus NO-ask. Wide spreads mean Kalshi can't even tell us a real price — the bot won't bet into them."],
+            "ceiling on YES-ask minus NO-ask. Wide spreads mean Kalshi can't even tell us a real price — the bot won't bet into them.",
+            "≤ " + fmtNum(va.max_spread_cents, "¢")],
            ["Time-to-close window",
-            "trade only when the contract has enough time left to play out but not so much that the edge has time to erode before settle."],
+            "trade only when the contract has enough time left to play out but not so much that the edge has time to erode before settle.",
+            fmtMinH(va.min_minutes_to_close) + " – " + fmtMinH(va.max_minutes_to_close)],
            ["Probability bounds",
-            "skip contracts already priced as near-certain or near-impossible. They pay too little to be worth the tail risk even when the edge is real."],
+            "skip contracts already priced as near-certain or near-impossible. They pay too little to be worth the tail risk even when the edge is real.",
+            pbStr],
            ["Min volume",
-            "minimum contracts traded so far. Brand-new markets with zero volume have unreliable mid prices."],
+            "minimum contracts traded so far. Brand-new markets with zero volume have unreliable mid prices.",
+            "≥ " + fmtNum(va.min_volume)],
            ["Min open interest",
-            "real positions held by other traders. Confirms there are counterparties on this contract, not just the bot's own echo on a thin book."],
+            "real positions held by other traders. Confirms there are counterparties on this contract, not just the bot's own echo on a thin book.",
+            "≥ " + fmtNum(va.min_open_interest)],
            ["Min depth at best ask",
-            "size resting at the exact ask the bot would lift. Ensures the bot can fill its bet size without walking up the book."],
+            "size resting at the exact ask the bot would lift. Ensures the bot can fill its bet size without walking up the book.",
+            "≥ " + fmtNum(va.min_depth_at_best_ask) + " contracts"],
            ["Basis-risk strike window",
-            "skip trades whose underlying is too close to the contract's strike — those settle on noise instead of the model's view."],
+            "skip trades whose underlying is too close to the contract's strike — those settle on noise instead of the model's view.",
+            "±" + fmtNum(va.basis_risk_strike_window_dollars)],
            ["Basis-risk time window",
-            "the basis-risk filter only applies inside the final few hours before settlement; farther out the underlying has room to move."],
+            "the basis-risk filter only applies inside the final few hours before settlement; farther out the underlying has room to move.",
+            "< " + fmtNum(va.basis_risk_max_hours_to_close, "h") + " to close"],
          ])
          + "</div>";
 
@@ -3552,15 +3743,20 @@ def _live_update_script(current_bot: str, period_key: str = "all") -> str:
          + "<h4>3 · Risk caps — does this trade fit in the budget?</h4>"
          + bullets([
            ["Fixed bet size",
-            "every position the bot opens is the same $ size, not scaled by edge magnitude."],
+            "every position the bot opens is the same $ size, not scaled by edge magnitude.",
+            fmtCash(rk.bet_size_cents)],
            ["Max concurrent open positions",
-            "ceiling on the number of simultaneous open contracts. Prevents racking up correlated exposure across the strike ladder."],
+            "ceiling on the number of simultaneous open contracts. Prevents racking up correlated exposure across the strike ladder.",
+            "≤ " + fmtNum(rk.max_open_positions)],
            ["Max total exposure",
-            "$ ceiling on the combined entry cost of all open positions. New trades skip when adding them would breach this cap."],
+            "$ ceiling on the combined entry cost of all open positions. New trades skip when adding them would breach this cap.",
+            "≤ " + fmtCash(rk.max_total_exposure_cents)],
            ["Max bets per day",
-            "throttle on how many fresh positions the bot can open in 24h. Brakes against runaway loops if the model gets stuck endorsing the same contract."],
+            "throttle on how many fresh positions the bot can open in 24h. Brakes against runaway loops if the model gets stuck endorsing the same contract.",
+            "≤ " + fmtNum(rk.max_bets_per_day)],
            ["Cooldown on same market",
-            "minimum wait before re-entering a contract after closing a position on it. Stops flap-trades when the price moves through break-even repeatedly."],
+            "minimum wait before re-entering a contract after closing a position on it. Stops flap-trades when the price moves through break-even repeatedly.",
+            "≥ " + fmtSec(rk.cooldown_seconds_same_market)],
          ])
          + "</div>";
 
@@ -3568,13 +3764,17 @@ def _live_update_script(current_bot: str, period_key: str = "all") -> str:
          + "<h4>4 · Auto-hedge / exit rules — when does the bot leave?</h4>"
          + bullets([
            ["Auto-hedger on/off",
-            "kill switch for the exit monitor. When off, positions ride to settlement and the bot accepts the binary outcome."],
+            "kill switch for the exit monitor. When off, positions ride to settlement and the bot accepts the binary outcome.",
+            fmtNum(hg.enabled)],
            ["Profit-lock",
-            "close the position once the mark has gained enough cents above entry. Locks in realised profit instead of giving it back if the edge fades."],
+            "close the position once the mark has gained enough cents above entry. Locks in realised profit instead of giving it back if the edge fades.",
+            "+" + fmtNum(hg.profit_lock_cents, "¢")],
            ["Stop-loss",
-            "close the position once the mark has dropped enough cents below entry. Caps the per-trade downside if the model turns out wrong."],
+            "close the position once the mark has dropped enough cents below entry. Caps the per-trade downside if the model turns out wrong.",
+            "−" + fmtNum(hg.stop_loss_cents, "¢")],
            ["Hedge size fraction",
-            "fraction of the original position to close when a trigger fires. Full-exit on the whole bet, or scale half off and let the rest run."],
+            "fraction of the original position to close when a trigger fires. Full-exit on the whole bet, or scale half off and let the rest run.",
+            fmtPctF(hg.hedge_size_fraction)],
          ])
          + "</div>";
 
@@ -9006,6 +9206,7 @@ def _render_watchlist(out: List[str], watchlist: List[dict],
                       contract_open_ts: float | None = None,
                       contract_close_ts: float | None = None,
                       event_title: str | None = None,
+                      threshold_source: dict | None = None,
                       edge_cfg: dict | None = None,
                       validator_cfg: dict | None = None,
                       risk_caps: dict | None = None,
@@ -9048,6 +9249,9 @@ def _render_watchlist(out: List[str], watchlist: List[dict],
         "validators": validator_cfg or {},
         "risk": risk_caps or {},
         "hedge": hedge_cfg or {},
+        "_source": threshold_source or {"source": "fallback",
+                                          "captured_at": None,
+                                          "missing_keys": []},
     }, separators=(",", ":"), default=str)
     rules_icon_html = (
         "<button type='button' class='criteria-rules-btn' "
@@ -10282,6 +10486,22 @@ class Handler(BaseHTTPRequestHandler):
                 # Open positions were fetched above so their tickers
                 # could be merged into the Kalshi watchlist scope.
 
+                # Resolve per-bot thresholds. When the bot has written
+                # ``data/effective_config.json`` at startup we render
+                # the gates it actually applies (which can differ from
+                # the dashboard YAML's display defaults per-bot); when
+                # absent we fall through to the dashboard YAML and the
+                # modal surfaces "showing dashboard defaults" so the
+                # user knows the panel might not match reality.
+                (bot_edge_cfg, bot_validator_cfg, bot_risk_caps,
+                 bot_hedge_cfg, threshold_source) = resolve_bot_thresholds(
+                    bot,
+                    fallback_edge=self.edge_cfg,
+                    fallback_validators=self.validator_cfg,
+                    fallback_risk=self.risk_caps,
+                    fallback_hedge=self.hedge_cfg,
+                )
+
                 body = render_page(
                     model=model,
                     global_summary=global_summary,
@@ -10299,10 +10519,11 @@ class Handler(BaseHTTPRequestHandler):
                     contract_open_ts=contract_open_ts,
                     contract_close_ts=contract_close_ts,
                     event_title=event_title,
-                    risk_caps=self.risk_caps,
-                    edge_cfg=self.edge_cfg,
-                    validator_cfg=self.validator_cfg,
-                    hedge_cfg=self.hedge_cfg,
+                    risk_caps=bot_risk_caps,
+                    edge_cfg=bot_edge_cfg,
+                    validator_cfg=bot_validator_cfg,
+                    hedge_cfg=bot_hedge_cfg,
+                    threshold_source=threshold_source,
                     available_bots=self.bots,
                     current_bot=bot["key"],
                     period_key=period_key,
@@ -10495,13 +10716,12 @@ def main(argv: list[str] | None = None) -> int:
         "cooldown_seconds_same_market": cfg.risk.cooldown_seconds_same_market,
     }
     edge_cfg = {
-        "min_edge_yes": cfg.edge.min_edge_yes,
-        "min_edge_no": cfg.edge.min_edge_no,
         "min_model_confidence": cfg.edge.min_model_confidence,
-        "min_confidence": cfg.edge.min_confidence,
-        "min_model_accuracy": cfg.edge.min_model_accuracy,
         "min_ev_per_contract": cfg.edge.min_ev_per_contract,
         "min_prob_edge_over_breakeven": cfg.edge.min_prob_edge_over_breakeven,
+        "min_raw_model_edge": cfg.edge.min_raw_model_edge,
+        "max_entry_price_cents": cfg.edge.max_entry_price_cents,
+        "min_model_accuracy": cfg.edge.min_model_accuracy,
     }
     validator_cfg = {
         "max_spread_cents": cfg.validators.max_spread_cents,

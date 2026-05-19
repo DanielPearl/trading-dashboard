@@ -99,13 +99,25 @@ class RiskCfg:
 
 @dataclass
 class EdgeCfg:
-    min_edge_yes: float
-    min_edge_no: float
+    """Display-side defaults for the buy-criteria panel.
+
+    Field names line up with ``kalshi_sdk.validators.select_side_by_ev``
+    so what the dashboard renders here is what the bots actually gate
+    on. ``min_model_accuracy`` stays as an optional extra — it's a
+    macro-bot-specific floor (gas / claims / CPI) that runs before the
+    shared SDK gates.
+
+    These are *fallback* values. When a bot has written
+    ``data/effective_config.json`` at startup the panel renders the
+    bot's reported live values instead; missing bot fields fall back to
+    these defaults so the panel never reads "—".
+    """
     min_model_confidence: float
-    min_confidence: float
-    min_model_accuracy: float
     min_ev_per_contract: float
     min_prob_edge_over_breakeven: float
+    min_raw_model_edge: float = 0.06
+    max_entry_price_cents: int = 70
+    min_model_accuracy: float = 0.0
 
 
 @dataclass

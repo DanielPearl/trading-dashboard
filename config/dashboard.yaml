@@ -193,13 +193,19 @@ risk:
   cooldown_seconds_same_market: 1800
 
 edge:
-  min_edge_yes: 0.08
-  min_edge_no: 0.08
+  # Field names line up with kalshi_sdk.validators.select_side_by_ev so
+  # what the dashboard panel renders is what the bots actually gate on.
+  # These are FALLBACK values — when a bot writes data/effective_config.json
+  # at startup (via kalshi_sdk.write_effective_config) the panel renders
+  # the bot's reported live values instead. min_model_accuracy is the
+  # one macro-bot-specific extra (gas / claims / CPI run it before the
+  # shared SDK gates); harmless 0.0 default for bots that don't care.
   min_model_confidence: 0.40
-  min_confidence: 0.30
-  min_model_accuracy: 0.55
   min_ev_per_contract: 0.03
   min_prob_edge_over_breakeven: 0.05
+  min_raw_model_edge: 0.06
+  max_entry_price_cents: 70
+  min_model_accuracy: 0.55
 
 hedge:
   enabled: true
