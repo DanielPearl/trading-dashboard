@@ -10282,6 +10282,14 @@ class Handler(BaseHTTPRequestHandler):
                         and bot.get("dashboard_type") not in ("tennis",
                                                               "billboard")):
                     from . import kalshi_client
+                    # Sport series like KXNBAGAME have many concurrent
+                    # open events (one per game on the slate). Narrowing
+                    # to the most-imminent event hides the rest of the
+                    # slate from the watchlist; flag those bots so the
+                    # client returns every market with a future close.
+                    all_open_events = bot.get("key") in {
+                        "nba", "tennis", "table-tennis", "darts",
+                    }
                     try:
                         (kalshi_history, atm_market, kalshi_markets,
                          contract_open_ts, contract_close_ts,
@@ -10290,6 +10298,7 @@ class Handler(BaseHTTPRequestHandler):
                                 series_ticker,
                                 period_minutes=chart_period,
                                 extra_tickers=open_position_tickers,
+                                all_open_events=all_open_events,
                             )
                         )
                     except Exception:  # noqa: BLE001

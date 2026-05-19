@@ -797,6 +797,7 @@ def fetch_underlying_history(
     client: Optional[KalshiClient] = None,
     max_strikes: int = 6,
     extra_tickers: Optional[Iterable[str]] = None,
+    all_open_events: bool = False,
 ) -> Tuple[List[dict], Optional[dict], List[dict],
             Optional[float], Optional[float], Optional[str]]:
     """Build the chart + watchlist payload for one series.
@@ -808,10 +809,12 @@ def fetch_underlying_history(
     atm_market : dict or None
         The ATM market (used as the chart anchor).
     markets : list[dict]
-        Every currently-open market for the *current event* in the
-        series. Used by the Watchlist table; the multi-event listing
-        Kalshi returns is filtered down by _pick_current_event_markets
-        so the user only ever sees one contract at a time.
+        Markets feeding the Watchlist table. By default this is just
+        the current event (gas / CPI / unemployment-style series have
+        only one contract open at a time). When ``all_open_events`` is
+        true — NBA and other sport series where many concurrent games
+        are open simultaneously — every market with a future
+        ``close_time`` is returned.
     contract_open_ts : float or None
         Unix epoch of the current event's open. Chart x-axis start.
     contract_close_ts : float or None
@@ -825,19 +828,29 @@ def fetch_underlying_history(
     raw_markets = c.list_markets(series_ticker=series_ticker)
     if not raw_markets:
         return [], None, raw_markets, None, None, None
-    # Scope to a single event before any downstream picking. This is
-    # what gives the Watchlist its "current month only" behaviour and
-    # lets it transition to the next month automatically once the
-    # imminent event's close_time passes. ``extra_tickers`` (when
-    # provided by the watchlist GET handler) widens the scope to also
-    # include events containing those tickers — keeps open positions
-    # visible even when they're parked on a non-imminent event (e.g.
-    # NBA bets on tomorrow's game while tonight's game is the current
-    # event).
-    markets = _pick_current_event_markets(
+    # The chart always anchors to ONE event (the most-imminent close,
+    # with ``extra_tickers`` keeping events containing open positions
+    # visible too). For sport series like KXNBAGAME where every game
+    # is its own concurrently-open event, the watchlist needs every
+    # one of them — narrowing to one event would hide the rest of
+    # tonight's slate.
+    chart_markets = _pick_current_event_markets(
         raw_markets, extra_tickers=extra_tickers,
     )
-    atm = pick_atm_market(markets)
+    if all_open_events:
+        now_ts = _time.time()
+        watchlist_markets = [
+            m for m in raw_markets
+            if (_parse_iso(m.get("close_time")) or 0) > now_ts
+        ]
+        # If nothing has a future close_time (test fixtures / odd
+        # state), fall back to the chart-side picker output so the
+        # watchlist still renders something.
+        if not watchlist_markets:
+            watchlist_markets = chart_markets
+    else:
+        watchlist_markets = chart_markets
+    atm = pick_atm_market(chart_markets)
     contract_open_ts = _parse_iso(atm.get("open_time")) if atm else None
     contract_close_ts = _parse_iso(atm.get("close_time")) if atm else None
     event_title: Optional[str] = None
@@ -861,12 +874,12 @@ def fetch_underlying_history(
         effective_period = 60
 
     history = _interpolate_event_history(
-        c, series_ticker, markets, anchor_value=None,
+        c, series_ticker, chart_markets, anchor_value=None,
         period_minutes=effective_period,
         lookback_hours=lookback_hours,
         max_strikes=max_strikes,
     )
-    return (history, atm, markets, contract_open_ts,
+    return (history, atm, watchlist_markets, contract_open_ts,
             contract_close_ts, event_title)
 
 
