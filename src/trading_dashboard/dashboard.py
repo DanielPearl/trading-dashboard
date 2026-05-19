@@ -7370,14 +7370,32 @@ def _render_feature_source_legend(features: List[dict]) -> str:
     return "".join(parts)
 
 
-def _render_feature_source_table(features: List[dict]) -> str:
-    """Master-detail view of the features the model *actually uses*.
+def _readable_feature_name(name: str) -> str:
+    """Render a raw feature identifier in a more reader-friendly form.
 
-    Left column: vertical list of feature names (clickable). Right
-    column: the selected feature's name, description, and source name
-    (the source name is itself a link to the canonical source page).
-    Rejected candidates are excluded; they live in the chart's muted
-    bars and the source legend's "kept/considered" counts.
+    Replaces underscores with spaces and capitalizes the first letter;
+    leaves embedded numbers / abbreviations alone. The raw name still
+    appears beneath it in monospace for users who need the canonical
+    identifier.
+    """
+    s = (name or "").replace("_", " ").strip()
+    return s[:1].upper() + s[1:] if s else ""
+
+
+def _render_feature_source_table(features: List[dict]) -> str:
+    """Side-by-side feature panel.
+
+    Left column: horizontal bar chart, one bar per feature, stacked
+    vertically going downward. Bar length encodes mean importance,
+    bar colour encodes the data source.
+
+    Right column: aligned table giving the readable feature name,
+    its plain-English description, and the source name as a clickable
+    link to the canonical source page.
+
+    Rows are sorted by importance descending so the heaviest features
+    sit at the top; only features the walk-forward stability filter
+    kept are shown.
     """
     if not features:
         return ""
@@ -7388,64 +7406,69 @@ def _render_feature_source_table(features: List[dict]) -> str:
                 "last retrain — the model is in degenerate state.</div>")
     kept.sort(key=lambda f: f.get("mean_importance") or 0.0, reverse=True)
     cadence = _detect_bot_cadence(features)
-
-    def _src_html(md: dict, link_url: str) -> str:
-        dot = (f"<span class='fd-dot' style='background:"
-               f"{html.escape(md['color'])};'></span>")
-        label = html.escape(md["label"])
-        if link_url:
-            return (
-                f"<a href='{html.escape(link_url)}' target='_blank' "
-                f"rel='noopener noreferrer' class='fd-src-link'>"
-                f"{dot}{label} ↗</a>"
-            )
-        return f"<span class='fd-src-link'>{dot}{label}</span>"
+    max_imp = max(
+        (abs(f.get("mean_importance") or 0.0) for f in kept),
+        default=1.0,
+    ) or 1.0
 
     rows: List[str] = []
-    for i, f in enumerate(kept):
+    for f in kept:
         name = f.get("feature") or ""
         imp = float(f.get("mean_importance") or 0.0)
         md = feature_metadata(name, cadence=cadence)
         link_url = md.get("link") or ""
-        active_cls = " active" if i == 0 else ""
+        bar_pct = (abs(imp) / max_imp) * 100.0
+        readable = _readable_feature_name(name)
+        if link_url:
+            src_cell = (
+                f"<a href='{html.escape(link_url)}' target='_blank' "
+                f"rel='noopener noreferrer' class='ft-src'>"
+                f"<span class='ft-dot' style='background:"
+                f"{html.escape(md['color'])};'></span>"
+                f"{html.escape(md['label'])} ↗</a>"
+            )
+        else:
+            src_cell = (
+                f"<span class='ft-src ft-src-nolink'>"
+                f"<span class='ft-dot' style='background:"
+                f"{html.escape(md['color'])};'></span>"
+                f"{html.escape(md['label'])}</span>"
+            )
         rows.append(
-            f"<li class='fd-row{active_cls}' data-idx='{i}' "
-            f"data-name='{html.escape(name)}' "
-            f"data-desc='{html.escape(md['description'])}' "
-            f"data-src-label='{html.escape(md['label'])}' "
-            f"data-src-color='{html.escape(md['color'])}' "
-            f"data-src-link='{html.escape(link_url)}' "
-            f"data-imp='{imp:.4f}'>"
-            f"<span class='fd-dot' style='background:"
-            f"{html.escape(md['color'])};'></span>"
-            f"<span class='mono small fd-row-name' "
-            f"title='{html.escape(name)}'>{html.escape(name)}</span>"
-            f"</li>"
+            f"<div class='ft-row' "
+            f"title='{html.escape(name)} · imp {imp:.4f}'>"
+            f"<div class='ft-bar-cell'>"
+            f"<div class='ft-bar-track'>"
+            f"<div class='ft-bar-fill' style='width:{bar_pct:.1f}%;"
+            f"background:{html.escape(md['color'])};'></div>"
+            f"</div>"
+            f"<div class='ft-bar-imp'>{imp:.4f}</div>"
+            f"</div>"
+            f"<div class='ft-name-cell'>"
+            f"<div class='ft-name-readable'>"
+            f"{html.escape(readable)}</div>"
+            f"<div class='ft-name-raw mono small gray'>"
+            f"{html.escape(name)}</div>"
+            f"</div>"
+            f"<div class='ft-desc'>{html.escape(md['description'])}"
+            f"</div>"
+            f"<div class='ft-src-cell'>{src_cell}</div>"
+            f"</div>"
         )
-
-    first = kept[0]
-    first_name = first.get("feature") or ""
-    first_md = feature_metadata(first_name, cadence=cadence)
-    first_imp = float(first.get("mean_importance") or 0.0)
-    first_link = first_md.get("link") or ""
 
     parts = [
         f"<h3 class='subhead'>Features used by the model "
         f"<span class='small gray'>({len(kept)} kept by the "
         f"stability filter)</span></h3>",
-        "<div class='fd-layout'>",
-        "<ul class='fd-list'>",
+        "<div class='ft-layout'>",
+        "<div class='ft-head'>"
+        "<div>Importance</div>"
+        "<div>Feature</div>"
+        "<div>Description</div>"
+        "<div>Source</div>"
+        "</div>",
+        "<div class='ft-body'>",
         *rows,
-        "</ul>",
-        "<div class='fd-pane'>",
-        f"<div class='fd-name mono'>{html.escape(first_name)}</div>",
-        f"<div class='fd-imp small gray'>"
-        f"Importance: {first_imp:.4f}</div>",
-        f"<div class='fd-desc'>{html.escape(first_md['description'])}"
-        f"</div>",
-        f"<div class='fd-src-row'>"
-        f"<span class='small gray'>Source:</span> "
-        f"{_src_html(first_md, first_link)}</div>",
         "</div>",
         "</div>",
         _FEATURE_DETAIL_CSS_JS,
@@ -7455,145 +7478,129 @@ def _render_feature_source_table(features: List[dict]) -> str:
 
 _FEATURE_DETAIL_CSS_JS = """
 <style>
-.fd-layout {
-  display: flex;
-  gap: 0;
+.ft-layout {
   border: 1px solid #21262d;
   border-radius: 6px;
   overflow: hidden;
   margin-top: 4px;
-  max-height: 420px;
-}
-.fd-layout .fd-list {
-  list-style: none;
-  margin: 0;
-  padding: 0;
-  width: 280px;
-  flex: 0 0 280px;
-  overflow-y: auto;
-  border-right: 1px solid #21262d;
   background: #0d1117;
 }
-.fd-layout .fd-row {
-  display: flex;
-  align-items: center;
-  gap: 8px;
+.ft-head {
+  display: grid;
+  grid-template-columns: 220px 200px 1fr 170px;
+  gap: 16px;
   padding: 8px 12px;
-  cursor: pointer;
+  background: #0d1117;
+  border-bottom: 1px solid #21262d;
+  color: #8b949e;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  position: sticky;
+  top: 0;
+  z-index: 1;
+}
+.ft-body {
+  max-height: 600px;
+  overflow-y: auto;
+}
+.ft-row {
+  display: grid;
+  grid-template-columns: 220px 200px 1fr 170px;
+  gap: 16px;
+  padding: 10px 12px;
   border-bottom: 1px solid #161b22;
-  color: #c9d1d9;
+  align-items: center;
 }
-.fd-layout .fd-row:last-child { border-bottom: none; }
-.fd-layout .fd-row:hover { background: #161b22; }
-.fd-layout .fd-row.active {
-  background: #1f2630;
-  box-shadow: inset 2px 0 0 #58a6ff;
+.ft-row:last-child { border-bottom: none; }
+.ft-row:hover { background: #161b22; }
+.ft-bar-cell {
+  display: grid;
+  grid-template-columns: 1fr 56px;
+  gap: 8px;
+  align-items: center;
+  /* visual divider so the chart side reads as its own column */
+  border-right: 1px solid #21262d;
+  padding-right: 12px;
+  margin-right: -8px;
 }
-.fd-layout .fd-row-name {
+.ft-head > div:first-child {
+  border-right: 1px solid #21262d;
+  padding-right: 12px;
+  margin-right: -8px;
+}
+.ft-bar-track {
+  position: relative;
+  height: 10px;
+  background: #161b22;
+  border-radius: 2px;
   overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  flex: 1 1 auto;
-  min-width: 0;
 }
-.fd-dot {
+.ft-bar-fill {
+  position: absolute;
+  top: 0; left: 0; bottom: 0;
+  border-radius: 2px;
+}
+.ft-bar-imp {
+  font-size: 11px;
+  color: #8b949e;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+.ft-name-cell { min-width: 0; }
+.ft-name-readable {
+  font-size: 13px;
+  color: #c9d1d9;
+  font-weight: 500;
+  line-height: 1.3;
+}
+.ft-name-raw {
+  margin-top: 2px;
+  font-size: 11px;
+  word-break: break-all;
+  line-height: 1.2;
+}
+.ft-desc {
+  color: #c9d1d9;
+  font-size: 12px;
+  line-height: 1.45;
+}
+.ft-src-cell { font-size: 12px; }
+.ft-src {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: #58a6ff;
+  text-decoration: none;
+}
+.ft-src:hover { text-decoration: underline; }
+.ft-src-nolink { color: #8b949e; }
+.ft-dot {
   display: inline-block;
   width: 8px;
   height: 8px;
   border-radius: 2px;
   flex: 0 0 auto;
 }
-.fd-layout .fd-pane {
-  flex: 1 1 auto;
-  padding: 16px 20px;
-  background: #0d1117;
-  min-width: 0;
-  overflow-y: auto;
+@media (max-width: 900px) {
+  .ft-head, .ft-row {
+    grid-template-columns: 160px 160px 1fr 140px;
+    gap: 10px;
+  }
 }
-.fd-pane .fd-name {
-  font-size: 14px;
-  font-weight: 600;
-  color: #c9d1d9;
-  margin-bottom: 4px;
-  word-break: break-all;
-}
-.fd-pane .fd-imp { margin-bottom: 12px; }
-.fd-pane .fd-desc {
-  color: #c9d1d9;
-  font-size: 13px;
-  line-height: 1.5;
-  margin-bottom: 14px;
-}
-.fd-pane .fd-src-row {
-  font-size: 13px;
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  flex-wrap: wrap;
-}
-.fd-src-link {
-  color: #58a6ff;
-  text-decoration: none;
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-}
-.fd-src-link:hover { text-decoration: underline; }
-a.fd-src-link { color: #58a6ff; }
-span.fd-src-link { color: #8b949e; }
 @media (max-width: 720px) {
-  .fd-layout { flex-direction: column; max-height: none; }
-  .fd-layout .fd-list {
-    width: 100%; flex: 0 0 auto; max-height: 220px;
-    border-right: none; border-bottom: 1px solid #21262d;
+  .ft-head { display: none; }
+  .ft-row {
+    grid-template-columns: 1fr;
+    gap: 6px;
+  }
+  .ft-bar-cell {
+    border-right: none;
+    padding-right: 0;
+    margin-right: 0;
   }
 }
 </style>
-<script>
-(function() {
-  function escapeHtml(s) {
-    return String(s).replace(/[&<>"']/g, function(c) {
-      return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c];
-    });
-  }
-  document.querySelectorAll('.fd-layout').forEach(function(layout) {
-    if (layout.dataset.fdBound) return;
-    layout.dataset.fdBound = '1';
-    var list = layout.querySelector('.fd-list');
-    var pane = layout.querySelector('.fd-pane');
-    if (!list || !pane) return;
-    list.addEventListener('click', function(ev) {
-      var row = ev.target.closest('.fd-row');
-      if (!row) return;
-      list.querySelectorAll('.fd-row').forEach(function(r) {
-        r.classList.toggle('active', r === row);
-      });
-      var name = row.dataset.name || '';
-      var desc = row.dataset.desc || '';
-      var srcLabel = row.dataset.srcLabel || '';
-      var srcColor = row.dataset.srcColor || '#6e7681';
-      var srcLink = row.dataset.srcLink || '';
-      var imp = row.dataset.imp || '';
-      pane.querySelector('.fd-name').textContent = name;
-      pane.querySelector('.fd-imp').textContent = 'Importance: ' + imp;
-      pane.querySelector('.fd-desc').textContent = desc;
-      var dot = '<span class="fd-dot" style="background:' +
-        escapeHtml(srcColor) + ';"></span>';
-      var srcHtml;
-      if (srcLink) {
-        srcHtml = '<a href="' + escapeHtml(srcLink) +
-          '" target="_blank" rel="noopener noreferrer" class="fd-src-link">' +
-          dot + escapeHtml(srcLabel) + ' ↗</a>';
-      } else {
-        srcHtml = '<span class="fd-src-link">' + dot +
-          escapeHtml(srcLabel) + '</span>';
-      }
-      pane.querySelector('.fd-src-row').innerHTML =
-        '<span class="small gray">Source:</span> ' + srcHtml;
-    });
-  });
-})();
-</script>
 """
 
 
@@ -8903,22 +8910,7 @@ def _render_models_panel(out: List[str], bot: dict, model: dict | None,
             )
     out.append("</div>")
 
-    # ── Top features (chart first, sources below) ───────────────────
-    TOP_N = 25
-    # Chart shows ONLY features the model actually uses — same filter
-    # the table below applies — and sorts them by mean importance
-    # descending, so the bar order matches the table row order
-    # one-to-one.
-    kept_sorted = sorted(
-        (f for f in feats if f.get("selected")),
-        key=lambda f: f.get("mean_importance") or 0.0,
-        reverse=True,
-    )
-    feats_shown = kept_sorted[:TOP_N]
-    out.append("<h3 class='subhead'>Top features</h3>")
-    out.append(_svg_feature_importance_vertical(feats_shown))
-    # Sources legend + full-list table sit BELOW the chart so the
-    # eye lands on the bars first and uses the legend to decode.
+    # ── Top features — bars + readable table in one aligned panel ───
     out.append(_render_feature_source_legend(feats))
     out.append(_render_feature_source_table(feats))
 

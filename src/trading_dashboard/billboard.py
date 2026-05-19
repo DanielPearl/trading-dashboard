@@ -323,15 +323,8 @@ def render_models_panel(out: List[str], bot: Dict[str, Any]) -> None:
             )
     out.append("</div>")
 
-    # ── 2. Top features ──────────────────────────────────────────────
+    # ── 2. Top features — bars + readable table in one aligned panel ─
     feats = _logistic_coefs_as_features(coefficients)
-    TOP_N = 25
-    kept_sorted = sorted((f for f in feats if f.get("selected")),
-                          key=lambda f: f.get("mean_importance") or 0.0,
-                          reverse=True)
-    feats_shown = kept_sorted[:TOP_N]
-    out.append("<h3 class='subhead'>Top features</h3>")
-    out.append(_d._svg_feature_importance_vertical(feats_shown))
     out.append(_d._render_feature_source_legend(feats))
     out.append(_d._render_feature_source_table(feats))
 
