@@ -52,23 +52,11 @@ bots:
     db_path: /root/nba/data/sim.db
     decisions_path: /root/nba/data/decisions.jsonl
     series_ticker: KXNBAGAME
-    # 2025-26 NBA season. Kalshi covers every NBA game under one
-    # series (KXNBAGAME, competition "Pro Basketball (M)") so all
-    # four phases below are tradeable — each phase is listed
-    # separately because the Seasons tab counts to / through them
-    # individually. Update at the start of each season.
+    # Single league-level window — regular-season tip-off through
+    # NBA Finals end. Update at the start of each season.
     seasons:
-      - name: "NBA Regular Season 2025-26"
+      - name: "NBA 2025-26 Season"
         start: "2025-10-21T23:00:00Z"
-        end:   "2026-04-13T03:00:00Z"
-      - name: "NBA Play-In Tournament 2026"
-        start: "2026-04-14T22:00:00Z"
-        end:   "2026-04-18T03:00:00Z"
-      - name: "NBA Playoffs 2026"
-        start: "2026-04-18T17:00:00Z"
-        end:   "2026-06-04T01:00:00Z"
-      - name: "NBA Finals 2026"
-        start: "2026-06-04T01:00:00Z"
         end:   "2026-06-22T03:00:00Z"
     display:
       # Underlying anchor for this bot is each home team's pre-game ELO
@@ -134,31 +122,11 @@ bots:
     metrics_path: /root/tennis-forecast/data/processed/artifacts/metrics.json
     coefficients_path: /root/tennis-forecast/data/processed/artifacts/model_coefficients.json
     sim_state_path: /root/tennis-forecast/data/outputs/sim_state.json
-    # 2026 ATP/WTA majors + season-ending Finals. Kalshi runs match
-    # markets for every ATP / WTA tour event on KXATPMATCH /
-    # KXWTAMATCH — listing all 50+ would bury the page. Only the four
-    # Grand Slams + the year-end Finals make the cut here because
-    # they're the windows that draw real volume. Dates use the
-    # singles main-draw window (qualifying not included). Update
-    # each year as schedules drop.
+    # Single league-level window — United Cup kickoff through the
+    # season-ending ATP Finals. Update each year.
     seasons:
-      - name: "Australian Open 2026"
-        start: "2026-01-18T00:00:00Z"
-        end:   "2026-02-01T11:00:00Z"
-      - name: "Roland-Garros 2026"
-        start: "2026-05-24T09:00:00Z"
-        end:   "2026-06-07T19:00:00Z"
-      - name: "Wimbledon 2026"
-        start: "2026-06-29T10:00:00Z"
-        end:   "2026-07-12T19:00:00Z"
-      - name: "US Open 2026"
-        start: "2026-08-24T15:00:00Z"
-        end:   "2026-09-13T22:00:00Z"
-      - name: "WTA Finals 2026"
-        start: "2026-11-07T00:00:00Z"
-        end:   "2026-11-15T23:59:59Z"
-      - name: "ATP Finals 2026"
-        start: "2026-11-15T12:00:00Z"
+      - name: "ATP/WTA 2026 Tour"
+        start: "2025-12-29T00:00:00Z"
         end:   "2026-11-22T22:00:00Z"
   - key: survivor
     name: Survivor Elimination
@@ -239,20 +207,12 @@ bots:
     metrics_path: /root/darts-forecast/data/processed/artifacts/metrics.json
     coefficients_path: /root/darts-forecast/data/processed/artifacts/model_coefficients.json
     sim_state_path: /root/darts-forecast/data/outputs/sim_state.json
-    # PDC tournaments Kalshi actually trades on KXDARTSMATCH (verified
-    # via the events API — only two competition labels appear:
-    # "Premier League Darts" and "PDC World Championship"). Other PDC
-    # majors (UK Open, World Matchplay, etc.) are not on Kalshi today;
-    # add a window back when a new tournament shows up.
+    # Single league-level window — Premier League opener through the
+    # following PDC World Championship final (the "season" the bot
+    # actually trades on Kalshi's KXDARTSMATCH series).
     seasons:
-      - name: "PDC World Championship 2026"
-        start: "2025-12-15T19:00:00Z"
-        end:   "2026-01-03T23:30:00Z"
-      - name: "PDC Premier League Darts 2026"
+      - name: "PDC 2026 Season"
         start: "2026-02-05T19:00:00Z"
-        end:   "2026-05-28T22:30:00Z"
-      - name: "PDC World Championship 2027"
-        start: "2026-12-15T19:00:00Z"
         end:   "2027-01-03T23:30:00Z"
 
 # ---------------------------------------------------------------------------
