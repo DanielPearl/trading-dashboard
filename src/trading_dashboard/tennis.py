@@ -1368,9 +1368,6 @@ def _render_tennis_models_page(metrics: dict, coefficients: dict,
     # the deep-dive chart and table.
     blended = (metrics or {}).get("blended") or {}
     if blended:
-        out.append("<h3 class='subhead'>Headline metrics "
-                    "<span class='small gray'>(blended model, the "
-                    "probability the live trader uses)</span></h3>")
         out.append(
             "<div class='cards' "
             "style='display:grid;grid-template-columns:repeat(6, 1fr);"
