@@ -194,6 +194,7 @@ def _render_tab_bar(current_bot_key: str, active: str = "watchlist") -> str:
         ("watchlist", "Watchlist", f"?bot={current_bot_key}&tab=watchlist"),
         ("models", "Models", f"?bot={current_bot_key}&tab=models"),
         ("history", "History", "/?tab=history"),
+        ("seasons", "Seasons", "/?tab=seasons"),
     ]
     out = ["<div class='tab-bar'>"]
     for k, label, href in tabs:

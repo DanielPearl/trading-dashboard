@@ -52,6 +52,12 @@ bots:
     db_path: /root/nba/data/sim.db
     decisions_path: /root/nba/data/decisions.jsonl
     series_ticker: KXNBAGAME
+    # 2025-26 NBA season — regular season tip-off → NBA Finals end.
+    # Update at the start of each season.
+    season:
+      name: "2025-26 NBA Season"
+      start: "2025-10-21T23:00:00Z"
+      end:   "2026-06-21T23:59:59Z"
     display:
       # Underlying anchor for this bot is each home team's pre-game ELO
       # rating — a unitless rating typically in the 1300-1700 range.
@@ -116,6 +122,11 @@ bots:
     metrics_path: /root/tennis-forecast/data/processed/artifacts/metrics.json
     coefficients_path: /root/tennis-forecast/data/processed/artifacts/model_coefficients.json
     sim_state_path: /root/tennis-forecast/data/outputs/sim_state.json
+    # ATP/WTA tour 2026 — United Cup kickoff → ATP Finals close.
+    season:
+      name: "2026 ATP/WTA Season"
+      start: "2025-12-29T00:00:00Z"
+      end:   "2026-11-22T22:00:00Z"
   - key: survivor
     name: Survivor Elimination
     # Survivor-elimination bot writes the same JSON-output shape as the
@@ -133,6 +144,12 @@ bots:
     metrics_path: /root/survivor-elimination/data/processed/artifacts/metrics.json
     coefficients_path: /root/survivor-elimination/data/processed/artifacts/model_coefficients.json
     sim_state_path: /root/survivor-elimination/data/outputs/sim_state.json
+    # Survivor 50 — premiere Feb 25, 2026; ~13-week run to the finale.
+    # Times are ET broadcast slot converted to UTC.
+    season:
+      name: "Survivor 50"
+      start: "2026-02-26T01:00:00Z"
+      end:   "2026-05-21T03:00:00Z"
 
   - key: table-tennis
     name: Table Tennis Forecast
@@ -147,6 +164,12 @@ bots:
     metrics_path: /root/table-tennis-forecast/data/processed/artifacts/metrics.json
     coefficients_path: /root/table-tennis-forecast/data/processed/artifacts/model_coefficients.json
     sim_state_path: /root/table-tennis-forecast/data/outputs/sim_state.json
+    # WTT 2026 season — first WTT Star Contender opens early Jan and
+    # the WTT Finals close in mid-December.
+    season:
+      name: "2026 WTT Season"
+      start: "2026-01-12T00:00:00Z"
+      end:   "2026-12-15T23:59:59Z"
 
   - key: billboard
     name: Billboard Hot 100
@@ -180,6 +203,13 @@ bots:
     metrics_path: /root/darts-forecast/data/processed/artifacts/metrics.json
     coefficients_path: /root/darts-forecast/data/processed/artifacts/model_coefficients.json
     sim_state_path: /root/darts-forecast/data/outputs/sim_state.json
+    # PDC Premier League Darts 2026 — Night 1 (Belfast) → Play-Offs
+    # at The O2 in London. The bot also covers other PDC events but
+    # Premier League is the headline calendar driver.
+    season:
+      name: "2026 PDC Premier League"
+      start: "2026-02-05T19:00:00Z"
+      end:   "2026-05-28T22:30:00Z"
 
 # ---------------------------------------------------------------------------
 # Display thresholds. Mirror the gas-bot's gates so the buy-criteria panel

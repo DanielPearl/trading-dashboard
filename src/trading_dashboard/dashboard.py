@@ -2429,6 +2429,41 @@ code { background: #161b22; padding: 1px 6px; border-radius: 3px; color: #c9d1d9
     margin-bottom: -1px; font-weight: 600; }
 .tab-panel { display: none; }
 .tab-panel-active { display: block; }
+/* Seasons tab — one card per bot. Two columns at desktop widths,
+   collapses to a single column when narrow. Matches the .card /
+   .section visual language so it sits naturally next to the Home
+   tab's bot-card grid. */
+.season-grid { display: grid; gap: 14px;
+   grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); }
+.season-card { background: #1d232c; border: 1px solid #30363d;
+   border-radius: 8px; padding: 14px 16px;
+   box-shadow: 0 1px 2px rgba(0,0,0,0.35); display: flex;
+   flex-direction: column; gap: 10px; }
+.season-card-head { display: flex; align-items: center;
+   justify-content: space-between; gap: 8px; }
+.season-bot { color: #f0f6fc; font-weight: 600; font-size: 14px;
+   text-decoration: none; }
+.season-bot:hover { color: #58a6ff; text-decoration: underline; }
+.season-name { color: #c9d1d9; font-size: 12px; }
+.season-countdown { display: flex; align-items: baseline; gap: 8px;
+   margin-top: 4px; flex-wrap: wrap; }
+.season-countdown-label { font-size: 11px; text-transform: uppercase;
+   letter-spacing: 0.05em; color: #8b949e; }
+.season-countdown-value { font-size: 18px; font-weight: 600;
+   font-variant-numeric: tabular-nums; }
+/* Progress bar from start → end. Empty before start, fills as time
+   passes, stays full once the season is over. */
+.season-progress { background: #161b22; border: 1px solid #30363d;
+   border-radius: 999px; height: 6px; overflow: hidden; }
+.season-progress-fill { background: #58a6ff; height: 100%;
+   transition: width 1s linear; }
+.season-meta { display: grid; grid-template-columns: repeat(3, 1fr);
+   gap: 6px; margin-top: 4px; }
+.season-meta > div { display: flex; flex-direction: column; gap: 2px; }
+.season-meta-label { font-size: 10px; text-transform: uppercase;
+   letter-spacing: 0.05em; color: #8b949e; }
+.season-meta-value { font-size: 13px; color: #f0f6fc;
+   font-variant-numeric: tabular-nums; }
 /* "Why?" button on each active-bets row + the criteria modal it
    opens. Single shared modal at page bottom; JS populates the body
    from data-criteria on the clicked button. */
@@ -2946,6 +2981,7 @@ def render_page(
         ("watchlist", "Watchlist"),
         ("models", "Models"),
         ("history", "History"),
+        ("seasons", "Seasons"),
     ]
     valid_tabs = {k for k, _ in tabs}
     active_tab = tab_key if tab_key in valid_tabs else "home"
@@ -3091,6 +3127,11 @@ def render_page(
     out.append("</div></div>")
     out.append("</div>")  # /history panel
 
+    # ── SEASONS tab — one card per bot with a real-world season ──────
+    _open_panel("seasons")
+    _render_seasons_panel(out, available_bots)
+    out.append("</div>")  # /seasons panel
+
     # Live-update JS: polls /api/snapshot every 5s and patches summary
     # cards + watchlist cells in place. Pass the period so the live
     # cards keep matching the user's filter selection between polls.
@@ -3128,6 +3169,7 @@ def render_page(
     )
     out.append(_BOT_TOGGLE_JS)
     out.append(_HISTORY_CHART_JS)
+    out.append(_SEASON_COUNTDOWN_JS)
     out.append(_live_update_script(current_bot, period_key=period_key))
     out.append("</body></html>")
     return "".join(out)
@@ -3175,6 +3217,76 @@ function toggleBotState(ev, btn) {
 }
 </script>"""
 
+
+# Seasons-tab live countdown. Each card carries data-start / data-end
+# (ISO datetimes) — we tick once a second and update the headline +
+# remaining-time fields. Three states map to existing summary colours:
+#   • Before start  → "Starts in …" (yellow)
+#   • Between       → "Ends in …"   (green)
+#   • After end     → "Season over" (gray)
+_SEASON_COUNTDOWN_JS = """<script>
+(function () {
+  function fmt(ms) {
+    if (ms <= 0) return "0d 0h 0m 0s";
+    const s = Math.floor(ms / 1000);
+    const days = Math.floor(s / 86400);
+    const hours = Math.floor((s % 86400) / 3600);
+    const mins = Math.floor((s % 3600) / 60);
+    const secs = s % 60;
+    return days + "d " + hours + "h " + mins + "m " + secs + "s";
+  }
+  function pct(now, start, end) {
+    if (now <= start) return 0;
+    if (now >= end) return 100;
+    const span = end - start;
+    if (span <= 0) return 100;
+    return Math.max(0, Math.min(100, ((now - start) / span) * 100));
+  }
+  function tick() {
+    const now = Date.now();
+    document.querySelectorAll('[data-season-card]').forEach(function (card) {
+      const start = parseInt(card.dataset.start, 10);
+      const end = parseInt(card.dataset.end, 10);
+      if (!isFinite(start) || !isFinite(end)) return;
+      const statusEl = card.querySelector('[data-season-status]');
+      const labelEl = card.querySelector('[data-season-countdown-label]');
+      const valueEl = card.querySelector('[data-season-countdown-value]');
+      const fillEl = card.querySelector('[data-season-progress-fill]');
+      let status, label, value, color;
+      if (now < start) {
+        status = 'Upcoming';
+        label = 'Starts in';
+        value = fmt(start - now);
+        color = 'yellow';
+      } else if (now < end) {
+        status = 'In season';
+        label = 'Ends in';
+        value = fmt(end - now);
+        color = 'green';
+      } else {
+        status = 'Season over';
+        label = 'Ended';
+        value = fmt(now - end) + ' ago';
+        color = 'gray';
+      }
+      if (statusEl) {
+        statusEl.textContent = status;
+        statusEl.classList.remove('green', 'yellow', 'gray');
+        statusEl.classList.add(color);
+      }
+      if (labelEl) labelEl.textContent = label;
+      if (valueEl) {
+        valueEl.textContent = value;
+        valueEl.classList.remove('green', 'yellow', 'gray');
+        valueEl.classList.add(color);
+      }
+      if (fillEl) fillEl.style.width = pct(now, start, end).toFixed(2) + '%';
+    });
+  }
+  tick();
+  setInterval(tick, 1000);
+})();
+</script>"""
 
 # History-tab daily P&L chart renderer. Reads the closed-bet ledger
 # embedded as JSON on the SVG node, filters by selected bot + date
@@ -4032,6 +4144,14 @@ def _live_update_script(current_bot: str, period_key: str = "all") -> str:
         // and preserves period from elsewhere on the page).
         if (key === "history") {{
           window.location.href = "?tab=history";
+          return;
+        }}
+        // Seasons is also cross-bot — no per-bot view, so navigate to
+        // a clean ?tab=seasons URL (drops ?bot= and ?period=). Avoids
+        // showing an empty panel when the user clicks Seasons from a
+        // bot-scoped page that doesn't render the panel.
+        if (key === "seasons") {{
+          window.location.href = "?tab=seasons";
           return;
         }}
         tabBar.querySelectorAll(".tab-pill").forEach(function (p) {{
@@ -5222,6 +5342,139 @@ def _render_active_bets_table(out: List[str], bets: List[dict],
             f"</tr>"
         )
     out.append("</tbody></table>")
+
+
+def _parse_season_dt(value: str | None) -> datetime | None:
+    """Best-effort ISO-8601 → aware datetime. Accepts the ``Z`` suffix
+    that PyYAML / config files commonly use; returns None on parse
+    failure so a broken season block just hides the affected card
+    rather than 500-ing the page."""
+    if not value:
+        return None
+    s = str(value).strip()
+    if s.endswith("Z"):
+        s = s[:-1] + "+00:00"
+    try:
+        dt = datetime.fromisoformat(s)
+    except ValueError:
+        return None
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt
+
+
+def _humanize_duration(delta_seconds: float) -> str:
+    """Render a duration as ``Xd`` or ``Xw Yd`` for season-length cells.
+    Used as the static "Length" value on the Seasons tab; the live
+    countdown values are rendered client-side in JS."""
+    if delta_seconds <= 0:
+        return "—"
+    days = int(delta_seconds // 86400)
+    if days < 14:
+        return f"{days}d"
+    weeks, rem_days = divmod(days, 7)
+    if rem_days == 0:
+        return f"{weeks}w"
+    return f"{weeks}w {rem_days}d"
+
+
+def _render_seasons_panel(out: List[str], available_bots: List[dict]) -> None:
+    """One card per bot that declares a ``season:`` block. Each card
+    shows the season name, start, end, total length, and a live
+    countdown that flips from "Starts in …" to "Ends in …" to
+    "Season over" as time crosses the boundaries (see
+    ``_SEASON_COUNTDOWN_JS``)."""
+    now = datetime.now(timezone.utc)
+    cards: List[tuple[dict, datetime, datetime]] = []
+    for bot in available_bots:
+        season = bot.get("season") or {}
+        start = _parse_season_dt(season.get("start"))
+        end = _parse_season_dt(season.get("end"))
+        if not start or not end:
+            continue
+        cards.append((bot, start, end))
+
+    # Sort: in-season first (by end date), then upcoming (by start),
+    # then finished (most recent first). Keeps the "what's live now"
+    # cluster at the top.
+    def _sort_key(item: tuple[dict, datetime, datetime]) -> tuple:
+        _, s, e = item
+        if s <= now <= e:
+            return (0, e)
+        if now < s:
+            return (1, s)
+        return (2, -e.timestamp())
+    cards.sort(key=_sort_key)
+
+    out.append(
+        "<div class='section'><h2>Seasons</h2><div class='body'>"
+    )
+    if not cards:
+        out.append(
+            "<div class='empty'>No bots have a season window "
+            "configured. Add a <code>season:</code> block to a bot in "
+            "<code>config/dashboard.yaml</code> to see it here.</div>"
+        )
+        out.append("</div></div>")
+        return
+
+    out.append(
+        "<p class='small gray' style='margin: 0 0 14px 0;'>"
+        "Schedule for the bots whose markets follow a real-world "
+        "calendar. The countdown ticks live and flips from "
+        "<span class='yellow'>Starts in</span> to "
+        "<span class='green'>Ends in</span> to "
+        "<span class='gray'>Season over</span>."
+        "</p>"
+    )
+    out.append("<div class='season-grid'>")
+    for bot, start, end in cards:
+        season = bot.get("season") or {}
+        season_name = season.get("name") or bot.get("name") or bot.get("key")
+        length = _humanize_duration((end - start).total_seconds())
+        start_ms = int(start.timestamp() * 1000)
+        end_ms = int(end.timestamp() * 1000)
+        start_str = start.strftime("%b %-d, %Y")
+        end_str = end.strftime("%b %-d, %Y")
+        # The bot's home card already links to Watchlist — match the
+        # idiom so users can click through from a season card to the
+        # corresponding bot view.
+        bot_href = f"?bot={html.escape(bot['key'])}&tab=watchlist"
+        out.append(
+            f"<div class='season-card' data-season-card "
+            f"data-start='{start_ms}' data-end='{end_ms}'>"
+            f"<div class='season-card-head'>"
+            f"<a class='season-bot' href='{bot_href}'>"
+            f"{html.escape(bot.get('name') or bot['key'])}"
+            f"</a>"
+            f"<span class='status-pill gray' data-season-status>—</span>"
+            f"</div>"
+            f"<div class='season-name'>{html.escape(season_name)}</div>"
+            f"<div class='season-countdown'>"
+            f"<div class='season-countdown-label' "
+            f"data-season-countdown-label>—</div>"
+            f"<div class='season-countdown-value gray' "
+            f"data-season-countdown-value>—</div>"
+            f"</div>"
+            f"<div class='season-progress'>"
+            f"<div class='season-progress-fill' "
+            f"data-season-progress-fill style='width: 0%;'></div>"
+            f"</div>"
+            f"<div class='season-meta'>"
+            f"<div><span class='season-meta-label'>Start</span>"
+            f"<span class='season-meta-value'>{html.escape(start_str)}"
+            f"</span></div>"
+            f"<div><span class='season-meta-label'>End</span>"
+            f"<span class='season-meta-value'>{html.escape(end_str)}"
+            f"</span></div>"
+            f"<div><span class='season-meta-label'>Length</span>"
+            f"<span class='season-meta-value'>{html.escape(length)}"
+            f"</span></div>"
+            f"</div>"
+            f"</div>"
+        )
+    out.append("</div>")  # /season-grid
+    out.append("</div></div>")  # /body /section
 
 
 def _render_history_chart(out: List[str], history: List[dict],
@@ -10356,7 +10609,8 @@ class Handler(BaseHTTPRequestHandler):
                 # silently redirect to home so deep links keep working.
                 if tab_key == "performance":
                     tab_key = "home"
-                if tab_key not in {"home", "watchlist", "models", "history"}:
+                if tab_key not in {"home", "watchlist", "models",
+                                    "history", "seasons"}:
                     tab_key = "home"
                 # Models tab supports a pregame / ingame view toggle on
                 # sport bots. Defaults to pregame; ignored for non-sport
@@ -11080,6 +11334,14 @@ def main(argv: list[str] | None = None) -> int:
             "coefficients_path": b.coefficients_path,
             "sim_state_path": b.sim_state_path,
             "series_ticker": b.series_ticker,
+            "season": (
+                {
+                    "name": b.season.name,
+                    "start": b.season.start,
+                    "end": b.season.end,
+                }
+                if b.season is not None else None
+            ),
             "display": {
                 "underlying_label": b.display.underlying_label,
                 "underlying_unit": b.display.underlying_unit,
