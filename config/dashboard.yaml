@@ -52,12 +52,22 @@ bots:
     db_path: /root/nba/data/sim.db
     decisions_path: /root/nba/data/decisions.jsonl
     series_ticker: KXNBAGAME
-    # 2025-26 NBA season — regular season tip-off → NBA Finals end.
+    # 2025-26 NBA season — each phase listed separately so the
+    # Seasons tab can count down to / through them individually.
     # Update at the start of each season.
-    season:
-      name: "2025-26 NBA Season"
-      start: "2025-10-21T23:00:00Z"
-      end:   "2026-06-21T23:59:59Z"
+    seasons:
+      - name: "NBA Regular Season 2025-26"
+        start: "2025-10-21T23:00:00Z"
+        end:   "2026-04-13T03:00:00Z"
+      - name: "NBA Play-In Tournament 2026"
+        start: "2026-04-14T22:00:00Z"
+        end:   "2026-04-18T03:00:00Z"
+      - name: "NBA Playoffs 2026"
+        start: "2026-04-18T17:00:00Z"
+        end:   "2026-06-04T01:00:00Z"
+      - name: "NBA Finals 2026"
+        start: "2026-06-04T01:00:00Z"
+        end:   "2026-06-22T03:00:00Z"
     display:
       # Underlying anchor for this bot is each home team's pre-game ELO
       # rating — a unitless rating typically in the 1300-1700 range.
@@ -122,11 +132,29 @@ bots:
     metrics_path: /root/tennis-forecast/data/processed/artifacts/metrics.json
     coefficients_path: /root/tennis-forecast/data/processed/artifacts/model_coefficients.json
     sim_state_path: /root/tennis-forecast/data/outputs/sim_state.json
-    # ATP/WTA tour 2026 — United Cup kickoff → ATP Finals close.
-    season:
-      name: "2026 ATP/WTA Season"
-      start: "2025-12-29T00:00:00Z"
-      end:   "2026-11-22T22:00:00Z"
+    # 2026 ATP/WTA majors + season-ending Finals. Tour-wide windows
+    # were dropped in favour of the Grand Slams because they're where
+    # the markets are deepest. Dates use the singles main-draw window
+    # (qualifying not included). Update each year as schedules drop.
+    seasons:
+      - name: "Australian Open 2026"
+        start: "2026-01-18T00:00:00Z"
+        end:   "2026-02-01T11:00:00Z"
+      - name: "Roland-Garros 2026"
+        start: "2026-05-24T09:00:00Z"
+        end:   "2026-06-07T19:00:00Z"
+      - name: "Wimbledon 2026"
+        start: "2026-06-29T10:00:00Z"
+        end:   "2026-07-12T19:00:00Z"
+      - name: "US Open 2026"
+        start: "2026-08-24T15:00:00Z"
+        end:   "2026-09-13T22:00:00Z"
+      - name: "WTA Finals 2026"
+        start: "2026-11-07T00:00:00Z"
+        end:   "2026-11-15T23:59:59Z"
+      - name: "ATP Finals 2026"
+        start: "2026-11-15T12:00:00Z"
+        end:   "2026-11-22T22:00:00Z"
   - key: survivor
     name: Survivor Elimination
     # Survivor-elimination bot writes the same JSON-output shape as the
@@ -145,11 +173,13 @@ bots:
     coefficients_path: /root/survivor-elimination/data/processed/artifacts/model_coefficients.json
     sim_state_path: /root/survivor-elimination/data/outputs/sim_state.json
     # Survivor 50 — premiere Feb 25, 2026; ~13-week run to the finale.
-    # Times are ET broadcast slot converted to UTC.
-    season:
-      name: "Survivor 50"
-      start: "2026-02-26T01:00:00Z"
-      end:   "2026-05-21T03:00:00Z"
+    # Times are ET broadcast slot converted to UTC. One window per
+    # U.S. cycle — list additional entries when CBS announces the
+    # next season.
+    seasons:
+      - name: "Survivor 50"
+        start: "2026-02-26T01:00:00Z"
+        end:   "2026-05-21T03:00:00Z"
 
   - key: table-tennis
     name: Table Tennis Forecast
@@ -164,12 +194,26 @@ bots:
     metrics_path: /root/table-tennis-forecast/data/processed/artifacts/metrics.json
     coefficients_path: /root/table-tennis-forecast/data/processed/artifacts/model_coefficients.json
     sim_state_path: /root/table-tennis-forecast/data/outputs/sim_state.json
-    # WTT 2026 season — first WTT Star Contender opens early Jan and
-    # the WTT Finals close in mid-December.
-    season:
-      name: "2026 WTT Season"
-      start: "2026-01-12T00:00:00Z"
-      end:   "2026-12-15T23:59:59Z"
+    # Headline WTT / ITTF events on the 2026 calendar. The bot covers
+    # the full WTT season — these are the windows where market depth
+    # is reliably high enough to matter. Dates approximate; refresh
+    # when WTT publishes finalised schedules.
+    seasons:
+      - name: "WTT Singapore Smash 2026"
+        start: "2026-02-08T00:00:00Z"
+        end:   "2026-02-22T23:59:59Z"
+      - name: "ITTF World Championships 2026"
+        start: "2026-05-08T00:00:00Z"
+        end:   "2026-05-17T23:59:59Z"
+      - name: "WTT US Smash 2026"
+        start: "2026-07-04T00:00:00Z"
+        end:   "2026-07-12T23:59:59Z"
+      - name: "WTT China Smash 2026"
+        start: "2026-09-19T00:00:00Z"
+        end:   "2026-09-27T23:59:59Z"
+      - name: "WTT Finals 2026"
+        start: "2026-12-09T00:00:00Z"
+        end:   "2026-12-13T23:59:59Z"
 
   - key: billboard
     name: Billboard Hot 100
@@ -203,13 +247,35 @@ bots:
     metrics_path: /root/darts-forecast/data/processed/artifacts/metrics.json
     coefficients_path: /root/darts-forecast/data/processed/artifacts/model_coefficients.json
     sim_state_path: /root/darts-forecast/data/outputs/sim_state.json
-    # PDC Premier League Darts 2026 — Night 1 (Belfast) → Play-Offs
-    # at The O2 in London. The bot also covers other PDC events but
-    # Premier League is the headline calendar driver.
-    season:
-      name: "2026 PDC Premier League"
-      start: "2026-02-05T19:00:00Z"
-      end:   "2026-05-28T22:30:00Z"
+    # PDC darts calendar — separate window per major event so each
+    # gets its own countdown card. The bot polls every configured
+    # darts series; these are the headline tournaments with the
+    # deepest Kalshi markets.
+    seasons:
+      - name: "PDC World Championship 2026"
+        start: "2025-12-15T19:00:00Z"
+        end:   "2026-01-03T23:30:00Z"
+      - name: "PDC Premier League Darts 2026"
+        start: "2026-02-05T19:00:00Z"
+        end:   "2026-05-28T22:30:00Z"
+      - name: "UK Open 2026"
+        start: "2026-03-06T12:00:00Z"
+        end:   "2026-03-08T22:30:00Z"
+      - name: "World Matchplay 2026"
+        start: "2026-07-18T18:00:00Z"
+        end:   "2026-07-26T22:30:00Z"
+      - name: "World Grand Prix 2026"
+        start: "2026-10-05T18:00:00Z"
+        end:   "2026-10-11T22:30:00Z"
+      - name: "Grand Slam of Darts 2026"
+        start: "2026-11-07T13:00:00Z"
+        end:   "2026-11-15T22:30:00Z"
+      - name: "Players Championship Finals 2026"
+        start: "2026-11-20T18:00:00Z"
+        end:   "2026-11-22T22:30:00Z"
+      - name: "PDC World Championship 2027"
+        start: "2026-12-15T19:00:00Z"
+        end:   "2027-01-03T23:30:00Z"
 
 # ---------------------------------------------------------------------------
 # Display thresholds. Mirror the gas-bot's gates so the buy-criteria panel

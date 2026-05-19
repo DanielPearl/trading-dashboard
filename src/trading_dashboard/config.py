@@ -63,15 +63,15 @@ class DisplayCfg:
 
 @dataclass
 class SeasonCfg:
-    """Optional season window for the Seasons tab.
+    """One tournament / season window for the Seasons tab.
 
     Bots whose markets follow a real-world calendar (NBA regular season,
-    Survivor U.S. cycle, PDC Premier League Darts, etc.) declare their
-    current season here. The Seasons tab on the dashboard renders one
-    card per bot with these fields plus a live countdown that flips
-    from "starts in" → "ends in" → "season over" as time crosses
-    ``start`` and ``end``. ``start`` / ``end`` accept any ISO-8601
-    string PyYAML parses to a datetime (e.g. ``2026-02-25T01:00:00Z``).
+    Survivor cycle, PDC events, ATP/WTA majors, etc.) declare one or
+    more windows here. The Seasons tab renders one card per (bot,
+    window) pair plus a live countdown that flips from "starts in" →
+    "ends in" → "season over" as time crosses ``start`` and ``end``.
+    ``start`` / ``end`` accept any ISO-8601 string PyYAML parses to a
+    datetime (e.g. ``2026-02-25T01:00:00Z``).
     """
     name: str
     start: str
@@ -103,10 +103,12 @@ class BotEntry:
     # watchlist hero chart, independent of whether the bot itself is up.
     series_ticker: str | None = None
     display: DisplayCfg = field(default_factory=DisplayCfg)
-    # Optional season window. Only set for bots whose markets follow a
-    # real-world calendar (sports, Survivor). None → bot is omitted from
-    # the Seasons tab.
-    season: SeasonCfg | None = None
+    # Zero or more season / tournament windows. Empty list → bot is
+    # omitted from the Seasons tab. Sport bots typically list multiple
+    # tournaments (NBA regular season + playoffs, ATP/WTA Grand Slams,
+    # the PDC darts calendar, etc.); Survivor lists one window per
+    # cycle.
+    seasons: List[SeasonCfg] = field(default_factory=list)
 
 
 @dataclass
@@ -182,23 +184,34 @@ def load_config(path: str | Path = "config/dashboard.yaml") -> DashboardConfig:
     validators_raw = dict(raw["validators"])
     validators_raw["prob_bounds_cents"] = tuple(validators_raw["prob_bounds_cents"])
 
+    def _coerce_season(item: dict) -> SeasonCfg:
+        s = dict(item)
+        # YAML may parse the ISO date strings into datetime objects
+        # depending on quoting. Normalise to ISO string so the
+        # downstream JS layer always receives text.
+        for k in ("start", "end"):
+            v = s.get(k)
+            if hasattr(v, "isoformat"):
+                s[k] = v.isoformat()
+            elif v is not None:
+                s[k] = str(v)
+        return SeasonCfg(**s)
+
     bots: List[BotEntry] = []
     for b in raw["bots"]:
         b = dict(b)
         if "display" in b and isinstance(b["display"], dict):
             b["display"] = DisplayCfg(**b["display"])
-        if "season" in b and isinstance(b["season"], dict):
-            s = dict(b["season"])
-            # YAML may parse the ISO date strings into datetime objects
-            # depending on quoting. Normalise to ISO string so the
-            # downstream JS layer always receives text.
-            for k in ("start", "end"):
-                v = s.get(k)
-                if hasattr(v, "isoformat"):
-                    s[k] = v.isoformat()
-                elif v is not None:
-                    s[k] = str(v)
-            b["season"] = SeasonCfg(**s)
+        # Accept either ``seasons:`` (list — preferred) or a legacy
+        # singular ``season:`` block (one dict). Both end up as a
+        # ``seasons`` list of SeasonCfg.
+        raw_seasons = b.pop("seasons", None)
+        if raw_seasons is None and "season" in b:
+            raw_seasons = [b.pop("season")]
+        elif "season" in b:
+            del b["season"]
+        if raw_seasons:
+            b["seasons"] = [_coerce_season(s) for s in raw_seasons]
         bots.append(BotEntry(**b))
 
     return DashboardConfig(

@@ -5391,26 +5391,31 @@ def _humanize_duration(delta_seconds: float) -> str:
 
 
 def _render_seasons_panel(out: List[str], available_bots: List[dict]) -> None:
-    """One card per bot that declares a ``season:`` block. Each card
-    shows the season name, start, end, total length, and a live
-    countdown that flips from "Starts in …" to "Ends in …" to
-    "Season over" as time crosses the boundaries (see
-    ``_SEASON_COUNTDOWN_JS``)."""
+    """One card per (bot, tournament) window. Each card shows the
+    tournament name, start, end, total length, and a live countdown
+    that flips from "Starts in …" to "Ends in …" to "Season over" as
+    time crosses the boundaries (see ``_SEASON_COUNTDOWN_JS``).
+
+    Sports bots that declare multiple tournaments (NBA regular season
+    + playoffs, the ATP/WTA Grand Slam set, the PDC darts calendar,
+    etc.) produce one card per tournament. Survivor / similar bots
+    with a single window produce one card."""
     now = datetime.now(timezone.utc)
-    cards: List[tuple[dict, datetime, datetime]] = []
+    cards: List[tuple[dict, dict, datetime, datetime]] = []
     for bot in available_bots:
-        season = bot.get("season") or {}
-        start = _parse_season_dt(season.get("start"))
-        end = _parse_season_dt(season.get("end"))
-        if not start or not end:
-            continue
-        cards.append((bot, start, end))
+        for season in (bot.get("seasons") or []):
+            start = _parse_season_dt(season.get("start"))
+            end = _parse_season_dt(season.get("end"))
+            if not start or not end:
+                continue
+            cards.append((bot, season, start, end))
 
     # Sort: in-season first (by end date), then upcoming (by start),
     # then finished (most recent first). Keeps the "what's live now"
-    # cluster at the top.
-    def _sort_key(item: tuple[dict, datetime, datetime]) -> tuple:
-        _, s, e = item
+    # cluster at the top, with each bot's individual tournaments
+    # interleaved in the timeline rather than grouped.
+    def _sort_key(item: tuple[dict, dict, datetime, datetime]) -> tuple:
+        _, _, s, e = item
         if s <= now <= e:
             return (0, e)
         if now < s:
@@ -5424,8 +5429,9 @@ def _render_seasons_panel(out: List[str], available_bots: List[dict]) -> None:
     if not cards:
         out.append(
             "<div class='empty'>No bots have a season window "
-            "configured. Add a <code>season:</code> block to a bot in "
-            "<code>config/dashboard.yaml</code> to see it here.</div>"
+            "configured. Add a <code>seasons:</code> block to a bot "
+            "in <code>config/dashboard.yaml</code> to see it here."
+            "</div>"
         )
         out.append("</div></div>")
         return
@@ -5440,8 +5446,7 @@ def _render_seasons_panel(out: List[str], available_bots: List[dict]) -> None:
         "</p>"
     )
     out.append("<div class='season-grid'>")
-    for bot, start, end in cards:
-        season = bot.get("season") or {}
+    for bot, season, start, end in cards:
         season_name = season.get("name") or bot.get("name") or bot.get("key")
         length = _humanize_duration((end - start).total_seconds())
         start_ms = int(start.timestamp() * 1000)
@@ -11373,14 +11378,10 @@ def main(argv: list[str] | None = None) -> int:
             "coefficients_path": b.coefficients_path,
             "sim_state_path": b.sim_state_path,
             "series_ticker": b.series_ticker,
-            "season": (
-                {
-                    "name": b.season.name,
-                    "start": b.season.start,
-                    "end": b.season.end,
-                }
-                if b.season is not None else None
-            ),
+            "seasons": [
+                {"name": s.name, "start": s.start, "end": s.end}
+                for s in (b.seasons or [])
+            ],
             "display": {
                 "underlying_label": b.display.underlying_label,
                 "underlying_unit": b.display.underlying_unit,
