@@ -7501,7 +7501,7 @@ def _render_feature_source_table(features: List[dict]) -> str:
         )
 
     parts = [
-        f"<h3 class='subhead'>Features used by the model "
+        f"<h3 class='subhead'>Feature importance "
         f"<span class='small gray'>({len(kept)} kept by the "
         f"stability filter)</span></h3>",
         "<div class='ft-layout'>",
