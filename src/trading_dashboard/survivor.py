@@ -578,28 +578,28 @@ def _render_models_section(metrics: Dict[str, Any],
     )
 
     log_coefs = (coefficients.get("logistic") or {})
-    feats = log_coefs.get("features") or []
+    feats_names = log_coefs.get("features") or []
     coefs = log_coefs.get("coefficients") or []
-    intercept = log_coefs.get("intercept")
-    if feats and coefs:
-        out.append("<h3 class='subhead'>Model coefficients · "
-                    "logistic regression</h3>")
-        out.append("<table><thead><tr>"
-                    "<th>Feature</th><th>Coefficient</th>"
-                    "</tr></thead><tbody>")
-        ranked = sorted(zip(feats, coefs),
-                         key=lambda fc: -abs(fc[1]))
-        for n, c in ranked:
-            out.append(
-                f"<tr><td><code>{html.escape(n)}</code></td>"
-                f"<td>{c:+.4f}</td></tr>"
-            )
-        if intercept is not None:
-            out.append(
-                f"<tr><td><code>(intercept)</code></td>"
-                f"<td>{intercept:+.4f}</td></tr>"
-            )
-        out.append("</tbody></table>")
+    if feats_names and coefs:
+        # Reuse the dashboard's standard feature renderer so survivor's
+        # models page shows the same Feature / Description / Source /
+        # Importance layout the other bots get. Logistic coefficients
+        # are signed; the renderer expects magnitudes, so we feed it
+        # |coef| as mean_importance.
+        feat_rows: List[Dict[str, Any]] = []
+        for n, c in zip(feats_names, coefs):
+            try:
+                mag = abs(float(c))
+            except (TypeError, ValueError):
+                mag = 0.0
+            feat_rows.append({
+                "feature": str(n),
+                "mean_importance": mag,
+                "positive_folds": 1,
+                "selected": True,
+            })
+        from .dashboard import _render_feature_source_table  # type: ignore
+        out.append(_render_feature_source_table(feat_rows))
     return "".join(out)
 
 
