@@ -3563,6 +3563,26 @@ def _live_update_script(current_bot: str, period_key: str = "all") -> str:
   // (or fall back to the active tab pill) and override the option's
   // ?tab= so the bot switch keeps the user on whichever tab is
   // currently visible.
+  // Browsers default to "auto" scroll restoration on history navigation
+  // but they do NOT restore scroll on cross-URL navigation (which is
+  // what a bot-select change triggers). Stash the current scrollY in
+  // sessionStorage so the next page load can re-apply it.
+  if ("scrollRestoration" in history) {{
+    history.scrollRestoration = "manual";
+  }}
+  const _SCROLL_KEY = "dashboardBotSwitchScrollY";
+  try {{
+    const saved = sessionStorage.getItem(_SCROLL_KEY);
+    if (saved !== null) {{
+      sessionStorage.removeItem(_SCROLL_KEY);
+      // Defer one frame so the layout settles before scrolling — the
+      // body keeps growing as deferred SVG charts paint in.
+      requestAnimationFrame(function () {{
+        window.scrollTo(0, parseInt(saved, 10) || 0);
+      }});
+    }}
+  }} catch (err) {{ /* sessionStorage disabled — ignore */ }}
+
   document.querySelectorAll("[data-bot-select]").forEach(function (sel) {{
     sel.addEventListener("change", function () {{
       let target = sel.value;
@@ -3590,6 +3610,9 @@ def _live_update_script(current_bot: str, period_key: str = "all") -> str:
           }}
         }} catch (err) {{ /* fall through to raw target */ }}
       }}
+      try {{
+        sessionStorage.setItem(_SCROLL_KEY, String(window.scrollY));
+      }} catch (err) {{ /* ignore */ }}
       window.location.href = target;
     }});
   }});
