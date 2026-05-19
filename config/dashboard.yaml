@@ -52,9 +52,11 @@ bots:
     db_path: /root/nba/data/sim.db
     decisions_path: /root/nba/data/decisions.jsonl
     series_ticker: KXNBAGAME
-    # 2025-26 NBA season — each phase listed separately so the
-    # Seasons tab can count down to / through them individually.
-    # Update at the start of each season.
+    # 2025-26 NBA season. Kalshi covers every NBA game under one
+    # series (KXNBAGAME, competition "Pro Basketball (M)") so all
+    # four phases below are tradeable — each phase is listed
+    # separately because the Seasons tab counts to / through them
+    # individually. Update at the start of each season.
     seasons:
       - name: "NBA Regular Season 2025-26"
         start: "2025-10-21T23:00:00Z"
@@ -132,10 +134,13 @@ bots:
     metrics_path: /root/tennis-forecast/data/processed/artifacts/metrics.json
     coefficients_path: /root/tennis-forecast/data/processed/artifacts/model_coefficients.json
     sim_state_path: /root/tennis-forecast/data/outputs/sim_state.json
-    # 2026 ATP/WTA majors + season-ending Finals. Tour-wide windows
-    # were dropped in favour of the Grand Slams because they're where
-    # the markets are deepest. Dates use the singles main-draw window
-    # (qualifying not included). Update each year as schedules drop.
+    # 2026 ATP/WTA majors + season-ending Finals. Kalshi runs match
+    # markets for every ATP / WTA tour event on KXATPMATCH /
+    # KXWTAMATCH — listing all 50+ would bury the page. Only the four
+    # Grand Slams + the year-end Finals make the cut here because
+    # they're the windows that draw real volume. Dates use the
+    # singles main-draw window (qualifying not included). Update
+    # each year as schedules drop.
     seasons:
       - name: "Australian Open 2026"
         start: "2026-01-18T00:00:00Z"
@@ -172,10 +177,11 @@ bots:
     metrics_path: /root/survivor-elimination/data/processed/artifacts/metrics.json
     coefficients_path: /root/survivor-elimination/data/processed/artifacts/model_coefficients.json
     sim_state_path: /root/survivor-elimination/data/outputs/sim_state.json
-    # Survivor 50 — premiere Feb 25, 2026; ~13-week run to the finale.
-    # Times are ET broadcast slot converted to UTC. One window per
-    # U.S. cycle — list additional entries when CBS announces the
-    # next season.
+    # Survivor 50 — premiere Feb 25, 2026; ~13-week run to the
+    # finale. Kalshi has the season-winner market on KXSURVIVOR
+    # ("Who will win Survivor Season 50?"). Times are ET broadcast
+    # slot converted to UTC. One window per U.S. cycle — list
+    # additional entries when CBS announces the next season.
     seasons:
       - name: "Survivor 50"
         start: "2026-02-26T01:00:00Z"
@@ -194,26 +200,12 @@ bots:
     metrics_path: /root/table-tennis-forecast/data/processed/artifacts/metrics.json
     coefficients_path: /root/table-tennis-forecast/data/processed/artifacts/model_coefficients.json
     sim_state_path: /root/table-tennis-forecast/data/outputs/sim_state.json
-    # Headline WTT / ITTF events on the 2026 calendar. The bot covers
-    # the full WTT season — these are the windows where market depth
-    # is reliably high enough to matter. Dates approximate; refresh
-    # when WTT publishes finalised schedules.
-    seasons:
-      - name: "WTT Singapore Smash 2026"
-        start: "2026-02-08T00:00:00Z"
-        end:   "2026-02-22T23:59:59Z"
-      - name: "ITTF World Championships 2026"
-        start: "2026-05-08T00:00:00Z"
-        end:   "2026-05-17T23:59:59Z"
-      - name: "WTT US Smash 2026"
-        start: "2026-07-04T00:00:00Z"
-        end:   "2026-07-12T23:59:59Z"
-      - name: "WTT China Smash 2026"
-        start: "2026-09-19T00:00:00Z"
-        end:   "2026-09-27T23:59:59Z"
-      - name: "WTT Finals 2026"
-        start: "2026-12-09T00:00:00Z"
-        end:   "2026-12-13T23:59:59Z"
+    # No seasons block — Kalshi's only KXTABLETENNIS competition is
+    # "TT Elite Series Men" (a Polish men's league that runs
+    # year-round with no discrete season window). WTT / ITTF events
+    # are not on Kalshi, so the table-tennis bot is intentionally
+    # omitted from the Seasons tab. Add a seasons: list back here
+    # if Kalshi starts listing WTT Smashes / ITTF Worlds markets.
 
   - key: billboard
     name: Billboard Hot 100
@@ -247,10 +239,11 @@ bots:
     metrics_path: /root/darts-forecast/data/processed/artifacts/metrics.json
     coefficients_path: /root/darts-forecast/data/processed/artifacts/model_coefficients.json
     sim_state_path: /root/darts-forecast/data/outputs/sim_state.json
-    # PDC darts calendar — separate window per major event so each
-    # gets its own countdown card. The bot polls every configured
-    # darts series; these are the headline tournaments with the
-    # deepest Kalshi markets.
+    # PDC tournaments Kalshi actually trades on KXDARTSMATCH (verified
+    # via the events API — only two competition labels appear:
+    # "Premier League Darts" and "PDC World Championship"). Other PDC
+    # majors (UK Open, World Matchplay, etc.) are not on Kalshi today;
+    # add a window back when a new tournament shows up.
     seasons:
       - name: "PDC World Championship 2026"
         start: "2025-12-15T19:00:00Z"
@@ -258,21 +251,6 @@ bots:
       - name: "PDC Premier League Darts 2026"
         start: "2026-02-05T19:00:00Z"
         end:   "2026-05-28T22:30:00Z"
-      - name: "UK Open 2026"
-        start: "2026-03-06T12:00:00Z"
-        end:   "2026-03-08T22:30:00Z"
-      - name: "World Matchplay 2026"
-        start: "2026-07-18T18:00:00Z"
-        end:   "2026-07-26T22:30:00Z"
-      - name: "World Grand Prix 2026"
-        start: "2026-10-05T18:00:00Z"
-        end:   "2026-10-11T22:30:00Z"
-      - name: "Grand Slam of Darts 2026"
-        start: "2026-11-07T13:00:00Z"
-        end:   "2026-11-15T22:30:00Z"
-      - name: "Players Championship Finals 2026"
-        start: "2026-11-20T18:00:00Z"
-        end:   "2026-11-22T22:30:00Z"
       - name: "PDC World Championship 2027"
         start: "2026-12-15T19:00:00Z"
         end:   "2027-01-03T23:30:00Z"
