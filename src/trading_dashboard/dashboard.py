@@ -1032,6 +1032,13 @@ def _compute_active_bets_totals(active_bets: List[dict],
             bots_in_table.add(bk)
     return {
         "open_count": len(active_bets),
+        # ``active_bets`` mirrors ``open_count`` so callers that
+        # ``summary.update(...)`` this dict also overwrite the rollup's
+        # ``active_bets`` field — the card value the Home tab renders
+        # for "Active bets". Without this, the card kept the un-filtered
+        # per-bot sum (which counts zombie positions whose ticker close
+        # time is already past) and disagreed with the table beneath it.
+        "active_bets": len(active_bets),
         "active_contracts": int(contracts_total),
         "active_bots": len(bots_in_table),
         "active_money_spent_cents": int(money_spent_cents),
