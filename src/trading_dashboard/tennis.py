@@ -28,11 +28,30 @@ from __future__ import annotations
 import html
 import json
 import logging
+import math
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List
 
 log = logging.getLogger("dashboard.tennis")
+
+
+def _kalshi_fee_cents(price_cents: int | None, contracts: int | None) -> int:
+    """Inline copy of dashboard.kalshi_fee_cents to avoid a circular
+    import. Kalshi's published fee = ceil(0.07 × contracts × p × (1−p))
+    where p is the price in dollars; returns the equivalent cents.
+    Zero on inputs that wouldn't be charged (settled / missing).
+    """
+    if price_cents is None or contracts is None:
+        return 0
+    try:
+        p = int(price_cents)
+        n = int(contracts)
+    except (TypeError, ValueError):
+        return 0
+    if n <= 0 or p <= 0 or p >= 100:
+        return 0
+    return int(math.ceil(0.07 * n * p * (100 - p) / 100.0))
 
 _LABEL_COLORS = {
     "STRONG_EDGE":         "#3fb950",
@@ -357,6 +376,27 @@ def closed_positions_for_rollup(sim_state_path: str | None,
             realized_cents = int(round(float(c.get("realized_pnl", 0)) * 100))
         except (TypeError, ValueError):
             realized_cents = 0
+        # Recover Entry EV from what the bot recorded at open. Tennis-
+        # style sim state doesn't persist the dashboard's per-row EV,
+        # but it does record (entry_model_prob, entry_market_prob), so
+        # we can reconstruct the same net-of-fee figure the watchlist
+        # column shows for open bets:
+        #     EV = entry_model_prob − entry_market_prob − fee_at_entry
+        # (no half-spread term — sport bots don't store the bid-ask
+        # spread on the closed-position record.)
+        entry_model_p = c.get("entry_model_prob")
+        try:
+            entry_model_p = (float(entry_model_p)
+                             if entry_model_p is not None else None)
+            entry_market_p = float(entry) if entry is not None else None
+        except (TypeError, ValueError):
+            entry_model_p = entry_market_p = None
+        if (entry_model_p is not None and entry_market_p is not None
+                and entry_cents is not None):
+            fee_d = _kalshi_fee_cents(entry_cents, 1) / 100.0
+            expected_ev = entry_model_p - entry_market_p - fee_d
+        else:
+            expected_ev = None
         out.append({
             "ticker": c.get("match_id"),
             "_title": c.get("title", ""),
@@ -370,7 +410,7 @@ def closed_positions_for_rollup(sim_state_path: str | None,
             "error_type": c.get("exit_reason"),
             "model_yes_prob_at_entry": c.get("entry_model_prob"),
             "kalshi_yes_prob_at_entry": entry,
-            "expected_ev_at_entry": None,
+            "expected_ev_at_entry": expected_ev,
             "break_even_probability": entry,
         })
     return out

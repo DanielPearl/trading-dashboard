@@ -1432,11 +1432,15 @@ def build_snapshot(db_path: str, bots: List[dict],
     def _ev_yes(p, ya_c, spread_c):
         if p is None or ya_c is None:
             return None
-        return float(p) - (ya_c / 100.0) - ((spread_c or 0) / 200.0)
+        fee_d = kalshi_fee_cents(ya_c, 1) / 100.0
+        return (float(p) - (ya_c / 100.0)
+                - ((spread_c or 0) / 200.0) - fee_d)
     def _ev_no(p, na_c, spread_c):
         if p is None or na_c is None:
             return None
-        return (1.0 - float(p)) - (na_c / 100.0) - ((spread_c or 0) / 200.0)
+        fee_d = kalshi_fee_cents(na_c, 1) / 100.0
+        return ((1.0 - float(p)) - (na_c / 100.0)
+                - ((spread_c or 0) / 200.0) - fee_d)
 
     rows = []
     min_ev = edge_cfg.get("min_ev_per_contract", 0.03)
@@ -1526,9 +1530,13 @@ def _tennis_like_snapshot(
         ev_yes = None
         ev_no = None
         if p is not None and ya is not None:
-            ev_yes = float(p) - (ya / 100.0) - (sp / 200.0)
+            fee_yes_d = kalshi_fee_cents(ya, 1) / 100.0
+            ev_yes = (float(p) - (ya / 100.0)
+                      - (sp / 200.0) - fee_yes_d)
         if p is not None and na is not None:
-            ev_no = (1.0 - float(p)) - (na / 100.0) - (sp / 200.0)
+            fee_no_d = kalshi_fee_cents(na, 1) / 100.0
+            ev_no = ((1.0 - float(p)) - (na / 100.0)
+                     - (sp / 200.0) - fee_no_d)
         rows.append({
             "ticker": v.get("ticker"),
             "kalshi_yes": ya, "kalshi_no": na,
@@ -10000,9 +10008,15 @@ def _render_watchlist(out: List[str], watchlist: List[dict],
         p_yes_blend = v.get("model_prob_yes")
         be_yes = (ya / 100.0) if ya is not None else None
         be_no = (na / 100.0) if na is not None else None
-        ev_yes = ((p_yes_blend - be_yes) - half_spread_d
+        # Net-of-fee EV. The Kalshi entry fee (ceil(0.07 × p × (1−p))
+        # per contract) is charged at open; settlement at 0¢ / 100¢ has
+        # no exit fee, so on a held-to-settle bet the only deduction is
+        # the entry fee. Per-$1-contract figure: divide cents by 100.
+        fee_yes_d = kalshi_fee_cents(ya, 1) / 100.0 if ya is not None else 0.0
+        fee_no_d = kalshi_fee_cents(na, 1) / 100.0 if na is not None else 0.0
+        ev_yes = ((p_yes_blend - be_yes) - half_spread_d - fee_yes_d
                   if p_yes_blend is not None and be_yes is not None else None)
-        ev_no = (((1.0 - p_yes_blend) - be_no) - half_spread_d
+        ev_no = (((1.0 - p_yes_blend) - be_no) - half_spread_d - fee_no_d
                  if p_yes_blend is not None and be_no is not None else None)
         # Best side by EV (only among the sides we have prices for).
         candidates = [(s, e) for s, e in (("YES", ev_yes), ("NO", ev_no))
@@ -10088,7 +10102,7 @@ def _render_watchlist(out: List[str], watchlist: List[dict],
                "<th class='num' title='Bot model probability — YES on top (green), NO on bottom (red).'>My %</th>"
                "<th class='num' title='Kalshi market price — YES on top (green), NO on bottom (red). Each side&apos;s implied probability that side wins.'>Kalshi %</th>"
                "<th class='num' title='Edge = my probability − Kalshi price, per side. YES on top (green), NO on bottom (red).'>Edge</th>"
-               "<th class='num' title='Expected value per $1 contract, per side, net of half-spread. YES on top (green), NO on bottom (red).'>EV</th>"
+               "<th class='num' title='Expected value per $1 contract, per side, net of half-spread and the Kalshi entry fee. YES on top (green), NO on bottom (red).'>EV</th>"
                "<th>Verdict</th></tr></thead><tbody id='watchlist-tbody'>")
     for v in watchlist:
         ticker = v.get("ticker", "")
