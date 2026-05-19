@@ -326,6 +326,15 @@ def active_bets_for_rollup(sim_state_path: str | None,
             # Required by the renderer's "why was this bet chosen" hook.
             "model_yes_prob_at_entry": float(p.get("entry_model_prob") or entry),
             "kalshi_yes_prob_at_entry": entry,
+            # Reconstruct the net-of-fee EV the bot saw at open from
+            # (entry_model_prob, entry_market_prob). Same formula the
+            # closed-position rollup uses, so the buy-criteria popup
+            # on the cross-bot active-bets row shows a real EV figure
+            # for sport bots instead of a missing value.
+            "expected_ev_at_entry": (
+                float(p.get("entry_model_prob") or entry) - entry
+                - (_kalshi_fee_cents(int(round(entry * 100)), 1) / 100.0)
+            ),
         })
     return out
 
