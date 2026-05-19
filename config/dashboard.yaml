@@ -122,12 +122,17 @@ bots:
     metrics_path: /root/tennis-forecast/data/processed/artifacts/metrics.json
     coefficients_path: /root/tennis-forecast/data/processed/artifacts/model_coefficients.json
     sim_state_path: /root/tennis-forecast/data/outputs/sim_state.json
-    # Single league-level window — United Cup kickoff through the
-    # season-ending ATP Finals. Update each year.
+    # One window per Kalshi tennis league. The bot polls KXATPMATCH
+    # and KXWTAMATCH — these are two separate tours, so each gets
+    # its own card. United Cup kickoff → tour-ending Finals; refresh
+    # dates each year as the calendar drops.
     seasons:
-      - name: "ATP/WTA 2026 Tour"
+      - name: "ATP Tour 2026"
         start: "2025-12-29T00:00:00Z"
         end:   "2026-11-22T22:00:00Z"
+      - name: "WTA Tour 2026"
+        start: "2025-12-29T00:00:00Z"
+        end:   "2026-11-15T23:59:59Z"
   - key: survivor
     name: Survivor Elimination
     # Survivor-elimination bot writes the same JSON-output shape as the
@@ -168,12 +173,14 @@ bots:
     metrics_path: /root/table-tennis-forecast/data/processed/artifacts/metrics.json
     coefficients_path: /root/table-tennis-forecast/data/processed/artifacts/model_coefficients.json
     sim_state_path: /root/table-tennis-forecast/data/outputs/sim_state.json
-    # No seasons block — Kalshi's only KXTABLETENNIS competition is
-    # "TT Elite Series Men" (a Polish men's league that runs
-    # year-round with no discrete season window). WTT / ITTF events
-    # are not on Kalshi, so the table-tennis bot is intentionally
-    # omitted from the Seasons tab. Add a seasons: list back here
-    # if Kalshi starts listing WTT Smashes / ITTF Worlds markets.
+    # TT Elite Series Men is the only league Kalshi trades on
+    # KXTABLETENNIS — a Polish men's league that runs essentially
+    # year-round. Calendar-year window keeps the card on the page
+    # all season; refresh in January.
+    seasons:
+      - name: "TT Elite Series Men 2026"
+        start: "2026-01-01T00:00:00Z"
+        end:   "2026-12-31T23:59:59Z"
 
   - key: billboard
     name: Billboard Hot 100
@@ -207,12 +214,17 @@ bots:
     metrics_path: /root/darts-forecast/data/processed/artifacts/metrics.json
     coefficients_path: /root/darts-forecast/data/processed/artifacts/model_coefficients.json
     sim_state_path: /root/darts-forecast/data/outputs/sim_state.json
-    # Single league-level window — Premier League opener through the
-    # following PDC World Championship final (the "season" the bot
-    # actually trades on Kalshi's KXDARTSMATCH series).
+    # One window per Kalshi darts league. KXDARTSMATCH carries two
+    # distinct competitions — "Premier League Darts" (Feb-May tour)
+    # and "PDC World Championship" (Dec-Jan event). Each gets its
+    # own card; we point the World Championship at the *next*
+    # iteration so the card stays useful once the current one ends.
     seasons:
-      - name: "PDC 2026 Season"
+      - name: "PDC Premier League Darts 2026"
         start: "2026-02-05T19:00:00Z"
+        end:   "2026-05-28T22:30:00Z"
+      - name: "PDC World Championship 2026-27"
+        start: "2026-12-15T19:00:00Z"
         end:   "2027-01-03T23:30:00Z"
 
 # ---------------------------------------------------------------------------

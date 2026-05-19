@@ -5425,38 +5425,28 @@ def _humanize_duration(delta_seconds: float) -> str:
 
 
 def _render_seasons_panel(out: List[str], available_bots: List[dict]) -> None:
-    """One card per league (= bot). Each card shows the league's
-    current or next season window with a live countdown that flips
-    from "Starts in …" to "Ends in …" as time crosses the start.
-    Leagues whose configured season has already ended don't render
-    a card — update the YAML to the next season to bring them back.
-    Live leagues (in-season right now) sort above upcoming ones."""
+    """One card per league. A bot can declare multiple ``seasons:``
+    entries when its bot trades multiple Kalshi competitions
+    (tennis = ATP + WTA tours, darts = Premier League + PDC World
+    Championship, etc.) — each entry renders as its own card.
+    Cards whose end time has already passed are hidden so the tab
+    stays focused on what's actually trading; the countdown only
+    flips between "Starts in …" and "Ends in …". Live leagues sort
+    above upcoming ones."""
     now = datetime.now(timezone.utc)
 
-    # Pick the single "currently relevant" window per league: the
-    # in-progress one if there is one, otherwise the soonest
-    # upcoming. Bots whose configured seasons are all over (or
-    # missing) don't render — keeps the tab focused on what's
-    # actually trading.
     cards: List[tuple[dict, dict, datetime, datetime]] = []
     for bot in available_bots:
-        windows = []
         for season in (bot.get("seasons") or []):
             start = _parse_season_dt(season.get("start"))
             end = _parse_season_dt(season.get("end"))
             if not start or not end:
                 continue
-            windows.append((season, start, end))
-        if not windows:
-            continue
-        live = [w for w in windows if w[1] <= now <= w[2]]
-        upcoming = sorted([w for w in windows if now < w[1]],
-                           key=lambda w: w[1])
-        if live:
-            cards.append((bot,) + live[0])
-        elif upcoming:
-            cards.append((bot,) + upcoming[0])
-        # else: every configured window has ended → skip
+            if end < now:
+                # Season already wrapped up; update the YAML to the
+                # next iteration to bring this league back to the tab.
+                continue
+            cards.append((bot, season, start, end))
 
     # Live leagues first (soonest end), then upcoming (soonest start).
     def _sort_key(item):
