@@ -226,6 +226,7 @@ def fetch_summary(db_path: str, period_days: int | None = None) -> dict:
         "period_money_gained_cents": 0,
         "period_contracts_bought": 0,
         "potential_gain_cents": 0,
+        "active_money_spent_cents": 0,
     }
     if not Path(db_path).exists():
         return empty
@@ -244,7 +245,7 @@ def fetch_summary(db_path: str, period_days: int | None = None) -> dict:
             # active-bets table applies (``hide_settled``) so the
             # headline cards agree with what's rendered in the table.
             open_rows = c.execute(
-                "SELECT p.ticker, p.contracts, "
+                "SELECT p.ticker, p.contracts, p.entry_price_cents, "
                 "  (SELECT mv.minutes_to_close FROM market_views mv "
                 "     WHERE mv.ticker = p.ticker "
                 "     ORDER BY mv.id DESC LIMIT 1) AS mtc "
@@ -252,13 +253,20 @@ def fetch_summary(db_path: str, period_days: int | None = None) -> dict:
             ).fetchall()
             active_count = 0
             active_contracts = 0
+            active_money_spent_cents = 0
+            active_potential_gain_cents = 0
             for r in open_rows:
                 mtc = r["mtc"]
                 if mtc is None:
                     mtc = minutes_to_close_from_ticker(r["ticker"])
                 if (mtc if mtc is not None else 0) >= -60:
                     active_count += 1
-                    active_contracts += r["contracts"] or 0
+                    ctr = r["contracts"] or 0
+                    entry_c = r["entry_price_cents"] or 0
+                    active_contracts += ctr
+                    fee_c = kalshi_fee_cents(entry_c, ctr)
+                    active_money_spent_cents += entry_c * ctr + fee_c
+                    active_potential_gain_cents += (100 - entry_c) * ctr - fee_c
             closed_row = c.execute(
                 "SELECT COUNT(*) n, COALESCE(SUM(realized_pnl_cents), 0) pnl, "
                 "SUM(CASE WHEN realized_pnl_cents > 0 THEN 1 ELSE 0 END) wins, "
@@ -295,14 +303,11 @@ def fetch_summary(db_path: str, period_days: int | None = None) -> dict:
                 "SELECT COUNT(*) n FROM trades "
                 "WHERE kind = 'entry' AND substr(created_at, 1, 10) = date('now')"
             ).fetchone()
-            # Potential gains from currently-open bets (always live —
-            # never period-scoped, like the active-bets count). For a
-            # YES bet at entry=65c × 10 contracts: potential payout if
-            # the contract resolves on our side = (100−65) × 10 = 350c.
-            potential = c.execute(
-                "SELECT COALESCE(SUM((100 - entry_price_cents) * contracts), 0) v "
-                "FROM positions WHERE status = 'open'"
-            ).fetchone()
+            # Potential gain + active money-spent are computed inline
+            # from the open-rows loop above (matches the active-bets
+            # table renderer cell-for-cell: subtracts Kalshi entry fee
+            # on potential, includes entry fee in cost, and applies the
+            # same hide-settled mtc≥−60 filter).
             # Period-filtered values: when period_days is None, scope
             # to lifetime; otherwise restrict to the rolling window.
             if period_days is None:
@@ -397,7 +402,8 @@ def fetch_summary(db_path: str, period_days: int | None = None) -> dict:
         "period_money_spent_cents": int(period_money_spent or 0),
         "period_money_gained_cents": int(period_money_gained or 0),
         "period_contracts_bought": int(period_contracts_bought or 0),
-        "potential_gain_cents": int(potential["v"] or 0),
+        "potential_gain_cents": int(active_potential_gain_cents),
+        "active_money_spent_cents": int(active_money_spent_cents),
     }
 
 
@@ -913,7 +919,7 @@ def fetch_global_summary(bots: List[dict],
     rollup = {
         "active_bets": 0,            # always current — never period-scoped
         "active_contracts": 0,       # always current — sum of contracts open
-        "active_bots": 0,            # always current — bots enabled & with data
+        "active_bots": 0,            # distinct bots with at least one active bet
         "period_bets_made": 0,
         "period_net_pnl_cents": 0,
         "period_wins": 0,
@@ -921,7 +927,8 @@ def fetch_global_summary(bots: List[dict],
         "period_money_spent_cents": 0,
         "period_money_gained_cents": 0,
         "period_contracts_bought": 0,
-        "potential_gain_cents": 0,    # always current
+        "potential_gain_cents": 0,    # always current — fee-subtracted
+        "active_money_spent_cents": 0,  # entry cost of currently-open bets only
         "this_week_pnl_cents": 0,     # always lifetime-of-last-7-days
         # Lifetime fields kept for callers that still want them.
         "total_bets": 0,
@@ -932,12 +939,6 @@ def fetch_global_summary(bots: List[dict],
         "best_bot_pnl_cents": 0,
         "per_bot": [],
     }
-    # Bots that are both available (have data) and enabled (user
-    # toggle on the homepage card grid is on). Used for the
-    # "Active bots" headline card.
-    from . import bot_state
-    enabled_map = {k: bool((v or {}).get("enabled", True))
-                   for k, v in (bot_state.get_all_states() or {}).items()}
     for b in bots:
         if not b.get("available"):
             continue
@@ -960,7 +961,7 @@ def fetch_global_summary(bots: List[dict],
             s = fetch_summary(b["db_path"], period_days=period_days)
         rollup["active_bets"] += s.get("open_count", 0)
         rollup["active_contracts"] += s.get("active_contracts", 0)
-        if enabled_map.get(b["key"], True):
+        if s.get("open_count", 0) > 0:
             rollup["active_bots"] += 1
         rollup["period_bets_made"] += s.get("period_bets_made", 0)
         rollup["period_net_pnl_cents"] += s.get("period_net_pnl_cents", 0)
@@ -970,6 +971,7 @@ def fetch_global_summary(bots: List[dict],
         rollup["period_money_gained_cents"] += s.get("period_money_gained_cents", 0)
         rollup["period_contracts_bought"] += s.get("period_contracts_bought", 0)
         rollup["potential_gain_cents"] += s.get("potential_gain_cents", 0)
+        rollup["active_money_spent_cents"] += s.get("active_money_spent_cents", 0)
         rollup["this_week_pnl_cents"] += s.get("this_week_pnl_cents", 0)
         rollup["total_bets"] += s.get("total_bets", 0)
         rollup["net_pnl_cents"] += s.get("realized_pnl_cents", 0)
@@ -1397,6 +1399,7 @@ def build_snapshot(db_path: str, bots: List[dict],
             "period_closed_bets": period_closed,
             "period_money_spent_cents": summary.get("period_money_spent_cents"),
             "period_money_gained_cents": summary.get("period_money_gained_cents"),
+            "active_money_spent_cents": summary.get("active_money_spent_cents"),
             "potential_gain_cents": summary.get("potential_gain_cents"),
             "period_net_pnl_cents": summary.get("period_net_pnl_cents"),
             "period_win_pct": summary.get("period_win_pct"),
@@ -1476,6 +1479,7 @@ def _tennis_like_snapshot(
             "period_closed_bets": period_closed,
             "period_money_spent_cents": summary.get("period_money_spent_cents"),
             "period_money_gained_cents": summary.get("period_money_gained_cents"),
+            "active_money_spent_cents": summary.get("active_money_spent_cents"),
             "potential_gain_cents": summary.get("potential_gain_cents"),
             "period_net_pnl_cents": summary.get("period_net_pnl_cents"),
             "period_win_pct": summary.get("period_win_pct"),
@@ -3316,9 +3320,9 @@ def _live_update_script(current_bot: str, period_key: str = "all") -> str:
     patch("card-active-contracts", String(s.active_contracts ?? 0));
     patch("card-active-bots", String(s.active_bots ?? 0));
     patch("card-money-spent",
-          (s.period_money_spent_cents ?? 0) === 0
+          (s.active_money_spent_cents ?? 0) === 0
             ? "$0.00"
-            : fmtSignedCents(-(s.period_money_spent_cents ?? 0)));
+            : fmtSignedCents(-(s.active_money_spent_cents ?? 0)));
     patch("card-potential-earnings",
           "+" + fmtSignedCents(s.potential_gain_cents).replace(/^[+−-]/, ""),
           "green");
@@ -4218,14 +4222,15 @@ def _week_change_pct(rollup: dict) -> Tuple[str, str]:
 
 def _render_home_summary_cards(out: List[str], rollup: dict) -> None:
     """Emit the Home tab's 6 headline cards: Active bets, Active
-    contracts, Active bots, Money spent (lifetime), Potential
+    contracts, Active bots, Money spent (active bets only), Potential
     earnings, Week change %. All values are always-current — the Home
-    tab has no period filter.
+    tab has no period filter, and every dollar/contract card mirrors
+    a column total in the Active bets table directly below.
     """
     active_bets = rollup.get("active_bets", 0)
     active_contracts = rollup.get("active_contracts", 0)
     active_bots = rollup.get("active_bots", 0)
-    money_spent = rollup.get("period_money_spent_cents", 0)
+    money_spent = rollup.get("active_money_spent_cents", 0)
     potential = rollup.get("potential_gain_cents", 0)
     week_text, week_cls = _week_change_pct(rollup)
     out.append("<div class='row'>")
@@ -4242,21 +4247,22 @@ def _render_home_summary_cards(out: List[str], rollup: dict) -> None:
                f"<div class='value' id='card-active-contracts'>"
                f"{active_contracts}</div></div>")
     out.append(f"<div class='card'><div class='label' "
-               f"title='Bots that have data and are currently enabled "
-               f"(toggle on).'>"
+               f"title='Distinct bots that have at least one bet in "
+               f"the Active bets table below.'>"
                f"Active bots</div>"
                f"<div class='value' id='card-active-bots'>"
                f"{active_bots}</div></div>")
     out.append(f"<div class='card'><div class='label' "
-               f"title='Lifetime cost basis of every position opened "
-               f"(entry × contracts).'>"
+               f"title='Sum of the Entry cost column across the "
+               f"Active bets table (entry × contracts + Kalshi entry "
+               f"fee).'>"
                f"Money spent</div>"
                f"<div class='value' id='card-money-spent'>"
                f"{fmt_signed_cents(-money_spent)}</div></div>")
     out.append(f"<div class='card'><div class='label' "
-               f"title='Maximum payout if every currently-open "
-               f"position resolves on our side. (100 − entry) × "
-               f"contracts.'>"
+               f"title='Sum of the Potential gain column across the "
+               f"Active bets table ((100 − entry) × contracts − "
+               f"entry fee).'>"
                f"Potential earnings</div>"
                f"<div class='value green' id='card-potential-earnings'>"
                f"+{fmt_signed_cents(potential).lstrip('+')}</div></div>")

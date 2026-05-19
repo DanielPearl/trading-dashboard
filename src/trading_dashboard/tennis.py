@@ -376,7 +376,13 @@ def closed_positions_for_rollup(sim_state_path: str | None,
 def summary_for_rollup(sim_state_path: str | None) -> Dict[str, Any]:
     """Tennis summary in the shape the cross-bot rollup expects.
     Cents conversion: tennis stake is dollars (1.0 = $1) → ×100 for cents.
+
+    Tennis convention: each paper bet is 1 contract face-value
+    (``active_bets_for_rollup`` returns contracts=1, entry in cents
+    from the market prob × 100). The active-bets totals mirror that
+    so the Home-tab summary cards agree with the rendered table.
     """
+    from .dashboard import kalshi_fee_cents
     s = load_sim_state(sim_state_path)
     stats = s.get("stats") or {}
     open_positions = s.get("open_positions") or []
@@ -390,12 +396,22 @@ def summary_for_rollup(sim_state_path: str | None) -> Dict[str, Any]:
         pnl = float(c.get("realized_pnl", 0))
         money_gained_cents += int(round((stake + pnl) * 100.0))
     realized_pnl_cents = money_gained_cents - money_spent_cents
-    potential_gain_cents = int(round(sum(
-        (1.0 - float(p.get("entry_market_prob", 0.5))) * float(p.get("stake", 0)) * 100.0
-        for p in open_positions
-    )))
+    active_contracts = 0
+    active_money_spent_cents = 0
+    potential_gain_cents = 0
+    for p in open_positions:
+        entry = p.get("entry_market_prob")
+        if entry is None:
+            continue
+        entry_c = int(round(float(entry) * 100))
+        ctr = 1  # tennis paper bet face-value matches the table renderer
+        fee_c = kalshi_fee_cents(entry_c, ctr)
+        active_contracts += ctr
+        active_money_spent_cents += entry_c * ctr + fee_c
+        potential_gain_cents += (100 - entry_c) * ctr - fee_c
     return {
         "open_count": len(open_positions),
+        "active_contracts": active_contracts,
         "period_bets_made": int(stats.get("total_closed", 0)) + len(open_positions),
         "period_net_pnl_cents": realized_pnl_cents,
         "period_wins": int(stats.get("wins", 0)),
@@ -403,6 +419,7 @@ def summary_for_rollup(sim_state_path: str | None) -> Dict[str, Any]:
         "period_money_spent_cents": money_spent_cents,
         "period_money_gained_cents": money_gained_cents,
         "potential_gain_cents": potential_gain_cents,
+        "active_money_spent_cents": active_money_spent_cents,
         "total_bets": int(stats.get("total_closed", 0)) + len(open_positions),
         "realized_pnl_cents": realized_pnl_cents,
         "wins_lifetime": int(stats.get("wins", 0)),

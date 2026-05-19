@@ -104,9 +104,11 @@ def model_summary_for_card(metrics_path: str | None,
 
 def summary_for_rollup(sim_state_path: str | None) -> Dict[str, Any]:
     return {
-        "open_count": 0, "period_bets_made": 0, "period_net_pnl_cents": 0,
+        "open_count": 0, "active_contracts": 0,
+        "period_bets_made": 0, "period_net_pnl_cents": 0,
         "period_wins": 0, "period_losses": 0, "period_money_spent_cents": 0,
         "period_money_gained_cents": 0, "potential_gain_cents": 0,
+        "active_money_spent_cents": 0,
         "total_bets": 0, "realized_pnl_cents": 0,
         "wins_lifetime": 0, "losses_lifetime": 0,
     }
