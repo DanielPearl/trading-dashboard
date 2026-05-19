@@ -2451,11 +2451,13 @@ code { background: #161b22; padding: 1px 6px; border-radius: 3px; color: #c9d1d9
    text-decoration: underline; }
 .season-league-subtitle { color: #8b949e; font-size: 12px;
    margin-left: auto; text-align: right; }
-/* Two columns at desktop widths, collapses to a single column when
-   narrow. Matches the .card / .section visual language so it sits
-   naturally next to the Home tab's bot-card grid. */
+/* Fixed-width grid slots — uses ``auto-fill`` (not auto-fit) so a
+   league with a single card doesn't blow that card up to full
+   width. Cards stay the same size across every league so the page
+   reads as one uniform grid. */
 .season-grid { display: grid; gap: 14px;
-   grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); }
+   grid-template-columns: repeat(auto-fill, minmax(280px, 320px));
+   justify-content: start; }
 .season-card { background: #1d232c; border: 1px solid #30363d;
    border-radius: 8px; padding: 14px 16px;
    box-shadow: 0 1px 2px rgba(0,0,0,0.35); display: flex;
