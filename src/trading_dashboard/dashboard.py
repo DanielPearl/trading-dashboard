@@ -4938,13 +4938,15 @@ def _render_bot_cards(out: List[str], rollup: dict,
                 brier_str = f"{float(brier_val):.3f}" if brier_val is not None else "—"
             except (TypeError, ValueError):
                 brier_str = "—"
-            # Sample size: the count of examples the headline metrics
-            # were measured on. Tennis-style bots expose the test-set
-            # size as ``training_rows_test``; sqlite bots have
-            # ``training_pairs_count`` from the training_pairs table.
+            # Sample size: count of observations the headline metrics
+            # were measured on. Tennis-style bots persist this as
+            # ``training_rows_test`` in metrics.json. Sqlite bots
+            # don't store a training/test sample size on their
+            # model_snapshots row, so the cell stays "—" rather than
+            # falling back to training_pairs_count (which is the
+            # closed-bets feedback pool — a different concept and
+            # misleading next to training-time metrics).
             sample_n = m.get("training_rows_test")
-            if sample_n is None:
-                sample_n = m.get("training_pairs_count")
             try:
                 sample_str = f"{int(sample_n):,}" if sample_n else "—"
             except (TypeError, ValueError):
@@ -4958,7 +4960,7 @@ def _render_bot_cards(out: List[str], rollup: dict,
                         f"<dt>Features</dt><dd>{features}</dd>")
             out.append(f"<dt title='Brier score — mean squared error of probability predictions; 0 is perfect, 0.25 is a coin flip. Lower is better.'>Brier</dt>"
                         f"<dd>{brier_str}</dd>"
-                        f"<dt title='Number of observations the headline metrics were measured on (holdout test set for sport bots, training pairs for the rest).'>Sample size</dt>"
+                        f"<dt title='Holdout test-set size — observations the headline metrics were measured on.'>Sample size</dt>"
                         f"<dd>{sample_str}</dd>")
             out.append(f"<dt>Actual win %</dt><dd class='{a_cls}'>{a_str}</dd>"
                         f"<dt>Gain / loss</dt><dd class='{gl_cls}'>{gl_str}</dd>")
