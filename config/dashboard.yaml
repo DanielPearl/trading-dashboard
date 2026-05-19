@@ -173,14 +173,25 @@ bots:
     metrics_path: /root/table-tennis-forecast/data/processed/artifacts/metrics.json
     coefficients_path: /root/table-tennis-forecast/data/processed/artifacts/model_coefficients.json
     sim_state_path: /root/table-tennis-forecast/data/outputs/sim_state.json
-    # TT Elite Series Men is the only league Kalshi trades on
-    # KXTABLETENNIS — a Polish men's league that runs essentially
-    # year-round. Calendar-year window keeps the card on the page
-    # all season; refresh in January.
+    # Kalshi table-tennis leagues the bot polls:
+    #   • KXTABLETENNIS    → TT Elite Series Men (Polish men's
+    #     league, year-round).
+    #   • KXITTFMENMATCH   → ITTF World Team Championships Men
+    #     (biennial; 2026 ended Apr 29 in London, next 2028).
+    #   • KXITTFWOMENMATCH → ITTF World Team Championships Women
+    #     (same biennial cadence).
+    # ITTF dates for 2028 are placeholders — refresh once the ITTF
+    # publishes the official calendar.
     seasons:
       - name: "TT Elite Series Men 2026"
         start: "2026-01-01T00:00:00Z"
         end:   "2026-12-31T23:59:59Z"
+      - name: "ITTF World Team Championships Men 2028"
+        start: "2028-04-24T00:00:00Z"
+        end:   "2028-05-01T23:59:59Z"
+      - name: "ITTF World Team Championships Women 2028"
+        start: "2028-04-24T00:00:00Z"
+        end:   "2028-05-01T23:59:59Z"
 
   - key: billboard
     name: Billboard Hot 100
