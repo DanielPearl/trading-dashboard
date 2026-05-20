@@ -195,11 +195,45 @@ def build_standard_watchlist_rows(
         p_a = r.get("live_prob_a")
         if p_a is None:
             p_a = r.get("pre_match_prob_a")
+        # Decide which player goes on the "YES" / top side of the row.
+        # The standard sport-bot renderer treats YES as the favoured /
+        # action side — top of every stacked cell (My %, Kalshi %,
+        # Edge, EV) and the bold player name in the Side cell. For
+        # tennis, both players have their own YES market (separate
+        # Kalshi tickers), and player A is just alphabetical first —
+        # not necessarily the favoured side. If we leave the mapping
+        # unconditional, rows where player B has the edge render with
+        # player A as the bold "Side" name but the bot is actually
+        # betting on B (Title cell + Verdict reflect this), inverting
+        # the visual. Flip every side-paired field so YES always tracks
+        # the favoured side.
+        b_favoured = (p_a is not None and float(p_a) < 0.5)
+        if b_favoured:
+            top_ask = r.get("yes_ask_cents_b")
+            bot_ask = r.get("yes_ask_cents_a")
+            top_prob = (1.0 - float(p_a)) if p_a is not None else None
+            top_raw = ((1.0 - float(r.get("pre_match_prob_a")))
+                       if r.get("pre_match_prob_a") is not None else None)
+            top_label = r.get("player_b")
+            bot_label = r.get("player_a")
+            top_title = r.get("title_b") or r.get("title") or ""
+        else:
+            top_ask = r.get("yes_ask_cents_a")
+            bot_ask = r.get("yes_ask_cents_b")
+            top_prob = p_a
+            top_raw = r.get("pre_match_prob_a")
+            top_label = r.get("player_a")
+            bot_label = r.get("player_b")
+            top_title = r.get("title_a") or r.get("title") or ""
         buy_eligible = bool(r.get("buy_eligible"))
         buy_side = (r.get("buy_side") or "").upper()
-        if buy_eligible and buy_side == "A":
+        # ``BUY_YES`` = act on the favoured (top-of-row) side. Whether
+        # that's PLAYER_A or PLAYER_B in the underlying row is now
+        # encoded by the flip above.
+        if buy_eligible and ((buy_side == "A" and not b_favoured)
+                              or (buy_side == "B" and b_favoured)):
             verdict = "BUY_YES"
-        elif buy_eligible and buy_side == "B":
+        elif buy_eligible:
             verdict = "BUY_NO"
         else:
             verdict = "SKIP"
@@ -213,22 +247,19 @@ def build_standard_watchlist_rows(
             "direction": "yes",
             "strike_low": None,
             "strike_high": None,
-            "yes_ask_cents": r.get("yes_ask_cents_a"),
-            "no_ask_cents": r.get("yes_ask_cents_b"),
+            "yes_ask_cents": top_ask,
+            "no_ask_cents": bot_ask,
             "spread_cents": r.get("spread_cents"),
             "volume": r.get("volume"),
             "open_interest": oi,
-            "model_prob_yes": p_a,
-            "raw_model_prob_yes": r.get("pre_match_prob_a"),
+            "model_prob_yes": top_prob,
+            "raw_model_prob_yes": top_raw,
             "bot_verdict": verdict,
             "rejection_reason": rej_reason,
-            "title": r.get("title") or r.get("title_a") or "",
+            "title": top_title,
             "minutes_to_close": None,
-            # Pre-formatted player names so the standard sport-row
-            # renderer surfaces "Brancaccio / Zink" instead of trying
-            # to parse an NBA-style tricode out of the ticker.
-            "_yes_label": r.get("player_a"),
-            "_no_label": r.get("player_b"),
+            "_yes_label": top_label,
+            "_no_label": bot_label,
         })
     return out
 
