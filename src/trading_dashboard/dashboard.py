@@ -4961,18 +4961,19 @@ def _render_bot_cards(out: List[str], rollup: dict,
                 brier_str = f"{float(brier_val):.3f}" if brier_val is not None else "—"
             except (TypeError, ValueError):
                 brier_str = "—"
-            # Sample size: count of observations the headline metrics
-            # were measured on. Both code paths now persist this under
-            # ``rows_test`` — tennis-style adapters pull it from
-            # metrics.json; sqlite bots ALTER it onto model_snapshots
-            # and fetch_latest_model returns it via dict(row). The
-            # cell reads "—" only when the bot hasn't been retrained
-            # since the schema migration.
-            sample_n = m.get("rows_test")
-            try:
-                sample_str = f"{int(sample_n):,}" if sample_n else "—"
-            except (TypeError, ValueError):
-                sample_str = "—"
+            # Sample sizes: training-set rows the model fit on, and the
+            # held-out test rows the headline metrics were measured on.
+            # Both come from model_snapshots (sqlite bots) or metrics.json
+            # (tennis-style adapters via fetch_latest_model). Cell reads
+            # "—" when a bot hasn't been retrained since the schema added
+            # the column.
+            def _fmt_n(v):
+                try:
+                    return f"{int(v):,}" if v else "—"
+                except (TypeError, ValueError):
+                    return "—"
+            train_str = _fmt_n(m.get("rows_train"))
+            test_str = _fmt_n(m.get("rows_test"))
             out.append("<dl>")
             out.append(f"<dt>Accuracy</dt><dd>{_fmt_pct(m.get('classifier_accuracy'), 1)}</dd>"
                         f"<dt>F1</dt><dd>{_fmt_pct(m.get('training_f1'))}</dd>")
@@ -4982,10 +4983,12 @@ def _render_bot_cards(out: List[str], rollup: dict,
                         f"<dt>Features</dt><dd>{features}</dd>")
             out.append(f"<dt title='Brier score — mean squared error of probability predictions; 0 is perfect, 0.25 is a coin flip. Lower is better.'>Brier</dt>"
                         f"<dd>{brier_str}</dd>"
-                        f"<dt title='Holdout test-set size — observations the headline metrics were measured on.'>Sample size</dt>"
-                        f"<dd>{sample_str}</dd>")
-            out.append(f"<dt>Actual win %</dt><dd class='{a_cls}'>{a_str}</dd>"
-                        f"<dt>Gain / loss</dt><dd class='{gl_cls}'>{gl_str}</dd>")
+                        f"<dt title='Training-set size — number of historical observations the model fit on. More rows = more market regimes covered.'>Train rows</dt>"
+                        f"<dd>{train_str}</dd>")
+            out.append(f"<dt title='Held-out test-set size — observations the headline metrics were measured on.'>Test rows</dt>"
+                        f"<dd>{test_str}</dd>"
+                        f"<dt>Actual win %</dt><dd class='{a_cls}'>{a_str}</dd>")
+            out.append(f"<dt>Gain / loss</dt><dd class='{gl_cls}'>{gl_str}</dd>")
             out.append("</dl>")
 
         # Footer hints at the click affordance — same idiom as the
@@ -9402,6 +9405,21 @@ def _render_models_panel(out: List[str], bot: dict, model: dict | None,
         out.append("<div class='card'><div class='label'>Model</div>"
                    "<div class='value'>No snapshot yet</div></div>")
     else:
+        def _int_str(v: object) -> str:
+            if v is None:
+                return "—"
+            try:
+                return f"{int(v):,}"
+            except (TypeError, ValueError):
+                return "—"
+
+        def _short_date(v: object) -> str:
+            if not v:
+                return "—"
+            s = str(v)
+            # captured_at is an ISO8601 string like "2026-05-20T14:22:34..."
+            return s[:10] if len(s) >= 10 else s
+
         metric_cards = [
             ("Accuracy",
              "Held-out classifier accuracy on the trainer's test set.",
@@ -9423,6 +9441,16 @@ def _render_models_panel(out: List[str], bot: dict, model: dict | None,
              "Number of input features the model uses.",
              (str(int(model.get("feature_count")))
               if model.get("feature_count") is not None else "—")),
+            ("Train rows",
+             "Number of historical observations the model trained on. "
+             "More rows = the model has seen more market regimes.",
+             _int_str(model.get("rows_train"))),
+            ("Test rows",
+             "Held-out test rows the metrics above are computed on.",
+             _int_str(model.get("rows_test"))),
+            ("Last trained",
+             "Date the current model snapshot was captured.",
+             _short_date(model.get("captured_at"))),
         ]
         for label, title, value in metric_cards:
             out.append(
