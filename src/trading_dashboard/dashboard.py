@@ -508,6 +508,12 @@ def fetch_bet_history(db_path: str, limit: int = 100) -> List[dict]:
                 # tab's Model-p cell is populated regardless of which
                 # schema the bot ships with.
                 "decision_json",
+                # Set to N > 1 by the same-ticker dedupe pass when
+                # multiple flap-trades on the same (ticker, side) were
+                # collapsed into this row. The History renderer surfaces
+                # a "×N" badge so the user can tell merged rows apart.
+                "merged_trade_count",
+                "merged_position_ids",
             ) if c_ in cols]
             select_cols = base_cols + (", " + ", ".join(extras) if extras else "")
             rows = c.execute(
@@ -2650,6 +2656,15 @@ td.num.cell-stack .side-no  { color: #f85149 !important; }  /* red   */
     font-size: 9px; font-weight: 700; text-transform: uppercase;
     letter-spacing: 0.04em; line-height: 1.5;
     vertical-align: 2px; }
+/* "×N" badge on history rows where the same ticker was traded
+   multiple times (flap-trades collapsed into one row). Small,
+   muted-gray so it doesn't compete with WON/LOST coloring. */
+.merged-badge { display: inline-block; margin-left: 6px;
+    padding: 0 5px; border-radius: 3px;
+    background: rgba(139, 148, 158, 0.18);
+    color: #8b949e; border: 1px solid rgba(139, 148, 158, 0.3);
+    font-size: 9px; font-weight: 700; line-height: 1.4;
+    vertical-align: 1px; cursor: help; }
 /* Auto-pause notifications panel — surfaced above the bot-card
    grid on Home when the regime monitor has flipped a bot off in the
    recent past. Silent (no DOM) when the audit log is empty so the
@@ -5845,10 +5860,27 @@ def _render_bet_history_block(out: List[str], history: List[dict],
                          f"{html.escape(bot_name)}</a></td>")
         else:
             bot_cell = f"<td>{html.escape(bot_name)}</td>"
+        # ``merged_trade_count > 1`` flags a history row that collapses
+        # multiple flap-trades (open + close + re-open on the same
+        # match/strike) into one. Surface a small "×N" badge next to
+        # the ticker so the user can tell a merged row from a single
+        # trade — and the P&L column makes sense as the *net* across
+        # those N trades.
+        merged_n = int(b.get("merged_trade_count") or 1)
+        if merged_n > 1:
+            merged_badge = (
+                f"<span class='merged-badge' "
+                f"title='Net P&L across {merged_n} trades on this same "
+                f"ticker (bot re-opened the position after each close). "
+                f"Click for the raw trade IDs.'>×{merged_n}</span>"
+            )
+        else:
+            merged_badge = ""
         return (f"<tr><td>{html.escape(opened)}</td>"
                 f"<td>{html.escape(closed)}</td>"
                 f"{bot_cell}"
-                f"<td class='mono'>{ticker_cell_html(b.get('ticker'))}</td>"
+                f"<td class='mono'>{ticker_cell_html(b.get('ticker'))}"
+                f"{merged_badge}</td>"
                 f"<td>{html.escape(title_text)}</td>"
                 f"<td><span class='badge {badge_cls}'>{side}</span></td>"
                 f"<td class='num'>{mp_str}</td>"

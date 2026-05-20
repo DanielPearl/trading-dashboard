@@ -421,6 +421,10 @@ def closed_positions_for_rollup(sim_state_path: str | None,
             "kalshi_yes_prob_at_entry": entry,
             "expected_ev_at_entry": expected_ev,
             "break_even_probability": entry,
+            # > 1 when multiple flap-trades on this match were
+            # collapsed into this row by the dedupe pass.
+            "merged_trade_count": int(c.get("merged_trade_count", 1) or 1),
+            "merged_position_ids": c.get("merged_position_ids"),
         })
     return out
 
