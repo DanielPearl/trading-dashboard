@@ -225,6 +225,13 @@ def build_standard_watchlist_rows(
             top_label = r.get("player_a")
             bot_label = r.get("player_b")
             top_title = r.get("title_a") or r.get("title") or ""
+        # The dashboard's Title cell should match what Kalshi shows on
+        # the event page the user lands on when they click the ticker
+        # (e.g. "Choinski vs Herbert", not "Will Herbert win the
+        # Choinski vs Herbert: Qual R2 match?"). Prefer the bot's
+        # stored event_title when present; fall back to the per-side
+        # market title for older rows that haven't been re-exported.
+        display_title = r.get("event_title") or top_title
         buy_eligible = bool(r.get("buy_eligible"))
         buy_side = (r.get("buy_side") or "").upper()
         # ``BUY_YES`` = act on the favoured (top-of-row) side. Whether
@@ -256,7 +263,7 @@ def build_standard_watchlist_rows(
             "raw_model_prob_yes": top_raw,
             "bot_verdict": verdict,
             "rejection_reason": rej_reason,
-            "title": top_title,
+            "title": display_title,
             "minutes_to_close": None,
             "_yes_label": top_label,
             "_no_label": bot_label,
@@ -332,12 +339,12 @@ def active_bets_for_rollup(sim_state_path: str | None,
             "ticker": mid,
             "_match": f"{p.get('player_a','')} vs {p.get('player_b','')}",
             "_side_player": p.get("side_player", ""),
-            # Kalshi-published contract title for the side we're
-            # betting on. The shared active-bets renderer reads this
-            # via ``_title`` (or the standard ``title`` field, which
-            # we also fill in for symmetry with the Kalshi-bot path).
-            "_title": p.get("title") or "",
-            "title": p.get("title") or "",
+            # Prefer the Kalshi event-page heading so the active-bets
+            # Title column matches what the user sees on click-through.
+            # Falls back to the per-side market question for pre-fix
+            # rows that don't have event_title stored.
+            "_title": p.get("event_title") or p.get("title") or "",
+            "title": p.get("event_title") or p.get("title") or "",
             "_tournament": p.get("tournament", ""),
             "_surface": p.get("surface", ""),
             "side": "YES",  # tennis always buys the favoured side
@@ -439,7 +446,10 @@ def closed_positions_for_rollup(sim_state_path: str | None,
             expected_ev = None
         out.append({
             "ticker": c.get("match_id"),
-            "_title": c.get("title", ""),
+            # Prefer the Kalshi event-page heading so the History tab
+            # title matches what the user sees on click-through. Falls
+            # back to the per-side market question for pre-fix rows.
+            "_title": c.get("event_title") or c.get("title", ""),
             "side": "YES",
             "entry_price_cents": entry_cents,
             "exit_price_cents": exit_cents,
