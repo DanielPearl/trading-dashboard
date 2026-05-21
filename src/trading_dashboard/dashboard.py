@@ -10128,6 +10128,20 @@ def _render_watchlist(out: List[str], watchlist: List[dict],
                 ev_mag = 0.0
             return (actionable, ev_mag)
         watchlist = sorted(watchlist, key=_sport_sort_key)
+    elif is_billboard_bot:
+        # Each event has ~40 rows, almost all SKIPs. Surface only the
+        # rows the bot would actually buy, ordered best-EV first, and
+        # cap at 10 so the table stays scannable.
+        def _billboard_sort_key(r: dict) -> Tuple[int, float]:
+            v = r.get("bot_verdict") or "SKIP"
+            actionable = 0 if v in ("BUY_YES", "BUY_NO") else 1
+            ev = r.get("_best_ev")
+            try:
+                ev_neg = -float(ev) if ev is not None else 0.0
+            except (TypeError, ValueError):
+                ev_neg = 0.0
+            return (actionable, ev_neg)
+        watchlist = sorted(watchlist, key=_billboard_sort_key)[:10]
     else:
         watchlist = sorted(
             watchlist,
@@ -10156,12 +10170,15 @@ def _render_watchlist(out: List[str], watchlist: List[dict],
     elif is_billboard_bot:
         # Billboard markets all share the same long question stem ("Will
         # X be Top 10..."), so splitting into Artist + Song makes the
-        # table scannable.
+        # table scannable. The full Kalshi-published title sits in a
+        # third column so the chart week is still visible per row.
         head_cols = (
             "<th title='Recording artist.'>Artist</th>"
             "<th title='Song title (the contract resolves YES if this "
             "song is top 10 on the Billboard Hot 100 for the listed "
             "chart week).'>Song</th>"
+            "<th title='Kalshi-published contract title — the YES "
+            "question shown on the market page.'>Title</th>"
         )
     else:
         head_cols = (
@@ -10484,6 +10501,7 @@ def _render_watchlist(out: List[str], watchlist: List[dict],
             middle_cells = (
                 f"<td>{html.escape(str(artist_text))}</td>"
                 f"<td>{html.escape(str(song_text))}</td>"
+                f"<td>{html.escape(title_text)}</td>"
             )
         else:
             middle_cells = (

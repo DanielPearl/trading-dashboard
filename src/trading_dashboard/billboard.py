@@ -188,10 +188,6 @@ def build_standard_watchlist_rows(payload: Dict[str, Any]
             "rejection_reason": (", ".join(str(b) for b in blockers)
                                   if blockers else ""),
             "minutes_to_close": r.get("minutes_to_close"),
-            # Lets the renderer's OI filter pass for billboard rows
-            # whose Kalshi-side OI is null (illiquid early in the
-            # chart week — the markets are still tradeable).
-            "_skip_oi_filter": True,
         })
     return out
 
