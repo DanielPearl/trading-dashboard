@@ -530,12 +530,11 @@ def fetch_bet_history(db_path: str, limit: int = 100) -> List[dict]:
     except (sqlite3.OperationalError, sqlite3.DatabaseError):
         return []
     out = [dict(r) for r in rows]
-    # Backfill model_yes_prob_at_entry / kalshi_yes_prob_at_entry from
-    # decision_json for bots that don't have dedicated columns (the
-    # natural-gas bot's older schema is the case in production).
+    # Backfill model_yes_prob_at_entry / kalshi_yes_prob_at_entry /
+    # expected_ev_at_entry from decision_json for bots that don't have
+    # dedicated columns (the natural-gas bot's older schema is the case
+    # in production).
     for h in out:
-        if h.get("model_yes_prob_at_entry") is not None:
-            continue
         raw = h.get("decision_json")
         if not raw:
             continue
@@ -555,6 +554,26 @@ def fetch_bet_history(db_path: str, limit: int = 100) -> List[dict]:
         if kp is not None and h.get("kalshi_yes_prob_at_entry") is None:
             try:
                 h["kalshi_yes_prob_at_entry"] = float(kp)
+            except (TypeError, ValueError):
+                pass
+        # Entry EV: derive from model_prob + side + ask + spread when the
+        # bot's schema doesn't store it directly. Same formula as the
+        # SDK's ev_for_side: p_side - ask_dollars - half_spread.
+        if h.get("expected_ev_at_entry") is None and mp is not None:
+            try:
+                model_p = float(mp)
+                side = (h.get("side") or "").upper()
+                ya = payload.get("yes_ask_cents")
+                na = payload.get("no_ask_cents")
+                spr = payload.get("spread_cents") or 0
+                half_spread = (float(spr) / 2.0) / 100.0
+                ev = None
+                if side == "YES" and ya is not None:
+                    ev = model_p - (float(ya) / 100.0) - half_spread
+                elif side == "NO" and na is not None:
+                    ev = (1.0 - model_p) - (float(na) / 100.0) - half_spread
+                if ev is not None:
+                    h["expected_ev_at_entry"] = ev
             except (TypeError, ValueError):
                 pass
     return out
