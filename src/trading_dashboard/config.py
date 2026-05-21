@@ -102,6 +102,11 @@ class BotEntry:
     # this to fetch live candlesticks straight from Kalshi for the
     # watchlist hero chart, independent of whether the bot itself is up.
     series_ticker: str | None = None
+    # Human-readable name of the upstream data source surfaced on each
+    # bot's model card and detail page (e.g. "FRED ICSA", "Billboard
+    # Hot 100 weekly chart"). Falls through from config; render code
+    # reads it via ``bot.get("data_source")``.
+    data_source: str | None = None
     display: DisplayCfg = field(default_factory=DisplayCfg)
     # Zero or more season / tournament windows. Empty list → bot is
     # omitted from the Seasons tab. Sport bots typically list multiple
