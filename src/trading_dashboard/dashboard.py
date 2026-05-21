@@ -2214,7 +2214,13 @@ def _match_text_from_ticker(ticker: str | None) -> str:
     """Parse the matchup string out of a Kalshi NBA ticker.
 
     Format: ``KXNBAGAME-{YY}{MMM}{DD}{AWAY}{HOME}-{TEAM}``
-    Example: ``KXNBAGAME-26MAY08SASMIN-MIN`` → ``"MIN vs SAS"``.
+    Example: ``KXNBAGAME-26MAY08SASMIN-MIN`` → ``"MIN vs SAS (May 8)"``.
+
+    The game date is appended so playoff series with multiple games
+    against the same opponent (e.g. CLE vs NYK Games 2 + 3) don't
+    collide visually between active bets and history — two rows
+    rendered identically as just "NYK vs CLE" can otherwise look
+    like the same ticker appearing in both places.
 
     Returns ``""`` when the ticker doesn't fit the NBA pattern (gas /
     CPI / jobless tickers); the caller renders a ``—`` placeholder.
@@ -2233,7 +2239,13 @@ def _match_text_from_ticker(ticker: str | None) -> str:
     home_tri = body[10:13]
     if not (away_tri.isalpha() and home_tri.isalpha()):
         return ""
-    return f"{home_tri.upper()} vs {away_tri.upper()}"
+    mmm = body[2:5]
+    dd = body[5:7]
+    month_pretty = mmm.capitalize() if mmm.isalpha() else mmm
+    day_pretty = dd.lstrip("0") or dd
+    date_suffix = (f" ({month_pretty} {day_pretty})"
+                    if month_pretty and day_pretty.isdigit() else "")
+    return f"{home_tri.upper()} vs {away_tri.upper()}{date_suffix}"
 
 
 def _side_tricode_from_ticker(ticker: str | None, side: str) -> str:
