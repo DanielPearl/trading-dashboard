@@ -2836,9 +2836,11 @@ td.num.cell-stack .side-no  { color: #f85149 !important; }  /* red   */
 }
 .bot-card-foot .arrow { color: #8b949e; }
 /* Watchlist row that fails one or more validations (horizon mismatch,
-   wide spread, edge<cost, etc.). Rendered visible but de-emphasized. */
+   wide spread, edge<cost, etc.). Rendered visible but de-emphasized.
+   EV used to escape this rule via a nth-last-child(2) exception —
+   per user request the EV column now dims with the rest of the row
+   so only the held positions pop in full brightness. */
 tr.row-suspect td { opacity: 0.55; }
-tr.row-suspect td:nth-last-child(2) { opacity: 0.85; }  /* keep gap legible */
 /* Watchlist row matching the strike the bot currently holds an open
    position on. Every cell reads in pure white so the held rows pop
    off the surrounding dimmed-grey ones at a glance. Subtle left
