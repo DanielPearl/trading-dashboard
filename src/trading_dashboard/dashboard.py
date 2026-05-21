@@ -10175,17 +10175,17 @@ def _render_watchlist(out: List[str], watchlist: List[dict],
             "<th title='Who the bot is betting will win.'>Side</th>"
         )
     elif is_billboard_bot:
-        # Billboard markets all share the same long question stem ("Will
-        # X be Top 10..."), so splitting into Artist + Song makes the
-        # table scannable. The full Kalshi-published title sits in a
-        # third column so the chart week is still visible per row.
+        # Billboard layout: Title | Song | Artist. Title carries the
+        # full Kalshi-published question (so the chart week is visible
+        # per row), Song + Artist break out the two pieces of identity
+        # that the long Title stem buries.
         head_cols = (
-            "<th title='Recording artist.'>Artist</th>"
+            "<th title='Kalshi-published contract title — the YES "
+            "question shown on the market page.'>Title</th>"
             "<th title='Song title (the contract resolves YES if this "
             "song is top 10 on the Billboard Hot 100 for the listed "
             "chart week).'>Song</th>"
-            "<th title='Kalshi-published contract title — the YES "
-            "question shown on the market page.'>Title</th>"
+            "<th title='Recording artist.'>Artist</th>"
         )
     else:
         head_cols = (
@@ -10506,9 +10506,9 @@ def _render_watchlist(out: List[str], watchlist: List[dict],
             artist_text = v.get("_artist") or ""
             song_text = v.get("_song") or v.get("direction") or ""
             middle_cells = (
-                f"<td>{html.escape(str(artist_text))}</td>"
-                f"<td>{html.escape(str(song_text))}</td>"
                 f"<td>{html.escape(title_text)}</td>"
+                f"<td>{html.escape(str(song_text))}</td>"
+                f"<td>{html.escape(str(artist_text))}</td>"
             )
         else:
             middle_cells = (
