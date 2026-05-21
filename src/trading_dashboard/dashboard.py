@@ -2847,11 +2847,18 @@ tr.row-suspect td { opacity: 0.55; }
    rail + bold ticker stay as the secondary cue; the Verdict
    column's HOLDING YES / HOLDING NO badge conveys the bet
    direction. Wins specificity over row-suspect so a held position
-   is never dimmed. */
-tr.row-bought td { opacity: 1 !important; color: #ffffff !important; }
+   is never dimmed. The side-yes / side-no overrides below win over
+   the green/red !important colours those classes carry so a held
+   row reads white edge-to-edge — green/red would re-flag YES vs
+   NO that the HOLDING badge already conveys. */
+tr.row-bought td { opacity: 1 !important; color: #ffffff !important;
+    font-weight: 600 !important; }
 tr.row-bought td:first-child { border-left: 3px solid #8b949e; }
 tr.row-bought td.mono a.ticker-link,
-tr.row-bought td.mono { color: #ffffff; font-weight: 600; }
+tr.row-bought td.mono { color: #ffffff; }
+tr.row-bought td.num.cell-stack .side-yes,
+tr.row-bought td.num.cell-stack .side-no {
+    color: #ffffff !important; }
 /* Watchlist table: fixed scrolling viewport so the strike list never
    pushes the rest of the page off-screen. Sticky header keeps the
    column labels in view as the user scrolls. */
