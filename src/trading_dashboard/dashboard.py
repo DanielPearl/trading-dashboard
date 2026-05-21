@@ -959,8 +959,11 @@ def fetch_global_summary(bots: List[dict],
             from . import survivor as _survivor
             s = _survivor.summary_for_rollup(b.get("sim_state_path"))
         elif b.get("dashboard_type") == "billboard":
-            from . import billboard as _billboard
-            s = _billboard.summary_for_rollup(b.get("sim_state_path"))
+            # Billboard now writes a real sim.db (standard schema) so
+            # the same summary reader the gas / claims bots use works
+            # here too. The legacy `_billboard.summary_for_rollup`
+            # always returned zeros (advisory-only era).
+            s = fetch_summary(b["db_path"], period_days=period_days)
         elif b.get("dashboard_type") and b["dashboard_type"] != "standard":
             continue
         else:
@@ -1069,8 +1072,12 @@ def _build_global_active_bets(bots: List[dict]) -> List[dict]:
             rows = _tennis.active_bets_for_rollup(
                 b.get("sim_state_path"),
                 watchlist_path=b.get("watchlist_json_path"))
-        elif dt in ("survivor", "billboard"):
-            continue  # advisory bots — no positions
+        elif dt == "survivor":
+            continue  # advisory bot — no positions
+        elif dt == "billboard":
+            # Live trader writes the standard sim.db, so the shared
+            # active-bets reader works.
+            rows = fetch_active_bets_with_marks(b["db_path"])
         elif dt != "standard":
             continue
         else:
@@ -10877,8 +10884,13 @@ class Handler(BaseHTTPRequestHandler):
                         bot.get("watchlist_json_path"))
                     watchlist = _billboard.build_standard_watchlist_rows(
                         payload_wl)
-                    bot_active_bets = []
-                    latest_active = None
+                    # Live trader writes a standard sim.db; share the
+                    # readers used by gas/claims/CPI so active bets +
+                    # latest open render the same way.
+                    bot_active_bets = fetch_active_bets_with_marks(db_path)
+                    for ab in bot_active_bets:
+                        ab.setdefault("_display", bot.get("display") or {})
+                    latest_active = fetch_latest_open_position(db_path)
                     model = None
                 else:
                     # Bot-scoped fetches for standard sim.db bots.
@@ -11085,13 +11097,30 @@ class Handler(BaseHTTPRequestHandler):
                                 except Exception:  # noqa: BLE001
                                     log.exception("in_game.predict in enrich failed")
                                 global_active_bets.append(ab)
+                        elif b.get("dashboard_type") == "billboard":
+                            # Billboard writes a real sim.db — same
+                            # readers as the standard bots below.
+                            for ab in fetch_active_bets_with_marks(b["db_path"]):
+                                ab["_bot_name"] = b["name"]
+                                ab["_bot_key"] = b["key"]
+                                ab["_dashboard_type"] = "billboard"
+                                ab["_display"] = b.get("display") or {}
+                                global_active_bets.append(ab)
                         # Closed paper bets into the cross-bot history
                         # so hedge exits + natural settles surface on
                         # the History tab. Same row shape the standard
-                        # ``fetch_bet_history`` produces.
-                        for h in adapter.closed_positions_for_rollup(
-                            b.get("sim_state_path"), limit=50,
-                        ):
+                        # ``fetch_bet_history`` produces. Billboard
+                        # closed bets live in its sim.db (standard
+                        # schema); the legacy
+                        # ``_billboard.closed_positions_for_rollup``
+                        # stub always returned [].
+                        if b.get("dashboard_type") == "billboard":
+                            closed_iter = fetch_bet_history(b["db_path"], limit=50)
+                        else:
+                            closed_iter = adapter.closed_positions_for_rollup(
+                                b.get("sim_state_path"), limit=50,
+                            )
+                        for h in closed_iter:
                             h["_bot_name"] = b["name"]
                             h["_bot_key"] = b["key"]
                             h["_dashboard_type"] = b.get("dashboard_type") or "standard"
