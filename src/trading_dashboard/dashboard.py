@@ -28,7 +28,7 @@ import sqlite3
 import sys
 import time
 from contextlib import closing
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
@@ -5466,6 +5466,7 @@ def _render_seasons_panel(out: List[str], available_bots: List[dict]) -> None:
     flips between "Starts in …" and "Ends in …". Live leagues sort
     above upcoming ones."""
     now = datetime.now(timezone.utc)
+    one_year_out = now + timedelta(days=365)
 
     cards: List[tuple[dict, dict, datetime, datetime]] = []
     for bot in available_bots:
@@ -5477,6 +5478,8 @@ def _render_seasons_panel(out: List[str], available_bots: List[dict]) -> None:
             if end < now:
                 # Season already wrapped up; update the YAML to the
                 # next iteration to bring this league back to the tab.
+                continue
+            if start > one_year_out:
                 continue
             cards.append((bot, season, start, end))
 
