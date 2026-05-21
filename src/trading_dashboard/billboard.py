@@ -169,6 +169,12 @@ def build_standard_watchlist_rows(payload: Dict[str, Any]
             "ticker": r.get("ticker") or "",
             "title": r.get("title") or "",
             "direction": r.get("song") or r.get("album") or "",
+            # Watchlist renderer reads these to fill the billboard-only
+            # Artist + Song columns that replace the generic Question
+            # column. ``direction`` is left set so the question_str
+            # fallback (used elsewhere) still works.
+            "_artist": r.get("artist") or "",
+            "_song": r.get("song") or "",
             "strike_low": None,
             "strike_high": None,
             "yes_ask_cents": r.get("yes_ask_cents"),

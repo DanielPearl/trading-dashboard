@@ -10116,6 +10116,7 @@ def _render_watchlist(out: List[str], watchlist: List[dict],
     # standard renderer is replacing. Non-sport bots keep the strike
     # ascending sort that drives the natural ladder layout.
     is_sport_bot = current_bot in {"nba", "tennis", "table-tennis", "darts"}
+    is_billboard_bot = current_bot == "billboard"
     if is_sport_bot:
         def _sport_sort_key(r: dict) -> Tuple[int, float]:
             v = r.get("bot_verdict") or "SKIP"
@@ -10151,6 +10152,16 @@ def _render_watchlist(out: List[str], watchlist: List[dict],
             "<th title='Kalshi-published contract title — the "
             "YES question shown on the market page.'>Title</th>"
             "<th title='Who the bot is betting will win.'>Side</th>"
+        )
+    elif is_billboard_bot:
+        # Billboard markets all share the same long question stem ("Will
+        # X be Top 10..."), so splitting into Artist + Song makes the
+        # table scannable.
+        head_cols = (
+            "<th title='Recording artist.'>Artist</th>"
+            "<th title='Song title (the contract resolves YES if this "
+            "song is top 10 on the Billboard Hot 100 for the listed "
+            "chart week).'>Song</th>"
         )
     else:
         head_cols = (
@@ -10466,6 +10477,13 @@ def _render_watchlist(out: List[str], watchlist: List[dict],
             middle_cells = (
                 f"<td>{html.escape(title_text)}</td>"
                 f"{side_cell}"
+            )
+        elif is_billboard_bot:
+            artist_text = v.get("_artist") or ""
+            song_text = v.get("_song") or v.get("direction") or ""
+            middle_cells = (
+                f"<td>{html.escape(str(artist_text))}</td>"
+                f"<td>{html.escape(str(song_text))}</td>"
             )
         else:
             middle_cells = (
