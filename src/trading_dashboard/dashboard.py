@@ -4605,7 +4605,7 @@ def _render_summary_cards(out: List[str], rollup: dict,
                f"<div class='value green' id='card-money-gained{id_suffix}'>"
                f"+{fmt_signed_cents(money_gained).lstrip('+')}</div></div>")
     out.append(f"<div class='card'><div class='label'>"
-               f"Net gain / loss</div>"
+               f"P&amp;L</div>"
                f"<div class='value {pnl_cls}' id='card-net-pnl{id_suffix}'>"
                f"{fmt_signed_cents(net)}</div></div>")
     out.append(f"<div class='card'><div class='label' "
@@ -4953,14 +4953,6 @@ def _render_bot_cards(out: List[str], rollup: dict,
                 a_str = "—"
                 a_cls = "gray"
             features = int(m.get("feature_count") or 0)
-            # Brier: lower is better; only the tennis-style adapters
-            # populate this — sqlite bots' model_snapshots table doesn't
-            # carry Brier, so the cell renders "—" for them.
-            brier_val = m.get("training_brier")
-            try:
-                brier_str = f"{float(brier_val):.3f}" if brier_val is not None else "—"
-            except (TypeError, ValueError):
-                brier_str = "—"
             # Sample sizes: training-set rows the model fit on, and the
             # held-out test rows the headline metrics were measured on.
             # Both come from model_snapshots (sqlite bots) or metrics.json
@@ -4981,14 +4973,12 @@ def _render_bot_cards(out: List[str], rollup: dict,
                         f"<dt>ROC AUC</dt><dd>{_fmt_pct(m.get('training_roc_auc'))}</dd>")
             out.append(f"<dt>Recall</dt><dd>{_fmt_pct(m.get('training_recall'))}</dd>"
                         f"<dt>Features</dt><dd>{features}</dd>")
-            out.append(f"<dt title='Brier score — mean squared error of probability predictions; 0 is perfect, 0.25 is a coin flip. Lower is better.'>Brier</dt>"
-                        f"<dd>{brier_str}</dd>"
-                        f"<dt title='Training-set size — number of historical observations the model fit on. More rows = more market regimes covered.'>Train rows</dt>"
-                        f"<dd>{train_str}</dd>")
-            out.append(f"<dt title='Held-out test-set size — observations the headline metrics were measured on.'>Test rows</dt>"
-                        f"<dd>{test_str}</dd>"
-                        f"<dt>Actual win %</dt><dd class='{a_cls}'>{a_str}</dd>")
-            out.append(f"<dt>Gain / loss</dt><dd class='{gl_cls}'>{gl_str}</dd>")
+            out.append(f"<dt title='Training-set size — number of historical observations the model fit on. More rows = more market regimes covered.'>Train rows</dt>"
+                        f"<dd>{train_str}</dd>"
+                        f"<dt title='Held-out test-set size — observations the headline metrics were measured on.'>Test rows</dt>"
+                        f"<dd>{test_str}</dd>")
+            out.append(f"<dt>Actual win %</dt><dd class='{a_cls}'>{a_str}</dd>"
+                        f"<dt>P&amp;L</dt><dd class='{gl_cls}'>{gl_str}</dd>")
             out.append("</dl>")
 
         # Footer hints at the click affordance — same idiom as the
