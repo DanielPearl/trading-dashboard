@@ -190,7 +190,7 @@ bots:
     # series_ticker meta label distinguishes the cards on the home grid.
     dashboard_type: tennis
     series_ticker: TABLETENNIS
-    data_source: "(disabled — no free real per-match data source)"
+    data_source: "ahartness/table-tennis-bet-analyzer (GitHub, TT Elite Series 2022-2025)"
     db_path: /root/table-tennis-forecast/data/outputs/watchlist.json
     decisions_path: /root/table-tennis-forecast/data/outputs/watchlist.json
     watchlist_json_path: /root/table-tennis-forecast/data/outputs/watchlist.json
