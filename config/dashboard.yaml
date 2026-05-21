@@ -16,6 +16,7 @@ bots:
     db_path: /root/gas-prices/data/sim.db
     decisions_path: /root/gas-prices/data/decisions.jsonl
     series_ticker: KXAAAGASW
+    data_source: "FRED EIA + AAA gas survey"
     display:
       underlying_label: Retail gas price
       underlying_unit: "$"
@@ -30,6 +31,7 @@ bots:
     db_path: /root/unemployment-claims/data/sim.db
     decisions_path: /root/unemployment-claims/data/decisions.jsonl
     series_ticker: KXJOBLESSCLAIMS
+    data_source: "FRED ICSA"
     display:
       underlying_label: Initial jobless claims
       underlying_unit: "K"
@@ -52,6 +54,7 @@ bots:
     db_path: /root/nba/data/sim.db
     decisions_path: /root/nba/data/decisions.jsonl
     series_ticker: KXNBAGAME
+    data_source: "ESPN box scores + NBA stats API"
     # Single league-level window — regular-season tip-off through
     # NBA Finals end. Update at the start of each season.
     seasons:
@@ -81,6 +84,7 @@ bots:
     # the watchlist anchor — see Consumer Price Index/config/config.yaml
     # for why we excluded it.
     series_ticker: KXCPICORE
+    data_source: "FRED CPILFESL + Cleveland Fed nowcast"
     display:
       underlying_label: Last realized Core CPI MoM
       underlying_unit: "pp"
@@ -99,6 +103,7 @@ bots:
     db_path: /root/peak-load/data/sim.db
     decisions_path: /root/peak-load/outputs/daily_signals.json
     series_ticker: KXNATGASD
+    data_source: "FRED Henry Hub spot"
     display:
       underlying_label: Henry Hub spot
       underlying_unit: "$"
@@ -116,6 +121,7 @@ bots:
     # generic "available" check has somewhere to look.
     dashboard_type: tennis
     series_ticker: BASELINEBREAK
+    data_source: "Jeff Sackmann tennis_atp + tennis_wta (GitHub)"
     db_path: /root/tennis-forecast/data/outputs/watchlist.json
     decisions_path: /root/tennis-forecast/data/outputs/watchlist.json
     watchlist_json_path: /root/tennis-forecast/data/outputs/watchlist.json
@@ -160,6 +166,7 @@ bots:
     # without a code change.
     dashboard_type: survivor
     series_ticker: KXSURVIVOR
+    data_source: "doehm/survivoR (GitHub)"
     db_path: /root/survivor-elimination/data/outputs/watchlist.json
     decisions_path: /root/survivor-elimination/data/outputs/watchlist.json
     watchlist_json_path: /root/survivor-elimination/data/outputs/watchlist.json
@@ -183,6 +190,7 @@ bots:
     # series_ticker meta label distinguishes the cards on the home grid.
     dashboard_type: tennis
     series_ticker: TABLETENNIS
+    data_source: "(disabled — no free real per-match data source)"
     db_path: /root/table-tennis-forecast/data/outputs/watchlist.json
     decisions_path: /root/table-tennis-forecast/data/outputs/watchlist.json
     watchlist_json_path: /root/table-tennis-forecast/data/outputs/watchlist.json
@@ -218,6 +226,7 @@ bots:
     # the next weekly event once today's settles.
     dashboard_type: billboard
     series_ticker: KXRANKLISTSONGTOP10
+    data_source: "Billboard Hot 100 weekly chart"
     db_path: /root/billboard-charts/data/outputs/watchlist.json
     decisions_path: /root/billboard-charts/data/outputs/watchlist.json
     watchlist_json_path: /root/billboard-charts/data/outputs/watchlist.json
@@ -235,6 +244,7 @@ bots:
     # (Premier League, Worlds, PDC tour) under that umbrella.
     dashboard_type: tennis
     series_ticker: KXDARTS
+    data_source: "wonderkiduk/darts_data (GitHub, PDC WC 2022)"
     db_path: /root/darts-forecast/data/outputs/watchlist.json
     decisions_path: /root/darts-forecast/data/outputs/watchlist.json
     watchlist_json_path: /root/darts-forecast/data/outputs/watchlist.json

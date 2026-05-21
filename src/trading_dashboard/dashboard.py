@@ -4979,6 +4979,16 @@ def _render_bot_cards(out: List[str], rollup: dict,
                         f"<dd>{test_str}</dd>")
             out.append(f"<dt>Actual win %</dt><dd class='{a_cls}'>{a_str}</dd>"
                         f"<dt>P&amp;L</dt><dd class='{gl_cls}'>{gl_str}</dd>")
+            # Data source — pulled from dashboard.yaml. Spans the full
+            # row width so long descriptions don't crowd a metric cell.
+            ds = b.get("data_source")
+            if ds:
+                out.append(
+                    f"<dt title='Where the model's training data comes "
+                    f"from. Real public source — never synthetic.'>Source</dt>"
+                    f"<dd style='grid-column:span 3;text-align:left;font-size:0.85em;color:var(--muted);'>"
+                    f"{html.escape(str(ds))}</dd>"
+                )
             out.append("</dl>")
 
         # Footer hints at the click affordance — same idiom as the
@@ -9448,6 +9458,18 @@ def _render_models_panel(out: List[str], bot: dict, model: dict | None,
                 f"title='{html.escape(title)}'>"
                 f"{html.escape(label)}</div>"
                 f"<div class='value'>{html.escape(value)}</div></div>"
+            )
+        # Data source banner — surfaces what training data feeds the
+        # model, pulled from dashboard.yaml. Spans the full card row.
+        ds = (bot or {}).get("data_source")
+        if ds:
+            out.append(
+                f"<div class='card' style='grid-column:1/-1;text-align:left;'>"
+                f"<div class='label' title='Where the model'"
+                f"&#39;s training data comes from. Real public source — "
+                f"never synthetic.'>Source</div>"
+                f"<div class='value' style='font-size:1em;'>"
+                f"{html.escape(str(ds))}</div></div>"
             )
     out.append("</div>")
 
