@@ -2842,23 +2842,17 @@ td.num.cell-stack .side-no  { color: #f85149 !important; }  /* red   */
    so only the held positions pop in full brightness. */
 tr.row-suspect td { opacity: 0.55; }
 /* Watchlist row matching the strike the bot currently holds an open
-   position on. Every cell reads in pure white so the held rows pop
-   off the surrounding dimmed-grey ones at a glance. Subtle left
-   rail + bold ticker stay as the secondary cue; the Verdict
-   column's HOLDING YES / HOLDING NO badge conveys the bet
-   direction. Wins specificity over row-suspect so a held position
-   is never dimmed. The side-yes / side-no overrides below win over
-   the green/red !important colours those classes carry so a held
-   row reads white edge-to-edge — green/red would re-flag YES vs
-   NO that the HOLDING badge already conveys. */
+   position on. Non-coloured cells go pure white; the side-paired
+   cells (My %, Kalshi %, Edge, EV) keep their full-brightness
+   green/red so YES vs NO stays legible. Subtle left rail + bold
+   ticker stay as the secondary cue; the Verdict column's HOLDING
+   YES / HOLDING NO badge conveys the bet direction. Wins
+   specificity over row-suspect so a held position is never dimmed. */
 tr.row-bought td { opacity: 1 !important; color: #ffffff !important;
     font-weight: 600 !important; }
 tr.row-bought td:first-child { border-left: 3px solid #8b949e; }
 tr.row-bought td.mono a.ticker-link,
 tr.row-bought td.mono { color: #ffffff; }
-tr.row-bought td.num.cell-stack .side-yes,
-tr.row-bought td.num.cell-stack .side-no {
-    color: #ffffff !important; }
 /* Watchlist table: fixed scrolling viewport so the strike list never
    pushes the rest of the page off-screen. Sticky header keeps the
    column labels in view as the user scrolls. */
