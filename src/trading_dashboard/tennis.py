@@ -155,8 +155,9 @@ def model_summary_for_card(metrics_path: str | None,
         "training_recall": blended.get("recall"),
         "training_roc_auc": blended.get("roc_auc"),
         "feature_count": 12,
-        # Holdout test-set size — the sample these metrics are computed
-        # on. Surfaces on the Home tab's bot card as "Sample size".
+        # Training- and held-out test-set sizes. Surface on the Home
+        # tab's bot card as "Train rows" / "Test rows".
+        "rows_train": metrics.get("rows_train"),
         "rows_test": metrics.get("rows_test"),
         "actual_wins": int(stats.get("wins", 0) or 0),
         "actual_losses": int(stats.get("losses", 0) or 0),
