@@ -10120,10 +10120,13 @@ def _render_watchlist(out: List[str], watchlist: List[dict],
     # zero open interest aren't tradeable and clutter the table. Rows
     # that set ``_skip_oi_filter`` (e.g. billboard markets that may
     # have null Kalshi-side OI early in the chart week but are still
-    # the correct surface to show on the dashboard) opt out.
+    # the correct surface to show on the dashboard) opt out. Held
+    # tickers are never filtered out: the user always needs visibility
+    # into positions they actually own, regardless of current liquidity.
     watchlist = [r for r in watchlist
                  if r.get("_skip_oi_filter")
-                 or (r.get("open_interest") or 0) > 0]
+                 or (r.get("open_interest") or 0) > 0
+                 or r.get("ticker") in held_by_ticker]
     # Sort: sport bots (one row per game / match) have no strike axis,
     # so order by actionability — BUY-eligible verdicts first, then by
     # |best EV| descending — mirroring the tennis-specific table the
@@ -10145,8 +10148,13 @@ def _render_watchlist(out: List[str], watchlist: List[dict],
     elif is_billboard_bot:
         # Each event has ~40 rows, almost all SKIPs. Surface only the
         # rows the bot would actually buy, ordered best-EV first, and
-        # cap at 10 so the table stays scannable.
-        def _billboard_sort_key(r: dict) -> Tuple[int, float]:
+        # cap at 10 so the table stays scannable. Held positions
+        # always sort first so the user can see what's currently
+        # owned regardless of where today's EV places it — without
+        # this, a row whose entry edge has already played out can
+        # drop below the truncate cutoff and disappear entirely.
+        def _billboard_sort_key(r: dict) -> Tuple[int, int, float]:
+            is_held = 0 if r.get("ticker") in held_by_ticker else 1
             v = r.get("bot_verdict") or "SKIP"
             actionable = 0 if v in ("BUY_YES", "BUY_NO") else 1
             ev = r.get("_best_ev")
@@ -10154,7 +10162,7 @@ def _render_watchlist(out: List[str], watchlist: List[dict],
                 ev_neg = -float(ev) if ev is not None else 0.0
             except (TypeError, ValueError):
                 ev_neg = 0.0
-            return (actionable, ev_neg)
+            return (is_held, actionable, ev_neg)
         watchlist = sorted(watchlist, key=_billboard_sort_key)[:10]
     else:
         watchlist = sorted(
