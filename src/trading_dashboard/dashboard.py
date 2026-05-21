@@ -6896,11 +6896,11 @@ FEATURE_RULES: List[dict] = [
      "link": "https://fred.stlouisfed.org/series/UNRATE"},
     {"patterns": ("continuing_claims", "ccsa"),
      "label": "FRED CCSA", "color": "#3fb950",
-     "description": "Number of people still receiving unemployment benefits this week.",
+     "description": "Number of people still collecting jobless benefits this week (continuing claims).",
      "link": "https://fred.stlouisfed.org/series/CCSA"},
     {"patterns": ("initial_claims", "icsa"),
      "label": "FRED ICSA", "color": "#3fb950",
-     "description": "Number of people who filed for unemployment for the first time this week.",
+     "description": "Number of new initial jobless claims filed this week — the thing this bot predicts.",
      "link": "https://fred.stlouisfed.org/series/ICSA"},
     {"patterns": ("ppi", "ppiaco"),
      "label": "FRED PPIACO", "color": "#3fb950",
@@ -6992,7 +6992,7 @@ FEATURE_RULES: List[dict] = [
     # ── Alt-data / non-FRED sources ─────────────────────────────────
     {"patterns": ("google_trends",),
      "label": "Google Trends", "color": "#d29922",
-     "description": "How often Americans are searching Google for terms like 'how to file unemployment' or 'laid off'. A real-time signal of job losses.",
+     "description": "How often Americans are searching Google for terms like 'how to file jobless claims' or 'laid off'. A real-time signal of job losses.",
      "link": "https://trends.google.com/trends/"},
     {"patterns": ("bfs_total_apps", "busappwnsaus"),
      "label": "Census BFS (via FRED BUSAPPWNSAUS)", "color": "#3fb950",
@@ -7397,13 +7397,13 @@ _FEATURE_BASES: List[Tuple[str, str]] = [
     ("gas_price_anchor",        "Recent retail gas price used as the starting point for projecting future prices."),
     ("gas_change_consistency",  "Whether recent week-over-week gas-price moves have all gone the same direction (consistent trend) or zig-zagged."),
 
-    # ── Unemployment alt-data ───────────────────────────────────────
-    ("google_trends_filed_for_unemployment", "How often Americans Google 'filed for unemployment' — a real-time read on new claimants."),
-    ("google_trends_unemployment_benefits",  "How often Americans Google 'unemployment benefits' — signals would-be filers."),
-    ("google_trends_how_to_file_unemployment", "How often Americans Google 'how to file unemployment' — likely first-time filers."),
+    # ── Jobless-claims alt-data ─────────────────────────────────────
+    ("google_trends_filed_for_unemployment", "How often Americans Google 'filed for unemployment' — a real-time read on new jobless-claims filers."),
+    ("google_trends_unemployment_benefits",  "How often Americans Google 'unemployment benefits' — signals would-be jobless-claims filers."),
+    ("google_trends_how_to_file_unemployment", "How often Americans Google 'how to file unemployment' — likely first-time jobless-claims filers."),
     ("google_trends_laid_off",   "How often Americans Google 'laid off'."),
     ("google_trends_lost_my_job","How often Americans Google 'lost my job'."),
-    ("google_trends",            "Volume of unemployment-related Google searches across the US."),
+    ("google_trends",            "Volume of jobless-claims-related Google searches across the US."),
     ("reddit",       "Number of posts about losing a job submitted to r/layoffs."),
     ("bfs_total_apps",      "Number of business applications filed in the US this week (Census BFS via FRED). Slowing applications mean fewer new employers about to hire."),
     ("bfs_high_wage_apps",  "Business applications from people who plan to pay wages — the subset most likely to actually hire."),
@@ -7418,7 +7418,7 @@ _FEATURE_BASES: List[Tuple[str, str]] = [
     ("noaa_cdo_tmin_min",   "Coldest daily-minimum temperature across five major US cities this week."),
     ("noaa_cdo_tmax_max",   "Hottest daily-maximum temperature across five major US cities this week."),
 
-    # ── Unemployment / macro raw series (FRED friendly names) ──────
+    # ── Jobless-claims / macro raw series (FRED friendly names) ────
     ("nonfarm_payrolls",  "Total US employment (excluding farm workers) — the headline jobs number."),
     ("treasury_10y",      "Interest rate on a 10-year US government bond."),
     ("treasury_2y",       "Interest rate on a 2-year US government bond."),
@@ -7426,8 +7426,8 @@ _FEATURE_BASES: List[Tuple[str, str]] = [
     ("henry_hub",         "Henry Hub natural-gas benchmark price."),
     ("vix",               "Stock-market expected volatility over the next month — the 'fear gauge'."),
     ("unemployment_rate", "% of Americans who want a job but don't have one."),
-    ("continuing_claims", "Number of people still receiving unemployment benefits."),
-    ("initial_claims",    "Number of people who filed for unemployment for the first time this week."),
+    ("continuing_claims", "Number of people still collecting jobless benefits (continuing claims)."),
+    ("initial_claims",    "Number of new initial jobless claims filed this week — the thing this bot predicts."),
     ("ppi",               "Producer Price Index — what wholesalers charge stores."),
     ("headline_cpi",      "Headline consumer price level (everything in the basket)."),
     ("core_mom",          "Month-over-month change in core inflation (excluding food and energy)."),
@@ -7449,10 +7449,10 @@ _FEATURE_BASES: List[Tuple[str, str]] = [
     ("durable_orders",    "Orders for big-ticket items expected to last 3+ years."),
     ("policy_uncertainty","Measure of US economic-policy uncertainty from news coverage of policy disputes."),
 
-    # ── Unemployment-bot base names not covered elsewhere ───────────
+    # ── Jobless-claims-bot base names not covered elsewhere ─────────
     ("yield_curve_spread", "Gap between long-term and short-term Treasury yields. An inverted (negative) spread has historically preceded recessions."),
-    ("claims",   "Number of new unemployment filings this week (the thing we're predicting)."),
-    ("change",   "Week-over-week change in the target (initial-claims count)."),
+    ("claims",   "Number of new jobless claims filed this week (the thing we're predicting)."),
+    ("change",   "Week-over-week change in the target (initial jobless claims count)."),
     ("jolts_layoffs_to_hires", "Ratio of layoffs to hires from the JOLTS report — how loose vs tight the job market is."),
 
     # ── CPI-bot raw-series base names ───────────────────────────────
