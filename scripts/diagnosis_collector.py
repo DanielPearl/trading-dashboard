@@ -88,17 +88,47 @@ def _service_active(name: str) -> str:
     return _run(["systemctl", "is-active", name], timeout=10).strip() or "unknown"
 
 
-def _restart_count_24h(name: str) -> int:
-    """Count restart events in the last 24h by greping the unit's journal
-    for the marker systemd writes on every (re)start.  Works for both
-    crash-loops and clean restarts.
+def _crash_restart_count(name: str) -> int:
+    """How many times systemd has had to auto-restart this unit because
+    the process exited with a non-zero status (i.e. crashed).  This is
+    the alarming signal — it does NOT count clean ``systemctl restart``
+    invocations, which are almost always deploys and shouldn't trigger
+    a "service failing" classification.
+
+    The original collector greped the journal for ``Started``/``Starting``
+    lines, which over-counted in two ways:
+
+    1. App-level logs occasionally contain those words (``hedge_monitor
+       started``, etc.) — bumping the count without any real restart.
+    2. Manual ``systemctl restart`` (= every deploy) also produces a
+       ``systemd[1]: Started <unit>`` line, so a busy deploy day looked
+       like a crash loop.
+
+    ``systemctl show -p NRestarts`` returns systemd's own count of
+    failure-driven auto-restarts and is exactly the signal we want.
+    """
+    out = _run(["systemctl", "show", name, "-p", "NRestarts", "--value"],
+               timeout=10).strip()
+    try:
+        return int(out)
+    except ValueError:
+        return 0
+
+
+def _manual_restart_count_24h(name: str) -> int:
+    """Count clean (re)starts in the last 24h — most of these are deploys.
+    Surfaced separately so the dashboard can distinguish "you deployed 5
+    times today" from "the service crashed 5 times today".
+
+    We restrict to log lines emitted by PID 1 (systemd itself), which
+    excludes app-level "Started X" log lines that share the keyword.
     """
     out = _run([
         "journalctl", "-u", name, "--since", "24 hours ago",
-        "--no-pager", "-o", "cat",
+        "--no-pager",
     ])
     return sum(1 for line in out.splitlines()
-               if "Started " in line or "Starting " in line)
+               if f"systemd[1]: Started {name}" in line)
 
 
 def _journal_24h(name: str) -> list[str]:
@@ -163,26 +193,33 @@ def _dedup_keep_order(items: Iterable[str]) -> list[str]:
     return out
 
 
-def _classify(active_state: str, error_count: int, restarts: int) -> str:
+def _classify(active_state: str, error_count: int, crash_restarts: int) -> str:
     """Map raw signals to the three statuses the dashboard renders.
 
-    * failing  — systemd reports not-active, or the service has been
-                 restarted more than 5× in 24h (crash loop).
+    * failing  — systemd reports not-active, or the service has crashed
+                 (systemd-detected auto-restart) at least once.  We treat
+                 a single crash as failing because the previous heuristic
+                 (>5 restarts) folded in clean deploys and made the whole
+                 column meaningless.
     * degraded — at least one error in the last 24h.
     * healthy  — clean window.
     """
-    if active_state != "active" or restarts > 5:
+    if active_state != "active":
+        return "failing"
+    if crash_restarts > 0:
         return "failing"
     if error_count > 0:
         return "degraded"
     return "healthy"
 
 
-def _notable(error_count: int, warn_count: int, restarts: int,
+def _notable(error_count: int, warn_count: int,
+             crash_restarts: int, manual_restarts: int,
              last_error: str | None) -> str | None:
     """Pithy summary for the service-health table.  Prefer the most
     recent error line; fall back to counts when nothing severe happened
-    but the window wasn't perfectly clean.
+    but the window wasn't perfectly clean.  Crash restarts surface
+    distinctly from manual ones so deploys don't look like incidents.
     """
     if last_error:
         # Trim to keep the table tidy; the full evidence lives in bugs[].
@@ -191,12 +228,16 @@ def _notable(error_count: int, warn_count: int, restarts: int,
             text = text[:117] + "..."
         return text
     bits = []
+    if crash_restarts:
+        bits.append(f"{crash_restarts} crash" + ("es" if crash_restarts != 1 else ""))
     if error_count:
         bits.append(f"{error_count} error" + ("s" if error_count != 1 else ""))
     if warn_count:
         bits.append(f"{warn_count} warning" + ("s" if warn_count != 1 else ""))
-    if restarts > 1:
-        bits.append(f"{restarts} restarts")
+    if manual_restarts > 1:
+        # Only mention deploys if there were several — one is just
+        # "regular activity" and not worth surfacing.
+        bits.append(f"{manual_restarts} deploys")
     return ", ".join(bits) if bits else None
 
 
@@ -209,20 +250,25 @@ def collect_service(name: str) -> tuple[dict, list[dict], list[dict]]:
     * streamlining is one entry per high-frequency warning pattern
     """
     active = _service_active(name)
-    restarts = _restart_count_24h(name)
+    crash_restarts = _crash_restart_count(name)
+    manual_restarts = _manual_restart_count_24h(name)
     lines = _journal_24h(name)
     errors = [ln for ln in lines if ERROR_RE.search(ln)]
     warns = [ln for ln in lines if WARN_RE.search(ln)]
     tracebacks = _dedup_keep_order(_extract_tracebacks(lines))
 
     last_error = errors[-1] if errors else None
-    status = _classify(active, len(errors), restarts)
+    status = _classify(active, len(errors), crash_restarts)
 
     service_row = {
         "name": name,
         "status": status,
-        "restarts_24h": restarts,
-        "notable": _notable(len(errors), len(warns), restarts, last_error),
+        # ``restarts_24h`` keeps the original key the dashboard renders
+        # but now means "crashes" (the alarming signal).  Deploys live
+        # in the notable line instead so the column stays meaningful.
+        "restarts_24h": crash_restarts,
+        "notable": _notable(len(errors), len(warns),
+                            crash_restarts, manual_restarts, last_error),
     }
 
     bugs: list[dict] = []
