@@ -11134,6 +11134,26 @@ class Handler(BaseHTTPRequestHandler):
     def log_message(self, format: str, *args: Any) -> None:  # noqa: A002
         log.info("%s - %s", self.address_string(), format % args)
 
+    def handle_one_request(self) -> None:  # noqa: D401
+        """Wrap the base implementation to swallow benign network drops.
+
+        Scanner traffic (CONNECT probes, /geoserver/web/ scans, etc.) and
+        browser tabs that close mid-response routinely raise
+        ConnectionResetError / BrokenPipeError from ``self.wfile.write``.
+        The default BaseServer.handle_error path then dumps a full
+        socketserver → http.server → do_GET traceback to stderr — which
+        floods the journal with red herrings that look like real bugs to
+        anyone reading the logs (or to the diagnosis collector). None of
+        these are actionable: the client is gone before we noticed. We
+        drop one informational line instead and move on.
+        """
+        try:
+            super().handle_one_request()
+        except (ConnectionResetError, BrokenPipeError,
+                ConnectionAbortedError) as e:
+            self.log_message("client disconnected mid-response (%s)",
+                             type(e).__name__)
+
     def _resolve_bot(self, query: str) -> dict:
         from urllib.parse import parse_qs
         qs = parse_qs(query)
