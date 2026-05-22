@@ -30,7 +30,7 @@ import subprocess
 import sys
 import tempfile
 from collections import Counter
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Iterable
 
@@ -292,21 +292,30 @@ def collect_service(name: str) -> tuple[dict, list[dict], list[dict]]:
     warns = [ln for ln in lines if WARN_RE.search(ln)]
     tracebacks = _dedup_keep_order(_extract_tracebacks(lines))
 
-    # Status classification is scoped to errors since the last restart.
-    # Errors from earlier in the 24h window are almost always things you
-    # already fixed by deploying — counting them produces false-positive
-    # "degraded" badges for hours after shipping. The full 24h list still
-    # populates bugs[] and the notable summary so history isn't lost.
+    # Status classification scopes to errors that are BOTH recent (last
+    # 24h) AND post-restart (since the unit was last (re)started).  Use
+    # the LATER of the two timestamps as the window start:
+    #
+    #   * Freshly restarted service: window = since-restart, so pre-fix
+    #     errors don't tar a deploy that just shipped the fix.
+    #   * Long-running service (> 24h up): window = last 24h, so really
+    #     old errors don't keep the badge red forever.
+    #
+    # The full 24h list still feeds bugs[] and the notable line so
+    # history isn't lost — only the live degraded badge tightens.
+    now = datetime.now(timezone.utc)
+    h24_ago_iso = (now - timedelta(hours=24)).strftime("%Y-%m-%d %H:%M:%S UTC")
     last_start = _last_start_iso(name)
-    if last_start:
-        post_restart_lines = _journal_since(name, last_start)
-        errors_since_restart = [ln for ln in post_restart_lines
-                                if ERROR_RE.search(ln)]
-    else:
-        errors_since_restart = errors
+    # Both timestamps are "YYYY-MM-DD HH:MM:SS UTC"; lexicographic
+    # comparison matches chronological order in that format.
+    cls_since = (last_start
+                 if last_start and last_start > h24_ago_iso
+                 else h24_ago_iso)
+    cls_lines = _journal_since(name, cls_since)
+    classification_errors = [ln for ln in cls_lines if ERROR_RE.search(ln)]
 
     last_error = errors[-1] if errors else None
-    status = _classify(active, len(errors_since_restart), crash_restarts)
+    status = _classify(active, len(classification_errors), crash_restarts)
 
     service_row = {
         "name": name,
