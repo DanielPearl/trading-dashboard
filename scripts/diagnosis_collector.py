@@ -88,6 +88,28 @@ def _service_active(name: str) -> str:
     return _run(["systemctl", "is-active", name], timeout=10).strip() or "unknown"
 
 
+def _last_start_iso(name: str) -> str | None:
+    """Return the ISO timestamp of the unit's last (re)start, suitable
+    for passing to ``journalctl --since``.  Returns None if systemd
+    can't tell us (e.g. unit never started).
+
+    Used to scope the "degraded" classification: errors logged BEFORE
+    the most recent restart almost always reflect a problem that has
+    since been fixed by a deploy.  Counting them against the live
+    service produces false-positive "degraded" badges for hours after
+    shipping a fix — the worst time to look unreliable.
+    """
+    # ActiveEnterTimestamp format: "Fri 2026-05-22 20:56:24 UTC"
+    out = _run(["systemctl", "show", name, "-p", "ActiveEnterTimestamp",
+                "--value"], timeout=10).strip()
+    if not out or out == "0" or out.startswith("n/a"):
+        return None
+    # journalctl --since accepts the systemd timestamp format directly,
+    # but we strip the leading weekday for clarity.
+    parts = out.split(" ", 1)
+    return parts[1] if len(parts) == 2 else out
+
+
 def _crash_restart_count(name: str) -> int:
     """How many times systemd has had to auto-restart this unit because
     the process exited with a non-zero status (i.e. crashed).  This is
@@ -135,6 +157,19 @@ def _journal_24h(name: str) -> list[str]:
     """Plain log lines for a service over the last 24h."""
     out = _run([
         "journalctl", "-u", name, "--since", "24 hours ago",
+        "--no-pager", "-o", "short-iso",
+    ], timeout=60)
+    return out.splitlines()
+
+
+def _journal_since(name: str, since: str) -> list[str]:
+    """Plain log lines for a service since an arbitrary timestamp.
+    Used to look only at log activity since the most recent restart
+    when classifying current health (vs the full 24h window which
+    keeps reporting stale, already-fixed errors).
+    """
+    out = _run([
+        "journalctl", "-u", name, "--since", since,
         "--no-pager", "-o", "short-iso",
     ], timeout=60)
     return out.splitlines()
@@ -257,8 +292,21 @@ def collect_service(name: str) -> tuple[dict, list[dict], list[dict]]:
     warns = [ln for ln in lines if WARN_RE.search(ln)]
     tracebacks = _dedup_keep_order(_extract_tracebacks(lines))
 
+    # Status classification is scoped to errors since the last restart.
+    # Errors from earlier in the 24h window are almost always things you
+    # already fixed by deploying — counting them produces false-positive
+    # "degraded" badges for hours after shipping. The full 24h list still
+    # populates bugs[] and the notable summary so history isn't lost.
+    last_start = _last_start_iso(name)
+    if last_start:
+        post_restart_lines = _journal_since(name, last_start)
+        errors_since_restart = [ln for ln in post_restart_lines
+                                if ERROR_RE.search(ln)]
+    else:
+        errors_since_restart = errors
+
     last_error = errors[-1] if errors else None
-    status = _classify(active, len(errors), crash_restarts)
+    status = _classify(active, len(errors_since_restart), crash_restarts)
 
     service_row = {
         "name": name,
