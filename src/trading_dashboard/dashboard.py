@@ -2472,6 +2472,116 @@ code { background: #161b22; padding: 1px 6px; border-radius: 3px; color: #c9d1d9
 .filter-pill-active:hover { background: #1f6feb; border-color: #1f6feb; }
 .filter-pill-disabled { color: #6e7681; cursor: not-allowed; opacity: 0.7; }
 .filter-pill-disabled:hover { background: #21262d; border-color: #30363d; }
+/* Diagnosis button — sits inline in the bot-filter-bar to the right of
+   the bot dropdown. Opens the shared diagnosis modal which fetches
+   /api/diagnosis/latest and renders the latest scheduled droplet
+   health report (bugs, recommended changes, streamlining ideas).
+   Status dot reflects the latest report's health at a glance. */
+.diagnosis-btn {
+    background: transparent; color: #8b949e; border: 1px solid #30363d;
+    border-radius: 6px; padding: 6px 12px; font-size: 12px;
+    cursor: pointer; line-height: 1.4; margin-left: auto;
+    display: inline-flex; align-items: center; gap: 6px;
+    transition: background 120ms, border-color 120ms, color 120ms;
+}
+.diagnosis-btn:hover { background: #1c2128; border-color: #40464d;
+    color: #c9d1d9; }
+.diagnosis-btn .diagnosis-dot {
+    width: 7px; height: 7px; border-radius: 50%; background: #6e7681;
+    flex-shrink: 0;
+}
+.diagnosis-btn .diagnosis-dot.has-issues { background: #f85149; }
+.diagnosis-btn .diagnosis-dot.healthy    { background: #3fb950; }
+.diagnosis-btn .diagnosis-dot.stale      { background: #d29922; }
+/* Diagnosis modal — wider than the criteria modal because the body
+   shows a service-health table plus three sections (bugs / recommended /
+   streamlining). Same overlay-and-X-to-close idiom as criteria-modal. */
+.diagnosis-overlay {
+    position: fixed; inset: 0; background: rgba(0,0,0,0.55); z-index: 100;
+}
+.diagnosis-overlay[hidden] { display: none !important; }
+.diagnosis-modal {
+    position: fixed; top: 50%; left: 50%;
+    transform: translate(-50%, -50%);
+    background: #0d1117; border: 1px solid #30363d; border-radius: 8px;
+    width: min(900px, 92vw); max-height: 85vh;
+    display: flex; flex-direction: column;
+    z-index: 101; box-shadow: 0 12px 48px rgba(0,0,0,0.6);
+}
+.diagnosis-modal[hidden] { display: none !important; }
+.diagnosis-modal-head {
+    display: flex; align-items: flex-start;
+    justify-content: space-between; gap: 12px;
+    padding: 14px 18px; border-bottom: 1px solid #21262d;
+}
+.diagnosis-modal-head h3 { margin: 0; font-size: 15px; font-weight: 700;
+    color: #f0f6fc; }
+.diagnosis-modal-head .diagnosis-meta {
+    color: #8b949e; font-size: 12px; margin-top: 4px;
+}
+.diagnosis-modal-close {
+    background: transparent; border: none; color: #8b949e;
+    font-size: 24px; line-height: 1; cursor: pointer; padding: 0 4px;
+}
+.diagnosis-modal-close:hover { color: #f0f6fc; }
+.diagnosis-modal-body {
+    padding: 14px 18px; overflow-y: auto; flex: 1;
+}
+.diagnosis-section { margin-bottom: 18px; }
+.diagnosis-section h4 {
+    margin: 0 0 8px 0; font-size: 12px; text-transform: uppercase;
+    letter-spacing: 0.06em; color: #8b949e; font-weight: 600;
+}
+.diagnosis-item {
+    border: 1px solid #30363d; border-radius: 6px;
+    padding: 10px 12px; margin-bottom: 6px; background: #161b22;
+}
+.diagnosis-item .diagnosis-service {
+    font-size: 10px; text-transform: uppercase; letter-spacing: 0.06em;
+    color: #58a6ff; margin-bottom: 4px; font-weight: 600;
+}
+.diagnosis-item .diagnosis-what {
+    color: #f0f6fc; font-size: 13px; margin-bottom: 4px; line-height: 1.4;
+}
+.diagnosis-item .diagnosis-where {
+    font-family: ui-monospace, SFMono-Regular, monospace;
+    font-size: 11px; color: #8b949e; margin-bottom: 4px;
+}
+.diagnosis-item .diagnosis-evidence {
+    font-family: ui-monospace, SFMono-Regular, monospace;
+    font-size: 11px; color: #c9d1d9; white-space: pre-wrap;
+    margin-top: 6px; padding: 6px 8px; background: #0d1117;
+    border-radius: 4px; border-left: 2px solid #30363d;
+    max-height: 120px; overflow-y: auto;
+}
+.diagnosis-item .diagnosis-fix {
+    color: #3fb950; font-size: 12px; margin-top: 6px;
+}
+.diagnosis-empty {
+    text-align: center; padding: 32px 20px; color: #6e7681;
+    font-size: 13px; line-height: 1.5;
+}
+.diagnosis-services-table {
+    width: 100%; border-collapse: collapse; font-size: 12px;
+}
+.diagnosis-services-table th, .diagnosis-services-table td {
+    padding: 6px 10px; text-align: left; border-bottom: 1px solid #21262d;
+}
+.diagnosis-services-table th {
+    color: #8b949e; font-weight: 600; font-size: 11px;
+    text-transform: uppercase; letter-spacing: 0.06em;
+}
+.diagnosis-services-table td.status-healthy  { color: #3fb950; }
+.diagnosis-services-table td.status-degraded { color: #d29922; }
+.diagnosis-services-table td.status-failing  { color: #f85149; }
+.diagnosis-github-link {
+    display: inline-block; margin-top: 8px; padding: 6px 12px;
+    background: #21262d; border: 1px solid #30363d; border-radius: 6px;
+    color: #58a6ff; font-size: 12px; text-decoration: none;
+}
+.diagnosis-github-link:hover {
+    background: #2d333b; border-color: #40464d; text-decoration: underline;
+}
 /* Tab bar for the per-bot detail panes. Same pill idiom as the bot/
    period filters above, slightly slimmer so the visual hierarchy reads
    "filter > tab > content". */
@@ -3221,6 +3331,24 @@ def render_page(
         "      class='criteria-modal-close' aria-label='Close'>×</button>"
         "  </div>"
         "  <div class='criteria-modal-body' id='criteria-modal-body'></div>"
+        "</div>"
+    )
+    # Daily droplet diagnosis modal — single shared instance, opened by
+    # any .diagnosis-btn click. Body is populated from /api/diagnosis/latest
+    # at click time so it always reflects the latest scheduled report
+    # without bloating the initial page render.
+    out.append(
+        "<div id='diagnosis-overlay' class='diagnosis-overlay' hidden></div>"
+        "<div id='diagnosis-modal' class='diagnosis-modal' hidden>"
+        "  <div class='diagnosis-modal-head'>"
+        "    <div>"
+        "      <h3>Daily droplet diagnosis</h3>"
+        "      <div class='diagnosis-meta' id='diagnosis-modal-meta'></div>"
+        "    </div>"
+        "    <button type='button' id='diagnosis-close' "
+        "      class='diagnosis-modal-close' aria-label='Close'>×</button>"
+        "  </div>"
+        "  <div class='diagnosis-modal-body' id='diagnosis-modal-body'></div>"
         "</div>"
     )
     # Stash the gating config in a window global so the per-bet popup
@@ -4199,6 +4327,159 @@ def _live_update_script(current_bot: str, period_key: str = "all") -> str:
   document.addEventListener("keydown", function (e) {{
     if (e.key === "Escape") hideCriteria();
   }});
+
+  // ── Daily droplet diagnosis modal ───────────────────────────────
+  // Fetched on-demand from /api/diagnosis/latest (the dashboard's
+  // do_GET reads diagnosis/latest.json on disk — written by the
+  // scheduled daily-droplet-diagnosis agent). Renders an empty state
+  // when no report exists yet so the button works on a fresh install
+  // before the first run completes.
+  const diagOverlay = document.getElementById("diagnosis-overlay");
+  const diagModal   = document.getElementById("diagnosis-modal");
+  const diagBody    = document.getElementById("diagnosis-modal-body");
+  const diagMeta    = document.getElementById("diagnosis-modal-meta");
+  const diagClose   = document.getElementById("diagnosis-close");
+  function diagEsc(s) {{
+    if (s === null || s === undefined) return "";
+    return String(s).replace(/[&<>"']/g, function (c) {{
+      return ({{"&":"&amp;","<":"&lt;",">":"&gt;","\\"":"&quot;","'":"&#39;"}})[c];
+    }});
+  }}
+  function diagRenderItems(title, items) {{
+    if (!items || !items.length) return "";
+    let h = "<div class='diagnosis-section'><h4>" + diagEsc(title) + "</h4>";
+    for (const it of items) {{
+      h += "<div class='diagnosis-item'>";
+      if (it.service) h += "<div class='diagnosis-service'>" + diagEsc(it.service) + "</div>";
+      if (it.what)    h += "<div class='diagnosis-what'>"    + diagEsc(it.what)    + "</div>";
+      if (it.where)   h += "<div class='diagnosis-where'>"   + diagEsc(it.where)   + "</div>";
+      if (it.evidence) h += "<div class='diagnosis-evidence'>" + diagEsc(it.evidence) + "</div>";
+      if (it.suggested_fix) h += "<div class='diagnosis-fix'>\\u21b3 " + diagEsc(it.suggested_fix) + "</div>";
+      h += "</div>";
+    }}
+    h += "</div>";
+    return h;
+  }}
+  function diagRenderServices(services) {{
+    if (!services || !services.length) return "";
+    let h = "<div class='diagnosis-section'><h4>Service health</h4>";
+    h += "<table class='diagnosis-services-table'><thead><tr>";
+    h += "<th>Service</th><th>Status</th><th>Restarts (24h)</th><th>Notable</th>";
+    h += "</tr></thead><tbody>";
+    for (const s of services) {{
+      const status = s.status || "unknown";
+      h += "<tr>";
+      h += "<td>" + diagEsc(s.name) + "</td>";
+      h += "<td class='status-" + diagEsc(status) + "'>" + diagEsc(status) + "</td>";
+      h += "<td>" + (s.restarts_24h == null ? "\\u2014" : s.restarts_24h) + "</td>";
+      h += "<td>" + diagEsc(s.notable || "") + "</td>";
+      h += "</tr>";
+    }}
+    h += "</tbody></table></div>";
+    return h;
+  }}
+  function diagBuildHTML(d) {{
+    if (!d || d.status === "no_report_yet") {{
+      return "<div class='diagnosis-empty'>No diagnosis report yet."
+           + "<br><br>The scheduled <code>daily-droplet-diagnosis</code> "
+           + "agent hasn't run yet, or <code>diagnosis/latest.json</code> "
+           + "is missing on this host.</div>";
+    }}
+    if (d.status === "skipped_no_engagement") {{
+      let h = "<div class='diagnosis-empty'>"
+            + "Skipped \\u2014 no commits to any monitored repo since the "
+            + "last report. Waiting on you to act on prior recommendations."
+            + "<br><br>Last full report: "
+            + diagEsc(d.generated_at || "\\u2014") + "</div>";
+      if (d.github_issue_url) {{
+        h += "<div style='text-align:center'><a class='diagnosis-github-link' href='"
+           + diagEsc(d.github_issue_url) + "' target='_blank' rel='noopener'>"
+           + "View previous report on GitHub \\u2192</a></div>";
+      }}
+      return h;
+    }}
+    if (d.status === "failed") {{
+      return "<div class='diagnosis-empty' style='color:#f85149'>"
+           + "Diagnosis run failed.<br><br>"
+           + diagEsc(d.error || "(no error message)") + "</div>";
+    }}
+    let h = "";
+    h += diagRenderServices(d.services);
+    h += diagRenderItems("\\ud83d\\udd34 Bugs", d.bugs);
+    h += diagRenderItems("\\ud83d\\udfe1 Recommended changes", d.recommended_changes);
+    h += diagRenderItems("\\ud83d\\udfe2 Streamlining opportunities", d.streamlining);
+    const noFindings = (!d.bugs || !d.bugs.length)
+                    && (!d.recommended_changes || !d.recommended_changes.length)
+                    && (!d.streamlining || !d.streamlining.length);
+    if (noFindings) {{
+      h += "<div class='diagnosis-empty'>No findings \\u2014 everything looks healthy.</div>";
+    }}
+    if (d.github_issue_url) {{
+      h += "<div style='margin-top:14px'><a class='diagnosis-github-link' href='"
+         + diagEsc(d.github_issue_url) + "' target='_blank' rel='noopener'>"
+         + "View this report on GitHub \\u2192</a></div>";
+    }}
+    return h;
+  }}
+  function diagUpdateDots(d) {{
+    let cls = "stale";
+    if (d && d.status === "completed") {{
+      cls = (d.issues_found && d.issues_found > 0) ? "has-issues" : "healthy";
+    }} else if (d && d.status === "skipped_no_engagement") {{
+      cls = "stale";
+    }} else if (d && d.status === "failed") {{
+      cls = "has-issues";
+    }}
+    document.querySelectorAll("[data-diagnosis-dot]").forEach(function (el) {{
+      el.classList.remove("healthy", "has-issues", "stale");
+      el.classList.add(cls);
+    }});
+  }}
+  function diagShow() {{
+    if (!diagOverlay || !diagModal) return;
+    if (diagBody) diagBody.innerHTML = "<div class='diagnosis-empty'>Loading\\u2026</div>";
+    if (diagMeta) diagMeta.textContent = "";
+    diagOverlay.hidden = false;
+    diagModal.hidden = false;
+    fetch("/api/diagnosis/latest", {{cache: "no-store"}})
+      .then(function (r) {{ return r.json(); }})
+      .then(function (d) {{
+        if (diagBody) diagBody.innerHTML = diagBuildHTML(d);
+        if (diagMeta) {{
+          const when = d.generated_at || d.last_checked_at || "\\u2014";
+          let counts = "";
+          if (typeof d.issues_found === "number") {{
+            counts = " \\u00b7 " + d.issues_found + " issue"
+                   + (d.issues_found === 1 ? "" : "s");
+          }}
+          diagMeta.textContent = "Generated " + when + counts;
+        }}
+        diagUpdateDots(d);
+      }})
+      .catch(function (e) {{
+        if (diagBody) diagBody.innerHTML =
+          "<div class='diagnosis-empty' style='color:#f85149'>"
+          + "Failed to load diagnosis: " + diagEsc(String(e)) + "</div>";
+      }});
+  }}
+  function diagHide() {{
+    if (diagOverlay) diagOverlay.hidden = true;
+    if (diagModal)   diagModal.hidden   = true;
+  }}
+  document.querySelectorAll("[data-diagnosis-trigger]").forEach(function (btn) {{
+    btn.addEventListener("click", diagShow);
+  }});
+  if (diagClose)   diagClose.addEventListener("click", diagHide);
+  if (diagOverlay) diagOverlay.addEventListener("click", diagHide);
+  document.addEventListener("keydown", function (e) {{
+    if (e.key === "Escape") diagHide();
+  }});
+  // Prime the status dot on page load so the button reflects current
+  // health before the user clicks. Same endpoint, no UI side-effects.
+  fetch("/api/diagnosis/latest", {{cache: "no-store"}})
+    .then(function (r) {{ return r.json(); }})
+    .then(diagUpdateDots)
+    .catch(function () {{}});
 
   // ── Tab switcher ────────────────────────────────────────────────
   // Clicks on a tab pill toggle the .tab-pill-active class on the bar
@@ -6001,6 +6282,18 @@ def _render_bot_filter(out: List[str], available_bots: List[dict],
             f"{html.escape(b['name'])}{html.escape(suffix)}</option>"
         )
     out.append("</select>")
+    # Diagnosis button — opens the shared daily-droplet-diagnosis modal.
+    # Status dot is set by the JS once /api/diagnosis/latest resolves
+    # (healthy / has_issues / stale). Render uses ``data-diagnosis-trigger``
+    # rather than an id so the multiple bot-filter-bar instances on a
+    # page (home + tab views) can each carry a clickable trigger.
+    out.append(
+        "<button type='button' class='diagnosis-btn' "
+        "data-diagnosis-trigger "
+        "title='Daily droplet diagnosis report'>"
+        "<span class='diagnosis-dot' data-diagnosis-dot></span>"
+        "Diagnosis</button>"
+    )
     out.append("</div>")
 
 
@@ -11436,6 +11729,35 @@ class Handler(BaseHTTPRequestHandler):
                 self.wfile.write(b'{"error":"render failed"}')
                 return
             payload = json.dumps(payload_dict, default=str).encode("utf-8")
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Cache-Control", "no-store")
+            self.send_header("Content-Length", str(len(payload)))
+            self.end_headers()
+            self.wfile.write(payload)
+        elif parsed.path == "/api/diagnosis/latest":
+            # Daily droplet diagnosis report. The scheduled
+            # daily-droplet-diagnosis agent writes diagnosis/latest.json
+            # (relative to the dashboard's working directory — that's
+            # /root/trading-dashboard on the droplet). We just stream it
+            # back as-is. When no report exists yet (fresh install or
+            # the schedule hasn't fired), return a sentinel payload the
+            # UI knows how to render as a "no diagnosis yet" empty state
+            # rather than 404 / 500.
+            diag_path = Path("diagnosis/latest.json")
+            try:
+                if diag_path.exists():
+                    payload = diag_path.read_bytes()
+                else:
+                    payload = json.dumps(
+                        {"status": "no_report_yet"}
+                    ).encode("utf-8")
+            except OSError as e:
+                log.exception("failed to read diagnosis/latest.json")
+                payload = json.dumps({
+                    "status": "failed",
+                    "error": f"could not read latest.json: {e}",
+                }).encode("utf-8")
             self.send_response(200)
             self.send_header("Content-Type", "application/json")
             self.send_header("Cache-Control", "no-store")
