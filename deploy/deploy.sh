@@ -26,9 +26,13 @@ echo "→ pip install -r requirements.txt"
 .venv/bin/pip install -q --upgrade pip
 .venv/bin/pip install -q -r requirements.txt
 
-# First-time install: copy the unit file. On subsequent runs this is a no-op.
-if [[ ! -f /etc/systemd/system/trading-dashboard.service ]]; then
-  echo "→ installing systemd unit"
+# Copy the systemd unit if it's missing OR if our checked-in version
+# differs from what's installed. The previous "first-install only"
+# variant silently skipped MemoryMax / EnvironmentFile tweaks on
+# redeploys; this version keeps the installed unit in sync.
+if [[ ! -f /etc/systemd/system/trading-dashboard.service ]] || \
+   ! cmp -s deploy/trading-dashboard.service /etc/systemd/system/trading-dashboard.service; then
+  echo "→ installing/updating systemd unit"
   cp deploy/trading-dashboard.service /etc/systemd/system/
   systemctl daemon-reload
   systemctl enable trading-dashboard

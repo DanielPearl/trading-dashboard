@@ -11832,7 +11832,8 @@ class Handler(BaseHTTPRequestHandler):
 
 
 def serve(host: str, port: int, bots: List[dict], risk_caps: dict,
-          edge_cfg: dict, validator_cfg: dict, hedge_cfg: dict) -> None:
+          edge_cfg: dict, validator_cfg: dict, hedge_cfg: dict,
+          tennis_trader_cfg: dict | None = None) -> None:
     Handler.bots = bots
     Handler.risk_caps = risk_caps
     Handler.edge_cfg = edge_cfg
@@ -11856,6 +11857,15 @@ def serve(host: str, port: int, bots: List[dict], risk_caps: dict,
     # time-series to read — same shape NBA gets from market_views.
     from .in_game import tennis_snapshotter
     tennis_snapshotter.start_daemon(bots)
+    # In-process tennis trader. Replaces the standalone
+    # baseline-break-monitor.service that previously ran the 60s
+    # poll loop. The thread imports tennis-forecast's pure functions
+    # (predict, signals, simulator) via sys.path injection — see
+    # bots/tennis.py docstring. No-op when tennis_trader.enabled
+    # is false (the default until the operator opts in).
+    if tennis_trader_cfg:
+        from .bots import tennis as tennis_bot
+        tennis_bot.start_daemon(tennis_trader_cfg)
     server = ThreadingHTTPServer((host, port), Handler)
     log.info("dashboard listening on http://%s:%d", host, port)
     log.info("registered bots: %s",
@@ -11976,9 +11986,15 @@ def main(argv: list[str] | None = None) -> int:
             "available": available,
         })
 
+    # tennis_trader is opt-in (defaults to off). When enabled, the
+    # dashboard's serve() spawns the in-process tennis trading
+    # thread that replaces the old baseline-break-monitor.service.
+    tennis_trader_cfg = cfg.raw.get("tennis_trader") or {}
+
     host = args.host or cfg.host
     port = args.port or cfg.port
-    serve(host, port, bots, risk_caps, edge_cfg, validator_cfg, hedge_cfg)
+    serve(host, port, bots, risk_caps, edge_cfg, validator_cfg, hedge_cfg,
+          tennis_trader_cfg=tennis_trader_cfg)
     return 0
 
 

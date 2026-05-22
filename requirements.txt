@@ -4,3 +4,21 @@
 
 # Bot-specific:
 PyYAML>=6.0
+
+# Dependencies of the in-process bots that the dashboard now hosts.
+# The bot modules under src/trading_dashboard/bots/ import these
+# lazily (only when their daemon starts), so a dashboard with every
+# bot disabled in config still boots without pulling them.
+#
+# Tennis bot (bots/tennis.py) — also requires the tennis-forecast
+# repo to be present on disk at the path configured in
+# dashboard.yaml's tennis_trader.repo_path (default
+# /root/tennis-forecast). The repo isn't pip-installable; the bot
+# module injects its src/ onto sys.path at first tick.
+pandas>=2.1
+numpy>=1.26
+scipy>=1.11
+scikit-learn>=1.4
+joblib>=1.3
+requests>=2.31
+python-dotenv>=1.0

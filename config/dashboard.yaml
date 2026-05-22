@@ -309,3 +309,28 @@ validators:
   min_depth_at_best_ask: 25
   basis_risk_strike_window_dollars: 0.03
   basis_risk_max_hours_to_close: 6
+
+# In-process trading bots. Each bot used to run as its own systemd
+# unit on the droplet; folding them into the dashboard process
+# (under src/trading_dashboard/bots/) means one Python interpreter,
+# one shared pandas/sklearn import, and the Home-tab toggle actually
+# controls trading (the standalone services never read bot_states.json).
+#
+# When a bot's `enabled` is false the daemon thread isn't started and
+# its imports are skipped — the dashboard boots without pulling that
+# bot's deps. Flip a bot off here AND remember to stop+disable its
+# legacy systemd unit on the droplet to avoid two processes writing
+# the same state files.
+tennis_trader:
+  enabled: true
+  # Path to the tennis-forecast repo on disk. The bot module injects
+  # this onto sys.path at first tick and imports the upstream
+  # predict / signals / simulator functions from there. On the
+  # droplet this lives at /root/tennis-forecast (cloned beside
+  # /root/trading-dashboard). Override for local-dev runs.
+  repo_path: /root/tennis-forecast
+  # Poll interval in seconds. Matches the upstream
+  # tennis-forecast/config/config.yaml dashboard.refresh_seconds
+  # default. Lower = more frequent watchlist refresh + more Kalshi
+  # API calls.
+  interval_seconds: 60
