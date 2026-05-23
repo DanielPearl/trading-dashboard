@@ -36,8 +36,23 @@ from typing import Iterable
 
 # Services covered by this collector.  Keep in sync with the Claude agent
 # prompt — the dashboard renders whatever we put in ``services``.
+#
+# After the in-process bot fold-in (see src/trading_dashboard/bots/),
+# every per-bot service was stopped + disabled. They live on as
+# inactive units in /etc/systemd/system/ for rollback, but auditing
+# them surfaces stale traceback noise + always-failing rows because
+# ``systemctl is-active`` returns "inactive" → _classify returns
+# "failing". So the live monitored set is just the dashboard
+# (which now runs all 10 bot threads inside one process).
 MONITORED_SERVICES: tuple[str, ...] = (
     "trading-dashboard.service",
+)
+
+# Disabled-on-purpose units we keep around for rollback. The
+# collector ignores these — anything we'd want to know about them
+# (a stray crash log, etc.) shows up under trading-dashboard.service
+# in practice now that those bots run as threads inside the dashboard.
+LEGACY_DISABLED_SERVICES: tuple[str, ...] = (
     "kalshi-nba.service",
     "kalshi-cpi.service",
     "kalshi-gas-bot.service",
@@ -47,6 +62,7 @@ MONITORED_SERVICES: tuple[str, ...] = (
     "darts-monitor.service",
     "survivor-elimination-monitor.service",
     "table-tennis-monitor.service",
+    "kalshi-natgas-bot.timer",
 )
 
 # Where the dashboard expects the report.  Dashboard runs with

@@ -387,8 +387,17 @@ gas_trader:
 # Live-monitor bots (tennis-shape). Each one writes a JSON
 # watchlist + sim_state on every tick; the dashboard's
 # tennis-shape page renders those files.
+#
+# survivor is currently disabled — its model.joblib was trained on
+# an older sklearn that had LogisticRegression.multi_class. The
+# pinned sklearn 1.6.1 no longer exposes that attribute, so
+# predict_proba blows up with AttributeError every 5 min. Either
+# retrain the survivor model on sklearn >= 1.5 or pin sklearn
+# down to a version that still has multi_class, then flip this
+# back to true. Until then the daemon is a no-op (the watchlist
+# page renders the cached last-good JSON).
 survivor_trader:
-  enabled: true
+  enabled: false
   repo_path: /root/survivor-elimination
   interval_seconds: 300
 

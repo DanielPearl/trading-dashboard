@@ -36,6 +36,28 @@ BOT_KEY = "tennis"
 _prev_market_by_ticker: dict[str, dict] = {}
 
 
+class _PredictMatchSpamFilter(logging.Filter):
+    """Drop the upstream "predict_match failed (...); falling back
+    to Elo-only" warning. The tennis model.joblib was trained on a
+    pre-1.5 sklearn that had LogisticRegression.multi_class; the
+    pinned sklearn 1.6.1 no longer exposes that attribute, so the
+    warning fires on EVERY market on EVERY tick — 28k+ lines per
+    24h, masking any real error in the journal and tar-pitting the
+    diagnosis collector. The fall-back to Elo-only still produces
+    a usable signal, so the bot keeps trading; the warning itself
+    is just deafening noise. Drop it at the logging layer until
+    the model is retrained.
+    """
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        msg = record.getMessage()
+        if ("predict_match failed" in msg
+                and "multi_class" in msg
+                and "Elo-only" in msg):
+            return False
+        return True
+
+
 def _load_upstream(repo_path: str) -> dict[str, Callable[..., Any]]:
     """Load tennis-forecast's pure functions under a unique alias so
     its ``src/`` package doesn't collide with table-tennis or darts'
@@ -43,6 +65,10 @@ def _load_upstream(repo_path: str) -> dict[str, Callable[..., Any]]:
     """
     import importlib
     _base.load_upstream_as_alias(repo_path, "tennis_src", subdir="src")
+    # Attach the spam filter to upstream's logger once the package
+    # is loaded. The logger is named ``models.predict`` (no alias
+    # prefix — upstream's setup_logging uses bare module names).
+    logging.getLogger("models.predict").addFilter(_PredictMatchSpamFilter())
 
     kalshi_markets = importlib.import_module("tennis_src.data.kalshi_markets")
     export_watchlist_mod = importlib.import_module(
