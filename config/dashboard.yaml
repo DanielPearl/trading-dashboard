@@ -79,6 +79,15 @@ bots:
     decisions_path: /root/nba/data/decisions.jsonl
     watchlist_json_path: /root/nba/data/outputs/watchlist.json
     sim_state_path: /root/nba/data/outputs/sim_state.json
+    # NBA writes its training stats to sim.db's model_snapshots table
+    # (legacy macro-bot schema), not to metrics.json the way the
+    # other sport bots do. bots/_sport_adapter.py reads the latest
+    # snapshot and synthesises a metrics.json at this path after
+    # each Bot.tick(), so the sport Models tab renders NBA's
+    # accuracy / brier / log-loss / ROC AUC card alongside the
+    # others. Shared with the live dashboard (training artifacts
+    # are mode-agnostic).
+    metrics_path: /root/nba/data/processed/artifacts/metrics.json
     series_ticker: KXNBAGAME
     data_source: "ESPN box scores + NBA stats API"
     # Single league-level window — regular-season tip-off through

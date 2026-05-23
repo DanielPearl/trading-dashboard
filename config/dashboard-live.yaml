@@ -69,6 +69,11 @@ bots:
     decisions_path: /root/nba/data/decisions-live.jsonl
     watchlist_json_path: /root/nba/data/outputs-live/watchlist.json
     sim_state_path: /root/nba/data/outputs-live/sim_state.json
+    # Shared with sim — training artifacts are mode-agnostic. The
+    # sport adapter (run on the SIM side) writes this file from
+    # NBA's sim.db model_snapshots table; the live side just
+    # reads it.
+    metrics_path: /root/nba/data/processed/artifacts/metrics.json
     series_ticker: KXNBAGAME
     data_source: "ESPN box scores + NBA stats API"
     seasons:

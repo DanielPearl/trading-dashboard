@@ -5263,7 +5263,7 @@ def _render_bot_cards(out: List[str], rollup: dict,
         # underlying — same exclusion as the regime pill above.
         staleness_html = ""
         if (b.get("dashboard_type") not in
-                ("tennis", "survivor", "billboard", "whale", "rules-parser")
+                ("sport", "survivor", "billboard", "whale", "rules-parser")
                 and m and m.get("current_gas_price") is not None
                 and b.get("series_ticker")):
             try:
@@ -12190,6 +12190,19 @@ def main(argv: list[str] | None = None) -> int:
     if cfg.mode == "live":
         from . import bot_state
         bot_state.bootstrap_disabled([b["key"] for b in bots])
+        # Also pre-create the live data files (empty SQLite with the
+        # sim schema, empty-shell JSONs). Without this every macro-
+        # bot card renders "unavailable" because the standard
+        # renderer early-exits on missing db_path — even though the
+        # SAME trained model + training artifacts that the sim side
+        # shows are sitting right next to the missing file in the
+        # bot's repo. After bootstrap, the model card renders from
+        # the shared artifacts and only the live-runtime sections
+        # (positions, P&L, current predictions) show empty — which
+        # is the truthful state until each bot's live executor
+        # exists and is opted in.
+        from . import live_bootstrap
+        live_bootstrap.bootstrap_live_data_files(bots)
 
     serve(host, port, bots, risk_caps, edge_cfg, validator_cfg, hedge_cfg,
           tennis_trader_cfg=tennis_trader_cfg,

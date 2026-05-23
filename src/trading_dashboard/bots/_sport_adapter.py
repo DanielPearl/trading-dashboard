@@ -463,12 +463,75 @@ def _build_sim_state(con: sqlite3.Connection,
     }
 
 
+def _build_metrics(con: sqlite3.Connection) -> dict | None:
+    """Translate the latest ``model_snapshots`` row into the metrics
+    schema the sport-shape Models renderer reads (the one tennis
+    populates from ``metrics.json``).
+
+    The standard-shape macro bots — NBA, gas, etc. — write their
+    per-tick model state to ``model_snapshots`` instead of a JSON
+    artifact, so the sport renderer would otherwise have nothing
+    to draw the "model accuracy / brier / log-loss" card from for
+    those bots. This bridges the schemas: we read the freshest
+    model snapshot, map its training fields into the
+    ``{blended: {...}, rows_train: ..., cutoff_date: ...}`` shape
+    the renderer expects, and the caller writes it to disk
+    alongside the bot's other training artifacts.
+
+    Returns None if there are no snapshots yet (caller skips the
+    write — keeps any prior metrics.json on disk untouched).
+    """
+    cur = con.execute(
+        """
+        SELECT classifier_accuracy, training_precision, training_recall,
+                training_f1, training_roc_auc, training_brier,
+                rows_train, rows_test, captured_at
+        FROM model_snapshots
+        ORDER BY id DESC LIMIT 1
+        """,
+    )
+    row = cur.fetchone()
+    if not row:
+        return None
+    accuracy = row["classifier_accuracy"]
+    if accuracy is None:
+        return None
+    # "log_loss" isn't tracked in model_snapshots — leave it null and
+    # the renderer's existing "—" placeholder takes over for that cell.
+    blended = {
+        "accuracy": float(accuracy),
+        "log_loss": None,
+        "brier": (float(row["training_brier"])
+                   if row["training_brier"] is not None else None),
+        "f1": (float(row["training_f1"])
+                if row["training_f1"] is not None else None),
+        "precision": (float(row["training_precision"])
+                       if row["training_precision"] is not None else None),
+        "recall": (float(row["training_recall"])
+                    if row["training_recall"] is not None else None),
+        "roc_auc": (float(row["training_roc_auc"])
+                     if row["training_roc_auc"] is not None else None),
+    }
+    return {
+        "rows_train": int(row["rows_train"] or 0),
+        "rows_test": int(row["rows_test"] or 0),
+        # captured_at is when the model was last refreshed in-bot;
+        # use it as the cutoff_date so the renderer's "trained
+        # through" line reflects reality. Slice off the timezone
+        # suffix to match tennis's plain-date format.
+        "cutoff_date": str(row["captured_at"])[:10],
+        "blended": blended,
+        "xgboost": False,
+    }
+
+
 def translate(db_path: str | Path,
                watchlist_out: str | Path,
                sim_state_out: str | Path,
                ticker_parser: TickerParser,
                tournament_label: str,
-               surface_label: str = "") -> None:
+               surface_label: str = "",
+               metrics_out: str | Path | None = None) -> None:
     """Read ``db_path`` and write sport-format watchlist.json +
     sim_state.json to the configured output paths. Intended to be
     called by a sim.db-shape bot module after each tick.
@@ -491,6 +554,8 @@ def translate(db_path: str | Path,
                                      surface_label)
             state = _build_sim_state(con, ticker_parser, tournament_label,
                                       surface_label)
+            metrics = (_build_metrics(con)
+                        if metrics_out is not None else None)
         finally:
             con.close()
         watchlist = {
@@ -499,7 +564,13 @@ def translate(db_path: str | Path,
         }
         _atomic_write_json(Path(watchlist_out), watchlist)
         _atomic_write_json(Path(sim_state_out), state)
-        log.info("sport_adapter — wrote %d matches → %s",
-                 len(rows), watchlist_out)
+        if metrics is not None and metrics_out is not None:
+            _atomic_write_json(Path(metrics_out), metrics)
+        log.info(
+            "sport_adapter — wrote %d matches → %s%s",
+            len(rows), watchlist_out,
+            (f" (+ metrics → {metrics_out})"
+             if metrics is not None and metrics_out is not None else ""),
+        )
     except Exception:  # noqa: BLE001
         log.exception("sport_adapter: translation failed for %s", db_path)

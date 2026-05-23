@@ -145,9 +145,17 @@ def _parse_nba_ticker(ticker: str) -> Optional[dict]:
 
 
 def _sync_sport_json(repo_path: str, db_path: str,
-                       watchlist_out: str, sim_state_out: str) -> None:
+                       watchlist_out: str, sim_state_out: str,
+                       metrics_out: str | None = None) -> None:
     """Translate NBA's sim.db into sport-shape JSON for the
     dashboard's sport renderer. Called after each Bot.tick().
+
+    When ``metrics_out`` is provided, also writes a synthesized
+    ``metrics.json`` derived from the latest ``model_snapshots``
+    row so the sport Models tab can render NBA's accuracy /
+    brier / log-loss / ROC AUC card the same way it does for
+    tennis. Without this, NBA's Models tab is "unavailable"
+    because tennis-style metrics.json doesn't exist for it.
     """
     _sport_adapter.translate(
         db_path=db_path,
@@ -156,6 +164,7 @@ def _sync_sport_json(repo_path: str, db_path: str,
         ticker_parser=_parse_nba_ticker,
         tournament_label="NBA",
         surface_label="",
+        metrics_out=metrics_out,
     )
 
 
@@ -184,6 +193,15 @@ def start_daemon(cfg: dict) -> Any:
     sim_state_out = cfg.get("sim_state_path",
                               str(Path(repo_path) / "data" / "outputs"
                                   / "sim_state.json"))
+    # Where the synthesized metrics.json lands. Defaults to the
+    # canonical training-artifacts directory under each bot — the
+    # same place tennis / darts / table-tennis write their real
+    # metrics.json. Both the sim and live dashboard configs point
+    # at this same file (training artifacts are shared between
+    # modes), so writing once benefits both pages.
+    metrics_out = cfg.get("metrics_path",
+                            str(Path(repo_path) / "data" / "processed"
+                                / "artifacts" / "metrics.json"))
 
     def _run() -> None:
         log.info("nba-bot starting (repo=%s)", repo_path)
@@ -225,7 +243,7 @@ def start_daemon(cfg: dict) -> Any:
             result = _orig_tick(*args, **kwargs)
             try:
                 _sync_sport_json(repo_path, db_path, watchlist_out,
-                                  sim_state_out)
+                                  sim_state_out, metrics_out)
             except Exception:  # noqa: BLE001
                 log.exception("nba sport-json sync failed (non-fatal)")
             return result
