@@ -132,3 +132,33 @@ def toggle_bot(bot_key: str) -> Dict[str, Any]:
     the POST /api/bot/toggle endpoint behind the homepage toggle UI."""
     current = is_bot_enabled(bot_key)
     return set_bot_enabled(bot_key, not current)
+
+
+def bootstrap_disabled(bot_keys: list[str]) -> bool:
+    """Write a state file with every bot in ``bot_keys`` explicitly
+    set to ``enabled: false`` — but ONLY if the file doesn't exist
+    yet. Returns True if a fresh file was written, False if one was
+    already present (in which case the caller's preferences win and
+    nothing is touched).
+
+    This is the "live dashboard starts with every toggle OFF"
+    enforcement. Without it, the UI would default to "enabled" for
+    unlisted bots (see ``is_bot_enabled`` — that default makes sense
+    for sim where the implicit answer is "yes please trade", but is
+    the wrong default for live where the implicit answer is "no
+    real money until I explicitly opt in"). Called from the live
+    dashboard's main() at startup.
+    """
+    if _STATE_PATH.exists():
+        return False
+    now_iso = datetime.now(timezone.utc).isoformat(timespec="seconds")
+    payload: Dict[str, Any] = {
+        "states": {
+            key: {"enabled": False, "updated_at": now_iso}
+            for key in bot_keys
+        },
+    }
+    _atomic_write(payload)
+    log.info("bootstrap_disabled — wrote %s with %d bots all OFF",
+              _STATE_PATH, len(bot_keys))
+    return True

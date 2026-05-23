@@ -2332,30 +2332,18 @@ body[data-mode="live"] .mode-pill {
   border-color: #3fb950;
 }
 body[data-mode="live"] .mode-pill:hover { background: #3fb950; color: #fff; }
-/* ──────────────────────────────────────────────────────────────────
-   Live-mode theme. A red-tinted background + red H1 + a sticky
-   "REAL MONEY AT RISK" meta banner so you never confuse the two
-   tabs even with both open in adjacent browser windows. The base
-   sim palette is the default GitHub-dark; live overrides only
-   what's needed to scream "this is real".
-   ────────────────────────────────────────────────────────────── */
-body[data-mode="live"] {
-  background: #1c0e0e;
-}
-body[data-mode="live"] h1 {
-  color: #f85149;
-}
-body[data-mode="live"] .meta {
-  background: rgba(248, 81, 73, 0.15);
-  color: #f85149;
-  font-weight: 700;
-  letter-spacing: 0.04em;
-  padding: 10px 14px;
-  border-radius: 6px;
-  margin: 4px 0 18px 0;
-  border-left: 4px solid #f85149;
-  font-size: 13px;
-}
+/* The body[data-mode="..."] hook stays available for future per-
+   mode styling, but the two dashboards intentionally share the
+   default GitHub-dark palette today. Differentiation comes from
+   three lighter cues:
+     1. Header text — "Kalshi Simulation Dashboard" vs "Kalshi
+        LIVE Trading".
+     2. Meta line — "DRY-RUN mode (no real orders)" vs the
+        REAL-MONEY warning.
+     3. Mode-pill colour — red on the sim side (linking out to
+        live), green on the live side (linking back to sim).
+   That trio is enough to tell the two tabs apart at a glance
+   without a jarring red wash. */
 .row { display: flex; gap: 18px; flex-wrap: wrap; margin-bottom: 14px; }
 /* Cards sit on a slightly lighter, slightly cooler shade than the
    section background (#161b22). Subtle border + soft drop-shadow gives
@@ -3207,7 +3195,7 @@ def render_page(
     is_live = (mode == "live")
     page_title = ("Kalshi LIVE Trading"
                    if is_live else "Kalshi Simulation Dashboard")
-    meta_warning = ("⚠ LIVE TRADING — REAL MONEY AT RISK ⚠"
+    meta_warning = ("LIVE TRADING — real money at risk"
                      if is_live else "DRY-RUN mode (no real orders)")
     # Mode-pill text + which port the pill links to. Sim → 8081
     # (live), live → 8080 (sim). The pill's href is rewritten by the
@@ -12187,6 +12175,22 @@ def main(argv: list[str] | None = None) -> int:
     port = args.port or cfg.port
     log.info("starting dashboard in %s mode on http://%s:%d",
              cfg.mode, host, port)
+
+    # Live-mode safety: when the live dashboard boots and its
+    # bot_states_live.json doesn't exist yet, write it with every
+    # bot explicitly set to OFF. Without this, the homepage toggle
+    # UI would render every card as "enabled" by default
+    # (is_bot_enabled returns True for unlisted bots — the right
+    # default for sim, the wrong default for real money). The
+    # bot daemon threads themselves are also gated on the YAML's
+    # <bot>_trader.enabled flag, so this is belt-and-suspenders:
+    # neither the UI nor the daemons treat anything as on until
+    # the operator clicks the toggle (which writes a new entry to
+    # the live state file).
+    if cfg.mode == "live":
+        from . import bot_state
+        bot_state.bootstrap_disabled([b["key"] for b in bots])
+
     serve(host, port, bots, risk_caps, edge_cfg, validator_cfg, hedge_cfg,
           tennis_trader_cfg=tennis_trader_cfg,
           unemployment_trader_cfg=unemployment_trader_cfg,
