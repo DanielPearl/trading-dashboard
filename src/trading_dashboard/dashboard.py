@@ -12091,6 +12091,37 @@ def main(argv: list[str] | None = None) -> int:
         "hedge_size_fraction": cfg.hedge.hedge_size_fraction,
     }
 
+    # Live-mode bootstrap must happen BEFORE the bot registry's
+    # availability check runs (a few lines down) — otherwise every
+    # live macro bot gets ``available=False`` baked in at startup
+    # because the placeholder live.db files aren't created until
+    # later, and the dashboard's bot dropdown shows every bot as
+    # "(no data)" forever (until the next restart re-evaluates).
+    # Two bootstraps:
+    #   1) bot_state.bootstrap_disabled() writes the per-bot toggle
+    #      file with every bot OFF (the homepage toggle UI defaults
+    #      to "enabled" for unlisted bots — wrong default for real
+    #      money).
+    #   2) live_bootstrap.bootstrap_live_data_files() pre-creates
+    #      each live data file (empty SQLite mirroring the sim
+    #      schema, empty-shell JSONs) so the standard renderer
+    #      doesn't early-exit on missing db_path. The model card
+    #      then populates from shared training artifacts; only the
+    #      live-runtime sections show empty.
+    if cfg.mode == "live":
+        from . import bot_state
+        bot_state.bootstrap_disabled([b.key for b in cfg.bots])
+        from . import live_bootstrap
+        # Convert the BotEntry dataclasses to the dict shape the
+        # bootstrap walks (it reads db_path / watchlist_json_path /
+        # sim_state_path — same keys the registry dict uses below).
+        live_bootstrap.bootstrap_live_data_files([
+            {"db_path": b.db_path,
+             "watchlist_json_path": b.watchlist_json_path,
+             "sim_state_path": b.sim_state_path}
+            for b in cfg.bots
+        ])
+
     # Bot registry comes from the dashboard YAML. Each entry's "available"
     # flag reflects whether the bot's sim.db exists on disk — selecting an
     # unavailable bot in the dropdown shows a friendly stub.
@@ -12175,35 +12206,6 @@ def main(argv: list[str] | None = None) -> int:
     port = args.port or cfg.port
     log.info("starting dashboard in %s mode on http://%s:%d",
              cfg.mode, host, port)
-
-    # Live-mode safety: when the live dashboard boots and its
-    # bot_states_live.json doesn't exist yet, write it with every
-    # bot explicitly set to OFF. Without this, the homepage toggle
-    # UI would render every card as "enabled" by default
-    # (is_bot_enabled returns True for unlisted bots — the right
-    # default for sim, the wrong default for real money). The
-    # bot daemon threads themselves are also gated on the YAML's
-    # <bot>_trader.enabled flag, so this is belt-and-suspenders:
-    # neither the UI nor the daemons treat anything as on until
-    # the operator clicks the toggle (which writes a new entry to
-    # the live state file).
-    if cfg.mode == "live":
-        from . import bot_state
-        bot_state.bootstrap_disabled([b["key"] for b in bots])
-        # Also pre-create the live data files (empty SQLite with the
-        # sim schema, empty-shell JSONs). Without this every macro-
-        # bot card renders "unavailable" because the standard
-        # renderer early-exits on missing db_path — even though the
-        # SAME trained model + training artifacts that the sim side
-        # shows are sitting right next to the missing file in the
-        # bot's repo. After bootstrap, the model card renders from
-        # the shared artifacts and only the live-runtime sections
-        # (positions, P&L, current predictions) show empty — which
-        # is the truthful state until each bot's live executor
-        # exists and is opted in.
-        from . import live_bootstrap
-        live_bootstrap.bootstrap_live_data_files(bots)
-
     serve(host, port, bots, risk_caps, edge_cfg, validator_cfg, hedge_cfg,
           tennis_trader_cfg=tennis_trader_cfg,
           unemployment_trader_cfg=unemployment_trader_cfg,
