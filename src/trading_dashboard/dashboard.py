@@ -2332,18 +2332,47 @@ body[data-mode="live"] .mode-pill {
   border-color: #3fb950;
 }
 body[data-mode="live"] .mode-pill:hover { background: #3fb950; color: #fff; }
-/* The body[data-mode="..."] hook stays available for future per-
-   mode styling, but the two dashboards intentionally share the
-   default GitHub-dark palette today. Differentiation comes from
-   three lighter cues:
-     1. Header text — "Kalshi Simulation Dashboard" vs "Kalshi
-        LIVE Trading".
-     2. Meta line — "DRY-RUN mode (no real orders)" vs the
-        REAL-MONEY warning.
-     3. Mode-pill colour — red on the sim side (linking out to
-        live), green on the live side (linking back to sim).
-   That trio is enough to tell the two tabs apart at a glance
-   without a jarring red wash. */
+/* ──────────────────────────────────────────────────────────────────
+   Sim-mode chrome. Live is intentionally the "default" look (clean
+   GitHub-dark, normal h1 colour) so it feels professional rather
+   than alarming. Sim wears a subtle blue accent palette — a thin
+   bar across the top of every page, a muted-blue h1, and a small
+   "SANDBOX" badge next to the title — to signal "playground /
+   paper trading" without using the danger colour wheel. Blue was
+   chosen over green because green would read as "go / trade
+   enabled" against a financial dashboard.
+
+   Combined with the existing header text + meta line + mode-pill
+   differences, this gives sim a coherent identity you can read at
+   a glance even with both tabs open in adjacent browser windows.
+   ────────────────────────────────────────────────────────────── */
+body[data-mode="sim"]::before {
+  content: "";
+  display: block;
+  position: fixed;
+  top: 0; left: 0; right: 0;
+  height: 3px;
+  background: linear-gradient(90deg, #1f6feb 0%, #58a6ff 50%, #1f6feb 100%);
+  z-index: 100;
+  pointer-events: none;
+}
+body[data-mode="sim"] h1 {
+  color: #79c0ff;
+}
+.sim-badge {
+  display: inline-block;
+  margin-left: 10px;
+  padding: 3px 9px;
+  border-radius: 4px;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  vertical-align: middle;
+  background: rgba(88, 166, 255, 0.12);
+  color: #58a6ff;
+  border: 1px solid rgba(88, 166, 255, 0.45);
+  text-transform: uppercase;
+}
 .row { display: flex; gap: 18px; flex-wrap: wrap; margin-bottom: 14px; }
 /* Cards sit on a slightly lighter, slightly cooler shade than the
    section background (#161b22). Subtle border + soft drop-shadow gives
@@ -3220,8 +3249,17 @@ def render_page(
     # palette; the live theme (red-tinted) will land in CSS in the
     # next chapter (the fork itself).
     out.append(f"</head><body data-mode='{html.escape(mode)}'>")
+    # Sim gets a "🧪 SANDBOX" badge next to the title; live stays
+    # clean (the LIVE-TRADING meta line below already says what
+    # the live page is). The badge sits between the title and the
+    # mode-pill so the eye reads: TITLE → badge → action-pill.
+    sim_badge = (
+        "<span class='sim-badge'>🧪 SANDBOX</span> "
+        if not is_live else ""
+    )
     out.append(
-        f"<h1>{html.escape(page_title)}"
+        f"<h1>{html.escape(page_title)} "
+        f"{sim_badge}"
         f"<a class='mode-pill' data-peer-port='{peer_port}' "
         f"href='#'>{html.escape(pill_text)}</a></h1>"
     )
