@@ -1,0 +1,37 @@
+[Unit]
+Description=Kalshi multi-bot trading dashboard (LIVE — real money)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/root/trading-dashboard
+# Same Kalshi creds the sim dashboard uses for read-only candle
+# data fetching. If you ever rotate keys for the live executors
+# (paranoid separation), point this at a different .env file.
+EnvironmentFile=-/root/gas-prices/.env
+# bot_state.py reads KALSHI_BOT_STATES_PATH to decide where to
+# persist per-bot enabled flags. Setting it here gives the live
+# dashboard its own state file, so a toggle click in the sim
+# dashboard NEVER flips a live bot on (and vice versa). The path
+# is relative to WorkingDirectory.
+Environment=KALSHI_BOT_STATES_PATH=/root/trading-dashboard/data/bot_states_live.json
+ExecStart=/root/trading-dashboard/.venv/bin/python /root/trading-dashboard/dashboard.py --config /root/trading-dashboard/config/dashboard-live.yaml
+# Same memory caps as the sim service. When the live side actually
+# starts running bots, the resident set will look similar to the
+# sim side (~700M with all 10 daemons loaded). Both services share
+# the droplet's 2GB so the combined cap (2 × 1.5GB = 3GB) is
+# technically over-committed — works in practice because (a) the
+# live side is paused by default and (b) Python processes are
+# rarely at peak simultaneously. If both ever press their caps
+# you'll see this in the diagnosis panel before it bites.
+MemoryMax=1500M
+MemoryHigh=1200M
+Restart=on-failure
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

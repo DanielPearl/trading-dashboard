@@ -2300,6 +2300,62 @@ h1, h2 { color: #f0f6fc; margin: 0 0 8px 0; }
 h1 { font-size: 22px; font-weight: 600; }
 h2 { font-size: 14px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.06em; color: #8b949e; margin-top: 28px; margin-bottom: 8px; }
 .meta { color: #8b949e; font-size: 12px; margin-bottom: 20px; }
+/* ──────────────────────────────────────────────────────────────────
+   Mode-pill — header anchor that switches between the sim dashboard
+   (port 8080) and the live dashboard (port 8081). JS at the bottom
+   of the page rewrites its href on load to point at the current
+   window.location.host with the peer port, preserving the user's
+   tab / bot / period query string so a click never loses context.
+   ────────────────────────────────────────────────────────────── */
+.mode-pill {
+  display: inline-block;
+  margin-left: 14px;
+  padding: 4px 10px;
+  border-radius: 4px;
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-decoration: none;
+  border: 1px solid;
+  vertical-align: middle;
+  transition: background 0.15s, color 0.15s;
+}
+body[data-mode="sim"] .mode-pill {
+  background: rgba(248, 81, 73, 0.10);
+  color: #f85149;
+  border-color: #f85149;
+}
+body[data-mode="sim"] .mode-pill:hover { background: #f85149; color: #fff; }
+body[data-mode="live"] .mode-pill {
+  background: rgba(63, 185, 80, 0.10);
+  color: #3fb950;
+  border-color: #3fb950;
+}
+body[data-mode="live"] .mode-pill:hover { background: #3fb950; color: #fff; }
+/* ──────────────────────────────────────────────────────────────────
+   Live-mode theme. A red-tinted background + red H1 + a sticky
+   "REAL MONEY AT RISK" meta banner so you never confuse the two
+   tabs even with both open in adjacent browser windows. The base
+   sim palette is the default GitHub-dark; live overrides only
+   what's needed to scream "this is real".
+   ────────────────────────────────────────────────────────────── */
+body[data-mode="live"] {
+  background: #1c0e0e;
+}
+body[data-mode="live"] h1 {
+  color: #f85149;
+}
+body[data-mode="live"] .meta {
+  background: rgba(248, 81, 73, 0.15);
+  color: #f85149;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  padding: 10px 14px;
+  border-radius: 6px;
+  margin: 4px 0 18px 0;
+  border-left: 4px solid #f85149;
+  font-size: 13px;
+}
 .row { display: flex; gap: 18px; flex-wrap: wrap; margin-bottom: 14px; }
 /* Cards sit on a slightly lighter, slightly cooler shade than the
    section background (#161b22). Subtle border + soft drop-shadow gives
@@ -3151,8 +3207,17 @@ def render_page(
     is_live = (mode == "live")
     page_title = ("Kalshi LIVE Trading"
                    if is_live else "Kalshi Simulation Dashboard")
-    meta_warning = ("LIVE TRADING — real money at risk"
+    meta_warning = ("⚠ LIVE TRADING — REAL MONEY AT RISK ⚠"
                      if is_live else "DRY-RUN mode (no real orders)")
+    # Mode-pill text + which port the pill links to. Sim → 8081
+    # (live), live → 8080 (sim). The pill's href is rewritten by the
+    # tiny inline script below so it picks up the current
+    # window.location.host (works on localhost dev and the droplet
+    # interchangeably) and preserves the query string (so toggling
+    # sides doesn't drop your selected bot / tab / period).
+    peer_port = 8080 if is_live else 8081
+    pill_text = ("← Back to SIMULATION"
+                  if is_live else "→ Switch to LIVE (real money)")
 
     out: List[str] = []
     out.append("<!doctype html><html><head>")
@@ -3167,11 +3232,31 @@ def render_page(
     # palette; the live theme (red-tinted) will land in CSS in the
     # next chapter (the fork itself).
     out.append(f"</head><body data-mode='{html.escape(mode)}'>")
-    out.append(f"<h1>{html.escape(page_title)}</h1>")
+    out.append(
+        f"<h1>{html.escape(page_title)}"
+        f"<a class='mode-pill' data-peer-port='{peer_port}' "
+        f"href='#'>{html.escape(pill_text)}</a></h1>"
+    )
     out.append(
         f"<div class='meta'>Loaded "
         f"{datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%SZ')}"
         f" · live updates every 5s · {html.escape(meta_warning)}</div>"
+    )
+    # Inline mode-pill href rewriter. Runs before the rest of the
+    # page JS executes so the user never sees the placeholder '#'
+    # href in any context (link preview, right-click "copy URL", etc).
+    # Preserves window.location.pathname + search so toggling between
+    # sim and live keeps the user on the same bot / tab / period.
+    out.append(
+        "<script>"
+        "(function(){"
+        "  document.querySelectorAll('.mode-pill').forEach(function(a){"
+        "    var p=a.dataset.peerPort; if(!p) return;"
+        "    var u=new URL(window.location.href); u.port=p;"
+        "    a.href=u.toString();"
+        "  });"
+        "})();"
+        "</script>"
     )
 
     # ── Top-level page tabs ───────────────────────────────────────────

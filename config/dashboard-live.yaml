@@ -1,0 +1,310 @@
+# Multi-bot trading dashboard — LIVE (real money) variant.
+#
+# Mirrors config/dashboard.yaml but with the three knobs that matter
+# for the live/sim split flipped:
+#
+#   1. mode: live  → header renders "Kalshi LIVE Trading" + a
+#      red REAL MONEY banner; body data-mode="live" so CSS swaps
+#      to the warning palette.
+#   2. port: 8081  → independent HTTP server, accessed via
+#      http://<droplet>:8081/. The sim dashboard stays on 8080.
+#   3. every <bot>_trader.enabled: false  → no bot threads spin up
+#      until you opt one in. The page renders the registry, the
+#      toggles, and an empty-state for each bot card; nothing
+#      ever calls Kalshi's order endpoint until you flip a
+#      bot's enabled to true (AND that bot has a live executor
+#      written, which is a separate project — see the chat
+#      transcript for context).
+#
+# Bot data paths point at parallel "live.db" / "outputs-live/" files
+# under each bot's existing repo so the live dashboard reads from a
+# completely separate set of files than the sim dashboard. These
+# files do NOT exist yet — they'll be created the first time a live
+# executor writes to them. Until then each bot card shows the
+# friendly "no data" empty state, which is the right UX for "live
+# trading is wired up but nothing's running".
+#
+# IMPORTANT: the trading-dashboard-live.service systemd unit also
+# sets KALSHI_BOT_STATES_PATH=/root/trading-dashboard/data/bot_states_live.json
+# so toggling a bot on in sim doesn't accidentally enable it for
+# real money (and vice versa).
+
+host: "0.0.0.0"
+port: 8081
+
+mode: live
+
+bots:
+  - key: gas-prices
+    name: Retail Gas Prices
+    db_path: /root/gas-prices/data/live.db
+    decisions_path: /root/gas-prices/data/decisions-live.jsonl
+    series_ticker: KXAAAGASW
+    data_source: "FRED EIA + AAA gas survey"
+    display:
+      underlying_label: Retail gas price
+      underlying_unit: "$"
+      underlying_decimals: 2
+      unit_position: prefix
+      chart_period_minutes: 1440
+  - key: unemployment-claims
+    name: Jobless Claims
+    db_path: /root/unemployment-claims/data/live.db
+    decisions_path: /root/unemployment-claims/data/decisions-live.jsonl
+    series_ticker: KXJOBLESSCLAIMS
+    data_source: "FRED ICSA"
+    display:
+      underlying_label: Initial jobless claims
+      underlying_unit: "K"
+      underlying_decimals: 0
+      unit_position: suffix
+      divisor: 1000.0
+      chart_period_minutes: 1
+      watchlist_title_use_event: true
+      question_format: at_least_full
+  - key: nba
+    name: NBA Forecast
+    dashboard_type: sport
+    db_path: /root/nba/data/live.db
+    decisions_path: /root/nba/data/decisions-live.jsonl
+    watchlist_json_path: /root/nba/data/outputs-live/watchlist.json
+    sim_state_path: /root/nba/data/outputs-live/sim_state.json
+    series_ticker: KXNBAGAME
+    data_source: "ESPN box scores + NBA stats API"
+    seasons:
+      - name: "NBA 2025-26 Season"
+        start: "2025-10-21T23:00:00Z"
+        end:   "2026-06-22T03:00:00Z"
+    display:
+      underlying_label: Home team ELO (pre-game)
+      underlying_unit: ""
+      underlying_decimals: 0
+      unit_position: none
+      chart_period_minutes: 1440
+      prediction_period_label: this game
+  - key: cpi
+    name: Consumer Price Index
+    db_path: /root/cpi/data/live.db
+    decisions_path: /root/cpi/data/decisions-live.jsonl
+    series_ticker: KXCPICORE
+    data_source: "FRED CPILFESL + Cleveland Fed nowcast"
+    display:
+      underlying_label: Last realized Core CPI MoM
+      underlying_unit: "pp"
+      underlying_decimals: 2
+      unit_position: suffix
+      chart_period_minutes: 1440
+      prediction_period_label: next month
+  - key: natural-gas
+    name: Natural Gas Prices
+    db_path: /root/peak-load/data/live.db
+    decisions_path: /root/peak-load/outputs-live/daily_signals.json
+    series_ticker: KXNATGASD
+    data_source: "FRED Henry Hub spot"
+    display:
+      underlying_label: Henry Hub spot
+      underlying_unit: "$"
+      underlying_decimals: 2
+      unit_position: prefix
+      chart_period_minutes: 1440
+  - key: tennis
+    name: Tennis Forecast
+    dashboard_type: sport
+    series_ticker: BASELINEBREAK
+    data_source: "Jeff Sackmann tennis_atp + tennis_wta (GitHub)"
+    db_path: /root/tennis-forecast/data/outputs-live/watchlist.json
+    decisions_path: /root/tennis-forecast/data/outputs-live/watchlist.json
+    watchlist_json_path: /root/tennis-forecast/data/outputs-live/watchlist.json
+    metrics_path: /root/tennis-forecast/data/processed/artifacts/metrics.json
+    coefficients_path: /root/tennis-forecast/data/processed/artifacts/model_coefficients.json
+    sim_state_path: /root/tennis-forecast/data/outputs-live/sim_state.json
+    seasons:
+      - name: "ATP Tour 2026"
+        start: "2025-12-29T00:00:00Z"
+        end:   "2026-11-22T22:00:00Z"
+      - name: "WTA Tour 2026"
+        start: "2025-12-29T00:00:00Z"
+        end:   "2026-11-15T23:59:59Z"
+      - name: "Australian Open 2026"
+        start: "2026-01-18T00:00:00Z"
+        end:   "2026-02-01T11:00:00Z"
+      - name: "Roland-Garros 2026"
+        start: "2026-05-24T09:00:00Z"
+        end:   "2026-06-07T19:00:00Z"
+      - name: "Wimbledon 2026"
+        start: "2026-06-29T10:00:00Z"
+        end:   "2026-07-12T19:00:00Z"
+      - name: "US Open 2026"
+        start: "2026-08-24T15:00:00Z"
+        end:   "2026-09-13T22:00:00Z"
+  - key: survivor
+    name: Survivor Elimination
+    dashboard_type: survivor
+    series_ticker: KXSURVIVOR
+    data_source: "doehm/survivoR (GitHub)"
+    db_path: /root/survivor-elimination/data/outputs-live/watchlist.json
+    decisions_path: /root/survivor-elimination/data/outputs-live/watchlist.json
+    watchlist_json_path: /root/survivor-elimination/data/outputs-live/watchlist.json
+    metrics_path: /root/survivor-elimination/data/processed/artifacts/metrics.json
+    coefficients_path: /root/survivor-elimination/data/processed/artifacts/model_coefficients.json
+    sim_state_path: /root/survivor-elimination/data/outputs-live/sim_state.json
+    seasons:
+      - name: "Survivor 50"
+        start: "2026-02-26T01:00:00Z"
+        end:   "2026-05-21T03:00:00Z"
+
+  - key: table-tennis
+    name: Table Tennis Forecast
+    dashboard_type: sport
+    series_ticker: TABLETENNIS
+    data_source: "ahartness/table-tennis-bet-analyzer (GitHub, TT Elite Series 2022-2025)"
+    db_path: /root/table-tennis-forecast/data/outputs-live/watchlist.json
+    decisions_path: /root/table-tennis-forecast/data/outputs-live/watchlist.json
+    watchlist_json_path: /root/table-tennis-forecast/data/outputs-live/watchlist.json
+    metrics_path: /root/table-tennis-forecast/data/processed/artifacts/metrics.json
+    coefficients_path: /root/table-tennis-forecast/data/processed/artifacts/model_coefficients.json
+    sim_state_path: /root/table-tennis-forecast/data/outputs-live/sim_state.json
+    seasons:
+      - name: "TT Elite Series Men 2026"
+        start: "2026-01-01T00:00:00Z"
+        end:   "2026-12-31T23:59:59Z"
+      - name: "ITTF World Team Championships Men 2028"
+        start: "2028-04-24T00:00:00Z"
+        end:   "2028-05-01T23:59:59Z"
+      - name: "ITTF World Team Championships Women 2028"
+        start: "2028-04-24T00:00:00Z"
+        end:   "2028-05-01T23:59:59Z"
+
+  - key: billboard
+    name: Billboard Hot 100
+    dashboard_type: billboard
+    series_ticker: KXRANKLISTSONGTOP10
+    data_source: "Billboard Hot 100 weekly chart"
+    db_path: /root/billboard-charts/data/outputs-live/sim.db
+    decisions_path: /root/billboard-charts/data/outputs-live/watchlist.json
+    watchlist_json_path: /root/billboard-charts/data/outputs-live/watchlist.json
+    metrics_path: /root/billboard-charts/data/processed/artifacts/metrics.json
+    coefficients_path: /root/billboard-charts/data/processed/artifacts/model_coefficients.json
+    sim_state_path: /root/billboard-charts/data/outputs-live/sim_state.json
+
+  - key: darts
+    name: Darts Forecast
+    dashboard_type: sport
+    series_ticker: KXDARTS
+    data_source: "wonderkiduk/darts_data (GitHub, PDC WC 2022)"
+    db_path: /root/darts-forecast/data/outputs-live/watchlist.json
+    decisions_path: /root/darts-forecast/data/outputs-live/watchlist.json
+    watchlist_json_path: /root/darts-forecast/data/outputs-live/watchlist.json
+    metrics_path: /root/darts-forecast/data/processed/artifacts/metrics.json
+    coefficients_path: /root/darts-forecast/data/processed/artifacts/model_coefficients.json
+    sim_state_path: /root/darts-forecast/data/outputs-live/sim_state.json
+    seasons:
+      - name: "PDC Premier League Darts 2026"
+        start: "2026-02-05T19:00:00Z"
+        end:   "2026-05-28T22:30:00Z"
+      - name: "PDC World Championship 2026-27"
+        start: "2026-12-15T19:00:00Z"
+        end:   "2027-01-03T23:30:00Z"
+
+# Display thresholds — same defaults as sim. Each bot's effective_config
+# would override these once it's actually running, same as the sim side.
+risk:
+  bet_size_cents: 100
+  max_open_positions: 1
+  max_total_exposure_cents: 200
+  max_bets_per_day: 50
+  cooldown_seconds_same_market: 1800
+
+edge:
+  min_model_confidence: 0.40
+  min_ev_per_contract: 0.03
+  min_prob_edge_over_breakeven: 0.05
+  min_raw_model_edge: 0.06
+  max_entry_price_cents: 70
+  min_model_accuracy: 0.55
+
+hedge:
+  enabled: true
+  profit_lock_cents: 20
+  stop_loss_cents: 15
+  hedge_size_fraction: 0.5
+
+validators:
+  min_book_depth_contracts: 100
+  max_spread_cents: 8
+  min_minutes_to_close: 30
+  max_minutes_to_close: 10080
+  prob_bounds_cents: [15, 85]
+  min_volume: 50
+  min_open_interest: 50
+  min_depth_at_best_ask: 25
+  basis_risk_strike_window_dollars: 0.03
+  basis_risk_max_hours_to_close: 6
+
+# ──────────────────────────────────────────────────────────────────────
+# Per-bot trader daemons. EVERY ONE IS DISABLED on the live side. To
+# trade real money on a specific bot:
+#
+#   1. Write a live executor for that bot (replace its paper simulator
+#      with a real-order path that hits Kalshi via kalshi_sdk). This is
+#      per-bot work that doesn't exist yet for most bots.
+#   2. Flip that bot's enabled to true here.
+#   3. Deploy + restart trading-dashboard-live.service.
+#   4. Use the Home-tab toggle to confirm the bot is on. The toggle
+#      writes to /root/trading-dashboard/data/bot_states_live.json
+#      (separate from the sim file), so the live bot reads its own
+#      enabled flag.
+#
+# Until each bot is opted in here AND has a live executor, the live
+# dashboard is a passive viewer. Flipping enabled: true on a bot
+# whose code path still calls the paper simulator would write to
+# live.db but never place a real order — confusing, but safe.
+# ──────────────────────────────────────────────────────────────────────
+tennis_trader:
+  enabled: false
+  repo_path: /root/tennis-forecast
+  interval_seconds: 60
+
+unemployment_trader:
+  enabled: false
+  repo_path: /root/unemployment-claims
+  config_path: /root/unemployment-claims/config/config.yaml
+
+cpi_trader:
+  enabled: false
+  repo_path: /root/cpi
+  config_path: /root/cpi/config/config.yaml
+
+nba_trader:
+  enabled: false
+  repo_path: /root/nba
+  config_path: /root/nba/config/config.yaml
+
+gas_trader:
+  enabled: false
+  repo_path: /root/gas-prices
+  config_path: /root/gas-prices/config/config.yaml
+
+survivor_trader:
+  enabled: false
+  repo_path: /root/survivor-elimination
+  interval_seconds: 300
+
+table_tennis_trader:
+  enabled: false
+  repo_path: /root/table-tennis-forecast
+  interval_seconds: 60
+
+darts_trader:
+  enabled: false
+  repo_path: /root/darts-forecast
+  interval_seconds: 60
+
+natgas_trader:
+  enabled: false
+  repo_path: /root/peak-load
+
+billboard_trader:
+  enabled: false
+  repo_path: /root/billboard-charts
+  interval_seconds: 300
