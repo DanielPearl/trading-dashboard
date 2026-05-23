@@ -14,14 +14,15 @@ WorkingDirectory=/root/trading-dashboard
 # (e.g. on a fresh droplet that hasn't installed gas-prices yet).
 EnvironmentFile=-/root/gas-prices/.env
 ExecStart=/root/trading-dashboard/.venv/bin/python /root/trading-dashboard/dashboard.py --config /root/trading-dashboard/config/dashboard.yaml
-# Memory caps raised from the original 80M/60M to accommodate the
-# in-process tennis trader (and subsequent bots that get folded in).
-# The 80M cap was sized for a render-only dashboard; once we import
-# pandas + sklearn + joblib for the tennis bundle the resident set
-# climbs to ~150–180M average, ~220M during model load. 250M gives
-# headroom for the next bot we fold in without another bump.
-MemoryMax=250M
-MemoryHigh=200M
+# Memory caps. Original was 80M/60M (sized for a render-only
+# dashboard). Each folded-in bot adds:
+#   * one-time: pandas/sklearn/xgboost imports (~115M, shared)
+#   * per-bot: model artifact (1–10MB, 81M for billboard)
+#   * per-bot: cached DataFrames (10–40MB)
+# With all 10 bots folded in we project ~350–450M resident.
+# 500M cap gives headroom; soft cap at 400M flags pressure.
+MemoryMax=500M
+MemoryHigh=400M
 Restart=on-failure
 RestartSec=5
 StandardOutput=journal
