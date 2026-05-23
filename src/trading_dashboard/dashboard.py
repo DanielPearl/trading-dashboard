@@ -11837,7 +11837,10 @@ def serve(host: str, port: int, bots: List[dict], risk_caps: dict,
           unemployment_trader_cfg: dict | None = None,
           cpi_trader_cfg: dict | None = None,
           nba_trader_cfg: dict | None = None,
-          gas_trader_cfg: dict | None = None) -> None:
+          gas_trader_cfg: dict | None = None,
+          survivor_trader_cfg: dict | None = None,
+          table_tennis_trader_cfg: dict | None = None,
+          darts_trader_cfg: dict | None = None) -> None:
     Handler.bots = bots
     Handler.risk_caps = risk_caps
     Handler.edge_cfg = edge_cfg
@@ -11889,6 +11892,18 @@ def serve(host: str, port: int, bots: List[dict], risk_caps: dict,
     if gas_trader_cfg:
         from .bots import gas_prices as gas_bot
         gas_bot.start_daemon(gas_trader_cfg)
+    # Live-monitor bots (Shape B — hand-rolled tick loops mirroring
+    # tennis). Each one fetches Kalshi markets, runs the model, and
+    # ticks its paper-trading simulator on a configurable interval.
+    if survivor_trader_cfg:
+        from .bots import survivor as survivor_bot
+        survivor_bot.start_daemon(survivor_trader_cfg)
+    if table_tennis_trader_cfg:
+        from .bots import table_tennis as table_tennis_bot
+        table_tennis_bot.start_daemon(table_tennis_trader_cfg)
+    if darts_trader_cfg:
+        from .bots import darts as darts_bot
+        darts_bot.start_daemon(darts_trader_cfg)
     server = ThreadingHTTPServer((host, port), Handler)
     log.info("dashboard listening on http://%s:%d", host, port)
     log.info("registered bots: %s",
@@ -12017,6 +12032,9 @@ def main(argv: list[str] | None = None) -> int:
     cpi_trader_cfg = cfg.raw.get("cpi_trader") or {}
     nba_trader_cfg = cfg.raw.get("nba_trader") or {}
     gas_trader_cfg = cfg.raw.get("gas_trader") or {}
+    survivor_trader_cfg = cfg.raw.get("survivor_trader") or {}
+    table_tennis_trader_cfg = cfg.raw.get("table_tennis_trader") or {}
+    darts_trader_cfg = cfg.raw.get("darts_trader") or {}
 
     host = args.host or cfg.host
     port = args.port or cfg.port
@@ -12025,7 +12043,10 @@ def main(argv: list[str] | None = None) -> int:
           unemployment_trader_cfg=unemployment_trader_cfg,
           cpi_trader_cfg=cpi_trader_cfg,
           nba_trader_cfg=nba_trader_cfg,
-          gas_trader_cfg=gas_trader_cfg)
+          gas_trader_cfg=gas_trader_cfg,
+          survivor_trader_cfg=survivor_trader_cfg,
+          table_tennis_trader_cfg=table_tennis_trader_cfg,
+          darts_trader_cfg=darts_trader_cfg)
     return 0
 
 

@@ -371,3 +371,21 @@ gas_trader:
   # needed in the dashboard module.
   repo_path: /root/gas-prices
   config_path: /root/gas-prices/config/config.yaml
+
+# Live-monitor bots (tennis-shape). Each one writes a JSON
+# watchlist + sim_state on every tick; the dashboard's
+# tennis-shape page renders those files.
+survivor_trader:
+  enabled: true
+  repo_path: /root/survivor-elimination
+  interval_seconds: 300
+
+table_tennis_trader:
+  enabled: true
+  repo_path: /root/table-tennis-forecast
+  interval_seconds: 60
+
+darts_trader:
+  enabled: true
+  repo_path: /root/darts-forecast
+  interval_seconds: 60
