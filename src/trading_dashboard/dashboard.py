@@ -11987,13 +11987,19 @@ def main(argv: list[str] | None = None) -> int:
     bots: list[dict] = []
     for b in cfg.bots:
         if b.dashboard_type == "sport":
-            # Sport bots are "available" if the watchlist JSON exists.
-            # Sport-shape bots (tennis, table-tennis, darts) write it
-            # directly on every refresh; the NBA bot writes it via the
-            # _sport_adapter after each Bot.tick(). An empty rows list
-            # still counts as available (renders empty state).
-            available = bool(b.watchlist_json_path
-                             and Path(b.watchlist_json_path).exists())
+            # Sport bots are "available" if their watchlist JSON OR
+            # their sim.db exists. Sport-shape bots (tennis,
+            # table-tennis, darts) write watchlist.json directly on
+            # every refresh; the NBA bot writes it via the
+            # _sport_adapter after each Bot.tick(), and on a fresh
+            # boot the adapter hasn't run yet — so we accept db_path
+            # as evidence the bot is wired up. The page renders an
+            # empty-state placeholder until the adapter's first sync.
+            available = bool(
+                (b.watchlist_json_path
+                 and Path(b.watchlist_json_path).exists())
+                or (b.db_path and Path(b.db_path).exists())
+            )
         elif b.dashboard_type == "survivor":
             # Available whenever the trained model artifact (metrics
             # file) exists. The bot card on the homepage and the bot

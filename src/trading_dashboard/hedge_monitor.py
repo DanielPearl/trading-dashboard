@@ -586,12 +586,14 @@ def tick(bots: List[dict], hedge_cfg: dict) -> List[Dict[str, Any]]:
         bot_key = b.get("key", "")
         bot_name = b.get("name", "")
         try:
-            if dt in ("tennis", "survivor"):
-                # Tennis + survivor both use sim_state.json. Survivor
-                # currently has no open positions but the framework
-                # is in place — as soon as the bot starts paper-
-                # trading elimination markets, this path picks them
-                # up automatically.
+            if dt in ("sport", "survivor"):
+                # Sport (tennis / table-tennis / darts / NBA) and
+                # survivor all use sim_state.json. Survivor currently
+                # has no open positions but the framework is in
+                # place — as soon as the bot starts paper-trading
+                # elimination markets, this path picks them up
+                # automatically. NBA's sim_state.json is synthesized
+                # by bots/_sport_adapter from sim.db after each tick.
                 results = _check_tennis_state(
                     b.get("sim_state_path"), b,
                     profit_lock_cents=pl, stop_loss_cents=sl,

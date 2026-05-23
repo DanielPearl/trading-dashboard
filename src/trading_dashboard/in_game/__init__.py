@@ -63,7 +63,7 @@ def predict(bot: Dict[str, Any], position: Dict[str, Any],
     try:
         if bot_key == "nba":
             pred = _nba.predict(bot, position, market_view)
-        elif bot_key == "tennis" or (dt == "tennis" and bot_key == "tennis"):
+        elif bot_key == "tennis" or (dt == "sport" and bot_key == "tennis"):
             pred = _tennis.predict(bot, position, market_view,
                                       sport="tennis")
         elif bot_key == "table-tennis":
