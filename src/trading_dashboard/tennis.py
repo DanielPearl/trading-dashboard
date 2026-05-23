@@ -1574,28 +1574,14 @@ def _render_tennis_models_page(metrics: dict, coefficients: dict,
         _render_confidence_card(out, conf)
     elif conf:
         # No held-out CSV but the tennis fallback tier is still
-        # meaningful; show the same one-liner so the user sees the
-        # data confidence even without an ROC plot.
+        # meaningful; show the confidence card alone. (The previous
+        # version of this branch tried to also render an ROC curve
+        # + confusion matrix, but those references — roc_points,
+        # cm, n_pairs — only get defined in the ``if holdout_pairs:``
+        # branch above, so it 500'd the moment a sport bot landed
+        # here. NBA was the first bot in production to do so since
+        # it has a model accuracy metric but no held-out CSV.)
         _render_tennis_confidence_card(out, conf)
-        out.append(
-            "<div style='display:grid;grid-template-columns:1fr 1fr;"
-            "gap:14px;align-items:start;'>"
-        )
-        out.append("<div>")
-        out.append("<h3 class='subhead' style='margin-top:0;'>"
-                    "ROC curve <span class='small gray'>(historical "
-                    f"held-out test set, {n_pairs:,} predictions)"
-                    "</span></h3>")
-        out.append(_svg_roc_curve(roc_points, auc_scalar=auc_scalar))
-        out.append("</div>")
-        out.append("<div>")
-        out.append("<h3 class='subhead' style='margin-top:0;'>"
-                    "Confusion matrix <span class='small gray'>"
-                    "(historical held-out test set, threshold = 0.5)"
-                    "</span></h3>")
-        out.append(_svg_confusion(cm))
-        out.append("</div>")
-        out.append("</div>")
 
         out.append("<h3 class='subhead'>Calibration "
                     "<span class='small gray'>(historical held-out "
