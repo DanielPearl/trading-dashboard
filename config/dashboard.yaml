@@ -51,8 +51,19 @@ bots:
       question_format: at_least_full
   - key: nba
     name: NBA Forecast
+    # NBA is a head-to-head sport bot ("Will Team A win?") — same
+    # match-row shape as tennis / table-tennis / darts, so it
+    # renders under the unified ``dashboard_type: sport`` page.
+    # NBA's underlying loop still writes to sim.db (positions,
+    # market_views, model_snapshots — the standard-bot schema);
+    # bots/_sport_adapter.py reads that sim.db after each
+    # Bot.tick() and emits sport-shape watchlist.json +
+    # sim_state.json at the JSON paths below.
+    dashboard_type: sport
     db_path: /root/nba/data/sim.db
     decisions_path: /root/nba/data/decisions.jsonl
+    watchlist_json_path: /root/nba/data/outputs/watchlist.json
+    sim_state_path: /root/nba/data/outputs/sim_state.json
     series_ticker: KXNBAGAME
     data_source: "ESPN box scores + NBA stats API"
     # Single league-level window — regular-season tip-off through
@@ -119,7 +130,7 @@ bots:
     # coefficients files instead of a sim.db. The dashboard reads them
     # directly. db_path/decisions_path are unused but kept set so the
     # generic "available" check has somewhere to look.
-    dashboard_type: tennis
+    dashboard_type: sport
     series_ticker: BASELINEBREAK
     data_source: "Jeff Sackmann tennis_atp + tennis_wta (GitHub)"
     db_path: /root/tennis-forecast/data/outputs/watchlist.json
@@ -186,9 +197,9 @@ bots:
   - key: table-tennis
     name: Table Tennis Forecast
     # Table-tennis bot writes the same JSON output schema as tennis, so
-    # it routes through the same ``dashboard_type: tennis`` adapter. The
+    # it routes through the same ``dashboard_type: sport`` adapter. The
     # series_ticker meta label distinguishes the cards on the home grid.
-    dashboard_type: tennis
+    dashboard_type: sport
     series_ticker: TABLETENNIS
     data_source: "ahartness/table-tennis-bet-analyzer (GitHub, TT Elite Series 2022-2025)"
     db_path: /root/table-tennis-forecast/data/outputs/watchlist.json
@@ -240,11 +251,12 @@ bots:
     name: Darts Forecast
     # Darts bot writes the same JSON output schema as tennis (one row
     # per upcoming-or-live match with model + live + market probs and
-    # edge/EV/confidence), so it routes through the ``dashboard_type:
-    # tennis`` adapter. The series_ticker meta label is a generic
+    # edge/EV/confidence), so it routes through the unified
+    # ``dashboard_type: sport`` adapter. The series_ticker meta label
+    # is a generic
     # KXDARTS prefix; the bot polls every configured darts series
     # (Premier League, Worlds, PDC tour) under that umbrella.
-    dashboard_type: tennis
+    dashboard_type: sport
     series_ticker: KXDARTS
     data_source: "wonderkiduk/darts_data (GitHub, PDC WC 2022)"
     db_path: /root/darts-forecast/data/outputs/watchlist.json

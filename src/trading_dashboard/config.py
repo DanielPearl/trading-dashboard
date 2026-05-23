@@ -84,15 +84,19 @@ class BotEntry:
     name: str
     db_path: str
     decisions_path: str
-    # "standard" → render the gas-bot-style page (model card, watchlist,
-    # positions). "tennis" → render the tennis-forecast page driven by
-    # watchlist_json_path + metrics_path + coefficients_path.
-    # "survivor" → same JSON-source shape as tennis with a per-
-    # contestant table.
+    # "standard" → render the macro-bot page (model card, watchlist,
+    # positions) reading from sim.db.
+    # "sport" → render the head-to-head match page driven by
+    # watchlist_json_path + sim_state_path. Used by tennis,
+    # table-tennis, darts (which write the JSONs directly) and NBA
+    # (whose sim.db is translated to the sport schema by
+    # bots/_sport_adapter after each tick).
+    # "survivor" → JSON-source shape with a per-contestant table.
+    # "billboard" → JSON-source shape with a song-rank table.
     dashboard_type: str = "standard"
-    # Tennis bot inputs — the tennis-forecast project writes these to
-    # data/outputs/ + data/processed/artifacts/ on its own cadence;
-    # the dashboard just reads them.
+    # Sport / survivor / billboard inputs — JSON-shaped bots write
+    # these to their data/outputs/ dirs on their own cadence; the
+    # dashboard just reads them.
     watchlist_json_path: str | None = None
     metrics_path: str | None = None
     coefficients_path: str | None = None

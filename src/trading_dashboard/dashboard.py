@@ -971,7 +971,7 @@ def fetch_global_summary(bots: List[dict],
         # than a sim.db; we map it onto the same dict shape via
         # ``tennis.summary_for_rollup`` so the cross-bot summary cards
         # at the top of the home page DO include tennis volume + P&L.
-        if b.get("dashboard_type") == "tennis":
+        if b.get("dashboard_type") == "sport":
             from . import tennis as _tennis
             s = _tennis.summary_for_rollup(b.get("sim_state_path"))
         elif b.get("dashboard_type") == "survivor":
@@ -1086,7 +1086,7 @@ def _build_global_active_bets(bots: List[dict]) -> List[dict]:
         if not b.get("available"):
             continue
         dt = b.get("dashboard_type") or "standard"
-        if dt == "tennis":
+        if dt == "sport":
             from . import tennis as _tennis
             rows = _tennis.active_bets_for_rollup(
                 b.get("sim_state_path"),
@@ -5100,7 +5100,7 @@ def _render_bot_cards(out: List[str], rollup: dict,
         # through its own page since its model has its own renderer.
         if not bot_key:
             href = "#"
-        elif b.get("dashboard_type") in ("tennis", "survivor", "billboard"):
+        elif b.get("dashboard_type") in ("sport", "survivor", "billboard"):
             href = f"?bot={html.escape(bot_key)}&tab=models"
         else:
             href = f"?tab=models&bot={html.escape(bot_key)}"
@@ -5119,7 +5119,7 @@ def _render_bot_cards(out: List[str], rollup: dict,
         # "training accuracy" is a per-strike grid average that doesn't
         # line up apples-to-apples with the live actual-win-%, so the
         # drift badge fires spuriously on every load.
-        _drift_exempt = b.get("dashboard_type") in ("tennis", "survivor", "billboard") \
+        _drift_exempt = b.get("dashboard_type") in ("sport", "survivor", "billboard") \
             or bot_key == "natural-gas"
         if m and not _drift_exempt:
             a_wins_pre = int(m.get("actual_wins") or 0)
@@ -5148,7 +5148,7 @@ def _render_bot_cards(out: List[str], rollup: dict,
         # the schema we need, so they get no pill (rather than a
         # misleading "no data" badge on every load).
         regime_html = ""
-        if b.get("dashboard_type") not in ("tennis", "survivor", "billboard"):
+        if b.get("dashboard_type") not in ("sport", "survivor", "billboard"):
             regime = bot_regime_status(b.get("db_path") or "")
             if regime.get("status") and regime["status"] != "gray":
                 regime_html = (
@@ -5507,7 +5507,7 @@ def _render_active_bets_table(out: List[str], bets: List[dict],
         bot_key = b.get("_bot_key") or ""
         bot_dt = b.get("_dashboard_type") or "standard"
         if bot_key:
-            if bot_dt == "tennis":
+            if bot_dt == "sport":
                 href = f"?bot={html.escape(bot_key)}&tab=watchlist"
             else:
                 href = f"?tab=watchlist&bot={html.escape(bot_key)}"
@@ -6181,7 +6181,7 @@ def _render_bet_history_block(out: List[str], history: List[dict],
         bot_key = b.get("_bot_key") or ""
         bot_dt = b.get("_dashboard_type") or "standard"
         if bot_key:
-            if bot_dt == "tennis":
+            if bot_dt == "sport":
                 bot_href = f"?bot={html.escape(bot_key)}&tab=watchlist"
             else:
                 bot_href = f"?tab=watchlist&bot={html.escape(bot_key)}"
@@ -9469,7 +9469,7 @@ def _ingame_backtest_rows(bot: dict) -> List[dict]:
     """
     bot_key = bot.get("key", "")
     rows: List[dict] = []
-    if bot.get("dashboard_type") == "tennis":
+    if bot.get("dashboard_type") == "sport":
         # Tennis-shape: closed_positions in sim_state.json. The rollup
         # shape exposes entry_price_cents (market view) + the bot's
         # pre-game model probability under model_yes_prob_at_entry.
@@ -9699,7 +9699,7 @@ def _render_models_panel(out: List[str], bot: dict, model: dict | None,
     # sim.db — they keep their model artifacts in metrics.json +
     # coefficients.json. Delegate to the tennis renderer; Phase 2b
     # will replace this with a unified section-by-section layout.
-    if bot.get("dashboard_type") == "tennis":
+    if bot.get("dashboard_type") == "sport":
         from . import tennis as _tennis
         metrics = _tennis.load_metrics(bot.get("metrics_path"))
         coefficients = _tennis.load_coefficients(bot.get("coefficients_path"))
@@ -11235,7 +11235,7 @@ class Handler(BaseHTTPRequestHandler):
                 # watchlist + open positions into the standard row
                 # schema so the shared ``render_page`` consumes them
                 # exactly the way it consumes Kalshi event-bot data.
-                if bot.get("dashboard_type") == "tennis":
+                if bot.get("dashboard_type") == "sport":
                     from . import tennis as _tennis
                     payload_wl = _tennis.load_watchlist(
                         bot.get("watchlist_json_path"))
@@ -11327,7 +11327,7 @@ class Handler(BaseHTTPRequestHandler):
                 # candlestick fetch entirely so the hero renders an
                 # empty chart frame rather than 500ing.
                 if (series_ticker
-                        and bot.get("dashboard_type") not in ("tennis",
+                        and bot.get("dashboard_type") not in ("sport",
                                                               "billboard")):
                     from . import kalshi_client
                     # Sport series like KXNBAGAME have many concurrent
@@ -11368,7 +11368,7 @@ class Handler(BaseHTTPRequestHandler):
                 # plots something useful.
                 prob_history: List[dict] = []
                 if (db_path
-                        and bot.get("dashboard_type") not in ("tennis",
+                        and bot.get("dashboard_type") not in ("sport",
                                                               "survivor",
                                                               "billboard")):
                     candidates: List[str] = []
@@ -11428,7 +11428,7 @@ class Handler(BaseHTTPRequestHandler):
                     # metrics.json / coefficients.json. Synthesize a model
                     # dict for the card grid so the tennis bot shows up
                     # alongside the Kalshi bots on the home page.
-                    if b.get("dashboard_type") in ("tennis", "survivor", "billboard"):
+                    if b.get("dashboard_type") in ("sport", "survivor", "billboard"):
                         # Tennis, survivor, and billboard share the
                         # sim_state.json shape — the survivor and
                         # billboard adapters delegate
@@ -11458,7 +11458,7 @@ class Handler(BaseHTTPRequestHandler):
                         })
                         # Pull open paper bets into the cross-bot
                         # active-bets table.
-                        if b.get("dashboard_type") == "tennis":
+                        if b.get("dashboard_type") == "sport":
                             for ab in _tennis.active_bets_for_rollup(
                                 b.get("sim_state_path"),
                                 watchlist_path=b.get("watchlist_json_path"),
@@ -11607,7 +11607,7 @@ class Handler(BaseHTTPRequestHandler):
                 # the active-bet table per request. Tennis-shape bots
                 # have no sim.db; pull their closed paper-bet rollup
                 # from the tennis adapter instead.
-                if bot.get("dashboard_type") == "tennis":
+                if bot.get("dashboard_type") == "sport":
                     from . import tennis as _tennis
                     bot_closed_positions = _tennis.closed_positions_for_rollup(
                         bot.get("sim_state_path"), limit=100,
@@ -11692,7 +11692,7 @@ class Handler(BaseHTTPRequestHandler):
                 if snap_period not in {k for k, _, _ in PERIOD_OPTIONS}:
                     snap_period = "all"
                 snap_period_days = _period_days(snap_period)
-                if bot.get("dashboard_type") == "tennis":
+                if bot.get("dashboard_type") == "sport":
                     # Tennis bots now render through the standard
                     # ``render_page`` — feed the JS poller a real
                     # snapshot built from the JSON watchlist + sim_state
@@ -11986,10 +11986,12 @@ def main(argv: list[str] | None = None) -> int:
     # unavailable bot in the dropdown shows a friendly stub.
     bots: list[dict] = []
     for b in cfg.bots:
-        if b.dashboard_type == "tennis":
-            # Tennis bot is "available" if the watchlist JSON exists. The
-            # tennis-forecast cron writes it on every refresh; an empty
-            # rows list still counts as available (renders empty state).
+        if b.dashboard_type == "sport":
+            # Sport bots are "available" if the watchlist JSON exists.
+            # Sport-shape bots (tennis, table-tennis, darts) write it
+            # directly on every refresh; the NBA bot writes it via the
+            # _sport_adapter after each Bot.tick(). An empty rows list
+            # still counts as available (renders empty state).
             available = bool(b.watchlist_json_path
                              and Path(b.watchlist_json_path).exists())
         elif b.dashboard_type == "survivor":
