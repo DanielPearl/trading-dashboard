@@ -353,3 +353,21 @@ cpi_trader:
   # ``cpi_bot.main.Bot``.
   repo_path: /root/cpi
   config_path: /root/cpi/config/config.yaml
+
+nba_trader:
+  enabled: true
+  # Path to the nba-forecast repo. Bot module injects
+  # ``<repo_path>/src`` onto sys.path and imports
+  # ``nba_bot.main.Bot``. Per memory the droplet repo is /root/nba.
+  repo_path: /root/nba
+  config_path: /root/nba/config/config.yaml
+
+gas_trader:
+  enabled: true
+  # Path to the retail-gas-prices repo. Bot module injects
+  # ``<repo_path>/src`` onto sys.path and imports
+  # ``kalshi_gas_bot.main.Bot``. Bot.run() spawns its own
+  # _light_loop subthread for orderbook ticks — no extra work
+  # needed in the dashboard module.
+  repo_path: /root/gas-prices
+  config_path: /root/gas-prices/config/config.yaml
