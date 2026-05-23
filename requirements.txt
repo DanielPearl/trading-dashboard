@@ -41,3 +41,5 @@ pytrends>=4.9               # unemployment-claims: Google Trends features
 python-dateutil>=2.8        # unemployment-claims: Easter-week flag
 matplotlib>=3.7             # gas-prices: chart export (rare path)
 rich>=13.7                  # gas-prices: console table rendering
+xgboost>=2.0                # survivor: model.joblib has xgboost classifiers;
+                            # billboard also needs this when folded in.

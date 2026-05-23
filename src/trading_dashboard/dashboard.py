@@ -11840,7 +11840,8 @@ def serve(host: str, port: int, bots: List[dict], risk_caps: dict,
           gas_trader_cfg: dict | None = None,
           survivor_trader_cfg: dict | None = None,
           table_tennis_trader_cfg: dict | None = None,
-          darts_trader_cfg: dict | None = None) -> None:
+          darts_trader_cfg: dict | None = None,
+          natgas_trader_cfg: dict | None = None) -> None:
     Handler.bots = bots
     Handler.risk_caps = risk_caps
     Handler.edge_cfg = edge_cfg
@@ -11904,6 +11905,12 @@ def serve(host: str, port: int, bots: List[dict], risk_caps: dict,
     if darts_trader_cfg:
         from .bots import darts as darts_bot
         darts_bot.start_daemon(darts_trader_cfg)
+    # Natural-gas trader. The only Tier-3 bot — cron-scheduled
+    # (3x/day UTC), so the in-process daemon is a scheduler that
+    # sleeps between firings rather than a tight poll loop.
+    if natgas_trader_cfg:
+        from .bots import natural_gas as natgas_bot
+        natgas_bot.start_daemon(natgas_trader_cfg)
     server = ThreadingHTTPServer((host, port), Handler)
     log.info("dashboard listening on http://%s:%d", host, port)
     log.info("registered bots: %s",
@@ -12035,6 +12042,7 @@ def main(argv: list[str] | None = None) -> int:
     survivor_trader_cfg = cfg.raw.get("survivor_trader") or {}
     table_tennis_trader_cfg = cfg.raw.get("table_tennis_trader") or {}
     darts_trader_cfg = cfg.raw.get("darts_trader") or {}
+    natgas_trader_cfg = cfg.raw.get("natgas_trader") or {}
 
     host = args.host or cfg.host
     port = args.port or cfg.port
@@ -12046,7 +12054,8 @@ def main(argv: list[str] | None = None) -> int:
           gas_trader_cfg=gas_trader_cfg,
           survivor_trader_cfg=survivor_trader_cfg,
           table_tennis_trader_cfg=table_tennis_trader_cfg,
-          darts_trader_cfg=darts_trader_cfg)
+          darts_trader_cfg=darts_trader_cfg,
+          natgas_trader_cfg=natgas_trader_cfg)
     return 0
 
 

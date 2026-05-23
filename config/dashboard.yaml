@@ -389,3 +389,10 @@ darts_trader:
   enabled: true
   repo_path: /root/darts-forecast
   interval_seconds: 60
+
+# Natural-gas trader. Cron-scheduled — see bots/natural_gas.py for
+# the firing-time logic. Repo lives at /root/peak-load on the
+# droplet (legacy path, predates the natural-gas rename).
+natgas_trader:
+  enabled: true
+  repo_path: /root/peak-load
