@@ -396,3 +396,12 @@ darts_trader:
 natgas_trader:
   enabled: true
   repo_path: /root/peak-load
+
+# Billboard trader — biggest model artifact (81MB) but lazy-loaded
+# inside predict_top10_proba(), so startup cost is small. If memory
+# pressure becomes a problem under high market load, flip
+# enabled: false to free the loaded model on next restart.
+billboard_trader:
+  enabled: true
+  repo_path: /root/billboard-charts
+  interval_seconds: 300

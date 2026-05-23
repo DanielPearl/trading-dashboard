@@ -11841,7 +11841,8 @@ def serve(host: str, port: int, bots: List[dict], risk_caps: dict,
           survivor_trader_cfg: dict | None = None,
           table_tennis_trader_cfg: dict | None = None,
           darts_trader_cfg: dict | None = None,
-          natgas_trader_cfg: dict | None = None) -> None:
+          natgas_trader_cfg: dict | None = None,
+          billboard_trader_cfg: dict | None = None) -> None:
     Handler.bots = bots
     Handler.risk_caps = risk_caps
     Handler.edge_cfg = edge_cfg
@@ -11911,6 +11912,13 @@ def serve(host: str, port: int, bots: List[dict], risk_caps: dict,
     if natgas_trader_cfg:
         from .bots import natural_gas as natgas_bot
         natgas_bot.start_daemon(natgas_trader_cfg)
+    # Billboard trader — biggest model in the fleet (81MB joblib).
+    # Lazy-loaded inside predict_top10_proba via @lru_cache, so this
+    # daemon's startup memory footprint is small; the model spike
+    # only lands on the first tick that finds open Billboard markets.
+    if billboard_trader_cfg:
+        from .bots import billboard as billboard_bot
+        billboard_bot.start_daemon(billboard_trader_cfg)
     server = ThreadingHTTPServer((host, port), Handler)
     log.info("dashboard listening on http://%s:%d", host, port)
     log.info("registered bots: %s",
@@ -12043,6 +12051,7 @@ def main(argv: list[str] | None = None) -> int:
     table_tennis_trader_cfg = cfg.raw.get("table_tennis_trader") or {}
     darts_trader_cfg = cfg.raw.get("darts_trader") or {}
     natgas_trader_cfg = cfg.raw.get("natgas_trader") or {}
+    billboard_trader_cfg = cfg.raw.get("billboard_trader") or {}
 
     host = args.host or cfg.host
     port = args.port or cfg.port
@@ -12055,7 +12064,8 @@ def main(argv: list[str] | None = None) -> int:
           survivor_trader_cfg=survivor_trader_cfg,
           table_tennis_trader_cfg=table_tennis_trader_cfg,
           darts_trader_cfg=darts_trader_cfg,
-          natgas_trader_cfg=natgas_trader_cfg)
+          natgas_trader_cfg=natgas_trader_cfg,
+          billboard_trader_cfg=billboard_trader_cfg)
     return 0
 
 
