@@ -303,35 +303,31 @@ def collect_service(name: str) -> tuple[dict, list[dict], list[dict]]:
     active = _service_active(name)
     crash_restarts = _crash_restart_count(name)
     manual_restarts = _manual_restart_count_24h(name)
-    lines = _journal_24h(name)
-    errors = [ln for ln in lines if ERROR_RE.search(ln)]
-    warns = [ln for ln in lines if WARN_RE.search(ln)]
-    tracebacks = _dedup_keep_order(_extract_tracebacks(lines))
 
-    # Status classification scopes to errors that are BOTH recent (last
-    # 24h) AND post-restart (since the unit was last (re)started).  Use
-    # the LATER of the two timestamps as the window start:
-    #
-    #   * Freshly restarted service: window = since-restart, so pre-fix
-    #     errors don't tar a deploy that just shipped the fix.
-    #   * Long-running service (> 24h up): window = last 24h, so really
-    #     old errors don't keep the badge red forever.
-    #
-    # The full 24h list still feeds bugs[] and the notable line so
-    # history isn't lost — only the live degraded badge tightens.
+    # Window the bugs / streamlining lists to "since the unit was last
+    # (re)started", capped at 24h. The previous version used the full
+    # 24h for these lists even though classification already scoped to
+    # since-restart — net effect was that the dashboard kept rendering
+    # tracebacks from pre-fix code for up to a day after the deploy
+    # that fixed them, plus warning counts that included pre-filter
+    # spam. The collector is a "what's broken right now" tool, not an
+    # incident archive, so all three signals should agree on the same
+    # window.
     now = datetime.now(timezone.utc)
     h24_ago_iso = (now - timedelta(hours=24)).strftime("%Y-%m-%d %H:%M:%S UTC")
     last_start = _last_start_iso(name)
     # Both timestamps are "YYYY-MM-DD HH:MM:SS UTC"; lexicographic
     # comparison matches chronological order in that format.
-    cls_since = (last_start
-                 if last_start and last_start > h24_ago_iso
-                 else h24_ago_iso)
-    cls_lines = _journal_since(name, cls_since)
-    classification_errors = [ln for ln in cls_lines if ERROR_RE.search(ln)]
+    window_since = (last_start
+                     if last_start and last_start > h24_ago_iso
+                     else h24_ago_iso)
+    window_lines = _journal_since(name, window_since)
+    errors = [ln for ln in window_lines if ERROR_RE.search(ln)]
+    warns = [ln for ln in window_lines if WARN_RE.search(ln)]
+    tracebacks = _dedup_keep_order(_extract_tracebacks(window_lines))
 
     last_error = errors[-1] if errors else None
-    status = _classify(active, len(classification_errors), crash_restarts)
+    status = _classify(active, len(errors), crash_restarts)
 
     service_row = {
         "name": name,
@@ -367,10 +363,11 @@ def collect_service(name: str) -> tuple[dict, list[dict], list[dict]]:
                              "review the traceback)",
         })
 
-    # Streamlining: warnings that fire ≥10× in 24h almost always indicate
-    # a missed retry / chatty third-party / dead config branch.  Surface
-    # the top three so the dashboard hints at them without listing every
-    # noise line.
+    # Streamlining: warnings that fire ≥10× in the current window
+    # (capped at 24h, scoped down to since-last-restart) almost always
+    # indicate a missed retry / chatty third-party / dead config
+    # branch.  Surface the top three so the dashboard hints at them
+    # without listing every noise line.
     streamlining: list[dict] = []
     warn_norm = [re.sub(r"\d+", "N", w.split("]", 1)[-1].strip()) for w in warns]
     common = Counter(warn_norm).most_common(3)
@@ -379,7 +376,7 @@ def collect_service(name: str) -> tuple[dict, list[dict], list[dict]]:
             continue
         streamlining.append({
             "service": name,
-            "what": f"Warning fires {count}× in 24h",
+            "what": f"Warning fires {count}× since last restart",
             "where": "(repeated log pattern)",
             "evidence": pattern[:400],
             "suggested_fix": "Consider rate-limiting, fixing root cause, "

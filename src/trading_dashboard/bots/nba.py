@@ -16,11 +16,90 @@ from __future__ import annotations
 
 import logging
 import re
+import time
 from pathlib import Path
 from typing import Any, Optional
 
 from . import _base
 from . import _sport_adapter
+
+
+class _NbaApiFetchSpamFilter(logging.Filter):
+    """Drop the upstream "game-log fetch for YYYY-YY failed" + the
+    "skipping season … due to fetch error" follow-up.
+
+    Digital Ocean cloud IPs are rate-limited (HTTP 403 or empty body)
+    by stats.nba.com, so nba_api fetches reliably fail on the
+    droplet. Upstream's nba_bot.data_sources retries 3× with backoff
+    per season before giving up, then logs a "skipping season" line
+    — once per season per tick, so for two open seasons that's
+    8 warning lines per tick × ~12 ticks/hour during market hours
+    ≈ 100/hour. The bot degrades gracefully (predictions still
+    work from the existing cached training data), but the warning
+    storm masks any real failure in the journal.
+
+    Drop both message families at the logger level. The retries
+    themselves are also negative-cached below (see
+    ``_install_negative_fetch_cache``) so we additionally cut the
+    network volume, not just the log volume.
+    """
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        msg = record.getMessage()
+        if "game-log fetch for" in msg and "failed (attempt" in msg:
+            return False
+        if "skipping season" in msg and "nba_api fetch failed" in msg:
+            return False
+        return True
+
+
+def _install_negative_fetch_cache(repo_path: str) -> None:
+    """Patch upstream's ``fetch_season_game_logs`` to short-circuit
+    when a recent fetch attempt failed.
+
+    The upstream function checks a positive cache (the season's CSV
+    on disk) but has no negative cache, so a failing season gets
+    re-attempted on every tick — three full HTTP round-trips with
+    exponential backoff, all guaranteed to fail again on the
+    droplet's blocked IP. We monkey-patch the function to remember
+    the last failure timestamp per season and refuse to retry for
+    24h. That drops the API volume from ~100 calls/hour to one
+    per season per day.
+    """
+    import importlib
+    try:
+        data_sources = importlib.import_module(
+            "nba_bot.data_sources",
+        )
+    except Exception:  # noqa: BLE001
+        # Upstream not yet importable in this thread — caller is
+        # responsible for ordering; just bail.
+        return
+
+    orig = getattr(data_sources, "fetch_season_game_logs", None)
+    if orig is None or getattr(orig, "_negative_cached", False):
+        return  # nothing to patch, or already patched
+
+    failed_at: dict[str, float] = {}
+    COOLDOWN_S = 24 * 3600
+
+    def _wrapped(season: str, *args, **kwargs):
+        last = failed_at.get(season)
+        if last is not None and (time.time() - last) < COOLDOWN_S:
+            raise RuntimeError(
+                f"nba_api fetch for {season} suppressed by negative "
+                f"cache (last failure was "
+                f"{int((time.time() - last) / 60)} min ago; cooldown "
+                f"24h to avoid hammering stats.nba.com).",
+            )
+        try:
+            return orig(season, *args, **kwargs)
+        except Exception:
+            failed_at[season] = time.time()
+            raise
+
+    _wrapped._negative_cached = True  # type: ignore[attr-defined]
+    data_sources.fetch_season_game_logs = _wrapped  # type: ignore[attr-defined]
 
 
 log = logging.getLogger("dashboard.nba-bot")
@@ -113,6 +192,16 @@ def start_daemon(cfg: dict) -> Any:
 
         from nba_bot.config import load_config  # type: ignore  # noqa: E402
         from nba_bot.main import Bot  # type: ignore  # noqa: E402
+
+        # Quiet the recurring stats.nba.com rate-limit warnings and
+        # negative-cache the fetches that produce them. See the
+        # filter / cache docstrings above for the why. Both are
+        # opt-in here so nba.py's daemon owns the noise reduction
+        # without modifying upstream code.
+        logging.getLogger("nba_bot.data_sources").addFilter(
+            _NbaApiFetchSpamFilter(),
+        )
+        _install_negative_fetch_cache(repo_path)
 
         upstream_cfg = load_config(config_path)
         _base.resolve_cfg_paths(
