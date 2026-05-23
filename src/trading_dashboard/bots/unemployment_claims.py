@@ -54,6 +54,17 @@ def start_daemon(cfg: dict) -> Any:
         from unemployment_claims_bot.main import Bot  # type: ignore  # noqa: E402
 
         upstream_cfg = load_config(config_path)
+        # Upstream's YAML uses CWD-relative paths (matches its old
+        # WorkingDirectory=/root/unemployment-claims). Resolve them
+        # against the repo so the bot reads the existing model and
+        # writes sim.db where the dashboard's bot registry expects it.
+        _base.resolve_cfg_paths(
+            upstream_cfg, repo_path,
+            "env.log_path",
+            "model.artifact_path",
+            "execution.sim_db_path",
+            "execution.decisions_log_path",
+        )
         bot = Bot(upstream_cfg)
         _base.gate_bot_tick(bot, BOT_KEY, log)
         log.info("unemployment-bot upstream loaded; handing off to Bot.run()")

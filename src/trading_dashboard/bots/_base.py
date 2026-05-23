@@ -114,6 +114,45 @@ def spawn_daemon(name: str,
     return t
 
 
+def resolve_cfg_paths(cfg: object, repo_path: str | Path,
+                       *attr_paths: str) -> object:
+    """Make relative path fields on an upstream config object absolute
+    by prefixing them with ``repo_path``.
+
+    Each upstream bot's config YAML uses CWD-relative paths
+    (``data/model.pkl``, ``data/sim.db``, etc.) because their original
+    systemd units set ``WorkingDirectory=/root/<bot>``. Inside the
+    dashboard process the CWD is ``/root/trading-dashboard``, so
+    those reads find a different (empty) ``data/`` dir and the bots
+    silently train fresh models / write to orphaned DB files. This
+    helper walks the config and resolves the listed dotted-name path
+    attributes to absolute paths.
+
+    ``attr_paths`` are dotted strings like ``"execution.sim_db_path"``
+    so a bot module can declare its config schema in one line:
+
+        resolve_cfg_paths(cfg, repo_path,
+            "env.log_path",
+            "model.artifact_path",
+            "execution.sim_db_path",
+            "execution.decisions_log_path",
+        )
+
+    No-op for fields that are already absolute, so it's safe to call
+    multiple times.
+    """
+    root = Path(repo_path)
+    for attr_path in attr_paths:
+        parts = attr_path.split(".")
+        obj = cfg
+        for p in parts[:-1]:
+            obj = getattr(obj, p)
+        current = getattr(obj, parts[-1], None)
+        if current and not Path(current).is_absolute():
+            setattr(obj, parts[-1], str(root / current))
+    return cfg
+
+
 def gate_bot_tick(bot: object, bot_key: str, log: logging.Logger) -> None:
     """Wrap ``bot.tick`` so it short-circuits when the Home-tab toggle
     is off. Used by shape-A bots that hand their main loop over to an

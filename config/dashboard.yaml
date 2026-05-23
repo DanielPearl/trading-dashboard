@@ -345,3 +345,11 @@ unemployment_trader:
   # model path, sim.db path) from this YAML. Leave at the repo
   # default unless you've got a custom override.
   config_path: /root/unemployment-claims/config/config.yaml
+
+cpi_trader:
+  enabled: true
+  # Path to the cpi repo (Consumer Price Index — Core CPI MoM bot).
+  # Bot module injects ``<repo_path>/src`` onto sys.path and imports
+  # ``cpi_bot.main.Bot``.
+  repo_path: /root/cpi
+  config_path: /root/cpi/config/config.yaml
