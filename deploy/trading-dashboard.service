@@ -14,15 +14,16 @@ WorkingDirectory=/root/trading-dashboard
 # (e.g. on a fresh droplet that hasn't installed gas-prices yet).
 EnvironmentFile=-/root/gas-prices/.env
 ExecStart=/root/trading-dashboard/.venv/bin/python /root/trading-dashboard/dashboard.py --config /root/trading-dashboard/config/dashboard.yaml
-# Memory caps. Original was 80M/60M (sized for a render-only
-# dashboard). Each folded-in bot adds:
-#   * one-time: pandas/sklearn/xgboost imports (~115M, shared)
-#   * per-bot: model artifact (1–10MB, 81M for billboard)
-#   * per-bot: cached DataFrames (10–40MB)
-# With all 10 bots folded in we project ~350–450M resident.
-# 500M cap gives headroom; soft cap at 400M flags pressure.
-MemoryMax=500M
-MemoryHigh=400M
+# Memory caps. Sized for the droplet's actual 2GB RAM (the hostname
+# label still says "512mb" from when the droplet was first created,
+# but it was resized). The previous 500M/400M caps were leftovers
+# from when I mis-read the hostname tag — they forced the kernel
+# to page the dashboard out to swap even though ~1.2 GiB of system
+# RAM was sitting idle. Bumping to 1500M / 1200M lets the dashboard
+# use the RAM it has access to, with headroom for billboard's
+# 81MB lazy model load and slow DataFrame growth over weeks.
+MemoryMax=1500M
+MemoryHigh=1200M
 Restart=on-failure
 RestartSec=5
 StandardOutput=journal
