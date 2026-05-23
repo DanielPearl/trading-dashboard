@@ -8,6 +8,21 @@
 host: "0.0.0.0"
 port: 8080
 
+# Mode flag. Two values are wired up:
+#   * "sim"  — paper-trading dashboard. Bots write to sim.db, no
+#              real orders ever placed. Header reads "Kalshi
+#              Simulation Dashboard". Body gets data-mode="sim"
+#              so CSS can leave the default GitHub-dark palette.
+#   * "live" — real-money trading dashboard. Header reads "Kalshi
+#              LIVE Trading", with a "REAL MONEY AT RISK" meta line.
+#              Body gets data-mode="live" so CSS can swap to a
+#              red-tinted palette as a visual safety cue. The live
+#              dashboard reads from a parallel config
+#              (dashboard-live.yaml) so the two services have
+#              independent bot lists, db paths, and bot_states
+#              files. See the upcoming live/sim split for details.
+mode: sim
+
 # Bot registry. Listed in display order. db_path is checked at startup —
 # bots whose DB is missing render a friendly stub instead of an error.
 bots:

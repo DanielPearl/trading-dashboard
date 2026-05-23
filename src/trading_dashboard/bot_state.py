@@ -38,7 +38,16 @@ log = logging.getLogger("dashboard.bot_state")
 
 # Resolved at import time so callers don't need to know the path. The
 # dashboard service writes here; bot services on the same host read.
-# Override via ``KALSHI_BOT_STATES_PATH`` for tests.
+#
+# ``KALSHI_BOT_STATES_PATH`` (env) overrides the default. This is the
+# isolation knob for the live/sim split: the sim systemd unit leaves
+# it unset (default file = ``<repo>/data/bot_states.json``) while the
+# live systemd unit sets it to ``<repo>/data/bot_states_live.json``,
+# so toggling a bot on in one dashboard never flips it on in the
+# other. Without this isolation a stray sim click could enable a
+# real-money trader.
+#
+# Also used by unit tests to point at a tempfile per run.
 _STATE_PATH = Path(
     os.environ.get(
         "KALSHI_BOT_STATES_PATH",

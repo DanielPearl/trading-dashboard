@@ -178,6 +178,12 @@ class ValidatorCfg:
 class DashboardConfig:
     host: str
     port: int
+    # Mode flag — see dashboard.yaml for semantics. Defaults to "sim"
+    # so legacy configs without a ``mode:`` key keep their pre-split
+    # behaviour. The live fork sets ``mode: live`` in its
+    # dashboard-live.yaml and inherits a different theme + header
+    # text from this one knob.
+    mode: str
     bots: List[BotEntry]
     risk: RiskCfg
     edge: EdgeCfg
@@ -223,9 +229,24 @@ def load_config(path: str | Path = "config/dashboard.yaml") -> DashboardConfig:
             b["seasons"] = [_coerce_season(s) for s in raw_seasons]
         bots.append(BotEntry(**b))
 
+    # ``mode`` is freeform-but-validated: anything other than the two
+    # recognised values flips back to "sim" with a warning rather than
+    # raising. The renderer treats anything-not-"live" as sim, so the
+    # worst case from a typo is "looks like sim" — never "accidentally
+    # places real-money trades because of a typo".
+    mode_raw = str(raw.get("mode", "sim")).strip().lower()
+    if mode_raw not in ("sim", "live"):
+        import logging
+        logging.getLogger("dashboard.config").warning(
+            "dashboard.yaml mode=%r is not 'sim' or 'live' — falling "
+            "back to 'sim' for safety.", mode_raw,
+        )
+        mode_raw = "sim"
+
     return DashboardConfig(
         host=raw.get("host", "0.0.0.0"),
         port=int(raw.get("port", 8080)),
+        mode=mode_raw,
         bots=bots,
         risk=RiskCfg(**raw["risk"]),
         edge=EdgeCfg(**raw["edge"]),

@@ -22,6 +22,7 @@ swapping over so there are no competing writers.
 
 from __future__ import annotations
 
+import argparse
 import json
 import os
 import re
@@ -386,9 +387,39 @@ def collect_service(name: str) -> tuple[dict, list[dict], list[dict]]:
     return service_row, bugs, streamlining
 
 
-def main() -> int:
-    DIAG_DIR.mkdir(parents=True, exist_ok=True)
-    HISTORY_DIR.mkdir(parents=True, exist_ok=True)
+def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
+    """CLI surface so the live/sim split can run two collectors with
+    different service lists + output paths. Defaults preserve today's
+    sim-only behaviour, so the existing systemd timer keeps working
+    unchanged.
+    """
+    p = argparse.ArgumentParser(
+        description="Mechanical droplet diagnosis collector.",
+    )
+    p.add_argument(
+        "--services", nargs="+", default=list(MONITORED_SERVICES),
+        help=("Systemd services to audit. Defaults to "
+              f"{', '.join(MONITORED_SERVICES)} (the sim dashboard). "
+              "The live timer should pass "
+              "``--services trading-dashboard-live.service``."),
+    )
+    p.add_argument(
+        "--diag-dir", type=Path, default=DIAG_DIR,
+        help=("Directory to write latest.json + history/ into. "
+              "Defaults to /root/trading-dashboard/diagnosis/. "
+              "The live timer should point this at "
+              "/root/trading-dashboard/diagnosis-live/."),
+    )
+    return p.parse_args(argv)
+
+
+def main(argv: list[str] | None = None) -> int:
+    args = _parse_args(argv)
+    diag_dir = Path(args.diag_dir)
+    latest_path = diag_dir / "latest.json"
+    history_dir = diag_dir / "history"
+    diag_dir.mkdir(parents=True, exist_ok=True)
+    history_dir.mkdir(parents=True, exist_ok=True)
 
     now = datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
     today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
@@ -396,7 +427,7 @@ def main() -> int:
     services: list[dict] = []
     bugs: list[dict] = []
     streamlining: list[dict] = []
-    for name in MONITORED_SERVICES:
+    for name in args.services:
         try:
             srv, srv_bugs, srv_stream = collect_service(name)
         except Exception as e:  # noqa: BLE001 — never let one service abort the run
@@ -434,13 +465,13 @@ def main() -> int:
     # The dashboard reads this on every API hit; a partial JSON would
     # break the modal until the next run.
     fd, tmp_path = tempfile.mkstemp(prefix=".latest-", suffix=".json",
-                                     dir=str(DIAG_DIR))
+                                     dir=str(diag_dir))
     try:
         with os.fdopen(fd, "w") as f:
             json.dump(report, f, indent=2)
             f.flush()
             os.fsync(f.fileno())
-        os.replace(tmp_path, LATEST_PATH)
+        os.replace(tmp_path, latest_path)
     except Exception:
         # Best-effort cleanup if the rename never happened.
         try:
@@ -451,8 +482,8 @@ def main() -> int:
 
     # History copy — useful when /schedule comes back and we want to
     # compare the cron's view to Claude's view of the same day.
-    shutil.copy2(LATEST_PATH, HISTORY_DIR / f"{today}.json")
-    print(f"wrote {LATEST_PATH} ({len(bugs)} bugs, "
+    shutil.copy2(latest_path, history_dir / f"{today}.json")
+    print(f"wrote {latest_path} ({len(bugs)} bugs, "
           f"{len(streamlining)} streamlining, {healthy}/{len(services)} healthy)")
     return 0
 

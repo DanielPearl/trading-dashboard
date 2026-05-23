@@ -3141,19 +3141,38 @@ def render_page(
     prob_history: List[dict] | None = None,
     model_view: str = "pregame",
     threshold_source: dict | None = None,
+    mode: str = "sim",
 ) -> str:
+    # Mode-driven page chrome. ``mode`` is "sim" (paper-trading
+    # default) or "live" (real-money dashboard). Anything not
+    # explicitly "live" renders as sim — safety default. See
+    # dashboard.yaml's ``mode:`` field and config.py's load_config
+    # for where this comes from.
+    is_live = (mode == "live")
+    page_title = ("Kalshi LIVE Trading"
+                   if is_live else "Kalshi Simulation Dashboard")
+    meta_warning = ("LIVE TRADING — real money at risk"
+                     if is_live else "DRY-RUN mode (no real orders)")
+
     out: List[str] = []
     out.append("<!doctype html><html><head>")
     out.append("<meta charset='utf-8'>")
     # No meta-refresh — JS at the bottom of the page polls /api/snapshot
     # every 5s and patches live cells in place. The page never reloads.
-    out.append(f"<title>Kalshi simulation dashboard</title>")
+    out.append(f"<title>{html.escape(page_title)}</title>")
     out.append(_favicon_link())
     out.append(f"<style>{CSS}</style>")
-    out.append("</head><body>")
-    out.append(f"<h1>Kalshi simulation dashboard</h1>")
-    out.append(f"<div class='meta'>Loaded {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%SZ')}"
-               f" · live updates every 5s · DRY-RUN mode (no real orders)</div>")
+    # data-mode hook so CSS can target either palette without touching
+    # any render code. Today both modes use the default GitHub-dark
+    # palette; the live theme (red-tinted) will land in CSS in the
+    # next chapter (the fork itself).
+    out.append(f"</head><body data-mode='{html.escape(mode)}'>")
+    out.append(f"<h1>{html.escape(page_title)}</h1>")
+    out.append(
+        f"<div class='meta'>Loaded "
+        f"{datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%SZ')}"
+        f" · live updates every 5s · {html.escape(meta_warning)}</div>"
+    )
 
     # ── Top-level page tabs ───────────────────────────────────────────
     # All four panels live on the same page; clicks swap which one is
@@ -11130,6 +11149,11 @@ class Handler(BaseHTTPRequestHandler):
     edge_cfg: dict = {}
     validator_cfg: dict = {}
     hedge_cfg: dict = {}
+    # "sim" or "live". Set by serve() at process start; read by the
+    # render_page() call below so the header text, body data-mode
+    # attribute, and meta warning all reflect which dashboard the
+    # user is on.
+    mode: str = "sim"
 
     def log_message(self, format: str, *args: Any) -> None:  # noqa: A002
         log.info("%s - %s", self.address_string(), format % args)
@@ -11662,6 +11686,7 @@ class Handler(BaseHTTPRequestHandler):
                     tab_key=tab_key,
                     bot_models=bot_models,
                     model_view=model_view,
+                    mode=self.mode,
                 )
             except Exception:  # noqa: BLE001
                 log.exception("dashboard render failed")
@@ -11757,14 +11782,24 @@ class Handler(BaseHTTPRequestHandler):
             self.wfile.write(payload)
         elif parsed.path == "/api/diagnosis/latest":
             # Daily droplet diagnosis report. The scheduled
-            # daily-droplet-diagnosis agent writes diagnosis/latest.json
-            # (relative to the dashboard's working directory — that's
-            # /root/trading-dashboard on the droplet). We just stream it
-            # back as-is. When no report exists yet (fresh install or
-            # the schedule hasn't fired), return a sentinel payload the
-            # UI knows how to render as a "no diagnosis yet" empty state
-            # rather than 404 / 500.
-            diag_path = Path("diagnosis/latest.json")
+            # daily-droplet-diagnosis agent (or the fallback cron in
+            # scripts/diagnosis_collector.py) writes to one of two
+            # directories depending on which dashboard wrote it:
+            #
+            #   sim  → diagnosis/latest.json
+            #   live → diagnosis-live/latest.json
+            #
+            # That separation keeps the sim collector from claiming the
+            # live dashboard is "failing" because it's only auditing the
+            # sim service (and vice versa). Both are relative to the
+            # dashboard's working directory (/root/trading-dashboard on
+            # the droplet). When no report exists yet (fresh install or
+            # schedule hasn't fired), return a sentinel payload the UI
+            # knows how to render as a "no diagnosis yet" empty state.
+            diag_subdir = ("diagnosis-live"
+                            if self.mode == "live"
+                            else "diagnosis")
+            diag_path = Path(diag_subdir) / "latest.json"
             try:
                 if diag_path.exists():
                     payload = diag_path.read_bytes()
@@ -11842,12 +11877,14 @@ def serve(host: str, port: int, bots: List[dict], risk_caps: dict,
           table_tennis_trader_cfg: dict | None = None,
           darts_trader_cfg: dict | None = None,
           natgas_trader_cfg: dict | None = None,
-          billboard_trader_cfg: dict | None = None) -> None:
+          billboard_trader_cfg: dict | None = None,
+          mode: str = "sim") -> None:
     Handler.bots = bots
     Handler.risk_caps = risk_caps
     Handler.edge_cfg = edge_cfg
     Handler.validator_cfg = validator_cfg
     Handler.hedge_cfg = hedge_cfg
+    Handler.mode = mode
     # Auto-hedge daemon. Reads each sim.db bot's positions table on a
     # 30s interval and closes any position whose unrealized P&L per
     # contract has crossed the configured profit-lock or stop-loss
@@ -12063,6 +12100,8 @@ def main(argv: list[str] | None = None) -> int:
 
     host = args.host or cfg.host
     port = args.port or cfg.port
+    log.info("starting dashboard in %s mode on http://%s:%d",
+             cfg.mode, host, port)
     serve(host, port, bots, risk_caps, edge_cfg, validator_cfg, hedge_cfg,
           tennis_trader_cfg=tennis_trader_cfg,
           unemployment_trader_cfg=unemployment_trader_cfg,
@@ -12073,7 +12112,8 @@ def main(argv: list[str] | None = None) -> int:
           table_tennis_trader_cfg=table_tennis_trader_cfg,
           darts_trader_cfg=darts_trader_cfg,
           natgas_trader_cfg=natgas_trader_cfg,
-          billboard_trader_cfg=billboard_trader_cfg)
+          billboard_trader_cfg=billboard_trader_cfg,
+          mode=cfg.mode)
     return 0
 
 
