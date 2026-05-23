@@ -29,3 +29,15 @@ scikit-learn==1.6.1
 joblib==1.5.3
 requests>=2.31
 python-dotenv>=1.0
+
+# Per-bot upstream dependencies. The union of every bot's
+# requirements.txt, deduped. Each bot's loader only imports what
+# it needs, so a disabled bot doesn't pay the import cost — but the
+# wheels still get downloaded on pip install, which is fine.
+lxml>=4.9                   # cpi: Cleveland Fed nowcast HTML parse
+yfinance>=0.2.40            # gas-prices + nba: market-hours / season data
+nba_api>=1.7.0              # nba: ESPN / NBA stats
+pytrends>=4.9               # unemployment-claims: Google Trends features
+python-dateutil>=2.8        # unemployment-claims: Easter-week flag
+matplotlib>=3.7             # gas-prices: chart export (rare path)
+rich>=13.7                  # gas-prices: console table rendering
