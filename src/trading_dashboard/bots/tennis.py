@@ -1,89 +1,53 @@
 """Tennis bot — runs the Baseline Break (ATP / WTA match) loop inside
 the dashboard process.
 
-This module is the first of the "folded-in" bots. The tennis-forecast
-project at ``/root/tennis-forecast`` was previously its own systemd
-service (``baseline-break-monitor.service``) running a 60-second poll
-loop and writing ``data/raw/live_state.json`` + ``data/outputs/*``.
-That service is now disabled; this thread does the same work from
-inside the dashboard process so:
-
-  * The bot toggle on the Home tab actually controls trading (the
-    previous standalone service never read ``bot_states.json``).
-  * pandas / numpy / scikit-learn / joblib only get imported once for
-    the dashboard process instead of once per bot service.
-  * State is reloaded by the dashboard's reader without crossing a
-    process boundary.
-
-How it works
-------------
-The tennis-forecast repo isn't pip-installable (no setup.py); it relies
-on a ``sys.path`` insert inside ``scripts/run_live_monitor.py`` to find
-its ``src/`` package. We mirror that here: inject the configured
-``tennis_repo_path`` onto ``sys.path`` once, then import the same
-modules that the original script imported. Each tick re-uses
-upstream's pure functions — no logic was reimplemented.
+Shape B (hand-rolled tick): the upstream entry point in tennis-forecast
+is a script with an inline ``while True``, so we reproduce the
+per-tick body here and spawn our own thread around it.
 
 Bot toggle behaviour
 --------------------
-Each iteration ALWAYS fetches markets, updates the watchlist, and runs
-the simulator's mark-to-market / settlement step. When
-``bot_state.is_bot_enabled("tennis")`` returns False, the simulator is
-called with an empty watchlist so it can keep settling existing
-positions but never opens new ones. This matches what the user
-expects from the "model toggle card" on the Home tab — paused means
-no new exposure, not "freeze everything in place".
+Each iteration ALWAYS fetches markets and updates the watchlist so
+the dashboard UI stays fresh. When ``bot_state.is_bot_enabled("tennis")``
+returns False we hand the simulator an empty watchlist, so its
+mark-to-market and settlement steps still run on existing positions
+but no new ones open. (Tennis positions are short-lived — minutes to
+hours — so freezing the open-new step but keeping settle-existing
+running is the right balance. Macro bots like unemployment use the
+coarser gate_bot_tick helper instead.)
 """
 from __future__ import annotations
 
 import logging
-import sys
-import threading
 import time
-from pathlib import Path
 from typing import Any, Callable
 
+from . import _base
 from .. import bot_state
 
 
-log = logging.getLogger("dashboard.tennis_bot")
+log = logging.getLogger("dashboard.tennis-bot")
 
 BOT_KEY = "tennis"
 
-# Cache of upstream's pure-function entrypoints. Populated on first
-# tick by ``_load_upstream`` so the import cost is paid lazily, after
-# the HTTP server is already serving — keeps the dashboard's startup
-# fast even though the tennis bundle pulls in pandas + sklearn.
-_upstream: dict[str, Callable[..., Any]] | None = None
-
-# Snapshot of the previous tick's per-ticker yes-ask prices. Mirrors
-# the module-global in ``scripts/run_live_monitor.py`` (line 55) so
-# the overreaction rule has somewhere to read prev_yes from.
+# Per-process cache of the previous tick's per-ticker yes-ask prices.
+# Mirrors the global in scripts/run_live_monitor.py line 55; needed
+# for the overreaction rule to see how the market moved between ticks.
 _prev_market_by_ticker: dict[str, dict] = {}
 
 
-def _load_upstream(repo_path: Path) -> dict[str, Callable[..., Any]]:
-    """Inject the tennis-forecast repo onto sys.path and import the
-    pure functions we need. Returns a dict of callables — no module
-    objects leak out so callers can't accidentally reach into upstream
-    state.
+def _load_upstream(repo_path: str) -> dict[str, Callable[..., Any]]:
+    """Import tennis-forecast's pure functions. The repo isn't
+    pip-installable so we inject its root onto sys.path (it puts its
+    own ``src/`` on the path via ``scripts/run_live_monitor.py:25``;
+    we mirror that by passing ``subdir=None`` and letting upstream's
+    ``from src.X import Y`` imports resolve from the repo root).
     """
-    if not repo_path.exists():
-        raise RuntimeError(
-            f"tennis bot disabled: tennis-forecast repo not found at "
-            f"{repo_path}. Either clone it there or set "
-            f"tennis_trader.repo_path in dashboard.yaml."
-        )
-    src_parent = str(repo_path)
-    if src_parent not in sys.path:
-        # Match what scripts/run_live_monitor.py:25 does — prepend so
-        # upstream's `src.X.Y` imports resolve before any colliding
-        # package in site-packages.
-        sys.path.insert(0, src_parent)
+    _base.inject_sys_path(repo_path, subdir=None)
 
-    # Imports are deferred to here so the dashboard can start without
-    # pandas/sklearn loaded — the bot only pulls them in when the
-    # daemon thread actually runs its first tick.
+    # Deferred imports — paid once on first tick, after the HTTP
+    # server is already serving requests. Keeps dashboard startup
+    # fast even though this bundle pulls in pandas + sklearn.
     from src.data import kalshi_markets  # type: ignore  # noqa: E402
     from src.dashboard.export_watchlist import (  # type: ignore  # noqa: E402
         build_watchlist_records,
@@ -101,29 +65,7 @@ def _load_upstream(repo_path: Path) -> dict[str, Callable[..., Any]]:
     }
 
 
-def _require_kalshi_creds() -> None:
-    """Same check upstream does at startup. Without creds the SDK can't
-    fetch live markets and we'd just log empty ticks forever — better
-    to log a single startup error and let the operator notice.
-    """
-    import os
-    missing = [k for k in ("KALSHI_API_KEY_ID", "KALSHI_PRIVATE_KEY_PATH")
-                if not os.environ.get(k, "").strip()]
-    if missing:
-        raise RuntimeError(
-            f"tennis bot needs Kalshi creds in env: {', '.join(missing)} "
-            f"missing. The dashboard's systemd unit loads these from "
-            f"/root/gas-prices/.env; check that file exists."
-        )
-
-
 def _one_tick(upstream: dict[str, Callable[..., Any]]) -> None:
-    """Single iteration. Mirrors ``scripts/run_live_monitor.py:_one_tick``
-    but routes the simulator's open-new step through the bot_state
-    toggle: when tennis is paused we pass an empty watchlist so
-    existing positions still get marked + settled but no new exposure
-    is opened.
-    """
     global _prev_market_by_ticker
 
     raw_markets = upstream["fetch_tennis_markets"]()
@@ -137,10 +79,9 @@ def _one_tick(upstream: dict[str, Callable[..., Any]]) -> None:
     rows = upstream["build_watchlist_records"]()
     upstream["export_watchlist"](records=rows)
 
-    # Bot-state gate: if paused, hand the simulator an empty watchlist
-    # so its open-new-positions step finds no candidates. The mark and
-    # settle steps still run against ``records`` so any open position
-    # closes out normally when its match finishes.
+    # Fine-grained gate: pass empty rows when paused so the simulator
+    # still settles + marks existing positions but doesn't open new
+    # ones. See module docstring.
     enabled = bot_state.is_bot_enabled(BOT_KEY)
     rows_for_sim = rows if enabled else []
     state = upstream["simulator_tick"](rows_for_sim, records)
@@ -158,49 +99,30 @@ def _one_tick(upstream: dict[str, Callable[..., Any]]) -> None:
     )
 
 
-def start_daemon(tennis_trader_cfg: dict,
-                  interval_seconds: int | None = None) -> threading.Thread:
-    """Spawn the tennis-trading background thread. Daemon = True so
-    Ctrl-C / SIGTERM on the dashboard tears it down cleanly. No-op
-    (returns a dead thread) when tennis_trader.enabled is false.
-
-    Expected config shape (under ``tennis_trader:`` in dashboard.yaml):
+def start_daemon(cfg: dict) -> Any:
+    """Spawn the tennis-trading background thread. No-op when
+    ``enabled`` is false. Config shape::
 
         tennis_trader:
           enabled: true
           repo_path: /root/tennis-forecast
           interval_seconds: 60
     """
-    enabled = bool(tennis_trader_cfg.get("enabled"))
-    repo_path = Path(tennis_trader_cfg.get("repo_path",
-                                            "/root/tennis-forecast"))
-    interval = int(interval_seconds
-                    or tennis_trader_cfg.get("interval_seconds", 60))
+    enabled = bool(cfg.get("enabled"))
+    repo_path = cfg.get("repo_path", "/root/tennis-forecast")
+    interval = int(cfg.get("interval_seconds", 60))
 
-    def _loop() -> None:
-        log.info("tennis_bot starting (interval=%ds, repo=%s, bot_key=%s)",
-                  interval, repo_path, BOT_KEY)
-        try:
-            _require_kalshi_creds()
-        except RuntimeError as exc:
-            log.error("%s", exc)
-            return  # thread exits — operator will see the log line
-        try:
-            upstream = _load_upstream(repo_path)
-        except Exception:  # noqa: BLE001
-            log.exception("tennis_bot failed to import upstream package")
-            return
-        log.info("tennis_bot upstream loaded; entering tick loop")
+    def _run() -> None:
+        log.info("tennis-bot starting (interval=%ds, repo=%s)",
+                  interval, repo_path)
+        _base.require_kalshi_creds()
+        upstream = _load_upstream(repo_path)
+        log.info("tennis-bot upstream loaded; entering tick loop")
         while True:
             try:
                 _one_tick(upstream)
             except Exception:  # noqa: BLE001
-                log.exception("tennis_bot tick failed")
+                log.exception("tennis-bot tick failed")
             time.sleep(interval)
 
-    t = threading.Thread(target=_loop, daemon=True, name="tennis-bot")
-    if enabled:
-        t.start()
-    else:
-        log.info("tennis_bot disabled in config (tennis_trader.enabled=false)")
-    return t
+    return _base.spawn_daemon("tennis-bot", _run, enabled=enabled)

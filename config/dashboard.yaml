@@ -334,3 +334,14 @@ tennis_trader:
   # default. Lower = more frequent watchlist refresh + more Kalshi
   # API calls.
   interval_seconds: 60
+
+unemployment_trader:
+  enabled: true
+  # Path to the unemployment-claims repo. The bot module injects
+  # ``<repo_path>/src`` onto sys.path and imports
+  # ``unemployment_claims_bot.main.Bot``.
+  repo_path: /root/unemployment-claims
+  # The upstream Bot reads its own config (poll intervals, gates,
+  # model path, sim.db path) from this YAML. Leave at the repo
+  # default unless you've got a custom override.
+  config_path: /root/unemployment-claims/config/config.yaml

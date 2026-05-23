@@ -11833,7 +11833,8 @@ class Handler(BaseHTTPRequestHandler):
 
 def serve(host: str, port: int, bots: List[dict], risk_caps: dict,
           edge_cfg: dict, validator_cfg: dict, hedge_cfg: dict,
-          tennis_trader_cfg: dict | None = None) -> None:
+          tennis_trader_cfg: dict | None = None,
+          unemployment_trader_cfg: dict | None = None) -> None:
     Handler.bots = bots
     Handler.risk_caps = risk_caps
     Handler.edge_cfg = edge_cfg
@@ -11866,6 +11867,12 @@ def serve(host: str, port: int, bots: List[dict], risk_caps: dict,
     if tennis_trader_cfg:
         from .bots import tennis as tennis_bot
         tennis_bot.start_daemon(tennis_trader_cfg)
+    # Unemployment-claims trader. Shape A — upstream's Bot class owns
+    # the run() loop; we just gate tick() on the Home-tab toggle.
+    # See bots/unemployment_claims.py for the gating rationale.
+    if unemployment_trader_cfg:
+        from .bots import unemployment_claims as unemployment_bot
+        unemployment_bot.start_daemon(unemployment_trader_cfg)
     server = ThreadingHTTPServer((host, port), Handler)
     log.info("dashboard listening on http://%s:%d", host, port)
     log.info("registered bots: %s",
@@ -11986,15 +11993,17 @@ def main(argv: list[str] | None = None) -> int:
             "available": available,
         })
 
-    # tennis_trader is opt-in (defaults to off). When enabled, the
-    # dashboard's serve() spawns the in-process tennis trading
-    # thread that replaces the old baseline-break-monitor.service.
+    # Per-bot trader configs. Each section under the YAML's
+    # ``<bot>_trader:`` key gets passed to the matching daemon in
+    # serve(). Missing section → empty dict → daemon is a no-op.
     tennis_trader_cfg = cfg.raw.get("tennis_trader") or {}
+    unemployment_trader_cfg = cfg.raw.get("unemployment_trader") or {}
 
     host = args.host or cfg.host
     port = args.port or cfg.port
     serve(host, port, bots, risk_caps, edge_cfg, validator_cfg, hedge_cfg,
-          tennis_trader_cfg=tennis_trader_cfg)
+          tennis_trader_cfg=tennis_trader_cfg,
+          unemployment_trader_cfg=unemployment_trader_cfg)
     return 0
 
 
