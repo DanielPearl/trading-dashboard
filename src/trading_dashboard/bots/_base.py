@@ -37,6 +37,83 @@ from pathlib import Path
 from typing import Callable
 
 
+def load_upstream_as_alias(repo_path: str | Path,
+                            alias: str,
+                            subdir: str = "src") -> Any:
+    """Load ``<repo_path>/<subdir>`` as a uniquely-named top-level
+    package and return it. Used by bots whose upstream packages all
+    bear the same generic name (``src``) and therefore collide in
+    ``sys.modules`` when loaded together.
+
+    Without this, the second bot to call ``inject_sys_path`` would
+    silently get the first bot's ``src`` package back from the module
+    cache, leading to errors like:
+
+        AttributeError: module 'src.data.kalshi_markets' has no
+        attribute 'fetch_darts_markets'. Did you mean
+        'fetch_tennis_markets'?
+
+    The fix is to register each upstream's package under a unique
+    name (``tennis_src``, ``darts_src``, ``survivor_src``, ...).
+    Relative imports inside the package (``from ..utils.config
+    import X``) still resolve correctly because they walk up via
+    the module's ``__package__`` attribute, which we set to the
+    alias when loading.
+
+    Usage::
+
+        pkg = load_upstream_as_alias("/root/darts-forecast", "darts_src")
+        kalshi_markets = importlib.import_module("darts_src.data.kalshi_markets")
+        kalshi_markets.fetch_darts_markets()
+
+    Returns the loaded package module (rarely needed directly —
+    typically callers go straight to ``importlib.import_module``
+    after the alias is registered).
+    """
+    import importlib.util
+
+    root = Path(repo_path)
+    src_path = root / subdir
+    if not src_path.exists():
+        raise RuntimeError(
+            f"bot disabled: expected upstream package at {src_path}. "
+            f"Either clone the bot's repo there or fix the repo_path "
+            f"in dashboard.yaml.",
+        )
+    init_file = src_path / "__init__.py"
+    if not init_file.exists():
+        # Some bot repos have a ``src/`` dir without an __init__.py
+        # because they relied on Python 3.3+ implicit namespace
+        # packages plus a sys.path entry. We need an explicit
+        # __init__.py for importlib.util.spec_from_file_location, so
+        # synthesize an empty one in-memory.
+        spec = importlib.util.spec_from_loader(alias, loader=None,
+                                                 is_package=True)
+        if spec is None or spec.loader is None:
+            raise RuntimeError(
+                f"could not build a package spec for {src_path} "
+                f"under alias {alias}",
+            )
+        pkg = importlib.util.module_from_spec(spec)
+        pkg.__path__ = [str(src_path)]  # type: ignore[attr-defined]
+    else:
+        spec = importlib.util.spec_from_file_location(
+            alias, init_file,
+            submodule_search_locations=[str(src_path)],
+        )
+        if spec is None or spec.loader is None:
+            raise RuntimeError(
+                f"could not build a package spec for {init_file} "
+                f"under alias {alias}",
+            )
+        pkg = importlib.util.module_from_spec(spec)
+        sys.modules[alias] = pkg
+        spec.loader.exec_module(pkg)
+        return pkg
+    sys.modules[alias] = pkg
+    return pkg
+
+
 def inject_sys_path(repo_path: str | Path, subdir: str | None = "src") -> Path:
     """Insert ``<repo_path>/<subdir>`` (or just ``<repo_path>``) at the
     head of ``sys.path`` so the upstream bot's package becomes

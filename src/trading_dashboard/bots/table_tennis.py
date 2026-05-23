@@ -31,22 +31,28 @@ _prev_market_by_ticker: dict[str, dict] = {}
 
 
 def _load_upstream(repo_path: str) -> dict[str, Callable[..., Any]]:
-    _base.inject_sys_path(repo_path, subdir=None)
+    """Load table-tennis upstream under a unique alias to avoid the
+    ``src/`` namespace collision with tennis and darts."""
+    import importlib
+    _base.load_upstream_as_alias(repo_path, "table_tennis_src", subdir="src")
 
-    from src.data import kalshi_markets  # type: ignore  # noqa: E402
-    from src.dashboard.export_watchlist import (  # type: ignore  # noqa: E402
-        build_watchlist_records,
-        export as export_watchlist,
+    kalshi_markets = importlib.import_module(
+        "table_tennis_src.data.kalshi_markets",
     )
-    from src.trading.simulator import tick as simulator_tick  # type: ignore  # noqa: E402
+    export_watchlist_mod = importlib.import_module(
+        "table_tennis_src.dashboard.export_watchlist",
+    )
+    simulator_mod = importlib.import_module(
+        "table_tennis_src.trading.simulator",
+    )
 
     return {
         "fetch_markets": kalshi_markets.fetch_table_tennis_markets,
         "collapse_to_matches": kalshi_markets.collapse_to_matches,
         "write_live_state": kalshi_markets.write_live_state,
-        "build_watchlist_records": build_watchlist_records,
-        "export_watchlist": export_watchlist,
-        "simulator_tick": simulator_tick,
+        "build_watchlist_records": export_watchlist_mod.build_watchlist_records,
+        "export_watchlist": export_watchlist_mod.export,
+        "simulator_tick": simulator_mod.tick,
     }
 
 

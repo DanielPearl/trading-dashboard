@@ -37,31 +37,26 @@ _prev_market_by_ticker: dict[str, dict] = {}
 
 
 def _load_upstream(repo_path: str) -> dict[str, Callable[..., Any]]:
-    """Import tennis-forecast's pure functions. The repo isn't
-    pip-installable so we inject its root onto sys.path (it puts its
-    own ``src/`` on the path via ``scripts/run_live_monitor.py:25``;
-    we mirror that by passing ``subdir=None`` and letting upstream's
-    ``from src.X import Y`` imports resolve from the repo root).
+    """Load tennis-forecast's pure functions under a unique alias so
+    its ``src/`` package doesn't collide with table-tennis or darts'
+    same-named ``src/`` packages. See ``_base.load_upstream_as_alias``.
     """
-    _base.inject_sys_path(repo_path, subdir=None)
+    import importlib
+    _base.load_upstream_as_alias(repo_path, "tennis_src", subdir="src")
 
-    # Deferred imports — paid once on first tick, after the HTTP
-    # server is already serving requests. Keeps dashboard startup
-    # fast even though this bundle pulls in pandas + sklearn.
-    from src.data import kalshi_markets  # type: ignore  # noqa: E402
-    from src.dashboard.export_watchlist import (  # type: ignore  # noqa: E402
-        build_watchlist_records,
-        export as export_watchlist,
+    kalshi_markets = importlib.import_module("tennis_src.data.kalshi_markets")
+    export_watchlist_mod = importlib.import_module(
+        "tennis_src.dashboard.export_watchlist",
     )
-    from src.trading.simulator import tick as simulator_tick  # type: ignore  # noqa: E402
+    simulator_mod = importlib.import_module("tennis_src.trading.simulator")
 
     return {
         "fetch_tennis_markets": kalshi_markets.fetch_tennis_markets,
         "collapse_to_matches": kalshi_markets.collapse_to_matches,
         "write_live_state": kalshi_markets.write_live_state,
-        "build_watchlist_records": build_watchlist_records,
-        "export_watchlist": export_watchlist,
-        "simulator_tick": simulator_tick,
+        "build_watchlist_records": export_watchlist_mod.build_watchlist_records,
+        "export_watchlist": export_watchlist_mod.export,
+        "simulator_tick": simulator_mod.tick,
     }
 
 

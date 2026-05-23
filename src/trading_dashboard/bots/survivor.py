@@ -28,9 +28,17 @@ BOT_KEY = "survivor"
 
 
 def _load_upstream(repo_path: str) -> Callable[[], Any]:
-    _base.inject_sys_path(repo_path, subdir=None)
-    from src.survivor.dashboard.export_watchlist import export  # type: ignore  # noqa: E402
-    return export
+    """Load survivor upstream under a unique alias. Survivor's
+    package layout is ``src/survivor/...`` (deeper-nested than the
+    tennis-shape bots), so the alias loader gets the ``src/`` dir
+    and we drill in from there.
+    """
+    import importlib
+    _base.load_upstream_as_alias(repo_path, "survivor_src", subdir="src")
+    export_mod = importlib.import_module(
+        "survivor_src.survivor.dashboard.export_watchlist",
+    )
+    return export_mod.export
 
 
 def start_daemon(cfg: dict) -> Any:
