@@ -46,6 +46,20 @@ def _conn(db_path: str) -> sqlite3.Connection:
     return c
 
 
+def _sibling_sim_db(db_path: str) -> str | None:
+    """For a live.db path, return the sibling sim.db path. None when
+    the path doesn't look like a live database (sim itself never
+    needs this fallback). Lets the model-snapshot fetch fall through
+    to sim's data when live.db is empty — the same trained model
+    runs in both modes, so sim's most-recent snapshot is an honest
+    proxy for the live model's current state until a live executor
+    starts writing its own snapshots.
+    """
+    if db_path.endswith("/live.db") or db_path.endswith("\\live.db"):
+        return db_path[: -len("live.db")] + "sim.db"
+    return None
+
+
 def fetch_latest_model(db_path: str) -> dict | None:
     if not Path(db_path).exists():
         return None
@@ -57,6 +71,25 @@ def fetch_latest_model(db_path: str) -> dict | None:
             out = dict(row) if row else None
     except (sqlite3.OperationalError, sqlite3.DatabaseError):
         return None
+    # Fall back to the sibling sim.db when the live DB has no
+    # snapshot yet. This is what makes the live dashboard's model
+    # cards show the current state of each bot's model — they're
+    # the same trained models in both modes, so reading sim's
+    # latest snapshot is honest (and the alternative is showing
+    # an empty card forever, since no live bot exists yet to
+    # write its own snapshots).
+    if out is None:
+        sim_path = _sibling_sim_db(db_path)
+        if sim_path and Path(sim_path).exists():
+            try:
+                with closing(_conn(sim_path)) as c:
+                    row = c.execute(
+                        "SELECT * FROM model_snapshots "
+                        "ORDER BY id DESC LIMIT 1"
+                    ).fetchone()
+                    out = dict(row) if row else None
+            except (sqlite3.OperationalError, sqlite3.DatabaseError):
+                pass
     if out is None:
         return None
     # Augment with closed-bet feedback stats — separate try so a missing
