@@ -52,7 +52,13 @@ sync_unit() {
     echo "→ installing/updating ${svc}.service"
     cp "$src" "$dst"
     systemctl daemon-reload
-    systemctl enable "$svc"
+    # Skip enable for units that don't declare an [Install] section
+    # (e.g. the diagnosis-collector.service which is triggered by
+    # its sibling .timer, not started directly). Silencing the
+    # warning avoids polluting every deploy output.
+    if grep -q '^\[Install\]' "$src"; then
+      systemctl enable "$svc"
+    fi
   fi
 }
 
