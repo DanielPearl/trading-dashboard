@@ -245,6 +245,30 @@ def _dedup_keep_order(items: Iterable[str]) -> list[str]:
     return out
 
 
+# journalctl short-iso prefix:
+#   "2026-05-23T11:02:02+00:00 ubuntu-s-1vcpu-512mb-10gb-nyc1 python[627890]: "
+# The collector reads this from every log line; the user doesn't
+# care which PID or host it came from when they're trying to read
+# what actually broke. Strip aggressively.
+_JOURNAL_PREFIX_RE = re.compile(
+    r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}[+\-]\d{2}:\d{2}\s+\S+\s+\S+:\s*",
+)
+
+
+def _strip_journal_prefix(line: str) -> str:
+    """Strip a single journalctl short-iso prefix from a log line."""
+    return _JOURNAL_PREFIX_RE.sub("", line).strip()
+
+
+def _strip_journal_prefixes(text: str) -> str:
+    """Strip the journalctl prefix from every line of a multi-line
+    block (e.g. a traceback's evidence). Used so the modal renders
+    actual Python frames + exception messages instead of walls of
+    timestamp / hostname / PID noise.
+    """
+    return "\n".join(_strip_journal_prefix(ln) for ln in text.splitlines())
+
+
 def _classify(active_state: str, error_count: int, crash_restarts: int) -> str:
     """Map raw signals to the three statuses the dashboard renders.
 
@@ -274,8 +298,10 @@ def _notable(error_count: int, warn_count: int,
     distinctly from manual ones so deploys don't look like incidents.
     """
     if last_error:
-        # Trim to keep the table tidy; the full evidence lives in bugs[].
-        text = last_error.strip()
+        # Strip the journalctl prefix (timestamp / hostname / python[PID]:)
+        # before trimming — without that, the 120-char budget gets eaten
+        # by log plumbing instead of the actual error text.
+        text = _strip_journal_prefix(last_error.strip())
         if len(text) > 120:
             text = text[:117] + "..."
         return text
@@ -341,28 +367,53 @@ def collect_service(name: str) -> tuple[dict, list[dict], list[dict]]:
                             crash_restarts, manual_restarts, last_error),
     }
 
-    bugs: list[dict] = []
-    for tb in tracebacks[:5]:  # cap per-service so the JSON stays readable
-        # Pick the last "File ..." frame as a where-hint; the in-app
-        # source is often a thin wrapper, so the deepest user frame is
-        # usually the most informative.
-        where = None
+    # Group tracebacks by their (file:line, exception) pair so the
+    # dashboard renders one row per UNIQUE failure with an occurrence
+    # count + first/last-seen timestamps. The previous flat list
+    # produced one row per stack-trace instance, so a single bug that
+    # fires every 5 minutes turned into a dozen near-identical
+    # entries and the user had no way to tell "12 separate bugs"
+    # from "1 bug, 12 hits".
+    bug_groups: dict[tuple[str, str], dict] = {}
+    for tb in tracebacks:
+        where = "(unknown — see evidence)"
         for ln in reversed(tb.splitlines()):
             m = re.search(r'File "([^"]+)", line (\d+)', ln)
             if m:
                 where = f"{m.group(1)}:{m.group(2)}"
                 break
-        # Last line of the traceback is the exception itself — use it
-        # as the "what" so the dashboard shows the actual error type.
+        # Last line of the traceback IS the exception. Strip the
+        # journalctl prefix ("YYYY-MM-DDTHH:MM:SS+TZ host python[PID]:
+        # ") so the user sees the actual error text, not log
+        # plumbing.
         exc_line = tb.splitlines()[-1].strip()
-        bugs.append({
-            "service": name,
-            "what": exc_line[:200],
-            "where": where or "(unknown — see evidence)",
-            "evidence": tb[:1200],
-            "suggested_fix": "(automated collector — no fix proposed; "
-                             "review the traceback)",
-        })
+        clean_exc = _strip_journal_prefix(exc_line)
+        # Pull the first line's timestamp out as the seen-at marker.
+        first_line = tb.splitlines()[0]
+        ts_match = re.match(r'^(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2})',
+                             first_line)
+        ts = ts_match.group(1) if ts_match else ""
+        key = (where, clean_exc)
+        if key in bug_groups:
+            bug_groups[key]["count"] += 1
+            if ts and ts > (bug_groups[key].get("last_seen") or ""):
+                bug_groups[key]["last_seen"] = ts
+        else:
+            bug_groups[key] = {
+                "service": name,
+                "what": clean_exc[:240],
+                "where": where,
+                "count": 1,
+                "first_seen": ts,
+                "last_seen": ts,
+                # Keep the trimmed traceback as evidence for the
+                # "expand details" affordance, also with the journal
+                # prefix stripped so it's actually readable.
+                "evidence": _strip_journal_prefixes(tb[:1500]),
+            }
+    bugs: list[dict] = sorted(
+        bug_groups.values(), key=lambda b: -b["count"],
+    )[:5]
 
     # Streamlining: warnings that fire ≥10× in the current window
     # (capped at 24h, scoped down to since-last-restart) almost always
@@ -375,13 +426,19 @@ def collect_service(name: str) -> tuple[dict, list[dict], list[dict]]:
     for pattern, count in common:
         if count < 10:
             continue
+        # The "evidence" pattern is the warning text with numbers
+        # replaced by "N"; clean up the leading "WARNING " prefix
+        # that the journal emits so it reads like a sentence.
+        evidence = pattern[:400].lstrip(": ").strip()
         streamlining.append({
             "service": name,
-            "what": f"Warning fires {count}× since last restart",
-            "where": "(repeated log pattern)",
-            "evidence": pattern[:400],
-            "suggested_fix": "Consider rate-limiting, fixing root cause, "
-                             "or lowering log level if expected.",
+            "what": f"{count}× since last restart",
+            "where": "",  # not file:line-shaped; let the renderer hide
+            "evidence": evidence,
+            # suggested_fix omitted on purpose — the previous canned
+            # "Consider rate-limiting, fixing root cause, or lowering
+            # log level if expected" added zero information per item
+            # and crowded out the actual evidence line.
         })
 
     return service_row, bugs, streamlining

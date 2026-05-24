@@ -2594,13 +2594,6 @@ code { background: #161b22; padding: 1px 6px; border-radius: 3px; color: #c9d1d9
     border: 1px solid #30363d; border-radius: 6px;
     padding: 10px 12px; margin-bottom: 6px; background: #161b22;
 }
-.diagnosis-item .diagnosis-service {
-    font-size: 10px; text-transform: uppercase; letter-spacing: 0.06em;
-    color: #58a6ff; margin-bottom: 4px; font-weight: 600;
-}
-.diagnosis-item .diagnosis-what {
-    color: #f0f6fc; font-size: 13px; margin-bottom: 4px; line-height: 1.4;
-}
 .diagnosis-item .diagnosis-where {
     font-family: ui-monospace, SFMono-Regular, monospace;
     font-size: 11px; color: #8b949e; margin-bottom: 4px;
@@ -2608,12 +2601,65 @@ code { background: #161b22; padding: 1px 6px; border-radius: 3px; color: #c9d1d9
 .diagnosis-item .diagnosis-evidence {
     font-family: ui-monospace, SFMono-Regular, monospace;
     font-size: 11px; color: #c9d1d9; white-space: pre-wrap;
-    margin-top: 6px; padding: 6px 8px; background: #0d1117;
+    margin: 6px 0 0 0; padding: 6px 8px; background: #0d1117;
     border-radius: 4px; border-left: 2px solid #30363d;
-    max-height: 120px; overflow-y: auto;
+    max-height: 180px; overflow-y: auto;
 }
+.diagnosis-item .diagnosis-evidence-wrap { margin-top: 6px; }
+.diagnosis-item .diagnosis-evidence-wrap summary {
+    cursor: pointer; color: #58a6ff; font-size: 11px;
+    user-select: none; padding: 2px 0;
+}
+.diagnosis-item .diagnosis-evidence-wrap summary:hover { color: #79c0ff; }
 .diagnosis-item .diagnosis-fix {
     color: #3fb950; font-size: 12px; margin-top: 6px;
+}
+.diagnosis-item .diagnosis-what-row {
+    display: flex; align-items: baseline; flex-wrap: wrap;
+    gap: 8px; margin-bottom: 4px;
+}
+.diagnosis-item .diagnosis-what {
+    color: #f0f6fc; font-size: 13px; line-height: 1.4;
+    font-weight: 500; flex: 1; min-width: 0; margin-bottom: 0;
+    word-break: break-word;
+}
+.diagnosis-item .diagnosis-count {
+    background: rgba(248, 81, 73, 0.15); color: #f85149;
+    border: 1px solid rgba(248, 81, 73, 0.5);
+    padding: 1px 8px; border-radius: 10px; font-size: 11px;
+    font-weight: 700; font-variant-numeric: tabular-nums;
+}
+.diagnosis-item .diagnosis-last-seen {
+    color: #6e7681; font-size: 11px; font-variant-numeric: tabular-nums;
+}
+/* Top-of-modal headline. Three palettes: ok (green), warn (amber),
+   bad (red). The icon is a single character ("✓" / "!" / "—") so
+   the headline reads cleanly in any rendering context including
+   text-only screen readers. */
+.diagnosis-headline {
+    display: flex; align-items: center; gap: 10px;
+    padding: 12px 14px; margin-bottom: 16px;
+    border-radius: 6px; font-size: 13px; line-height: 1.4;
+    border: 1px solid; font-weight: 500;
+}
+.diagnosis-headline-icon {
+    font-size: 18px; font-weight: 700; line-height: 1;
+}
+.diagnosis-headline-ok {
+    background: rgba(63, 185, 80, 0.10);
+    color: #56d364; border-color: rgba(63, 185, 80, 0.45);
+}
+.diagnosis-headline-warn {
+    background: rgba(227, 179, 65, 0.10);
+    color: #e3b341; border-color: rgba(227, 179, 65, 0.45);
+}
+.diagnosis-headline-bad {
+    background: rgba(248, 81, 73, 0.10);
+    color: #f85149; border-color: rgba(248, 81, 73, 0.45);
+}
+.diagnosis-headline-neutral {
+    background: #161b22; color: #8b949e;
+    border-color: #30363d;
 }
 .diagnosis-empty {
     text-align: center; padding: 32px 20px; color: #6e7681;
@@ -4456,15 +4502,67 @@ def _live_update_script(current_bot: str, period_key: str = "all") -> str:
     let h = "<div class='diagnosis-section'><h4>" + diagEsc(title) + "</h4>";
     for (const it of items) {{
       h += "<div class='diagnosis-item'>";
-      if (it.service) h += "<div class='diagnosis-service'>" + diagEsc(it.service) + "</div>";
-      if (it.what)    h += "<div class='diagnosis-what'>"    + diagEsc(it.what)    + "</div>";
-      if (it.where)   h += "<div class='diagnosis-where'>"   + diagEsc(it.where)   + "</div>";
-      if (it.evidence) h += "<div class='diagnosis-evidence'>" + diagEsc(it.evidence) + "</div>";
+      // Header row: WHAT (bold) + count badge if grouped + last-seen
+      // time if known. Service name moved to the right so the
+      // important text starts at the left edge.
+      h += "<div class='diagnosis-what-row'>";
+      h += "<span class='diagnosis-what'>" + diagEsc(it.what || "")
+         + "</span>";
+      if (it.count && it.count > 1) {{
+        h += " <span class='diagnosis-count' title='Times this exact "
+           + "error has fired since the last service restart'>"
+           + diagEsc(String(it.count)) + "\\u00d7</span>";
+      }}
+      if (it.last_seen) {{
+        h += " <span class='diagnosis-last-seen' title='Most recent "
+           + "occurrence'>last seen "
+           + diagEsc(it.last_seen.replace("T", " ")) + "</span>";
+      }}
+      h += "</div>";
+      if (it.where) h += "<div class='diagnosis-where'>" + diagEsc(it.where) + "</div>";
+      if (it.evidence) h += "<details class='diagnosis-evidence-wrap'><summary>Show details</summary><pre class='diagnosis-evidence'>" + diagEsc(it.evidence) + "</pre></details>";
+      // Suggested_fix only renders when there's actually a useful
+      // suggestion. The pre-rewrite collector emitted boilerplate on
+      // every row ("(automated collector — no fix proposed)") which
+      // added noise without information.
       if (it.suggested_fix) h += "<div class='diagnosis-fix'>\\u21b3 " + diagEsc(it.suggested_fix) + "</div>";
       h += "</div>";
     }}
     h += "</div>";
     return h;
+  }}
+  function diagRenderHeadline(d) {{
+    // Plain-English top line so the user knows the state at a glance
+    // without scanning the table. Pluralisation matters here — "1
+    // service healthy" reads weird, but so does "0 issues" with
+    // emphasis. Cover the three common shapes explicitly.
+    const audited = d.services_audited || 0;
+    const healthy = d.services_healthy || 0;
+    const issues  = d.issues_found || 0;
+    const broken  = audited - healthy;
+    let icon, palette, line;
+    if (audited === 0) {{
+      icon = "\\u2014"; palette = "neutral";
+      line = "No services audited yet.";
+    }} else if (broken === 0 && issues === 0) {{
+      icon = "\\u2713"; palette = "ok";
+      line = audited === 1
+        ? "Everything looks healthy."
+        : "All " + audited + " services healthy.";
+    }} else if (broken === 0) {{
+      icon = "!"; palette = "warn";
+      line = issues + " issue" + (issues === 1 ? "" : "s")
+           + " worth a look. Services themselves are running.";
+    }} else {{
+      icon = "!"; palette = "bad";
+      line = broken + " of " + audited + " service"
+           + (audited === 1 ? "" : "s") + " unhealthy"
+           + (issues ? ", " + issues + " issue"
+                       + (issues === 1 ? "" : "s") + " surfaced." : ".");
+    }}
+    return "<div class='diagnosis-headline diagnosis-headline-"
+         + palette + "'><span class='diagnosis-headline-icon'>"
+         + icon + "</span> " + diagEsc(line) + "</div>";
   }}
   function diagRenderServices(services) {{
     if (!services || !services.length) return "";
@@ -4510,15 +4608,16 @@ def _live_update_script(current_bot: str, period_key: str = "all") -> str:
            + diagEsc(d.error || "(no error message)") + "</div>";
     }}
     let h = "";
+    h += diagRenderHeadline(d);
     h += diagRenderServices(d.services);
-    h += diagRenderItems("\\ud83d\\udd34 Bugs", d.bugs);
-    h += diagRenderItems("\\ud83d\\udfe1 Recommended changes", d.recommended_changes);
-    h += diagRenderItems("\\ud83d\\udfe2 Streamlining opportunities", d.streamlining);
+    h += diagRenderItems("Errors caught since last restart", d.bugs);
+    h += diagRenderItems("Recommended changes", d.recommended_changes);
+    h += diagRenderItems("Noisy log patterns", d.streamlining);
     const noFindings = (!d.bugs || !d.bugs.length)
                     && (!d.recommended_changes || !d.recommended_changes.length)
                     && (!d.streamlining || !d.streamlining.length);
     if (noFindings) {{
-      h += "<div class='diagnosis-empty'>No findings \\u2014 everything looks healthy.</div>";
+      h += "<div class='diagnosis-empty'>No further findings \\u2014 nothing else to report.</div>";
     }}
     if (d.github_issue_url) {{
       h += "<div style='margin-top:14px'><a class='diagnosis-github-link' href='"

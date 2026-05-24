@@ -1,0 +1,15 @@
+[Unit]
+Description=Run trading dashboard diagnosis collector daily (sim + live)
+
+[Timer]
+# Daily at 11:00 UTC (7am ET). The collector also runs on every
+# deploy via deploy/deploy.sh, so the timer is just the safety net
+# for slow-burn issues that develop between deploys. Persistent so
+# a missed slot (e.g. droplet rebooting through 11:00) catches up
+# on next boot.
+OnCalendar=*-*-* 11:00:00 UTC
+Persistent=true
+Unit=diagnosis-collector.service
+
+[Install]
+WantedBy=timers.target

@@ -1,0 +1,23 @@
+[Unit]
+Description=Trading dashboard diagnosis collector (sim + live)
+After=network.target
+
+[Service]
+Type=oneshot
+User=root
+WorkingDirectory=/root/trading-dashboard
+# Run the collector twice in sequence — once for each dashboard
+# service. Each invocation writes its own diagnosis/latest.json
+# under a different diag-dir so the sim dashboard reads sim's
+# audit and the live dashboard reads live's audit. They can't
+# share a file because they monitor different services (sim
+# audits trading-dashboard-sim.service, live audits
+# trading-dashboard-live.service).
+ExecStart=/usr/bin/python3 /root/trading-dashboard/scripts/diagnosis_collector.py \
+    --services trading-dashboard-sim.service \
+    --diag-dir /root/trading-dashboard/diagnosis
+ExecStart=/usr/bin/python3 /root/trading-dashboard/scripts/diagnosis_collector.py \
+    --services trading-dashboard-live.service \
+    --diag-dir /root/trading-dashboard/diagnosis-live
+StandardOutput=journal
+StandardError=journal

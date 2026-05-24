@@ -88,6 +88,33 @@ if [[ "$TARGET" == "live" || "$TARGET" == "both" ]]; then
   restart_one trading-dashboard-live
 fi
 
+# Diagnosis-collector unit + timer. Source-of-truth lives in the
+# repo; sync_unit handles unit file changes. Re-enable the timer
+# in case a manual systemctl disable left it off. Then trigger
+# the service immediately so the post-deploy diagnosis isn't
+# stale (the timer's next fire could be 24h away).
+sync_unit diagnosis-collector
+sync_unit_timer() {
+  local svc="$1"
+  local src="deploy/${svc}.timer"
+  local dst="/etc/systemd/system/${svc}.timer"
+  if [[ ! -f "$dst" ]] || ! cmp -s "$src" "$dst"; then
+    echo "→ installing/updating ${svc}.timer"
+    cp "$src" "$dst"
+    systemctl daemon-reload
+    systemctl enable --now "${svc}.timer"
+  fi
+}
+sync_unit_timer diagnosis-collector
+
+echo "→ refresh diagnosis (sim + live, then write both .json files)"
+systemctl start diagnosis-collector.service
+sleep 2
+# Wait for the oneshot to finish before printing the URLs.
+while systemctl is-active --quiet diagnosis-collector.service; do
+  sleep 1
+done
+
 echo
 echo "Both dashboards should now be live:"
 echo "  sim  → http://$(hostname -I | awk '{print $1}'):8080"
