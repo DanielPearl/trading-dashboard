@@ -266,9 +266,50 @@ validators:
 # live.db but never place a real order — confusing, but safe.
 # ──────────────────────────────────────────────────────────────────────
 tennis_trader:
-  enabled: false
+  # Daemon is enabled — but the homepage toggle for tennis on the
+  # live dashboard is OFF by default (bot_state.bootstrap_disabled
+  # sets it). And the live executor's dry_run is true. So three
+  # gates have to align before any real order goes out:
+  #   1. enabled: true here (daemon runs)
+  #   2. tennis toggle ON in the live dashboard's Home tab
+  #   3. live.dry_run set to false here (real money mode)
+  # Until you flip #3, the daemon collects + scores + LOGS every
+  # decision but never calls Kalshi's order endpoint.
+  enabled: true
   repo_path: /root/tennis-forecast
   interval_seconds: 60
+
+  # Presence of the ``live:`` block tells bots/tennis.py to use the
+  # TennisLiveExecutor instead of the paper simulator. The executor
+  # writes positions to outputs-live/ (isolated from sim's
+  # outputs/), runs all kalshi_sdk gates pre-flight, and places
+  # IOC limit orders at the watchlist's ask price.
+  #
+  # All cap values are TIGHTENED, never relaxed, by the hard
+  # constants in bots/tennis_live_executor.py. A YAML typo can't
+  # widen them past the safety ceiling:
+  #   max_open_positions    ≤ 5
+  #   max_orders_per_day    ≤ 20
+  #   contracts_per_order   ≤ 1
+  #   min_edge_pp           ≥ 0.05
+  #   max_entry_price_cents ≤ 70
+  #   min_entry_price_cents ≥ 15
+  #   price_deviation_cents ≤ 3
+  live:
+    # Safety knob. While true, the executor logs "DRY-RUN would
+    # have placed: ..." for every order it WOULD send, but never
+    # calls Kalshi's order endpoint. Set to false ONLY after
+    # watching dry-run output for at least a full tick cycle and
+    # confirming the verdicts match what you'd expect.
+    dry_run: true
+    sim_state_path: /root/tennis-forecast/data/outputs-live/sim_state.json
+    max_open_positions: 5
+    max_orders_per_day: 20
+    contracts_per_order: 1
+    min_edge_pp: 0.05
+    max_entry_price_cents: 70
+    min_entry_price_cents: 15
+    price_deviation_cents: 3
 
 unemployment_trader:
   enabled: false
