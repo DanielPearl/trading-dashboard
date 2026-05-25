@@ -193,33 +193,55 @@ def _journal_since(name: str, since: str) -> list[str]:
 
 
 def _extract_tracebacks(lines: list[str]) -> list[str]:
-    """Group consecutive traceback lines into single error blocks.  Each
+    """Group consecutive traceback lines into single error blocks. Each
     returned string is one full traceback (header + frames + exception).
-    Caps at 12 frames per block so a runaway recursion doesn't blow up
+    Caps at 14 lines per block so a runaway recursion doesn't blow up
     the JSON.
+
+    Every journal line carries a "YYYY-MM-DDTHH:MM:SS+ZZ host python[PID]:"
+    prefix — so we can't use "starts with timestamp" as the boundary
+    between log entries (it would always trigger and truncate the
+    traceback to two lines). Instead, strip the prefix off each
+    candidate line and inspect what's UNDER it: a traceback
+    continuation looks like ``  File "...", line N, in funcname`` (two-
+    space indent), a code line (four-space indent), or the final
+    ``<ExceptionName>: <message>`` line. Anything else is a new log
+    entry and ends the chunk.
     """
+    # A continuation line, after the journal prefix is stripped:
+    #   "  File ..."   (indented File frame)
+    #   "    code"     (indented code line)
+    #   "    ^^^^"     (indented carets / annotation)
+    #   "ExceptionType: ..."  (final exception line)
+    #   "During handling of the above exception..." (chained traceback)
+    #   "The above exception was the direct cause..."  (chained)
+    _CONTINUATION_RE = re.compile(
+        r"^(?:"
+        r"  [^\s]"               # 2-space indent + non-space (File / >)
+        r"|    \S"               # 4-space indent (code or annotation)
+        r"|\t"                   # tab indent
+        r"|\S+(?:Error|Exception)\s*[:\s]"   # final exception line
+        r"|During handling of"
+        r"|The above exception"
+        r")"
+    )
     blocks: list[str] = []
     i = 0
     while i < len(lines):
         if TRACEBACK_RE.search(lines[i]):
             chunk = [lines[i]]
             j = i + 1
-            # Traceback frames are indented; exception line is unindented
-            # but starts with "<ExceptionName>:" — keep grabbing until we
-            # see a clearly-new log entry (different timestamp prefix).
             while j < len(lines) and len(chunk) < 14:
                 ln = lines[j]
                 if not ln.strip():
                     break
-                # A new systemd journal entry usually starts with a
-                # timestamp.  If the line looks like a fresh log entry
-                # (has an ISO date at column 0), stop.
-                if re.match(r"^\d{4}-\d{2}-\d{2}T", ln) and j > i + 1:
+                content = _strip_journal_prefix(ln)
+                if not _CONTINUATION_RE.match(content):
+                    # No longer a traceback line — fresh log entry.
                     break
                 chunk.append(ln)
                 # Exception line marks the end of a traceback.
-                if re.match(r"^\S+(?:Error|Exception)[:\s]", ln.lstrip()):
-                    chunk.append(ln) if False else None  # already appended
+                if re.match(r"^\S+(?:Error|Exception)\s*[:\s]", content):
                     j += 1
                     break
                 j += 1
@@ -421,15 +443,43 @@ def collect_service(name: str) -> tuple[dict, list[dict], list[dict]]:
     # branch.  Surface the top three so the dashboard hints at them
     # without listing every noise line.
     streamlining: list[dict] = []
-    warn_norm = [re.sub(r"\d+", "N", w.split("]", 1)[-1].strip()) for w in warns]
+    # Normalise each warning line into a pattern key so we can count
+    # how often "the same warning" fires. Three normalisations:
+    #   1. strip the journal prefix (timestamp / host / PID) — every
+    #      line has it and it'd defeat the count.
+    #   2. strip the "WARNING <logger.name>: " prefix between the
+    #      WARNING token and the message. Upstream bots use
+    #      setup_logging which adds a named handler; the dashboard
+    #      ALSO has a root handler, so the same warning text gets
+    #      emitted twice — once bare and once with the logger name
+    #      injected. Without this step those landed as two separate
+    #      streamlining rows (same root cause, doubled).
+    #   3. replace numbers with "N" so a fail-count or
+    #      timestamp-in-message doesn't fragment the bucket.
+    def _normalise_warn(line: str) -> str:
+        stripped = _strip_journal_prefix(line)
+        # Drop the "WARNING " or "WARNING <logger>:" prefix the
+        # journal includes after the application's leading
+        # timestamp. Both forms collapse to the same key.
+        stripped = re.sub(
+            r"^\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}:\d{2}\s+",
+            "", stripped,
+        )
+        stripped = re.sub(
+            r"^(?:WARN|WARNING)\s+(?:[\w.]+:\s+)?",
+            "", stripped,
+        )
+        return re.sub(r"\d+", "N", stripped)
+
+    warn_norm = [_normalise_warn(w) for w in warns]
     common = Counter(warn_norm).most_common(3)
     for pattern, count in common:
         if count < 10:
             continue
-        # The "evidence" pattern is the warning text with numbers
-        # replaced by "N"; clean up the leading "WARNING " prefix
-        # that the journal emits so it reads like a sentence.
-        evidence = pattern[:400].lstrip(": ").strip()
+        # The "evidence" shows the normalised pattern — clean of
+        # journal noise, clean of duplicate logger-name prefix,
+        # numbers collapsed. Reads as a sentence.
+        evidence = pattern[:400].strip()
         streamlining.append({
             "service": name,
             "what": f"{count}× since last restart",

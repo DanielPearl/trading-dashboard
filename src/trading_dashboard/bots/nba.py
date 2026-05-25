@@ -240,7 +240,31 @@ def start_daemon(cfg: dict) -> Any:
             if not bot_state.is_bot_enabled(BOT_KEY):
                 log.info("nba tick skipped — bot paused on dashboard")
                 return None
-            result = _orig_tick(*args, **kwargs)
+            try:
+                result = _orig_tick(*args, **kwargs)
+            except RuntimeError as exc:
+                # The negative-cache that throttles stats.nba.com calls
+                # means NBA can't fetch fresh game-log data when the
+                # weekly retrain timer fires. Upstream's _train_and_save
+                # then raises "game-log panel is empty — cannot train"
+                # because all seasons came back empty. The bot's main
+                # model still works (it uses the previously-trained
+                # one); only the periodic retrain attempt fails. Log
+                # it once at WARNING (so the diagnosis collector
+                # doesn't flag it as a real bug) and let the next
+                # tick continue normally.
+                msg = str(exc)
+                if "game-log panel is empty" in msg:
+                    log.warning(
+                        "nba retrain skipped — no fresh game-log data "
+                        "(stats.nba.com is rate-limited from this "
+                        "droplet's IP, and no cached panel exists for "
+                        "the active seasons). Predictions still use "
+                        "the existing trained model; only the periodic "
+                        "retrain is paused."
+                    )
+                    return None
+                raise
             try:
                 _sync_sport_json(repo_path, db_path, watchlist_out,
                                   sim_state_out, metrics_out)
