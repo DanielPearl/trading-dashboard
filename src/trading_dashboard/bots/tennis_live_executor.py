@@ -357,7 +357,15 @@ class TennisLiveExecutor:
                         balance_cents, order_cost)
             return False
 
-        # All gates pass. Place (or dry-run).
+        # All gates pass. Burn a budget slot BEFORE the API call so
+        # a systemic failure (bad TIF value, API outage, key
+        # revoked) doesn't end up re-trying the same 20 orders on
+        # every tick all day. If the call fails, we still consumed
+        # the slot — the next attempt has to wait for tomorrow's
+        # window. Under normal operation (orders succeeding), this
+        # is the same accounting as bumping after the call.
+        self._daily.increment()
+
         side_player = row.get(player_field) or "?"
         order_id, order_status = self._submit_order(
             ticker=ticker,
@@ -367,13 +375,10 @@ class TennisLiveExecutor:
             ask_cents=current_ask,
         )
         if order_id is None and not self.dry_run:
-            # Real submit failed; don't record a position.
+            # Real submit failed; don't record a position. Counter
+            # already incremented above, so we won't immediately
+            # retry on the next tick.
             return False
-
-        # Record the position (whether dry-run or real). For
-        # dry-run, we still bump the daily counter so the cap
-        # is realistic.
-        self._daily.increment()
         if self.dry_run:
             log.info(
                 "DRY-RUN would BUY %d %s on %s (%s vs %s, side=%s) "
@@ -474,9 +479,14 @@ class TennisLiveExecutor:
             # We always buy YES on the favoured side. The bot's
             # side selection already decides A vs B; "buy YES on
             # B" is equivalent to "bet against A". Time-in-force
-            # IOC behaves market-like at the configured limit:
-            # fills as much as it can right now or cancels the
-            # rest. No partial fills accumulate as resting orders.
+            # "immediate_or_cancel" behaves market-like at the
+            # configured limit: fills as much as it can right now
+            # or cancels the rest. No partial fills accumulate as
+            # resting orders.
+            #
+            # Note Kalshi accepts the lowercase snake_case string —
+            # NOT "IOC" / "GTC" / "FOK" (the SDK's default
+            # "IOC" gets rejected as "invalid_parameters / oneof").
             resp = client.place_order(
                 ticker=ticker,
                 side="yes",
@@ -484,7 +494,7 @@ class TennisLiveExecutor:
                 count=self.contracts_per_order,
                 order_type="limit",
                 yes_price=ask_cents,
-                time_in_force="IOC",
+                time_in_force="immediate_or_cancel",
                 client_order_id=coid,
             )
         except Exception as exc:  # noqa: BLE001
