@@ -614,38 +614,68 @@ class TennisLiveExecutor:
         position["unrealized_pnl"] = pnl
 
     def _reconcile_positions(self, state: dict) -> None:
-        """Query Kalshi for our open positions; any match in our
-        local ``open_positions`` that Kalshi no longer lists has
-        settled. Read the settlement outcome and move the position
-        to ``closed_positions``.
+        """Two-way sync with Kalshi:
+
+        * Anything in our local ``open_positions`` that Kalshi NO
+          LONGER lists is treated as settled — pull the final price,
+          compute realised P&L, move to ``closed_positions``.
+
+        * Anything Kalshi LISTS that we don't have locally gets added
+          back into ``open_positions`` as a recovered orphan — happens
+          after a state-file wipe, an earlier reconciliation bug, or
+          a manual edit. Without this we'd silently lose track of
+          real money sitting on Kalshi.
 
         Kept generous on failure — a transient SDK error doesn't
         flush our state. The position stays open locally until the
         next tick where we DO get a clean read.
         """
-        local_open = state.get("open_positions", [])
-        if not local_open:
-            return
         client = self._get_client()
         if client is None:
             return
         try:
             resp = client.get_positions(limit=200) or {}
-            kalshi_positions = resp.get("positions") or []
-            kalshi_tickers = {p.get("ticker") for p in kalshi_positions
-                               if p.get("position", 0) != 0}
+            # Kalshi's response wrapper changed: the SDK doc says
+            # "positions" but the API actually returns
+            # "market_positions" (the per-ticker positions, distinct
+            # from "event_positions" which aggregate by event).
+            # Accept either so we don't drift again if Kalshi adds a
+            # new top-level key. Empty list when neither shape is
+            # present.
+            kalshi_positions = (
+                resp.get("market_positions")
+                or resp.get("positions")
+                or []
+            )
+            # Position size lives in "position_fp" (string like "1.00"
+            # in the new API) — NOT "position", which doesn't exist
+            # in the current schema. The earlier
+            # ``p.get("position", 0) != 0`` returned None for every
+            # row → 0 != 0 → False → empty set → every local position
+            # incorrectly treated as settled. Use the new key + parse
+            # as float so a partial position (e.g. "0.50") survives.
+            def _has_position(p: dict) -> bool:
+                v = p.get("position_fp") or p.get("position") or 0
+                try:
+                    return abs(float(v)) > 0.0
+                except (TypeError, ValueError):
+                    return False
+            kalshi_open = {
+                p.get("ticker"): p for p in kalshi_positions
+                if _has_position(p) and p.get("ticker")
+            }
         except Exception:  # noqa: BLE001
             log.exception("get_positions failed; deferring "
                            "reconciliation to next tick")
             return
 
+        # 1) Walk local opens; settle the ones Kalshi no longer lists.
+        local_open = state.get("open_positions", [])
         still_open: list[dict] = []
         for p in local_open:
-            if p.get("ticker") in kalshi_tickers:
+            if p.get("ticker") in kalshi_open:
                 still_open.append(p)
                 continue
-            # Position is gone from Kalshi → settled (won or lost).
-            # Pull the final market price to record realised P&L.
             settle_cents = self._settle_price_cents(p.get("ticker") or "")
             settle_prob = (float(settle_cents) / 100.0
                             if settle_cents is not None else 1.0)
@@ -670,7 +700,106 @@ class TennisLiveExecutor:
                               {})[p.get("match_id", "")] = closed["closed_at"]
             log.info("tennis-live SETTLED %s — %s, P&L %+.3f",
                      p.get("ticker"), "WON" if won else "LOST", realized)
+
+        # 2) Catch-up: anything Kalshi lists but local missed.
+        local_tickers = {p.get("ticker") for p in still_open}
+        # Also check the closed list — if a wrongly-settled position
+        # is still actually open on Kalshi, restore it from the
+        # closed record (preserves the original entry data) and
+        # remove the bogus closed entry.
+        closed_by_ticker = {
+            c.get("ticker"): (i, c)
+            for i, c in enumerate(state.get("closed_positions") or [])
+        }
+        bogus_closed_indexes: list[int] = []
+        for ticker, kp in kalshi_open.items():
+            if ticker in local_tickers:
+                continue
+            # Prefer to restore from a wrongly-closed local record
+            # (keeps entry_market_prob / entry_model_prob / contracts).
+            if ticker in closed_by_ticker:
+                idx, closed_record = closed_by_ticker[ticker]
+                restored = {k: v for k, v in closed_record.items()
+                             if k not in {"closed_at",
+                                            "settle_market_prob",
+                                            "realized_pnl", "won",
+                                            "close_reason", "result",
+                                            "winner_side"}}
+                still_open.append(restored)
+                bogus_closed_indexes.append(idx)
+                log.info("tennis-live RESTORED %s from wrongly-closed "
+                         "record (still open on Kalshi)", ticker)
+                continue
+            # No local record at all — build a minimal stub from
+            # Kalshi's payload. We don't know the entry_model_prob
+            # (the model's view at order time), so it stays at 0;
+            # the home page will display "—" for the My Probability
+            # column on these orphans. Better than losing the
+            # position from local accounting entirely.
+            avg_cost = self._kalshi_avg_cost_cents(kp)
+            still_open.append({
+                "position_id": f"recovered-{ticker}-{int(datetime.now(timezone.utc).timestamp())}",
+                "ticker": ticker,
+                "match_id": ticker.rsplit("-", 1)[0] if "-" in ticker else ticker,
+                "side": "PLAYER_A",  # unknown without order metadata
+                "side_player": "(recovered from Kalshi)",
+                "player_a": "?", "player_b": "?",
+                "tournament": "", "surface": "",
+                "entry_market_prob": (avg_cost / 100.0
+                                        if avg_cost is not None else 0.0),
+                "entry_model_prob": 0.0,
+                "current_market_prob": (avg_cost / 100.0
+                                          if avg_cost is not None else 0.0),
+                "current_model_prob": 0.0,
+                "stake": (avg_cost / 100.0
+                           if avg_cost is not None else 0.0),
+                "contracts": int(float(kp.get("position_fp") or 1)),
+                "slippage": 0.0, "unrealized_pnl": 0.0,
+                "label_at_open": "RECOVERED",
+                "reason_at_open": "rebuilt from Kalshi after local "
+                                   "state lost it",
+                "opened_at": datetime.now(timezone.utc).isoformat(),
+                "title": "", "event_title": "",
+            })
+            log.info("tennis-live RECOVERED %s as orphan stub from "
+                     "Kalshi (no matching local record found)",
+                     ticker)
+
+        # Remove the wrongly-closed records we just restored.
+        if bogus_closed_indexes:
+            keep = [c for i, c in enumerate(state.get("closed_positions") or [])
+                    if i not in set(bogus_closed_indexes)]
+            state["closed_positions"] = keep
+
         state["open_positions"] = still_open
+
+    def _kalshi_avg_cost_cents(self, kp: dict) -> Optional[int]:
+        """Pull average cost in cents from a Kalshi position payload.
+        Kalshi exposes ``market_exposure`` (or ``market_exposure_dollars``
+        as a string) for our paid cost; divide by contract count to
+        recover per-contract price.
+        """
+        for key in ("market_exposure_dollars", "average_cost_dollars"):
+            v = kp.get(key)
+            if v is None:
+                continue
+            try:
+                count = abs(float(kp.get("position_fp") or 1))
+                if count <= 0:
+                    return None
+                return int(round(float(v) * 100.0 / count))
+            except (TypeError, ValueError):
+                continue
+        v = kp.get("market_exposure")  # cents int
+        if v is not None:
+            try:
+                count = abs(float(kp.get("position_fp") or 1))
+                if count <= 0:
+                    return None
+                return int(round(float(v) / count))
+            except (TypeError, ValueError):
+                pass
+        return None
 
     def _settle_price_cents(self, ticker: str) -> Optional[int]:
         client = self._get_client()
