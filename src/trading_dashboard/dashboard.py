@@ -3279,6 +3279,7 @@ def render_page(
     model_view: str = "pregame",
     threshold_source: dict | None = None,
     mode: str = "sim",
+    live_state_paths: list[str] | None = None,
 ) -> str:
     # Mode-driven page chrome. ``mode`` is "sim" (paper-trading
     # default) or "live" (real-money dashboard). Anything not
@@ -3394,6 +3395,16 @@ def render_page(
                      period_key=period_key, current_bot=current_bot,
                      available_bots=available_bots,
                      hedge_cfg=hedge_cfg)
+    # Live dashboard: show the real-money positions table at the
+    # top of Home so the operator sees what's actually on Kalshi
+    # right now. Renders an empty-state message in live mode even
+    # with no positions, so the operator can see the gate
+    # explanation. On sim we omit this section entirely (sim's
+    # paper positions are already covered by the per-bot active-
+    # bets table inside _render_summary).
+    if mode == "live":
+        live_positions = _load_live_open_positions(live_state_paths or [])
+        _render_live_positions_table(out, live_positions)
     out.append("<div class='section'><h2>Model performance</h2>"
                "<div class='body'>")
     _render_notifications_panel(out)
@@ -5560,6 +5571,149 @@ def _render_bot_cards(out: List[str], rollup: dict,
                    "</div>")
         out.append("</a>")  # /bot-card
     out.append("</div>")  # /bot-cards-grid
+
+
+def _load_live_open_positions(state_paths: list[str]) -> list[dict]:
+    """Read every live executor's ``sim_state.json`` and concatenate
+    the ``open_positions`` lists. Each position keeps the bot it
+    came from (tagged ``_bot_key``) so the rendered table can group
+    or label by bot. Returns an empty list when no state files exist
+    yet (e.g. fresh deploy of the live dashboard before any
+    executor has run).
+    """
+    positions: list[dict] = []
+    for path in state_paths or []:
+        p = Path(path)
+        if not p.exists():
+            continue
+        try:
+            with p.open("r", encoding="utf-8") as f:
+                state = json.load(f) or {}
+        except (OSError, json.JSONDecodeError):
+            log.exception("live positions: failed to read %s", p)
+            continue
+        # Tag each position with the bot it came from. Derive the
+        # bot key from the path's grandparent directory name
+        # (e.g. /root/tennis-forecast/.../outputs-live/sim_state.json
+        # → "tennis-forecast" → "tennis"). Simple heuristic; if it
+        # mis-tags for a future bot we'll generalise.
+        bot_key = p.parents[2].name if len(p.parents) >= 3 else ""
+        if bot_key.endswith("-forecast"):
+            bot_key = bot_key[: -len("-forecast")]
+        for pos in (state.get("open_positions") or []):
+            pos = dict(pos)
+            pos.setdefault("_bot_key", bot_key)
+            positions.append(pos)
+    return positions
+
+
+def _render_live_positions_table(out: List[str],
+                                   positions: list[dict]) -> None:
+    """Live-dashboard home-tab table. Mirrors what Kalshi's
+    Predictions / Portfolio page shows for each open contract, with
+    one extra column inserted before "Last Traded":
+
+        Market | Side | Position | Avg Price | MY PROBABILITY |
+        Last Traded | Unrealized P&L | Settles in
+
+    ``Avg Price`` is the entry price we paid (= entry_market_prob
+    in ¢). ``My Probability`` is the model's probability for our
+    side at order time (= entry_model_prob in ¢) — Kalshi never
+    shows this; the whole point of the column is to put our
+    model's view side-by-side with the market's last-traded price
+    so the user can read the edge at a glance. ``Last Traded`` is
+    the current market mid for our side (= current_market_prob in
+    ¢), refreshed each tick. ``Unrealized P&L`` is contracts ×
+    (Last Traded − Avg Price) in dollars; positive = we're ahead.
+
+    Empty state is a single ``<div class='empty'>`` row.
+    """
+    out.append("<div class='section'><h2>Open Real-Money Positions"
+               "</h2><div class='body'>")
+    if not positions:
+        out.append("<div class='empty'>No real-money positions open. "
+                    "(The bot is gated by three switches — daemon "
+                    "enabled, homepage toggle, and "
+                    "<code>dry_run: false</code> — see config "
+                    "<code>dashboard-live.yaml</code>.)</div>")
+        out.append("</div></div>")
+        return
+    out.append("<table><thead><tr>"
+               "<th title='Tennis match / event the contract resolves on'>"
+               "Market</th>"
+               "<th title='Which player we are betting YES on'>Side</th>"
+               "<th class='num' title='Number of contracts owned'>"
+               "Position</th>"
+               "<th class='num' title='Per-contract price we paid "
+               "(entry probability × 100¢)'>Avg Price</th>"
+               "<th class='num' title='Model probability for our side "
+               "when the order was placed — what the trained model "
+               "said before we bet. The number Kalshi never sees.'>"
+               "My Probability</th>"
+               "<th class='num' title='Current market mid for our "
+               "side, in cents'>Last Traded</th>"
+               "<th class='num' title='Contracts × (Last Traded − "
+               "Avg Price), in dollars. Positive = ahead.'>"
+               "Unrealized P&L</th>"
+               "<th class='num' title='Time until the contract "
+               "resolves on Kalshi'>Settles in</th>"
+               "</tr></thead><tbody>")
+    for p in positions:
+        ticker = str(p.get("ticker") or "")
+        side_label = (p.get("side_player")
+                       or p.get("player_a" if p.get("side") == "PLAYER_A"
+                                 else "player_b")
+                       or "?")
+        # event_title is the renderable match name (e.g. "Norrie vs
+        # Wang"); fall back to title (Kalshi YES question text) for
+        # recovered orphan stubs that have no event_title.
+        market_label = (p.get("event_title")
+                          or p.get("title")
+                          or ticker)
+        contracts = int(p.get("contracts") or 1)
+        entry_prob = float(p.get("entry_market_prob") or 0.0)
+        entry_cents = int(round(entry_prob * 100))
+        model_prob = float(p.get("entry_model_prob") or 0.0)
+        model_cents = int(round(model_prob * 100)) if model_prob else None
+        current_prob = float(p.get("current_market_prob")
+                              or entry_prob)
+        current_cents = int(round(current_prob * 100))
+        unrealized = float(p.get("unrealized_pnl") or 0.0)
+        # Time-to-close from the ticker's encoded settlement date.
+        mtc = minutes_to_close_from_ticker(ticker)
+        if mtc is None or mtc < 0:
+            settles_in = "—"
+        elif mtc < 60:
+            settles_in = f"{int(mtc)}m"
+        elif mtc < 60 * 24:
+            settles_in = f"{int(mtc / 60)}h"
+        else:
+            settles_in = f"{int(mtc / (60 * 24))}d"
+
+        pnl_cls = ("green" if unrealized > 0
+                    else ("red" if unrealized < 0 else ""))
+        pnl_str = f"{'+' if unrealized >= 0 else ''}${unrealized:.2f}"
+        # Model column: gray "—" when we have no model prob
+        # (recovered-orphan stubs that we picked up from Kalshi
+        # without a matching local order record).
+        model_cell = (
+            f"<td class='num'>{model_cents}¢</td>" if model_cents
+            else "<td class='num gray'>—</td>"
+        )
+        out.append(
+            "<tr>"
+            f"<td>{html.escape(market_label)}</td>"
+            f"<td><span class='badge-yes'>{html.escape(side_label)}</span></td>"
+            f"<td class='num'>{contracts}</td>"
+            f"<td class='num'>{entry_cents}¢</td>"
+            f"{model_cell}"
+            f"<td class='num'>{current_cents}¢</td>"
+            f"<td class='num {pnl_cls}'>{pnl_str}</td>"
+            f"<td class='num'>{settles_in}</td>"
+            "</tr>"
+        )
+    out.append("</tbody></table>")
+    out.append("</div></div>")
 
 
 def _render_active_bets_table(out: List[str], bets: List[dict],
@@ -11373,6 +11527,11 @@ class Handler(BaseHTTPRequestHandler):
     # attribute, and meta warning all reflect which dashboard the
     # user is on.
     mode: str = "sim"
+    # File paths to each live executor's sim_state.json. The Home
+    # tab on the live dashboard concatenates open_positions from
+    # all of these into the "Open Real-Money Positions" table.
+    # Empty on the sim side.
+    live_state_paths: List[str] = []
 
     def log_message(self, format: str, *args: Any) -> None:  # noqa: A002
         log.info("%s - %s", self.address_string(), format % args)
@@ -11906,6 +12065,7 @@ class Handler(BaseHTTPRequestHandler):
                     bot_models=bot_models,
                     model_view=model_view,
                     mode=self.mode,
+                    live_state_paths=self.live_state_paths,
                 )
             except Exception:  # noqa: BLE001
                 log.exception("dashboard render failed")
@@ -12097,13 +12257,15 @@ def serve(host: str, port: int, bots: List[dict], risk_caps: dict,
           darts_trader_cfg: dict | None = None,
           natgas_trader_cfg: dict | None = None,
           billboard_trader_cfg: dict | None = None,
-          mode: str = "sim") -> None:
+          mode: str = "sim",
+          live_state_paths: List[str] | None = None) -> None:
     Handler.bots = bots
     Handler.risk_caps = risk_caps
     Handler.edge_cfg = edge_cfg
     Handler.validator_cfg = validator_cfg
     Handler.hedge_cfg = hedge_cfg
     Handler.mode = mode
+    Handler.live_state_paths = list(live_state_paths or [])
     # Auto-hedge daemon. Reads each sim.db bot's positions table on a
     # 30s interval and closes any position whose unrealized P&L per
     # contract has crossed the configured profit-lock or stop-loss
@@ -12352,6 +12514,25 @@ def main(argv: list[str] | None = None) -> int:
     port = args.port or cfg.port
     log.info("starting dashboard in %s mode on http://%s:%d",
              cfg.mode, host, port)
+
+    # Walk every <bot>_trader.live.sim_state_path so the live home
+    # tab knows where to read each executor's open positions from.
+    # Only relevant in live mode (sim has no live executor / no
+    # corresponding state file). Empty list on sim → home table
+    # is skipped entirely.
+    live_state_paths: list[str] = []
+    if cfg.mode == "live":
+        for trader_cfg in (
+            tennis_trader_cfg, unemployment_trader_cfg, cpi_trader_cfg,
+            nba_trader_cfg, gas_trader_cfg, survivor_trader_cfg,
+            table_tennis_trader_cfg, darts_trader_cfg,
+            natgas_trader_cfg, billboard_trader_cfg,
+        ):
+            live_block = (trader_cfg or {}).get("live") or {}
+            path = live_block.get("sim_state_path")
+            if path:
+                live_state_paths.append(path)
+
     serve(host, port, bots, risk_caps, edge_cfg, validator_cfg, hedge_cfg,
           tennis_trader_cfg=tennis_trader_cfg,
           unemployment_trader_cfg=unemployment_trader_cfg,
@@ -12363,7 +12544,8 @@ def main(argv: list[str] | None = None) -> int:
           darts_trader_cfg=darts_trader_cfg,
           natgas_trader_cfg=natgas_trader_cfg,
           billboard_trader_cfg=billboard_trader_cfg,
-          mode=cfg.mode)
+          mode=cfg.mode,
+          live_state_paths=live_state_paths)
     return 0
 
 
