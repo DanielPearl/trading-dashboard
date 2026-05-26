@@ -288,7 +288,7 @@ tennis_trader:
   # All cap values are TIGHTENED, never relaxed, by the hard
   # constants in bots/tennis_live_executor.py. A YAML typo can't
   # widen them past the safety ceiling:
-  #   max_open_positions    ≤ 5
+  #   max_open_positions    ≤ 10
   #   max_orders_per_day    ≤ 20
   #   contracts_per_order   ≤ 1
   #   min_edge_pp           ≥ 0.05
@@ -303,7 +303,7 @@ tennis_trader:
     # confirming the verdicts match what you'd expect.
     dry_run: true
     sim_state_path: /root/tennis-forecast/data/outputs-live/sim_state.json
-    max_open_positions: 5
+    max_open_positions: 10
     max_orders_per_day: 20
     contracts_per_order: 1
     min_edge_pp: 0.05

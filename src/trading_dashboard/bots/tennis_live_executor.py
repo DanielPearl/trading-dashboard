@@ -70,7 +70,7 @@ log = logging.getLogger("dashboard.tennis-live-executor")
 # never raise them. A YAML typo will fail safe.
 # ──────────────────────────────────────────────────────────────────────
 _HARD_MAX_CONTRACTS_PER_ORDER = 1
-_HARD_MAX_OPEN_POSITIONS = 5
+_HARD_MAX_OPEN_POSITIONS = 10
 _HARD_MAX_ORDERS_PER_DAY = 20
 _HARD_MIN_EDGE_PP = 0.05           # 5 percentage points
 _HARD_MAX_ENTRY_PRICE_CENTS = 70   # don't pay > 70¢ for any contract
