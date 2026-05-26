@@ -301,7 +301,7 @@ tennis_trader:
     # calls Kalshi's order endpoint. Set to false ONLY after
     # watching dry-run output for at least a full tick cycle and
     # confirming the verdicts match what you'd expect.
-    dry_run: true
+    dry_run: false
     sim_state_path: /root/tennis-forecast/data/outputs-live/sim_state.json
     max_open_positions: 10
     max_orders_per_day: 20
