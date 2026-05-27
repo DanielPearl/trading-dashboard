@@ -615,7 +615,10 @@ def _render_tab_bar(active: str = "watchlist") -> str:
         ("home", "Home", "/"),
         ("watchlist", "Watchlist", "?bot=tennis&tab=watchlist"),
         ("models", "Models", "?bot=tennis&tab=models"),
-        ("history", "History", "/?tab=history"),
+        # History routes to the tennis-specific renderer (Kalshi
+        # settlements + Model + Model-prob columns) — was previously
+        # bouncing out to the cross-bot history.
+        ("history", "History", "?bot=tennis&tab=history"),
     ]
     out = ["<div class='tab-bar'>"]
     for k, label, href in tabs:
@@ -1234,6 +1237,232 @@ tr.tennis-row:hover td { background: #1c222b; }
 """
 
 
+# --------------------------------------------------------------------------- #
+# History page — sourced directly from Kalshi's settlements API                #
+# --------------------------------------------------------------------------- #
+
+# Cached Kalshi client + settlements list. Settlements rarely change for
+# closed positions (they're final), so a 60-second cache keeps the History
+# tab snappy without hammering the portfolio endpoint.
+_SETTLEMENTS_CACHE: dict[str, Any] = {"at": 0.0, "rows": []}
+_SETTLEMENTS_TTL_S = 60.0
+_KALSHI_CLIENT: Any = None
+
+
+def _get_kalshi_client():
+    """Lazy Kalshi client init — same env-var auth the live executor uses."""
+    global _KALSHI_CLIENT
+    if _KALSHI_CLIENT is not None:
+        return _KALSHI_CLIENT
+    import os
+    try:
+        from kalshi_sdk import KalshiClient
+    except ImportError:
+        log.warning("kalshi_sdk unavailable; tennis history will be empty")
+        return None
+    api = os.environ.get("KALSHI_API_KEY_ID", "").strip()
+    pkey = os.environ.get("KALSHI_PRIVATE_KEY_PATH", "").strip()
+    if not api or not pkey:
+        log.warning("KALSHI_API_KEY_ID / KALSHI_PRIVATE_KEY_PATH unset; "
+                     "tennis history will be empty")
+        return None
+    try:
+        _KALSHI_CLIENT = KalshiClient(api_key_id=api, private_key_path=pkey)
+    except Exception:  # noqa: BLE001
+        log.exception("KalshiClient init failed; tennis history will be empty")
+        return None
+    return _KALSHI_CLIENT
+
+
+def _fetch_tennis_settlements(force: bool = False) -> list[dict]:
+    """All Kalshi settlements where the ticker starts with KXATPMATCH or
+    KXWTAMATCH. Cached for ``_SETTLEMENTS_TTL_S`` to keep the History tab
+    cheap; settlements never change after they land, so even a longer TTL
+    would be safe — 60s is just paranoia."""
+    import time
+    now = time.time()
+    if not force and now - _SETTLEMENTS_CACHE["at"] < _SETTLEMENTS_TTL_S:
+        return _SETTLEMENTS_CACHE["rows"]
+    client = _get_kalshi_client()
+    if client is None:
+        return []
+    try:
+        atp = client.iter_settlements(ticker_prefix="KXATPMATCH")
+        wta = client.iter_settlements(ticker_prefix="KXWTAMATCH")
+    except Exception:  # noqa: BLE001
+        log.exception("settlements fetch failed")
+        return _SETTLEMENTS_CACHE["rows"]  # serve stale on error
+    rows = atp + wta
+    _SETTLEMENTS_CACHE.update({"at": now, "rows": rows})
+    return rows
+
+
+def _join_settlement_with_sim_state(s: dict, sim_state: dict) -> dict:
+    """Enrich one settlement row with model-side data from sim_state.
+    Returns a dict ready for ``_render_tennis_history_page``'s table
+    renderer.
+
+    Settlement fields we read from Kalshi:
+      ticker, event_ticker, market_result ("yes"|"no"),
+      yes_count_fp, no_count_fp, yes_total_cost_dollars,
+      no_total_cost_dollars, fee_cost, value (cents),
+      revenue (cents), settled_time
+
+    sim_state.closed_positions[] joining by ticker gives us:
+      entry_model_prob, side_player full name, player_a, player_b,
+      tournament, surface, side ("PLAYER_A" | "PLAYER_B").
+    """
+    ticker = s.get("ticker") or ""
+    event_ticker = s.get("event_ticker") or ""
+
+    # Side we held + count
+    yes_n = float(s.get("yes_count_fp") or 0)
+    no_n = float(s.get("no_count_fp") or 0)
+    if yes_n >= no_n:
+        side_held = "yes"
+        contracts = yes_n
+        total_cost = float(s.get("yes_total_cost_dollars") or 0)
+    else:
+        side_held = "no"
+        contracts = no_n
+        total_cost = float(s.get("no_total_cost_dollars") or 0)
+    fee = float(s.get("fee_cost") or 0)
+    total_cost_with_fee = total_cost + fee
+    # Did we win? "market_result" is the side that resolved to $1.
+    won = (s.get("market_result") == side_held)
+    # Payout: $1 per contract on the winning side, $0 on the losing.
+    total_payout = contracts if won else 0.0
+    total_return = total_payout - total_cost_with_fee
+    pct_return = (total_return / total_cost_with_fee) if total_cost_with_fee > 0 else 0.0
+
+    # Join with sim_state's closed_positions by ticker for the model
+    # data (entry_model_prob, full player name, matchup).
+    closed = (sim_state or {}).get("closed_positions") or []
+    sim_row = next((c for c in closed if c.get("ticker") == ticker), None)
+
+    # Player name we bet on — prefer sim_state's full name; fall back
+    # to the trailing 3-letter ticker code.
+    side_player = ""
+    matchup = ""
+    tournament = ""
+    series_label = ""
+    entry_model_prob = None
+    if sim_row:
+        side_player = sim_row.get("side_player") or ""
+        pa = sim_row.get("player_a") or ""
+        pb = sim_row.get("player_b") or ""
+        matchup = f"{pa} vs {pb}" if pa and pb else (sim_row.get("event_title") or "")
+        tournament = sim_row.get("tournament") or ""
+        entry_model_prob = sim_row.get("entry_model_prob")
+    if not side_player:
+        # Fallback: trailing 3-letter code from ticker, e.g.
+        # KXATPMATCH-26MAY27DAVTIR-DAV → "DAV"
+        parts = ticker.rsplit("-", 1)
+        if len(parts) == 2:
+            side_player = parts[1]
+    if not matchup:
+        # Derive a coarse matchup from the event_ticker's date+codes,
+        # e.g. KXATPMATCH-26MAY27DAVTIR → "DAVTIR"
+        ev_parts = event_ticker.rsplit("-", 1)
+        if len(ev_parts) == 2:
+            matchup = ev_parts[1]
+
+    # Series label = ATP/WTA + best-guess tournament. Slams have
+    # named events on Kalshi; for non-slams we use the generic ATP/WTA.
+    tour = "ATP" if ticker.startswith("KXATPMATCH") else "WTA"
+    sex = "Men" if tour == "ATP" else "Women"
+    if tournament:
+        series_label = f"{tournament} {sex} Singles"
+    else:
+        series_label = f"{tour} Singles"
+
+    # YES/NO badge text Kalshi uses on its own page ("1 Yes").
+    final_position_label = (
+        f"{int(round(contracts))} {'Yes' if side_held == 'yes' else 'No'}"
+    )
+
+    return {
+        "ticker": ticker,
+        "event_ticker": event_ticker,
+        "settled_time": s.get("settled_time") or "",
+        "side_player": side_player,
+        "matchup": matchup,
+        "series_label": series_label,
+        "entry_model_prob": entry_model_prob,
+        "final_position_label": final_position_label,
+        "settlement_payout_dollars": float(s.get("value") or 0) / 100.0,
+        "total_cost_dollars": total_cost_with_fee,
+        "total_payout_dollars": total_payout,
+        "total_return_dollars": total_return,
+        "total_return_pct": pct_return,
+        "won": won,
+    }
+
+
+def _render_tennis_history_page(sim_state: dict) -> str:
+    """The tennis bot's History tab — sourced from Kalshi's
+    /portfolio/settlements API (source of truth for closed bets) and
+    enriched with sim_state's per-trade entry-model-prob + full player
+    names. Column order matches Kalshi's own history page, with our
+    Model + Model Prob columns prepended on the left."""
+    settlements = _fetch_tennis_settlements()
+    if not settlements:
+        return (
+            "<div class='empty'>No Kalshi settlements yet. (Showed nothing "
+            "instead of guessing — once real positions on KX[ATP|WTA]MATCH "
+            "tickers settle, they appear here directly from Kalshi.)</div>"
+        )
+    rows = [_join_settlement_with_sim_state(s, sim_state) for s in settlements]
+    # Newest first.
+    rows.sort(key=lambda r: r.get("settled_time") or "", reverse=True)
+
+    out: List[str] = []
+    out.append(
+        "<table class='tennis-history'><thead><tr>"
+        "<th title='Which bot / model placed this trade.'>Model</th>"
+        "<th class='num' title='Model probability for the side we bet on, "
+        "recorded at order time.'>Model prob</th>"
+        "<th>Market</th>"
+        "<th title='The player or side we bet on (the YES contract we held).'>Side</th>"
+        "<th class='num'>Final position</th>"
+        "<th class='num' title='What Kalshi paid us on settlement (in $).'>"
+        "Settlement payout</th>"
+        "<th class='num' title='Total $ paid to enter (price × contracts + fees).'>"
+        "Total cost</th>"
+        "<th class='num' title='Total $ Kalshi returned at settle '"
+        "($1 per contract for the winning side).'>Total payout</th>"
+        "<th class='num' title='Total payout − total cost.'>Total return</th>"
+        "</tr></thead><tbody>"
+    )
+    for r in rows:
+        mp = r.get("entry_model_prob")
+        mp_cell = (f"{float(mp)*100:.0f}%" if mp is not None else "—")
+        ret = float(r.get("total_return_dollars") or 0)
+        pct = float(r.get("total_return_pct") or 0)
+        ret_cls = "green" if ret > 0 else ("red" if ret < 0 else "gray")
+        ret_str = f"{'+' if ret > 0 else ''}${ret:.2f} ({'+' if pct > 0 else ''}{pct*100:.0f}%)"
+        cost = float(r.get("total_cost_dollars") or 0)
+        payout = float(r.get("total_payout_dollars") or 0)
+        settle = float(r.get("settlement_payout_dollars") or 0)
+        settle_cls = "green" if settle > 0 else "red"
+        out.append(
+            "<tr>"
+            f"<td>Tennis Forecast</td>"
+            f"<td class='num'>{mp_cell}</td>"
+            f"<td><div>{html.escape(r.get('series_label') or '')}</div>"
+            f"<div class='small gray'>{html.escape(r.get('matchup') or '')}</div></td>"
+            f"<td>{html.escape(r.get('side_player') or '')}</td>"
+            f"<td class='num'>{html.escape(r.get('final_position_label') or '')}</td>"
+            f"<td class='num {settle_cls}'>${settle:.2f}</td>"
+            f"<td class='num'>${cost:.2f}</td>"
+            f"<td class='num'>${payout:.2f}</td>"
+            f"<td class='num {ret_cls}'>{ret_str}</td>"
+            "</tr>"
+        )
+    out.append("</tbody></table>")
+    return "".join(out)
+
+
 def _render_recent_settles(sim_state: dict, limit: int = 25) -> str:
     closed = list(sim_state.get("closed_positions") or [])
     if not closed:
@@ -1758,13 +1987,20 @@ def render_page(*, metrics_path: str | None, coefficients_path: str | None,
         f"{datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%SZ')}"
         f" · live updates every 60s · DRY-RUN mode (no real orders)</div>"
     )
-    active_tab = tab_key if tab_key in ("watchlist", "models") else "watchlist"
+    active_tab = (tab_key if tab_key in ("watchlist", "models", "history")
+                  else "watchlist")
     # Bot dropdown sits above the tab bar so it applies uniformly
     # across tabs (matches the standard renderer's layout).
     out.append(_render_bot_dropdown(available_bots, current_bot_key))
     out.append(_render_tab_bar(active=active_tab))
 
-    if active_tab == "models":
+    if active_tab == "history":
+        # ── History section (Kalshi-sourced) ─────────────────────────
+        out.append("<div class='section'><h2>Closed bets — Kalshi history</h2>"
+                    "<div class='body'>")
+        out.append(_render_tennis_history_page(sim_state))
+        out.append("</div></div>")
+    elif active_tab == "models":
         # ── Models section ───────────────────────────────────────────
         out.append("<div class='section'><h2>Model</h2><div class='body'>")
         out.append(_render_tennis_models_page(metrics, coefficients,

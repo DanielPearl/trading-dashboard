@@ -11631,6 +11631,36 @@ class Handler(BaseHTTPRequestHandler):
                 # and falls through to the cross-bot rollup + final
                 # render at the bottom of this method.
 
+                # Exception: tennis bot's History tab uses its own
+                # Kalshi-settlements-sourced renderer (Model + Model
+                # Prob columns + Kalshi-style layout), so dispatch
+                # directly. Table-tennis and darts are not yet on the
+                # new layout — they fall through to the standard
+                # cross-bot history below.
+                if (bot.get("dashboard_type") == "sport"
+                        and bot.get("key") == "tennis"
+                        and tab_key == "history"):
+                    from . import tennis as _tennis
+                    sim_state = _tennis.load_sim_state(
+                        bot.get("sim_state_path"))
+                    body = _tennis.render_page(
+                        metrics_path=bot.get("metrics_path"),
+                        coefficients_path=bot.get("coefficients_path"),
+                        watchlist_path=bot.get("watchlist_json_path"),
+                        sim_state_path=bot.get("sim_state_path"),
+                        available_bots=self.bots,
+                        current_bot_key=bot["key"],
+                        tab_key="history",
+                    )
+                    payload = body.encode("utf-8")
+                    self.send_response(200)
+                    self.send_header("Content-Type", "text/html; charset=utf-8")
+                    self.send_header("Cache-Control", "no-store")
+                    self.send_header("Content-Length", str(len(payload)))
+                    self.end_headers()
+                    self.wfile.write(payload)
+                    return
+
                 db_path = bot.get("db_path") or ""
 
                 # Tennis-shape bots write JSON, not sim.db. Adapt their
