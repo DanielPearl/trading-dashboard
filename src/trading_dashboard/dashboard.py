@@ -3756,7 +3756,9 @@ _HISTORY_CHART_JS = """<script>
       {month: 'short', day: 'numeric'});
   }
   function render() {
-    const now = Math.floor(Date.now() / 1000);
+    const now = new Date();
+    const todayMidnight = Math.floor(Date.UTC(
+      now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()) / 1000);
     // Bucket every closed bet by UTC day, summing realized P&L in
     // cents per bucket. Each series point is (UTC-midnight epoch,
     // day net).
@@ -3767,13 +3769,21 @@ _HISTORY_CHART_JS = """<script>
         d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate()) / 1000);
       daily.set(dayEpoch, (daily.get(dayEpoch) || 0) + p[1]);
     });
+    // Ensure today is always the rightmost point. If no trades
+    // settled today, the bucket is 0 — same daily-delta semantics
+    // (today made $0 of new realized P&L).
+    if (!daily.has(todayMidnight)) {
+      daily.set(todayMidnight, 0);
+    }
     const series = Array.from(daily.entries())
       .sort(function (a, b) { return a[0] - b[0]; });
     svg.innerHTML = '';
     if (series.length === 0) return;
-    // X range: first closed-bet day → now.
+    // X range: first closed-bet day → today (UTC midnight). Using
+    // today's midnight (not "now") keeps each day a full equal slot
+    // and parks the last data point exactly at the right edge.
     const tMin = series[0][0];
-    const tMax = now;
+    const tMax = todayMidnight;
     const tSpan = Math.max(1, tMax - tMin);
     // Y range: include 0 so the zero baseline always shows. 8% pad.
     let vals = series.map(function (s) { return s[1]; });
@@ -3816,19 +3826,31 @@ _HISTORY_CHART_JS = """<script>
       x1: PAD_L, y1: py0, x2: W - PAD_R, y2: py0,
       stroke: '#6e7681', 'stroke-width': '1'
     }));
-    // X-axis date ticks — up to 6 evenly spaced labels across the
-    // visible time span.
-    const N_TICKS = 5;
-    for (let i = 0; i <= N_TICKS; i++) {
-      const t = tMin + (i / N_TICKS) * tSpan;
+    // X-axis date ticks — one label per actual day in the series,
+    // never a fractional position that rounds to a duplicate date.
+    // When the series is long, downsample to ~6 labels by even-stride
+    // selection over the real day epochs.
+    const MAX_TICKS = 6;
+    const dayEpochs = series.map(function (s) { return s[0]; });
+    const stride = Math.max(1, Math.ceil(dayEpochs.length / MAX_TICKS));
+    const tickEpochs = [];
+    for (let i = 0; i < dayEpochs.length; i += stride) {
+      tickEpochs.push(dayEpochs[i]);
+    }
+    // Always include the rightmost (today) so the user sees today's
+    // label even if the stride skipped it.
+    if (tickEpochs[tickEpochs.length - 1] !== dayEpochs[dayEpochs.length - 1]) {
+      tickEpochs.push(dayEpochs[dayEpochs.length - 1]);
+    }
+    tickEpochs.forEach(function (t, i) {
       const px = x(t);
+      const last = i === tickEpochs.length - 1;
       svg.appendChild(el('text', {
         x: px, y: H - 8, fill: '#8b949e',
         'font-size': '10',
-        'text-anchor': i === 0 ? 'start' :
-          (i === N_TICKS ? 'end' : 'middle')
+        'text-anchor': i === 0 ? 'start' : (last ? 'end' : 'middle')
       }, fmtDate(t)));
-    }
+    });
     // Split the line into colored segments — green when the value is
     // >= 0 (gains), red when < 0 (losses). When two consecutive points
     // straddle zero, interpolate the crossing so the color flips
