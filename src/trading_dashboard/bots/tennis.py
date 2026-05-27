@@ -46,6 +46,7 @@ def _load_upstream(repo_path: str) -> dict[str, Callable[..., Any]]:
     _base.load_upstream_as_alias(repo_path, "tennis_src", subdir="src")
 
     kalshi_markets = importlib.import_module("tennis_src.data.kalshi_markets")
+    api_tennis_live = importlib.import_module("tennis_src.data.api_tennis_live")
     export_watchlist_mod = importlib.import_module(
         "tennis_src.dashboard.export_watchlist",
     )
@@ -55,6 +56,8 @@ def _load_upstream(repo_path: str) -> dict[str, Callable[..., Any]]:
         "fetch_tennis_markets": kalshi_markets.fetch_tennis_markets,
         "collapse_to_matches": kalshi_markets.collapse_to_matches,
         "write_live_state": kalshi_markets.write_live_state,
+        "fetch_livescore": api_tennis_live.fetch_livescore,
+        "build_state_by_key": api_tennis_live.build_state_by_key,
         "build_watchlist_records": export_watchlist_mod.build_watchlist_records,
         "export_watchlist": export_watchlist_mod.export,
         "simulator_tick": simulator_mod.tick,
@@ -83,8 +86,17 @@ def _one_tick(upstream: dict[str, Callable[..., Any]],
 
     raw_markets = upstream["fetch_tennis_markets"]()
     new_prev = {m.get("ticker"): m for m in raw_markets if m.get("ticker")}
+    # Live in-match state from api-tennis.com — gated on env var
+    # presence inside fetch_livescore. Empty dict when the key isn't
+    # set or the API is down, in which case collapse_to_matches
+    # falls back to the historic zero-filled defaults.
+    live_state_by_key = upstream["build_state_by_key"](
+        upstream["fetch_livescore"]()
+    )
     records = upstream["collapse_to_matches"](
-        raw_markets, prev_markets_by_ticker=_prev_market_by_ticker,
+        raw_markets,
+        prev_markets_by_ticker=_prev_market_by_ticker,
+        live_state_by_key=live_state_by_key,
     )
     _prev_market_by_ticker = new_prev
     upstream["write_live_state"](records)
