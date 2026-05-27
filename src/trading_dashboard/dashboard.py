@@ -3506,15 +3506,17 @@ def render_page(
             (b for b in available_bots if b.get("key") == "tennis"), None,
         )
         if tennis_bot_cfg:
-            sim_state_tennis = _tennis.load_sim_state(
-                tennis_bot_cfg.get("sim_state_path")
-            )
+            sim_state_tennis_path = tennis_bot_cfg.get("sim_state_path")
+            sim_state_tennis = _tennis.load_sim_state(sim_state_tennis_path)
             out.append("<h3 class='subhead'>Tennis bets "
                         "<span class='small gray'>"
                         "(direct from Kalshi settlements + fills)</span>"
                         "</h3>")
             out.append("<div class='history-scroll'>")
-            out.append(_tennis._render_tennis_history_page(sim_state_tennis))
+            out.append(_tennis._render_tennis_history_page(
+                sim_state_tennis,
+                sim_state_path=sim_state_tennis_path,
+            ))
             out.append("</div>")
     except Exception:  # noqa: BLE001 — never let the history page 500
         log.exception("tennis history block failed; rendering legacy only")

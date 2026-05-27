@@ -1379,6 +1379,124 @@ def _summarize_fills(fills: list[dict]) -> dict[str, dict]:
     return out
 
 
+# Player → country (IOC 3-letter) lookup. Populated lazily from
+# tennis-forecast's matches_clean.csv on first History-tab render and
+# cached for the life of the process — the file only changes on
+# retrain (~once a day) and re-reading it is cheap.
+_PLAYER_IOC_CACHE: dict[str, dict[str, str]] = {"by_path": {}}
+
+
+# IOC (Olympic) codes → ISO-3166-alpha-2. The two diverge on a few
+# dozen countries — the ones below cover every IOC code that appears
+# in the Sackmann ATP/WTA panel since 2015. Unmapped codes render
+# with no flag (defensive: better empty than wrong).
+_IOC_TO_ISO2: dict[str, str] = {
+    # Common ATP/WTA countries — alphabetical for grep-ability.
+    "ALG": "DZ", "ANG": "AO", "ARG": "AR", "ARM": "AM", "AUS": "AU",
+    "AUT": "AT", "AZE": "AZ", "BAH": "BS", "BAN": "BD", "BAR": "BB",
+    "BEL": "BE", "BIH": "BA", "BLR": "BY", "BOL": "BO", "BOT": "BW",
+    "BRA": "BR", "BRN": "BH", "BUL": "BG", "BUR": "BF", "CAM": "KH",
+    "CAN": "CA", "CHI": "CL", "CHN": "CN", "CIV": "CI", "CMR": "CM",
+    "COD": "CD", "COL": "CO", "CRC": "CR", "CRO": "HR", "CUB": "CU",
+    "CYP": "CY", "CZE": "CZ", "DEN": "DK", "DMA": "DM", "DOM": "DO",
+    "ECU": "EC", "EGY": "EG", "ESA": "SV", "ESP": "ES", "EST": "EE",
+    "ETH": "ET", "FIJ": "FJ", "FIN": "FI", "FRA": "FR", "GBR": "GB",
+    "GEO": "GE", "GER": "DE", "GHA": "GH", "GRE": "GR", "GRN": "GD",
+    "GUA": "GT", "HAI": "HT", "HKG": "HK", "HON": "HN", "HUN": "HU",
+    "INA": "ID", "IND": "IN", "IRI": "IR", "IRL": "IE", "ISL": "IS",
+    "ISR": "IL", "ITA": "IT", "JAM": "JM", "JOR": "JO", "JPN": "JP",
+    "KAZ": "KZ", "KEN": "KE", "KGZ": "KG", "KOR": "KR", "KSA": "SA",
+    "KUW": "KW", "LAT": "LV", "LBA": "LY", "LBN": "LB", "LCA": "LC",
+    "LIB": "LB", "LIE": "LI", "LTU": "LT", "LUX": "LU", "MAD": "MG",
+    "MAR": "MA", "MAS": "MY", "MDA": "MD", "MEX": "MX", "MGL": "MN",
+    "MKD": "MK", "MLT": "MT", "MNE": "ME", "MON": "MC", "NCA": "NI",
+    "NED": "NL", "NEP": "NP", "NGR": "NG", "NOR": "NO", "NZL": "NZ",
+    "OMA": "OM", "PAK": "PK", "PAN": "PA", "PAR": "PY", "PER": "PE",
+    "PHI": "PH", "POL": "PL", "POR": "PT", "PRK": "KP", "PUR": "PR",
+    "QAT": "QA", "ROU": "RO", "RSA": "ZA", "RUS": "RU", "SEN": "SN",
+    "SEY": "SC", "SIN": "SG", "SLO": "SI", "SMR": "SM", "SRB": "RS",
+    "SRI": "LK", "SUI": "CH", "SVK": "SK", "SWE": "SE", "SYR": "SY",
+    "TAH": "PF", "TAN": "TZ", "THA": "TH", "TJK": "TJ", "TKM": "TM",
+    "TOG": "TG", "TPE": "TW", "TRI": "TT", "TUN": "TN", "TUR": "TR",
+    "UAE": "AE", "UGA": "UG", "UKR": "UA", "URU": "UY", "USA": "US",
+    "UZB": "UZ", "VEN": "VE", "VIE": "VN", "ZAM": "ZM", "ZIM": "ZW",
+}
+
+
+def _flag_emoji(iso2: str) -> str:
+    """Two-letter ISO-3166-alpha-2 → flag emoji (regional indicator
+    pair). Returns empty string for invalid input."""
+    if not iso2 or len(iso2) != 2 or not iso2.isalpha():
+        return ""
+    cc = iso2.upper()
+    return chr(0x1F1E6 + (ord(cc[0]) - ord("A"))) + chr(0x1F1E6 + (ord(cc[1]) - ord("A")))
+
+
+def _player_country_map(sim_state_path: str | None) -> dict[str, str]:
+    """Build a {full_name: IOC} lookup from tennis-forecast's
+    matches_clean.csv. The file lives at
+    ``<sim_state's grandparent>/processed/matches_clean.csv`` per the
+    tennis-forecast repo layout; we derive the path rather than
+    threading another config key through.
+
+    Cached per-path at module load. Returns ``{}`` if the file is
+    missing — the History renderer treats absent IOC as "no flag".
+    """
+    if not sim_state_path:
+        return {}
+    cache = _PLAYER_IOC_CACHE["by_path"]
+    if sim_state_path in cache:
+        return cache[sim_state_path]
+    p = Path(sim_state_path)
+    # outputs-live/sim_state.json → data → processed/matches_clean.csv
+    candidates = [
+        p.parent.parent / "processed" / "matches_clean.csv",
+        p.parent.parent.parent / "processed" / "matches_clean.csv",
+    ]
+    matches_csv = next((c for c in candidates if c.exists()), None)
+    if matches_csv is None:
+        log.warning("matches_clean.csv not found near %s; flags disabled",
+                     sim_state_path)
+        cache[sim_state_path] = {}
+        return {}
+    import csv
+    out: dict[str, str] = {}
+    try:
+        with open(matches_csv, "r", encoding="utf-8") as f:
+            reader = csv.DictReader(f)
+            for row in reader:
+                # Skip 'None' string and empties.
+                wn, wi = row.get("winner_name"), row.get("winner_ioc")
+                ln, li = row.get("loser_name"), row.get("loser_ioc")
+                if wn and wi and wi != "None" and wn not in out:
+                    out[wn] = wi
+                if ln and li and li != "None" and ln not in out:
+                    out[ln] = li
+    except (OSError, csv.Error):
+        log.exception("failed to read %s; flags disabled", matches_csv)
+    log.info("loaded %d player→IOC entries from %s", len(out), matches_csv)
+    cache[sim_state_path] = out
+    return out
+
+
+def _player_with_flag(name: str, ioc_lookup: dict[str, str]) -> str:
+    """HTML-safe player cell: flag emoji + name. Returns the name
+    alone (no leading flag) when the player has no IOC entry."""
+    if not name:
+        return ""
+    safe_name = html.escape(name)
+    ioc = ioc_lookup.get(name)
+    if not ioc:
+        return safe_name
+    iso2 = _IOC_TO_ISO2.get(ioc.upper())
+    if not iso2:
+        return safe_name
+    flag = _flag_emoji(iso2)
+    if not flag:
+        return safe_name
+    return f"{flag} {safe_name}"
+
+
 def _format_fill_time(iso: str) -> str:
     """Format a fill timestamp like Kalshi's history row:
     ``May 26, 2026 · 9:58:10AM EDT``. Best-effort — falls back to the
@@ -1527,16 +1645,22 @@ def _join_settlement_with_sim_state(s: dict, sim_state: dict,
     }
 
 
-def _render_tennis_history_page(sim_state: dict) -> str:
+def _render_tennis_history_page(sim_state: dict,
+                                  sim_state_path: str | None = None) -> str:
     """The tennis bot's History tab — sourced from Kalshi's
     /portfolio/settlements + /portfolio/fills (source of truth for
     closed bets) and enriched with sim_state's per-trade entry-model
     -prob + full player names.
 
-    Columns (matches the Kalshi-style spec — Player / My probability
-    /  Final position / Settlement payout / Total cost / Total payout
-    / Total return / Average price / Contracts filled / Order type /
-    Date range), with Market as the leftmost group.
+    Column order (per latest spec):
+      Last updated · Market · Player · My probability ·
+      Avg price · Contracts filled · Order type ·
+      Final position · Settlement payout · Total cost ·
+      Total payout · Total return
+
+    Player cell carries the player's country flag prepended (from the
+    Sackmann matches_clean.csv → IOC lookup; unmapped players render
+    name-only).
 
     Phantom settlements (canceled-order rows where we held 0 contracts
     at settle AND have no recorded fill) are silently dropped so the
@@ -1545,6 +1669,7 @@ def _render_tennis_history_page(sim_state: dict) -> str:
     settlements = _fetch_tennis_settlements()
     fills = _fetch_tennis_fills()
     fills_by_ticker = _summarize_fills(fills)
+    ioc_lookup = _player_country_map(sim_state_path)
     if not settlements:
         return (
             "<div class='empty'>No Kalshi settlements yet. (Showed nothing "
@@ -1565,10 +1690,16 @@ def _render_tennis_history_page(sim_state: dict) -> str:
     out: List[str] = []
     out.append(
         "<table class='tennis-history'><thead><tr>"
+        "<th title='When the order filled (ET).'>Last updated</th>"
         "<th>Market</th>"
         "<th title='The player whose YES contract we bought.'>Player</th>"
         "<th class='num' title='Model probability for the side we bet on, "
         "recorded at order time.'>My probability</th>"
+        "<th class='num' title='Contract-weighted average fill price.'>"
+        "Avg price</th>"
+        "<th class='num'>Contracts filled</th>"
+        "<th title='Order type, limit price, and taker/maker side.'>"
+        "Order type</th>"
         "<th class='num'>Final position</th>"
         "<th class='num' title='What Kalshi paid us on settlement (in $).'>"
         "Settlement payout</th>"
@@ -1577,12 +1708,6 @@ def _render_tennis_history_page(sim_state: dict) -> str:
         "<th class='num' title='Total $ Kalshi returned at settle "
         "(1 dollar per contract for the winning side).'>Total payout</th>"
         "<th class='num' title='Total payout − total cost.'>Total return</th>"
-        "<th class='num' title='Contract-weighted average fill price.'>"
-        "Avg price</th>"
-        "<th class='num'>Contracts filled</th>"
-        "<th title='Order type, limit price, and taker/maker side.'>"
-        "Order type</th>"
-        "<th title='When the order filled (ET).'>Date range</th>"
         "</tr></thead><tbody>"
     )
     for r in rows:
@@ -1603,21 +1728,22 @@ def _render_tennis_history_page(sim_state: dict) -> str:
         cf = r.get("contracts_filled")
         cf_cell = (f"{int(round(float(cf)))}"
                     if cf is not None else "—")
+        player_html = _player_with_flag(r.get("side_player") or "", ioc_lookup)
         out.append(
             "<tr>"
+            f"<td class='small gray'>{html.escape(r.get('fill_time_label') or '—')}</td>"
             f"<td><div>{html.escape(r.get('series_label') or '')}</div>"
             f"<div class='small gray'>{html.escape(r.get('matchup') or '')}</div></td>"
-            f"<td>{html.escape(r.get('side_player') or '')}</td>"
+            f"<td>{player_html}</td>"
             f"<td class='num'>{mp_cell}</td>"
+            f"<td class='num'>{avg_cell}</td>"
+            f"<td class='num'>{cf_cell}</td>"
+            f"<td>{html.escape(r.get('order_type_label') or '—')}</td>"
             f"<td class='num'>{html.escape(r.get('final_position_label') or '')}</td>"
             f"<td class='num {settle_cls}'>${settle:.2f}</td>"
             f"<td class='num'>${cost:.2f}</td>"
             f"<td class='num'>${payout:.2f}</td>"
             f"<td class='num {ret_cls}'>{ret_str}</td>"
-            f"<td class='num'>{avg_cell}</td>"
-            f"<td class='num'>{cf_cell}</td>"
-            f"<td>{html.escape(r.get('order_type_label') or '—')}</td>"
-            f"<td class='small gray'>{html.escape(r.get('fill_time_label') or '—')}</td>"
             "</tr>"
         )
     out.append("</tbody></table>")
