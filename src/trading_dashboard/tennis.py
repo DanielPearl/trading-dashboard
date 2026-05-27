@@ -1241,10 +1241,11 @@ tr.tennis-row:hover td { background: #1c222b; }
 # History page — sourced directly from Kalshi's settlements API                #
 # --------------------------------------------------------------------------- #
 
-# Cached Kalshi client + settlements list. Settlements rarely change for
-# closed positions (they're final), so a 60-second cache keeps the History
-# tab snappy without hammering the portfolio endpoint.
+# Cached Kalshi client + settlements/fills lists. Settlements and
+# fills are immutable once written, so a 60-second cache is just
+# politeness to the portfolio endpoint, not a freshness compromise.
 _SETTLEMENTS_CACHE: dict[str, Any] = {"at": 0.0, "rows": []}
+_FILLS_CACHE: dict[str, Any] = {"at": 0.0, "rows": []}
 _SETTLEMENTS_TTL_S = 60.0
 _KALSHI_CLIENT: Any = None
 
@@ -1297,89 +1298,213 @@ def _fetch_tennis_settlements(force: bool = False) -> list[dict]:
     return rows
 
 
-def _join_settlement_with_sim_state(s: dict, sim_state: dict) -> dict:
-    """Enrich one settlement row with model-side data from sim_state.
-    Returns a dict ready for ``_render_tennis_history_page``'s table
-    renderer.
+def _fetch_tennis_fills(force: bool = False) -> list[dict]:
+    """All Kalshi fills on KX[ATP|WTA]MATCH tickers. Same caching
+    pattern as settlements."""
+    import time
+    now = time.time()
+    if not force and now - _FILLS_CACHE["at"] < _SETTLEMENTS_TTL_S:
+        return _FILLS_CACHE["rows"]
+    client = _get_kalshi_client()
+    if client is None:
+        return []
+    try:
+        atp = client.iter_fills(ticker_prefix="KXATPMATCH")
+        wta = client.iter_fills(ticker_prefix="KXWTAMATCH")
+    except Exception:  # noqa: BLE001
+        log.exception("fills fetch failed")
+        return _FILLS_CACHE["rows"]
+    rows = atp + wta
+    _FILLS_CACHE.update({"at": now, "rows": rows})
+    return rows
 
-    Settlement fields we read from Kalshi:
-      ticker, event_ticker, market_result ("yes"|"no"),
-      yes_count_fp, no_count_fp, yes_total_cost_dollars,
-      no_total_cost_dollars, fee_cost, value (cents),
-      revenue (cents), settled_time
 
-    sim_state.closed_positions[] joining by ticker gives us:
-      entry_model_prob, side_player full name, player_a, player_b,
-      tournament, surface, side ("PLAYER_A" | "PLAYER_B").
+def _summarize_fills(fills: list[dict]) -> dict[str, dict]:
+    """Group fills by ticker and compute per-ticker summary used by
+    the History row: contract-weighted average price, total contracts
+    filled, the dominant taker/maker flag, the earliest fill time, and
+    the order_id (just one — multi-fill orders are rare since our
+    bot uses IOC limit orders).
+    """
+    by_ticker: dict[str, dict] = {}
+    for f in fills:
+        t = f.get("ticker") or f.get("market_ticker") or ""
+        if not t:
+            continue
+        n = float(f.get("count_fp") or 0)
+        if n <= 0:
+            continue
+        side = f.get("side") or "yes"
+        price = float(
+            f.get("yes_price_dollars" if side == "yes" else "no_price_dollars")
+            or 0
+        )
+        d = by_ticker.setdefault(t, {
+            "ticker": t,
+            "_n_sum": 0.0,
+            "_price_x_n_sum": 0.0,
+            "is_taker": False,
+            "side": side,
+            "order_id": f.get("order_id"),
+            "first_fill_time": f.get("created_time") or "",
+            "fee_sum_dollars": 0.0,
+        })
+        d["_n_sum"] += n
+        d["_price_x_n_sum"] += price * n
+        d["fee_sum_dollars"] += float(f.get("fee_cost") or 0)
+        # Latest is_taker wins (overwrites). For multi-fill orders the
+        # taker/maker mix is rare; the dominant flag is fine.
+        if f.get("is_taker"):
+            d["is_taker"] = True
+        # Earliest fill time across multi-fill orders.
+        ct = f.get("created_time") or ""
+        if ct and (not d["first_fill_time"] or ct < d["first_fill_time"]):
+            d["first_fill_time"] = ct
+    # Finalize: avg price, contracts filled.
+    out: dict[str, dict] = {}
+    for t, d in by_ticker.items():
+        n = d["_n_sum"]
+        if n <= 0:
+            continue
+        avg_price = d["_price_x_n_sum"] / n
+        out[t] = {
+            "ticker": t,
+            "avg_price_dollars": avg_price,
+            "contracts_filled": n,
+            "is_taker": d["is_taker"],
+            "side": d["side"],
+            "order_id": d["order_id"],
+            "first_fill_time": d["first_fill_time"],
+            "fee_sum_dollars": d["fee_sum_dollars"],
+        }
+    return out
+
+
+def _format_fill_time(iso: str) -> str:
+    """Format a fill timestamp like Kalshi's history row:
+    ``May 26, 2026 · 9:58:10AM EDT``. Best-effort — falls back to the
+    raw string if parsing fails."""
+    if not iso:
+        return "—"
+    try:
+        # Kalshi gives UTC ISO; convert to ET for display (matches
+        # Kalshi's UI). Use zoneinfo, fallback to UTC label.
+        from datetime import datetime
+        try:
+            from zoneinfo import ZoneInfo
+            tz = ZoneInfo("America/New_York")
+            label_tz = ""
+        except Exception:
+            tz = timezone.utc
+            label_tz = "UTC"
+        dt = datetime.fromisoformat(iso.replace("Z", "+00:00")).astimezone(tz)
+        if not label_tz:
+            label_tz = dt.tzname() or "EDT"
+        return dt.strftime(f"%b %-d, %Y · %-I:%M:%S%p {label_tz}")
+    except Exception:
+        return iso[:19].replace("T", " ")
+
+
+def _join_settlement_with_sim_state(s: dict, sim_state: dict,
+                                       fills_by_ticker: dict[str, dict],
+                                       ) -> dict | None:
+    """Enrich one settlement row with sim_state (model prob, full
+    player name) and Kalshi fills (avg price, contracts filled, order
+    type, fill time). Returns ``None`` for phantom settlements where
+    we held 0 contracts at settle AND have no recorded fill — the
+    BUBSTR-style "canceled order" record that Kalshi still surfaces.
     """
     ticker = s.get("ticker") or ""
     event_ticker = s.get("event_ticker") or ""
 
-    # Side we held + count
-    yes_n = float(s.get("yes_count_fp") or 0)
-    no_n = float(s.get("no_count_fp") or 0)
-    if yes_n >= no_n:
-        side_held = "yes"
-        contracts = yes_n
-        total_cost = float(s.get("yes_total_cost_dollars") or 0)
+    # Side we held + count, sourced from BOTH Kalshi's settlement
+    # row (count at settle time) AND fills (actually executed). A
+    # cancelled order has fills=0 contracts; an order that filled
+    # but was later disposed of (we don't sell, so this shouldn't
+    # happen, but defensive) would have fills>0 and count=0.
+    yes_n_settle = float(s.get("yes_count_fp") or 0)
+    no_n_settle = float(s.get("no_count_fp") or 0)
+    fill_sum = fills_by_ticker.get(ticker)
+    fill_contracts = float(fill_sum["contracts_filled"]) if fill_sum else 0.0
+    fill_side = (fill_sum or {}).get("side", "yes")
+    # Final position = what we held at settle (Kalshi's view). Use
+    # fills as a tiebreak when both settle counts are zero — that's
+    # the canceled-order phantom we want to filter out.
+    if yes_n_settle > 0 or no_n_settle > 0:
+        side_held = "yes" if yes_n_settle > 0 else "no"
+        contracts = yes_n_settle if side_held == "yes" else no_n_settle
+    elif fill_contracts > 0:
+        # We filled then disposed — shouldn't happen in our bot.
+        # Render the row with fill-derived side; settlement value
+        # is whatever Kalshi paid (likely 0 since we didn't hold).
+        side_held = fill_side
+        contracts = fill_contracts
     else:
-        side_held = "no"
-        contracts = no_n
-        total_cost = float(s.get("no_total_cost_dollars") or 0)
+        # Pure phantom — Kalshi shows a settlement row but we never
+        # held or filled. Skip entirely so the History tab doesn't
+        # mis-attribute a "win" or "loss" to it.
+        return None
+
+    yes_total_cost = float(s.get("yes_total_cost_dollars") or 0)
+    no_total_cost = float(s.get("no_total_cost_dollars") or 0)
+    total_cost_basis = yes_total_cost if side_held == "yes" else no_total_cost
     fee = float(s.get("fee_cost") or 0)
-    total_cost_with_fee = total_cost + fee
-    # Did we win? "market_result" is the side that resolved to $1.
+    total_cost_with_fee = total_cost_basis + fee
+    # Won when the resolved side matches the side we held.
     won = (s.get("market_result") == side_held)
-    # Payout: $1 per contract on the winning side, $0 on the losing.
     total_payout = contracts if won else 0.0
     total_return = total_payout - total_cost_with_fee
-    pct_return = (total_return / total_cost_with_fee) if total_cost_with_fee > 0 else 0.0
+    pct_return = (total_return / total_cost_with_fee
+                   if total_cost_with_fee > 0 else 0.0)
 
-    # Join with sim_state's closed_positions by ticker for the model
-    # data (entry_model_prob, full player name, matchup).
+    # Sim-state join for model prob + matchup + player name.
     closed = (sim_state or {}).get("closed_positions") or []
     sim_row = next((c for c in closed if c.get("ticker") == ticker), None)
-
-    # Player name we bet on — prefer sim_state's full name; fall back
-    # to the trailing 3-letter ticker code.
     side_player = ""
     matchup = ""
     tournament = ""
-    series_label = ""
     entry_model_prob = None
     if sim_row:
         side_player = sim_row.get("side_player") or ""
         pa = sim_row.get("player_a") or ""
         pb = sim_row.get("player_b") or ""
-        matchup = f"{pa} vs {pb}" if pa and pb else (sim_row.get("event_title") or "")
+        matchup = (f"{pa} vs {pb}" if pa and pb
+                    else (sim_row.get("event_title") or ""))
         tournament = sim_row.get("tournament") or ""
         entry_model_prob = sim_row.get("entry_model_prob")
     if not side_player:
-        # Fallback: trailing 3-letter code from ticker, e.g.
-        # KXATPMATCH-26MAY27DAVTIR-DAV → "DAV"
         parts = ticker.rsplit("-", 1)
         if len(parts) == 2:
             side_player = parts[1]
     if not matchup:
-        # Derive a coarse matchup from the event_ticker's date+codes,
-        # e.g. KXATPMATCH-26MAY27DAVTIR → "DAVTIR"
         ev_parts = event_ticker.rsplit("-", 1)
         if len(ev_parts) == 2:
             matchup = ev_parts[1]
 
-    # Series label = ATP/WTA + best-guess tournament. Slams have
-    # named events on Kalshi; for non-slams we use the generic ATP/WTA.
     tour = "ATP" if ticker.startswith("KXATPMATCH") else "WTA"
     sex = "Men" if tour == "ATP" else "Women"
-    if tournament:
-        series_label = f"{tournament} {sex} Singles"
-    else:
-        series_label = f"{tour} Singles"
-
-    # YES/NO badge text Kalshi uses on its own page ("1 Yes").
+    series_label = (f"{tournament} {sex} Singles" if tournament
+                    else f"{tour} Singles")
     final_position_label = (
         f"{int(round(contracts))} {'Yes' if side_held == 'yes' else 'No'}"
     )
+
+    # Fill-derived columns. When no fill is recorded (sim-state
+    # phantom or canceled order), show em-dashes rather than fake
+    # numbers.
+    avg_price_dollars: float | None = None
+    contracts_filled: float | None = None
+    order_type_label = "—"
+    fill_time_label = "—"
+    if fill_sum:
+        avg_price_dollars = float(fill_sum["avg_price_dollars"])
+        contracts_filled = float(fill_sum["contracts_filled"])
+        # The bot always places limit IOC orders (see
+        # bots/tennis_live_executor.py _submit_order), so the order
+        # type is always Limit; the only variation is taker vs maker.
+        taker_label = "Taker" if fill_sum.get("is_taker") else "Maker"
+        order_type_label = f"Limit {int(round(avg_price_dollars*100))}¢ · {taker_label}"
+        fill_time_label = _format_fill_time(fill_sum.get("first_fill_time") or "")
 
     return {
         "ticker": ticker,
@@ -1396,34 +1521,55 @@ def _join_settlement_with_sim_state(s: dict, sim_state: dict) -> dict:
         "total_return_dollars": total_return,
         "total_return_pct": pct_return,
         "won": won,
+        "avg_price_dollars": avg_price_dollars,
+        "contracts_filled": contracts_filled,
+        "order_type_label": order_type_label,
+        "fill_time_label": fill_time_label,
     }
 
 
 def _render_tennis_history_page(sim_state: dict) -> str:
     """The tennis bot's History tab — sourced from Kalshi's
-    /portfolio/settlements API (source of truth for closed bets) and
-    enriched with sim_state's per-trade entry-model-prob + full player
-    names. Column order matches Kalshi's own history page, with our
-    Model + Model Prob columns prepended on the left."""
+    /portfolio/settlements + /portfolio/fills (source of truth for
+    closed bets) and enriched with sim_state's per-trade entry-model
+    -prob + full player names.
+
+    Columns (matches the Kalshi-style spec — Player / My probability
+    /  Final position / Settlement payout / Total cost / Total payout
+    / Total return / Average price / Contracts filled / Order type /
+    Date range), with Market as the leftmost group.
+
+    Phantom settlements (canceled-order rows where we held 0 contracts
+    at settle AND have no recorded fill) are silently dropped so the
+    win/loss column is always honest about a position we actually had.
+    """
     settlements = _fetch_tennis_settlements()
+    fills = _fetch_tennis_fills()
+    fills_by_ticker = _summarize_fills(fills)
     if not settlements:
         return (
             "<div class='empty'>No Kalshi settlements yet. (Showed nothing "
             "instead of guessing — once real positions on KX[ATP|WTA]MATCH "
             "tickers settle, they appear here directly from Kalshi.)</div>"
         )
-    rows = [_join_settlement_with_sim_state(s, sim_state) for s in settlements]
-    # Newest first.
+    raw_rows = [_join_settlement_with_sim_state(s, sim_state, fills_by_ticker)
+                 for s in settlements]
+    rows = [r for r in raw_rows if r is not None]
     rows.sort(key=lambda r: r.get("settled_time") or "", reverse=True)
+    if not rows:
+        return (
+            "<div class='empty'>No tennis bets with actual fills yet. "
+            "(Skipped Kalshi-side phantom settlements where no contract "
+            "was ever filled.)</div>"
+        )
 
     out: List[str] = []
     out.append(
         "<table class='tennis-history'><thead><tr>"
-        "<th title='Which bot / model placed this trade.'>Model</th>"
-        "<th class='num' title='Model probability for the side we bet on, "
-        "recorded at order time.'>Model prob</th>"
         "<th>Market</th>"
-        "<th title='The player or side we bet on (the YES contract we held).'>Side</th>"
+        "<th title='The player whose YES contract we bought.'>Player</th>"
+        "<th class='num' title='Model probability for the side we bet on, "
+        "recorded at order time.'>My probability</th>"
         "<th class='num'>Final position</th>"
         "<th class='num' title='What Kalshi paid us on settlement (in $).'>"
         "Settlement payout</th>"
@@ -1432,6 +1578,12 @@ def _render_tennis_history_page(sim_state: dict) -> str:
         "<th class='num' title='Total $ Kalshi returned at settle "
         "(1 dollar per contract for the winning side).'>Total payout</th>"
         "<th class='num' title='Total payout − total cost.'>Total return</th>"
+        "<th class='num' title='Contract-weighted average fill price.'>"
+        "Avg price</th>"
+        "<th class='num'>Contracts filled</th>"
+        "<th title='Order type, limit price, and taker/maker side.'>"
+        "Order type</th>"
+        "<th title='When the order filled (ET).'>Date range</th>"
         "</tr></thead><tbody>"
     )
     for r in rows:
@@ -1440,23 +1592,33 @@ def _render_tennis_history_page(sim_state: dict) -> str:
         ret = float(r.get("total_return_dollars") or 0)
         pct = float(r.get("total_return_pct") or 0)
         ret_cls = "green" if ret > 0 else ("red" if ret < 0 else "gray")
-        ret_str = f"{'+' if ret > 0 else ''}${ret:.2f} ({'+' if pct > 0 else ''}{pct*100:.0f}%)"
+        ret_str = (f"{'+' if ret > 0 else ''}${ret:.2f} "
+                    f"({'+' if pct > 0 else ''}{pct*100:.0f}%)")
         cost = float(r.get("total_cost_dollars") or 0)
         payout = float(r.get("total_payout_dollars") or 0)
         settle = float(r.get("settlement_payout_dollars") or 0)
         settle_cls = "green" if settle > 0 else "red"
+        avg_p = r.get("avg_price_dollars")
+        avg_cell = (f"{int(round(float(avg_p)*100))}¢"
+                    if avg_p is not None else "—")
+        cf = r.get("contracts_filled")
+        cf_cell = (f"{int(round(float(cf)))}"
+                    if cf is not None else "—")
         out.append(
             "<tr>"
-            f"<td>Tennis Forecast</td>"
-            f"<td class='num'>{mp_cell}</td>"
             f"<td><div>{html.escape(r.get('series_label') or '')}</div>"
             f"<div class='small gray'>{html.escape(r.get('matchup') or '')}</div></td>"
             f"<td>{html.escape(r.get('side_player') or '')}</td>"
+            f"<td class='num'>{mp_cell}</td>"
             f"<td class='num'>{html.escape(r.get('final_position_label') or '')}</td>"
             f"<td class='num {settle_cls}'>${settle:.2f}</td>"
             f"<td class='num'>${cost:.2f}</td>"
             f"<td class='num'>${payout:.2f}</td>"
             f"<td class='num {ret_cls}'>{ret_str}</td>"
+            f"<td class='num'>{avg_cell}</td>"
+            f"<td class='num'>{cf_cell}</td>"
+            f"<td>{html.escape(r.get('order_type_label') or '—')}</td>"
+            f"<td class='small gray'>{html.escape(r.get('fill_time_label') or '—')}</td>"
             "</tr>"
         )
     out.append("</tbody></table>")
