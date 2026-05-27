@@ -1769,21 +1769,23 @@ def _render_tennis_history_page(sim_state: dict,
         "<th title='ATP (men) or WTA (women) tour.'>Tour</th>"
         "<th title='When the order filled (ET).'>Last updated</th>"
         "<th>Market</th>"
-        "<th title='Model probability and the player we bet YES on, at order time.'>"
-        "My probability</th>"
-        "<th title='Whoever Kalshi resolved YES on — the player who actually won.'>"
-        "Winner</th>"
+        "<th title='The player our model picked — the YES contract "
+        "we bought.'>Predicted winner</th>"
+        "<th title='Whoever Kalshi resolved YES on — the player who "
+        "actually won.'>Winner</th>"
+        "<th class='num' title='Model probability for our predicted "
+        "winner at order time.'>My prob</th>"
         "<th class='num' title='Contract-weighted average fill price.'>"
         "Avg price</th>"
         "<th class='num'>Contracts filled</th>"
         "<th class='num'>Final position</th>"
-        "<th class='num' title='What Kalshi paid us on settlement (in $).'>"
-        "Settlement payout</th>"
-        "<th class='num' title='Total $ paid to enter (price × contracts + fees).'>"
-        "Total cost</th>"
+        "<th class='num' title='Total $ paid to enter (price × "
+        "contracts + fees).'>Total cost</th>"
         "<th class='num' title='Total $ Kalshi returned at settle "
-        "(1 dollar per contract for the winning side).'>Total payout</th>"
-        "<th class='num' title='Total payout − total cost.'>Total return</th>"
+        "(1 dollar per contract for the winning side; $0 if we "
+        "lost).'>Total payout</th>"
+        "<th class='num' title='Total payout − total cost.'>"
+        "Total return</th>"
         "</tr></thead><tbody>"
     )
     for r in rows:
@@ -1795,36 +1797,29 @@ def _render_tennis_history_page(sim_state: dict,
                     f"({'+' if pct > 0 else ''}{pct*100:.0f}%)")
         cost = float(r.get("total_cost_dollars") or 0)
         payout = float(r.get("total_payout_dollars") or 0)
-        settle = float(r.get("settlement_payout_dollars") or 0)
-        settle_cls = "green" if settle > 0 else "red"
+        # Total payout: green if we got paid out, red if zero (lost).
+        # Kalshi pays $1 × contracts on a win and $0 on a loss, so
+        # binary colouring tracks the win/loss flag directly.
+        payout_cls = "green" if payout > 0 else "red"
         avg_p = r.get("avg_price_dollars")
         avg_cell = (f"{int(round(float(avg_p)*100))}¢"
                     if avg_p is not None else "—")
         cf = r.get("contracts_filled")
         cf_cell = (f"{int(round(float(cf)))}"
                     if cf is not None else "—")
-        # My probability cell: "<X>% on <player we bet on>" (with flag).
+        # Predicted winner = the player we bet on (with flag).
         side_player_html = _player_with_flag(
             r.get("side_player") or "", ioc_lookup)
-        if mp is not None and side_player_html:
-            my_prob_cell = (
-                f"<span class='num'>{float(mp)*100:.0f}%</span>"
-                f" on {side_player_html}"
-            )
-        elif mp is not None:
-            my_prob_cell = f"<span class='num'>{float(mp)*100:.0f}%</span>"
-        else:
-            my_prob_cell = "—"
-        # Winner cell: whoever actually won the match (Kalshi-resolved).
-        # If we won, we bet on the winner; if we lost, the winner was
-        # the opponent. Recover opponent from the matchup string.
+        # My prob = model % for that player at order time.
+        my_prob_cell = (f"{float(mp)*100:.0f}%"
+                         if mp is not None else "—")
+        # Winner = actual match winner. We won → side_player; we lost
+        # → the OTHER side in the matchup string.
         matchup_str = r.get("matchup") or ""
         side_player = r.get("side_player") or ""
         won = bool(r.get("won"))
         winner_name = side_player
         if not won and matchup_str and side_player:
-            # Matchup is "{player_a} vs {player_b}". Pick whichever
-            # isn't side_player.
             parts = [p.strip() for p in matchup_str.split(" vs ")]
             if len(parts) == 2:
                 winner_name = parts[0] if parts[1] == side_player else parts[1]
@@ -1836,14 +1831,14 @@ def _render_tennis_history_page(sim_state: dict,
             f"<td class='small gray'>{html.escape(r.get('fill_time_label') or '—')}</td>"
             f"<td><div>{html.escape(r.get('series_label') or '')}</div>"
             f"<div class='small gray'>{html.escape(matchup_str)}</div></td>"
-            f"<td>{my_prob_cell}</td>"
+            f"<td>{side_player_html}</td>"
             f"<td>{winner_html}</td>"
+            f"<td class='num'>{my_prob_cell}</td>"
             f"<td class='num'>{avg_cell}</td>"
             f"<td class='num'>{cf_cell}</td>"
             f"<td class='num'>{html.escape(r.get('final_position_label') or '')}</td>"
-            f"<td class='num {settle_cls}'>${settle:.2f}</td>"
             f"<td class='num'>${cost:.2f}</td>"
-            f"<td class='num'>${payout:.2f}</td>"
+            f"<td class='num {payout_cls}'>${payout:.2f}</td>"
             f"<td class='num {ret_cls}'>{ret_str}</td>"
             "</tr>"
         )
