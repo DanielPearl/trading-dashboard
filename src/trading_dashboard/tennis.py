@@ -1663,8 +1663,77 @@ def _join_settlement_with_sim_state(s: dict, sim_state: dict,
     }
 
 
+def build_tennis_history_for_page(sim_state: dict) -> list[dict]:
+    """Return the enriched, phantom-filtered, settled-bet rows that
+    drive the History tab. Caller can pass them to the page-level
+    renderers (chart, attribution, summary cards) so every block on
+    the History tab reflects the same source-of-truth data.
+
+    Returned rows carry the fields ``_render_tennis_history_page``
+    reads PLUS the legacy schema fields the existing chart /
+    attribution / summary helpers expect, so callers can pass them
+    straight through.
+    """
+    settlements = _fetch_tennis_settlements()
+    fills_by_ticker = _summarize_fills(_fetch_tennis_fills())
+    rows = [_join_settlement_with_sim_state(s, sim_state, fills_by_ticker)
+            for s in settlements]
+    rows = [r for r in rows if r is not None]
+    rows.sort(key=lambda r: r.get("settled_time") or "", reverse=True)
+    # Decorate with legacy-shape fields so callers can pass the same
+    # list to _render_history_chart / _render_history_attribution /
+    # _render_summary_cards-via-rollup without further mapping.
+    for r in rows:
+        r["_bot_key"] = "tennis"
+        r["_bot_name"] = "Tennis Forecast"
+        r["exited_at"] = r.get("settled_time") or ""
+        r["side"] = "YES"  # the live executor only ever buys YES
+        r["realized_pnl_cents"] = int(round(
+            float(r.get("total_return_dollars") or 0) * 100
+        ))
+        mp = r.get("entry_model_prob")
+        avg_p = r.get("avg_price_dollars")
+        if mp is not None and avg_p is not None:
+            r["expected_ev_at_entry"] = float(mp) - float(avg_p)
+        else:
+            r["expected_ev_at_entry"] = None
+    return rows
+
+
+def compute_tennis_history_rollup(rows: list[dict]) -> dict:
+    """Build the rollup dict ``_render_summary_cards`` expects, from
+    the Kalshi-sourced tennis row list. Only counts CLOSED bets — the
+    bot's open positions aren't sourced from settlements so the
+    ``active_bets`` field is set to 0 and the caller can overlay the
+    live open count if it has one."""
+    wins = sum(1 for r in rows if r.get("won"))
+    closed = len(rows)
+    losses = closed - wins
+    net_cents = sum(int(r.get("realized_pnl_cents") or 0) for r in rows)
+    spent_cents = int(round(sum(
+        float(r.get("total_cost_dollars") or 0) for r in rows
+    ) * 100))
+    gained_cents = int(round(sum(
+        float(r.get("total_payout_dollars") or 0) for r in rows
+    ) * 100))
+    contracts_bought = int(round(sum(
+        float(r.get("contracts_filled") or 0) for r in rows
+    )))
+    return {
+        "period_net_pnl_cents": net_cents,
+        "period_wins": wins,
+        "period_losses": losses,
+        "period_win_pct": (wins / closed) if closed > 0 else 0.0,
+        "period_money_spent_cents": spent_cents,
+        "period_money_gained_cents": gained_cents,
+        "period_contracts_bought": contracts_bought,
+        "active_bets": 0,  # caller overlays this from the live state
+    }
+
+
 def _render_tennis_history_page(sim_state: dict,
-                                  sim_state_path: str | None = None) -> str:
+                                  sim_state_path: str | None = None,
+                                  rows: list[dict] | None = None) -> str:
     """The tennis bot's History tab — sourced from Kalshi's
     /portfolio/settlements + /portfolio/fills (source of truth for
     closed bets) and enriched with sim_state's per-trade entry-model
@@ -1684,25 +1753,14 @@ def _render_tennis_history_page(sim_state: dict,
     at settle AND have no recorded fill) are silently dropped so the
     win/loss column is always honest about a position we actually had.
     """
-    settlements = _fetch_tennis_settlements()
-    fills = _fetch_tennis_fills()
-    fills_by_ticker = _summarize_fills(fills)
     ioc_lookup = _player_country_map(sim_state_path)
-    if not settlements:
-        return (
-            "<div class='empty'>No Kalshi settlements yet. (Showed nothing "
-            "instead of guessing — once real positions on KX[ATP|WTA]MATCH "
-            "tickers settle, they appear here directly from Kalshi.)</div>"
-        )
-    raw_rows = [_join_settlement_with_sim_state(s, sim_state, fills_by_ticker)
-                 for s in settlements]
-    rows = [r for r in raw_rows if r is not None]
-    rows.sort(key=lambda r: r.get("settled_time") or "", reverse=True)
+    if rows is None:
+        rows = build_tennis_history_for_page(sim_state)
     if not rows:
         return (
-            "<div class='empty'>No tennis bets with actual fills yet. "
-            "(Skipped Kalshi-side phantom settlements where no contract "
-            "was ever filled.)</div>"
+            "<div class='empty'>No Kalshi-settled tennis bets yet — once "
+            "real positions on KX[ATP|WTA]MATCH tickers settle, they appear "
+            "here directly from Kalshi.</div>"
         )
 
     out: List[str] = []
@@ -1711,9 +1769,10 @@ def _render_tennis_history_page(sim_state: dict,
         "<th title='ATP (men) or WTA (women) tour.'>Tour</th>"
         "<th title='When the order filled (ET).'>Last updated</th>"
         "<th>Market</th>"
-        "<th title='The player whose YES contract we bought.'>Player</th>"
-        "<th class='num' title='Model probability for the side we bet on, "
-        "recorded at order time.'>My probability</th>"
+        "<th title='Model probability and the player we bet YES on, at order time.'>"
+        "My probability</th>"
+        "<th title='Whoever Kalshi resolved YES on — the player who actually won.'>"
+        "Winner</th>"
         "<th class='num' title='Contract-weighted average fill price.'>"
         "Avg price</th>"
         "<th class='num'>Contracts filled</th>"
@@ -1729,7 +1788,6 @@ def _render_tennis_history_page(sim_state: dict,
     )
     for r in rows:
         mp = r.get("entry_model_prob")
-        mp_cell = (f"{float(mp)*100:.0f}%" if mp is not None else "—")
         ret = float(r.get("total_return_dollars") or 0)
         pct = float(r.get("total_return_pct") or 0)
         ret_cls = "green" if ret > 0 else ("red" if ret < 0 else "gray")
@@ -1745,16 +1803,41 @@ def _render_tennis_history_page(sim_state: dict,
         cf = r.get("contracts_filled")
         cf_cell = (f"{int(round(float(cf)))}"
                     if cf is not None else "—")
-        player_html = _player_with_flag(r.get("side_player") or "", ioc_lookup)
+        # My probability cell: "<X>% on <player we bet on>" (with flag).
+        side_player_html = _player_with_flag(
+            r.get("side_player") or "", ioc_lookup)
+        if mp is not None and side_player_html:
+            my_prob_cell = (
+                f"<span class='num'>{float(mp)*100:.0f}%</span>"
+                f" on {side_player_html}"
+            )
+        elif mp is not None:
+            my_prob_cell = f"<span class='num'>{float(mp)*100:.0f}%</span>"
+        else:
+            my_prob_cell = "—"
+        # Winner cell: whoever actually won the match (Kalshi-resolved).
+        # If we won, we bet on the winner; if we lost, the winner was
+        # the opponent. Recover opponent from the matchup string.
+        matchup_str = r.get("matchup") or ""
+        side_player = r.get("side_player") or ""
+        won = bool(r.get("won"))
+        winner_name = side_player
+        if not won and matchup_str and side_player:
+            # Matchup is "{player_a} vs {player_b}". Pick whichever
+            # isn't side_player.
+            parts = [p.strip() for p in matchup_str.split(" vs ")]
+            if len(parts) == 2:
+                winner_name = parts[0] if parts[1] == side_player else parts[1]
+        winner_html = _player_with_flag(winner_name, ioc_lookup)
         tour_badge = _tour_badge(r.get("ticker") or "")
         out.append(
             "<tr>"
             f"<td>{tour_badge}</td>"
             f"<td class='small gray'>{html.escape(r.get('fill_time_label') or '—')}</td>"
             f"<td><div>{html.escape(r.get('series_label') or '')}</div>"
-            f"<div class='small gray'>{html.escape(r.get('matchup') or '')}</div></td>"
-            f"<td>{player_html}</td>"
-            f"<td class='num'>{mp_cell}</td>"
+            f"<div class='small gray'>{html.escape(matchup_str)}</div></td>"
+            f"<td>{my_prob_cell}</td>"
+            f"<td>{winner_html}</td>"
             f"<td class='num'>{avg_cell}</td>"
             f"<td class='num'>{cf_cell}</td>"
             f"<td class='num'>{html.escape(r.get('final_position_label') or '')}</td>"

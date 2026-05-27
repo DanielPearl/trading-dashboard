@@ -3474,63 +3474,77 @@ def render_page(
         f"</span></h2>"
         f"<div class='body'>"
     )
-    # Headline cards at the top of the panel. id_suffix='-history'
-    # lets the snapshot poller (which targets Home-tab ids) skip them.
-    _render_summary_cards(out, global_summary, id_suffix="-history",
-                           show_closed_contracts=True)
-    # Daily P&L chart with the Day/Week/Month/Year/All-time period
-    # selector rendered as the chart's toolbar — period scopes the
-    # chart, cards, and table below via a full-page reload on the
-    # ``?period=X`` query param.
-    _render_history_chart(out, global_history,
-                            period_key=period_key,
-                            current_bot=current_bot)
-    # P&L attribution panels — small breakdown tables that answer
-    # "where did this P&L come from?" by bot / month / side / EV
-    # bucket. Sits between the chart and the ledger so the user sees
-    # the shape of the P&L before reading individual bet rows.
-    _render_history_attribution(out, global_history)
-    # Tennis bets — Kalshi-sourced (settlements + fills), with the
-    # 12-column Kalshi-style layout (Market / Player / My probability
-    # / Final position / Settlement payout / Total cost / Total payout
-    # / Total return / Avg price / Contracts filled / Order type /
-    # Date range). Renders at the top of the History tab so the user
-    # sees the source-of-truth tennis view without navigating into the
-    # bot. Other bots remain in the legacy local-derived table below.
+    # The History tab is sourced entirely from the tennis bot's
+    # Kalshi-settlement + fills data — the user's only live-trading
+    # bot. Summary cards, daily P&L chart, and the P&L attribution
+    # panels all use the same Kalshi-derived row list as the All Bets
+    # table below, so everything on this tab tells the same story.
+    # The legacy local-derived block (sim.db cross-bot ledger) was
+    # dropped — it was running on the broken hedge_pl/hedge_sl
+    # bookkeeping and showing inflated numbers.
+    tennis_rows: List[dict] = []
+    tennis_rollup: dict = {}
+    sim_state_tennis_path: str | None = None
+    sim_state_tennis: dict = {}
     try:
         from . import tennis as _tennis
-        # Find the tennis bot's sim_state path (for entry-model-prob
-        # joins) by scanning the configured bot list. Skip silently
-        # if not configured (e.g. dashboard without tennis enabled).
         tennis_bot_cfg = next(
             (b for b in available_bots if b.get("key") == "tennis"), None,
         )
         if tennis_bot_cfg:
             sim_state_tennis_path = tennis_bot_cfg.get("sim_state_path")
             sim_state_tennis = _tennis.load_sim_state(sim_state_tennis_path)
-            out.append("<h3 class='subhead'>Tennis bets "
-                        "<span class='small gray'>"
-                        "(direct from Kalshi settlements + fills)</span>"
-                        "</h3>")
-            out.append("<div class='history-scroll'>")
-            out.append(_tennis._render_tennis_history_page(
-                sim_state_tennis,
-                sim_state_path=sim_state_tennis_path,
-            ))
-            out.append("</div>")
+            tennis_rows = _tennis.build_tennis_history_for_page(
+                sim_state_tennis)
+            tennis_rollup = _tennis.compute_tennis_history_rollup(tennis_rows)
+            # Overlay the live open-bet count from the cross-bot
+            # global_summary (the cards' "Active bets" surface isn't
+            # closed-position-derived — it's whatever's currently open
+            # across all bots). show_closed_contracts=True hides the
+            # active count card anyway, so this is belt-and-braces.
+            tennis_rollup["active_bets"] = (
+                global_summary.get("active_bets", 0) if global_summary
+                else 0
+            )
     except Exception:  # noqa: BLE001 — never let the history page 500
-        log.exception("tennis history block failed; rendering legacy only")
+        log.exception("tennis history fetch failed; "
+                       "summary/chart/attribution will be empty")
+        tennis_rows = []
+        tennis_rollup = {}
 
-    # Legacy cross-bot history (non-tennis bets render here; tennis
-    # bets are duplicated above with richer columns — kept here for
-    # the per-bot attribution panel above to stay in sync).
-    out.append("<h3 class='subhead'>All bots — historical bets</h3>")
+    # Headline cards — driven by the tennis-derived rollup so they
+    # match the All Bets table below.
+    _render_summary_cards(out, tennis_rollup or global_summary,
+                           id_suffix="-history",
+                           show_closed_contracts=True)
+    # Daily P&L chart over the same rows.
+    _render_history_chart(out, tennis_rows,
+                            period_key=period_key,
+                            current_bot=current_bot)
+    # P&L attribution panels over the same rows. (By-bot collapses
+    # to a single row since everything is tennis; by-side is YES-only;
+    # by-month is the useful one. EV bucket uses expected_ev_at_entry
+    # which we synthesize as model_prob − avg_fill_price.)
+    _render_history_attribution(out, tennis_rows)
+    # All Bets — Kalshi-sourced, with the 12-column layout. Always
+    # the last block on the History tab so it reads as the source of
+    # truth the cards / chart / attribution above are summarizing.
+    out.append("<h3 class='subhead'>All Bets "
+                "<span class='small gray'>"
+                "(direct from Kalshi settlements + fills)</span>"
+                "</h3>")
     out.append("<div class='history-scroll'>")
-    _render_bet_history_block(
-        out, global_history,
-        heading="",
-        shown_initially=20,
-    )
+    try:
+        from . import tennis as _tennis
+        out.append(_tennis._render_tennis_history_page(
+            sim_state_tennis,
+            sim_state_path=sim_state_tennis_path,
+            rows=tennis_rows or None,
+        ))
+    except Exception:  # noqa: BLE001
+        log.exception("tennis history render failed")
+        out.append("<div class='empty'>Tennis history unavailable — "
+                    "see server log.</div>")
     out.append("</div>")
     out.append("</div></div>")
     out.append("</div>")  # /history panel
