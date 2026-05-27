@@ -1429,8 +1429,8 @@ def _render_tennis_history_page(sim_state: dict) -> str:
         "Settlement payout</th>"
         "<th class='num' title='Total $ paid to enter (price × contracts + fees).'>"
         "Total cost</th>"
-        "<th class='num' title='Total $ Kalshi returned at settle '"
-        "($1 per contract for the winning side).'>Total payout</th>"
+        "<th class='num' title='Total $ Kalshi returned at settle "
+        "(1 dollar per contract for the winning side).'>Total payout</th>"
         "<th class='num' title='Total payout − total cost.'>Total return</th>"
         "</tr></thead><tbody>"
     )
