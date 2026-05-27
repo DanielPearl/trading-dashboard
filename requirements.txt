@@ -18,14 +18,22 @@ PyYAML>=6.0
 #
 # Versions are pinned to match what each bot's own venv has, so
 # pickled model artifacts load without the sklearn
-# "InconsistentVersionWarning: trained on 1.6.1, loading with 1.8.0"
-# warning (which the sklearn docs note "might lead to breaking
-# code or invalid results"). Refreshed from /root/unemployment-claims's
-# pip freeze; bump in lockstep when re-training models.
+# "InconsistentVersionWarning" cross-version notices. Refreshed
+# from the upstream sport repos' pip freezes; bump in lockstep when
+# re-training models.
+#
+# scikit-learn==1.8.0 because every sport repo except nba has moved
+# to it; the cross-version load that prompted this bump was a
+# 1.8-trained tennis LogisticRegression failing under 1.6.1 with
+# ``'LogisticRegression' object has no attribute 'multi_class'``
+# (the attribute was deprecated in 1.5 and removed in 1.7, so
+# 1.6.1's predict_proba couldn't process a 1.8-pickled instance).
+# Forward-compat for 1.6.1-trained bundles (e.g. NBA) into 1.8 was
+# verified before the bump.
 pandas==3.0.2
 numpy==2.4.4
 scipy==1.17.1
-scikit-learn==1.6.1
+scikit-learn==1.8.0
 joblib==1.5.3
 requests>=2.31
 python-dotenv>=1.0
