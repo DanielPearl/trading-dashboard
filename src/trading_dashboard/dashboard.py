@@ -3490,11 +3490,39 @@ def render_page(
     # bucket. Sits between the chart and the ledger so the user sees
     # the shape of the P&L before reading individual bet rows.
     _render_history_attribution(out, global_history)
-    # Pass heading="" so the table renders without a duplicate
-    # subhead — the section title above already carries the period.
-    # Scroll container clamps the table to a sensible viewport
-    # height so long histories don't push the rest of the page off
-    # screen — same idiom as the Summary's active-bets scroll.
+    # Tennis bets — Kalshi-sourced (settlements + fills), with the
+    # 12-column Kalshi-style layout (Market / Player / My probability
+    # / Final position / Settlement payout / Total cost / Total payout
+    # / Total return / Avg price / Contracts filled / Order type /
+    # Date range). Renders at the top of the History tab so the user
+    # sees the source-of-truth tennis view without navigating into the
+    # bot. Other bots remain in the legacy local-derived table below.
+    try:
+        from . import tennis as _tennis
+        # Find the tennis bot's sim_state path (for entry-model-prob
+        # joins) by scanning the configured bot list. Skip silently
+        # if not configured (e.g. dashboard without tennis enabled).
+        tennis_bot_cfg = next(
+            (b for b in available_bots if b.get("key") == "tennis"), None,
+        )
+        if tennis_bot_cfg:
+            sim_state_tennis = _tennis.load_sim_state(
+                tennis_bot_cfg.get("sim_state_path")
+            )
+            out.append("<h3 class='subhead'>Tennis bets "
+                        "<span class='small gray'>"
+                        "(direct from Kalshi settlements + fills)</span>"
+                        "</h3>")
+            out.append("<div class='history-scroll'>")
+            out.append(_tennis._render_tennis_history_page(sim_state_tennis))
+            out.append("</div>")
+    except Exception:  # noqa: BLE001 — never let the history page 500
+        log.exception("tennis history block failed; rendering legacy only")
+
+    # Legacy cross-bot history (non-tennis bets render here; tennis
+    # bets are duplicated above with richer columns — kept here for
+    # the per-bot attribution panel above to stay in sync).
+    out.append("<h3 class='subhead'>All bots — historical bets</h3>")
     out.append("<div class='history-scroll'>")
     _render_bet_history_block(
         out, global_history,
@@ -11630,36 +11658,6 @@ class Handler(BaseHTTPRequestHandler):
                 # render_page args from watchlist.json + sim_state.json
                 # and falls through to the cross-bot rollup + final
                 # render at the bottom of this method.
-
-                # Exception: tennis bot's History tab uses its own
-                # Kalshi-settlements-sourced renderer (Model + Model
-                # Prob columns + Kalshi-style layout), so dispatch
-                # directly. Table-tennis and darts are not yet on the
-                # new layout — they fall through to the standard
-                # cross-bot history below.
-                if (bot.get("dashboard_type") == "sport"
-                        and bot.get("key") == "tennis"
-                        and tab_key == "history"):
-                    from . import tennis as _tennis
-                    sim_state = _tennis.load_sim_state(
-                        bot.get("sim_state_path"))
-                    body = _tennis.render_page(
-                        metrics_path=bot.get("metrics_path"),
-                        coefficients_path=bot.get("coefficients_path"),
-                        watchlist_path=bot.get("watchlist_json_path"),
-                        sim_state_path=bot.get("sim_state_path"),
-                        available_bots=self.bots,
-                        current_bot_key=bot["key"],
-                        tab_key="history",
-                    )
-                    payload = body.encode("utf-8")
-                    self.send_response(200)
-                    self.send_header("Content-Type", "text/html; charset=utf-8")
-                    self.send_header("Cache-Control", "no-store")
-                    self.send_header("Content-Length", str(len(payload)))
-                    self.end_headers()
-                    self.wfile.write(payload)
-                    return
 
                 db_path = bot.get("db_path") or ""
 

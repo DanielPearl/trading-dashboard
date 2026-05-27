@@ -615,10 +615,9 @@ def _render_tab_bar(active: str = "watchlist") -> str:
         ("home", "Home", "/"),
         ("watchlist", "Watchlist", "?bot=tennis&tab=watchlist"),
         ("models", "Models", "?bot=tennis&tab=models"),
-        # History routes to the tennis-specific renderer (Kalshi
-        # settlements + Model + Model-prob columns) — was previously
-        # bouncing out to the cross-bot history.
-        ("history", "History", "?bot=tennis&tab=history"),
+        # History routes to the cross-bot history page, where the
+        # Kalshi-sourced tennis section renders at the top.
+        ("history", "History", "/?tab=history"),
     ]
     out = ["<div class='tab-bar'>"]
     for k, label, href in tabs:
@@ -2149,20 +2148,13 @@ def render_page(*, metrics_path: str | None, coefficients_path: str | None,
         f"{datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%SZ')}"
         f" · live updates every 60s · DRY-RUN mode (no real orders)</div>"
     )
-    active_tab = (tab_key if tab_key in ("watchlist", "models", "history")
-                  else "watchlist")
+    active_tab = tab_key if tab_key in ("watchlist", "models") else "watchlist"
     # Bot dropdown sits above the tab bar so it applies uniformly
     # across tabs (matches the standard renderer's layout).
     out.append(_render_bot_dropdown(available_bots, current_bot_key))
     out.append(_render_tab_bar(active=active_tab))
 
-    if active_tab == "history":
-        # ── History section (Kalshi-sourced) ─────────────────────────
-        out.append("<div class='section'><h2>Closed bets — Kalshi history</h2>"
-                    "<div class='body'>")
-        out.append(_render_tennis_history_page(sim_state))
-        out.append("</div></div>")
-    elif active_tab == "models":
+    if active_tab == "models":
         # ── Models section ───────────────────────────────────────────
         out.append("<div class='section'><h2>Model</h2><div class='body'>")
         out.append(_render_tennis_models_page(metrics, coefficients,
