@@ -1479,6 +1479,24 @@ def _player_country_map(sim_state_path: str | None) -> dict[str, str]:
     return out
 
 
+def _tour_badge(ticker: str) -> str:
+    """ATP/WTA badge HTML — Kalshi-style coloured pill on the leftmost
+    column of the History table. Derived from the Kalshi series prefix
+    (KXATPMATCH-* → ATP, KXWTAMATCH-* → WTA)."""
+    t = (ticker or "").upper()
+    if t.startswith("KXATPMATCH"):
+        return ("<span style='display:inline-block;padding:2px 8px;"
+                "font-size:10px;font-weight:700;letter-spacing:0.5px;"
+                "color:#fff;background:#1d3a8a;border-radius:4px;'>"
+                "ATP</span>")
+    if t.startswith("KXWTAMATCH"):
+        return ("<span style='display:inline-block;padding:2px 8px;"
+                "font-size:10px;font-weight:700;letter-spacing:0.5px;"
+                "color:#fff;background:#15803d;border-radius:4px;'>"
+                "WTA</span>")
+    return ""
+
+
 def _player_with_flag(name: str, ioc_lookup: dict[str, str]) -> str:
     """HTML-safe player cell: flag emoji + name. Returns the name
     alone (no leading flag) when the player has no IOC entry."""
@@ -1690,6 +1708,7 @@ def _render_tennis_history_page(sim_state: dict,
     out: List[str] = []
     out.append(
         "<table class='tennis-history'><thead><tr>"
+        "<th title='ATP (men) or WTA (women) tour.'>Tour</th>"
         "<th title='When the order filled (ET).'>Last updated</th>"
         "<th>Market</th>"
         "<th title='The player whose YES contract we bought.'>Player</th>"
@@ -1698,8 +1717,6 @@ def _render_tennis_history_page(sim_state: dict,
         "<th class='num' title='Contract-weighted average fill price.'>"
         "Avg price</th>"
         "<th class='num'>Contracts filled</th>"
-        "<th title='Order type, limit price, and taker/maker side.'>"
-        "Order type</th>"
         "<th class='num'>Final position</th>"
         "<th class='num' title='What Kalshi paid us on settlement (in $).'>"
         "Settlement payout</th>"
@@ -1729,8 +1746,10 @@ def _render_tennis_history_page(sim_state: dict,
         cf_cell = (f"{int(round(float(cf)))}"
                     if cf is not None else "—")
         player_html = _player_with_flag(r.get("side_player") or "", ioc_lookup)
+        tour_badge = _tour_badge(r.get("ticker") or "")
         out.append(
             "<tr>"
+            f"<td>{tour_badge}</td>"
             f"<td class='small gray'>{html.escape(r.get('fill_time_label') or '—')}</td>"
             f"<td><div>{html.escape(r.get('series_label') or '')}</div>"
             f"<div class='small gray'>{html.escape(r.get('matchup') or '')}</div></td>"
@@ -1738,7 +1757,6 @@ def _render_tennis_history_page(sim_state: dict,
             f"<td class='num'>{mp_cell}</td>"
             f"<td class='num'>{avg_cell}</td>"
             f"<td class='num'>{cf_cell}</td>"
-            f"<td>{html.escape(r.get('order_type_label') or '—')}</td>"
             f"<td class='num'>{html.escape(r.get('final_position_label') or '')}</td>"
             f"<td class='num {settle_cls}'>${settle:.2f}</td>"
             f"<td class='num'>${cost:.2f}</td>"
