@@ -311,10 +311,27 @@ def _check_tennis_state(sim_state_path: str | None, bot: Dict[str, Any],
     ``exit_reason='hedge_pl'|'hedge_sl'``. The bot's own ``_settle_
     position`` won't fire on these later because they're no longer
     in open_positions.
+
+    SKIPPED in live mode. The tennis live executor in
+    ``bots/tennis_live_executor.py`` is explicit that it holds
+    positions to natural Kalshi expiry ("always settle, never
+    partial-close") — it never sends a sell order. The hedge here
+    only mutates the local JSON, which:
+      (a) makes the dashboard's realized-P&L number on `hedge_sl` /
+          `hedge_pl` exits diverge from the real Kalshi position, and
+      (b) loops with the executor's ``_reconcile_positions`` catch-up
+          branch, which restores the position from ``closed_positions``
+          on the next tick because Kalshi still lists it open. Observed
+          on 2026-05-26: KXATPMATCH-26MAY25QUICOM hit hedge_sl 30+
+          times over 33 minutes before the underlying market finalized.
+    Sim mode is left alone — the paper simulator has no Kalshi side
+    to disagree with, so hedge_pl/sl exits there are correct.
     """
     bot_key = bot.get("key", "")
     bot_name = bot.get("name", "")
     if not sim_state_path:
+        return []
+    if "outputs-live" in str(sim_state_path):
         return []
     p = Path(sim_state_path)
     if not p.exists():
