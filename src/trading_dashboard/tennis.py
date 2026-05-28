@@ -651,29 +651,86 @@ def _render_bot_dropdown(available_bots: List[dict], current_bot_key: str
     return "".join(out)
 
 
-def _render_current_prediction(metrics: dict, sim_state: dict) -> str:
+def _render_current_prediction(metrics: dict, sim_state: dict,
+                                  sim_state_path: str | None = None) -> str:
     """Tennis equivalent of the standard 'Current prediction' card row.
 
     Six small cards, same layout as the gas / NBA / CPI watchlists.
-    Surfaces the metrics the user grades the forecaster on (Accuracy /
-    F1 / ROC AUC / Brier) plus the live trading state (open paper
-    bets / realized P&L).
+    Surfaces the model's held-out metrics (Accuracy / F1 / ROC AUC /
+    Brier) PLUS real-money trading stats.
+
+    The Realized P&L / Open / win rate cards used to read from
+    ``sim_state.stats``, which:
+      * inflated wins (the pre-fix hedge_pl/hedge_sl bookkeeping
+        credited closes that never actually sold on Kalshi)
+      * included canceled-order phantom "settles"
+      * disagreed with /portfolio/settlements by ~3× on win rate
+    Now we drive the same cards off the Kalshi-derived rows the
+    History tab uses (settlements + fills), so every panel on the
+    page tells the same true story.
     """
     blended = metrics.get("blended") or {}
-    stats = sim_state.get("stats") or {}
-    realized_cents = int(round(float(stats.get("total_realized_pnl") or 0) * 100))
+
+    # Real numbers from Kalshi settlements + fills, when reachable.
+    # Falls back to sim_state stats when the Kalshi pull fails (e.g.
+    # no creds in this venv) so the page never goes blank.
+    kalshi_rows: list[dict] = []
+    try:
+        kalshi_rows = build_tennis_history_for_page(sim_state)
+    except Exception:  # noqa: BLE001
+        log.exception("build_tennis_history_for_page failed; "
+                       "falling back to sim_state stats")
+
+    if kalshi_rows:
+        roll = compute_tennis_history_rollup(kalshi_rows)
+        realized_cents = int(roll.get("period_net_pnl_cents") or 0)
+        wins = int(roll.get("period_wins") or 0)
+        losses = int(roll.get("period_losses") or 0)
+        n_closed = wins + losses
+        win_rate = (wins / n_closed) if n_closed > 0 else None
+        # Open count comes from sim_state (live position file) — that's
+        # the live state, not historical.
+        open_count = int((sim_state.get("stats") or {}).get("open_count") or 0)
+        stake_dollars = (
+            (roll.get("period_money_spent_cents") or 0) / 100.0
+        )
+        roi = (realized_cents / 100.0) / stake_dollars if stake_dollars > 0 else None
+    else:
+        # Fallback — sim_state numbers are stale/inflated but a value
+        # is better than blank when Kalshi is unreachable.
+        stats = sim_state.get("stats") or {}
+        realized_cents = int(round(
+            float(stats.get("total_realized_pnl") or 0) * 100
+        ))
+        win_rate = stats.get("win_rate")
+        open_count = int(stats.get("open_count") or 0)
+        n_closed = int(stats.get("total_closed") or 0)
+        wins = int(stats.get("wins") or 0)
+        roi = stats.get("roi")
+
     pnl_cls = ("green" if realized_cents > 0
                 else "red" if realized_cents < 0 else "gray")
-    win_rate = stats.get("win_rate")
-    win_rate_str = "—" if win_rate is None else f"{float(win_rate) * 100:.0f}%"
+    win_rate_str = ("—" if win_rate is None
+                     else f"{float(win_rate) * 100:.0f}%")
+    win_cls = ("green" if win_rate is not None and win_rate >= 0.5
+                else "red" if win_rate is not None else "gray")
     cards = [
         ("Accuracy",         _fmt_pct(blended.get("accuracy"), 1), ""),
         ("F1",               _fmt_pct(blended.get("f1"), 1), ""),
         ("ROC AUC",          _fmt_pct(blended.get("roc_auc"), 1), ""),
-        ("Brier",            f"{blended.get('brier', 0):.3f}" if blended.get("brier") is not None else "—", "lower better"),
-        ("Open paper bets",  str(int(stats.get("open_count") or 0)), ""),
+        ("Brier",            f"{blended.get('brier', 0):.3f}"
+                              if blended.get("brier") is not None else "—",
+                              "lower better"),
+        ("Open paper bets",  str(open_count), ""),
         ("Realized P&L",     _fmt_signed_dollars(realized_cents), pnl_cls),
     ]
+    # Tack on the win-rate card so the cards row directly shows how
+    # the model is doing on real money. (Closed bet count goes in the
+    # label so we don't blow the layout up.)
+    cards.append(
+        (f"Real win rate", win_rate_str,
+         win_cls if win_cls in ("green", "red") else "")
+    )
     out = ["<div class='row compact'>"]
     for label, value, sub in cards:
         # ``sub`` here doubles as a CSS class for the Realized P&L cell
@@ -2521,7 +2578,8 @@ def render_page(*, metrics_path: str | None, coefficients_path: str | None,
         # ticker table at the bottom.
         out.append("<div class='section'><h2>Watchlist — model vs market</h2>"
                     "<div class='body'>")
-        out.append(_render_current_prediction(metrics, sim_state))
+        out.append(_render_current_prediction(metrics, sim_state,
+                                                  sim_state_path=sim_state_path))
 
         # Active paper bets — render via the standard shared renderer
         # so the column shape (Opened | Ticker | Title | Contracts |

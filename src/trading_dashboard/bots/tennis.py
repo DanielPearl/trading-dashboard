@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import logging
 import time
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable
 
@@ -115,6 +116,29 @@ def _one_tick(upstream: dict[str, Callable[..., Any]],
             " [LIVE — DRY-RUN]" if getattr(live_executor, "dry_run", True)
             else " [LIVE — REAL ORDERS]"
         )
+        # Mirror the watchlist to outputs-live/ so the live dashboard
+        # config (which points there) shows what the bot is actually
+        # considering. ``export_watchlist`` writes to outputs/ by
+        # default per tennis-forecast's config; the live dashboard's
+        # bot config reads outputs-live/watchlist.json. Without this
+        # mirror the live "Tradeable matches" panel reads empty even
+        # while the bot is happily trading.
+        try:
+            import json as _json
+            from pathlib import Path as _Path
+            live_dir = _Path(live_executor.state_path).parent
+            live_dir.mkdir(parents=True, exist_ok=True)
+            wl_live = live_dir / "watchlist.json"
+            generated_at = (
+                datetime.now(timezone.utc).isoformat(timespec="seconds")
+            )
+            with wl_live.open("w", encoding="utf-8") as f:
+                _json.dump(
+                    {"generated_at": generated_at, "rows": rows},
+                    f, separators=(",", ":"), default=str,
+                )
+        except Exception:  # noqa: BLE001 — mirror is best-effort
+            log.exception("watchlist mirror to outputs-live failed")
     else:
         state = upstream["simulator_tick"](rows_for_sim, records)
         mode_label = ""

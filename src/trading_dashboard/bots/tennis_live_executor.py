@@ -77,6 +77,14 @@ _HARD_MAX_ENTRY_PRICE_CENTS = 70   # don't pay > 70¢ for any contract
 _HARD_MIN_ENTRY_PRICE_CENTS = 15   # don't trade tail probabilities
 _HARD_PRICE_DEVIATION_CENTS = 3    # current ask must be within 3¢ of
                                      # the watchlist verdict's price
+_HARD_MAX_HOURS_TO_CLOSE = 24.0    # don't open positions on matches
+                                     # whose Kalshi market doesn't close
+                                     # for >24h — too much room for pre-
+                                     # match injury / withdrawal news to
+                                     # break and invalidate the model's
+                                     # priors. Lowering tighter than 24h
+                                     # in config is allowed; the hard
+                                     # cap is the loosest sane value.
 
 
 class _DailyOrderCounter:
@@ -180,6 +188,16 @@ class TennisLiveExecutor:
             int(cfg.get("price_deviation_cents", 3)),
             _HARD_PRICE_DEVIATION_CENTS,
         )
+        # max_hours_to_close_for_open: defer opens until the match's
+        # Kalshi market is within this many hours of close. Keeps the
+        # bot from betting overnight on tomorrow's match, where
+        # withdrawal / injury news has a full day to break and shift
+        # the line against us. Default 12h (≈8h before match start
+        # given a ~4h typical match duration). Hard cap 24h.
+        self.max_hours_to_close = min(
+            float(cfg.get("max_hours_to_close_for_open", 12.0)),
+            _HARD_MAX_HOURS_TO_CLOSE,
+        )
 
         self.state_path = Path(state_path)
         self._daily = _DailyOrderCounter()
@@ -189,11 +207,13 @@ class TennisLiveExecutor:
             "tennis-live-executor configured (dry_run=%s, max_open=%d, "
             "max_orders_per_day=%d, contracts_per_order=%d, "
             "min_edge=%.3f, entry_price=[%d¢, %d¢], "
-            "price_deviation_max=%d¢, state=%s)",
+            "price_deviation_max=%d¢, max_hours_to_close=%.1f, "
+            "state=%s)",
             self.dry_run, self.max_open, self.max_orders_per_day,
             self.contracts_per_order, self.min_edge,
             self.min_entry_price_cents, self.max_entry_price_cents,
-            self.price_deviation_cents, self.state_path,
+            self.price_deviation_cents, self.max_hours_to_close,
+            self.state_path,
         )
         if not self.dry_run:
             log.warning(
@@ -347,6 +367,35 @@ class TennisLiveExecutor:
                      match_id, side_letter, ask_cents, current_ask,
                      self.price_deviation_cents)
             return False
+
+        # Time-to-close gate. The bot historically opened positions on
+        # tomorrow's matches the moment they appeared on the watchlist
+        # — leaving 12-48h for withdrawal / injury news to break and
+        # crater the line. Skip when the Kalshi market's
+        # expected_expiration_time is more than ``max_hours_to_close``
+        # away. Settled / past-expiration matches are filtered out
+        # upstream by the simulator's ``min_minutes_to_close_for_open``
+        # check, so this is the FAR-AWAY side of the same gate.
+        live = live_by_id.get(match_id) or {}
+        exp = live.get("expected_expiration_time")
+        if exp:
+            try:
+                exp_ts = datetime.fromisoformat(
+                    str(exp).replace("Z", "+00:00")
+                ).timestamp()
+                now_ts = datetime.now(timezone.utc).timestamp()
+                hours_to_close = (exp_ts - now_ts) / 3600.0
+                if hours_to_close > self.max_hours_to_close:
+                    log.info(
+                        "tennis-live skip %s side %s: %.1fh to close "
+                        "(> max %.1fh) — too much pre-match window for "
+                        "news to break",
+                        match_id, side_letter, hours_to_close,
+                        self.max_hours_to_close,
+                    )
+                    return False
+            except (TypeError, ValueError):
+                pass  # malformed exp string — fall through
 
         # Balance check
         balance_cents = self._account_buying_power_cents()
@@ -677,8 +726,26 @@ class TennisLiveExecutor:
                 still_open.append(p)
                 continue
             settle_cents = self._settle_price_cents(p.get("ticker") or "")
-            settle_prob = (float(settle_cents) / 100.0
-                            if settle_cents is not None else 1.0)
+            if settle_cents is None:
+                # Couldn't determine the settlement price — neither
+                # ``settlement_value`` nor ``last_price`` was published.
+                # Defer settlement: keep the position open and retry on
+                # the next tick. Inventing a default (the prior code
+                # defaulted ``settle_prob`` to ``1.0`` ⇒ ``won = True``)
+                # silently minted fictitious wins on transient API
+                # failures and on voided markets where neither field is
+                # populated. Position will eventually settle when Kalshi
+                # publishes the settlement, or the operator can hand-
+                # close it after a void.
+                log.warning(
+                    "tennis-live SETTLE DEFERRED %s — no settlement_value "
+                    "or last_price on Kalshi market; keeping open and "
+                    "retrying next tick",
+                    p.get("ticker"),
+                )
+                still_open.append(p)
+                continue
+            settle_prob = float(settle_cents) / 100.0
             entry = float(p.get("entry_market_prob") or 0.0)
             contracts = int(p.get("contracts") or 1)
             realized = (settle_prob - entry) * contracts
