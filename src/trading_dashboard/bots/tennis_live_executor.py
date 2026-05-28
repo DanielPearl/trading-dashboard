@@ -887,13 +887,32 @@ class TennisLiveExecutor:
         # is still actually open on Kalshi, restore it from the
         # closed record (preserves the original entry data) and
         # remove the bogus closed entry.
+        #
+        # EXCEPTION: positions we deliberately auto-closed under
+        # ``auto_close_past_due`` are intentional locally-recorded
+        # exits — the match has ended, the market is clearly
+        # resolved, but Kalshi just hasn't pushed settlement_value
+        # yet so the position lingers in /portfolio/positions. If we
+        # restored those here, the next tick would re-close them,
+        # then restore them, then re-close them … flapping forever
+        # until Kalshi finally settles. Skip restoration on
+        # auto-closed records — we trust our judgement on those.
         closed_by_ticker = {
             c.get("ticker"): (i, c)
             for i, c in enumerate(state.get("closed_positions") or [])
+            if c.get("close_reason") != "auto_close_past_due"
+        }
+        # Tickers we auto-closed: hide from the catch-up so they
+        # don't get rebuilt as "recovered from Kalshi" orphans either.
+        auto_closed_tickers = {
+            c.get("ticker") for c in (state.get("closed_positions") or [])
+            if c.get("close_reason") == "auto_close_past_due"
         }
         bogus_closed_indexes: list[int] = []
         for ticker, kp in kalshi_open.items():
             if ticker in local_tickers:
+                continue
+            if ticker in auto_closed_tickers:
                 continue
             # Prefer to restore from a wrongly-closed local record
             # (keeps entry_market_prob / entry_model_prob / contracts).
