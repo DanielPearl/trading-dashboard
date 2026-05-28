@@ -2330,6 +2330,137 @@ def _render_tennis_models_page(metrics: dict, coefficients: dict,
             from .dashboard import _svg_calibration  # type: ignore
             out.append(_svg_calibration(bins))
 
+    # Kalshi-bet calibration — the honest "how is the model doing on
+    # real money?" panel. Sourced from
+    # ``data/processed/artifacts/kalshi_calibration.json`` which the
+    # daily retrain timer writes after refitting the model. Reads
+    # the per-bet rows and presents the same metric trio as the
+    # held-out card (Brier / accuracy / win rate) plus the
+    # calibration gap (mean predicted prob − actual win rate).
+    if artifacts_dir:
+        kalshi_path = artifacts_dir / "kalshi_calibration.json"
+        if kalshi_path.exists():
+            try:
+                with kalshi_path.open("r", encoding="utf-8") as f:
+                    kcal = json.load(f)
+            except (OSError, ValueError):
+                kcal = None
+            if kcal and (kcal.get("n") or 0) > 0:
+                out.append(_render_kalshi_calibration_card(kcal))
+
+    return "".join(out)
+
+
+def _render_kalshi_calibration_card(kcal: dict) -> str:
+    """Render the Kalshi-bet calibration section on the Models tab.
+    Mirrors the held-out metrics card style so the user can eyeball
+    Sackmann-eval vs real-money-eval side by side."""
+    n = int(kcal.get("n") or 0)
+    brier = kcal.get("brier")
+    acc = kcal.get("accuracy")
+    win_rate = kcal.get("win_rate")
+    mean_pred = kcal.get("mean_predicted_prob")
+    gap = kcal.get("calibration_gap")
+    log_loss = kcal.get("log_loss")
+    generated = (kcal.get("generated_at") or "")[:19].replace("T", " ")
+    out: List[str] = []
+    out.append(
+        "<h3 class='subhead' style='margin-top:24px;'>"
+        "Calibration on real Kalshi bets "
+        f"<span class='small gray'>({n} settled bet"
+        f"{'s' if n != 1 else ''}"
+        f"{' · refreshed ' + html.escape(generated) if generated else ''}"
+        f")</span></h3>"
+    )
+    out.append(
+        "<p class='small gray' style='margin:0 0 10px 0;'>"
+        "How the live model has performed on every Kalshi bet that has "
+        "settled. Pulled from <code>/portfolio/settlements</code> + "
+        "<code>/portfolio/fills</code>, joined with sim_state for the "
+        "model's pre-bet probability. Refreshed by the daily retrain "
+        "timer (05:00 UTC) and the standalone "
+        "<code>scripts/sync_from_kalshi.py</code>."
+        "</p>"
+    )
+
+    def _card(label: str, value: str, hint: str = "",
+               cls: str = "") -> str:
+        title_attr = (f" title='{html.escape(hint)}'" if hint else "")
+        return (f"<div class='card'{title_attr}>"
+                f"<div class='label'>{html.escape(label)}</div>"
+                f"<div class='value {cls}'>{value}</div></div>")
+
+    cards: List[str] = []
+    cards.append(_card(
+        "Brier",
+        f"{brier:.4f}" if brier is not None else "—",
+        "Mean squared error of probability predictions. Lower is "
+        "better. 0.25 is the no-signal baseline; <0.20 is generally "
+        "good for binary-outcome markets."
+    ))
+    cards.append(_card(
+        "Accuracy",
+        f"{acc*100:.1f}%" if acc is not None else "—",
+        "Share of bets where the model's >50% prediction matched the "
+        "actual outcome.",
+        cls=("green" if acc is not None and acc >= 0.6 else
+              "red" if acc is not None and acc < 0.5 else "")
+    ))
+    cards.append(_card(
+        "Actual win rate",
+        f"{win_rate*100:.1f}%" if win_rate is not None else "—",
+        "Share of bets we won — what actually happened on real money.",
+        cls=("green" if win_rate is not None and win_rate >= 0.5 else
+              "red" if win_rate is not None and win_rate < 0.5 else "")
+    ))
+    cards.append(_card(
+        "Mean predicted prob",
+        f"{mean_pred*100:.1f}%" if mean_pred is not None else "—",
+        "Average model probability on the side we bet. A well-"
+        "calibrated bot's mean predicted prob ≈ actual win rate."
+    ))
+    cards.append(_card(
+        "Calibration gap",
+        (f"{gap*100:+.1f}pp" if gap is not None else "—"),
+        "Mean predicted prob − actual win rate. Positive = model "
+        "over-confident (says 65% but wins 55%); negative = under-"
+        "confident. ±5pp is healthy noise on small samples.",
+        cls=("red" if gap is not None and abs(gap) > 0.10 else
+              "green" if gap is not None and abs(gap) <= 0.05 else "")
+    ))
+    cards.append(_card(
+        "Log loss",
+        f"{log_loss:.4f}" if log_loss is not None else "—",
+        "Cross-entropy of the predictions. Penalizes confident wrong "
+        "answers harder than Brier."
+    ))
+    out.append("<div class='row'>" + "".join(cards) + "</div>")
+
+    # Reliability diagram — bucket-level mean predicted prob vs
+    # actual win rate. Reuses the dashboard's _svg_calibration via the
+    # same {lo, hi, n, wins} schema it accepts (we map our buckets
+    # to the wins=actual*n form).
+    buckets = kcal.get("buckets") or []
+    if buckets:
+        adapted = []
+        for b in buckets:
+            actual = float(b.get("actual_win_rate") or 0)
+            n_b = int(b.get("n") or 0)
+            adapted.append({
+                "lo": float(b.get("bin_lo") or 0),
+                "hi": float(b.get("bin_hi") or 1),
+                "n": n_b,
+                "wins": int(round(actual * n_b)),
+            })
+        if adapted:
+            out.append(
+                "<h4 class='subhead' style='margin-top:14px;'>Reliability "
+                "<span class='small gray'>(predicted prob vs actual win "
+                "rate)</span></h4>"
+            )
+            from .dashboard import _svg_calibration  # type: ignore
+            out.append(_svg_calibration(adapted))
+
     return "".join(out)
 
 
