@@ -235,15 +235,18 @@ class TennisLiveExecutor:
         identically).
         """
         state = self._load_state()
+        live_by_id = {str(r.get("match_id") or ""): r
+                       for r in live_records}
         # 1) Settle positions whose match finished (read from
         #    Kalshi's portfolio so we don't have to track expiry
-        #    ourselves).
-        self._reconcile_positions(state)
+        #    ourselves). live_by_id is passed so we can auto-close
+        #    positions where Kalshi has stalled on publishing a
+        #    settlement_value but the market price has clearly
+        #    resolved + the expiration has passed.
+        self._reconcile_positions(state, live_by_id)
         # 2) Mark-to-market open positions using the current
         #    market prices in live_records. Skip in dry_run to
         #    keep the JSON readable.
-        live_by_id = {str(r.get("match_id") or ""): r
-                       for r in live_records}
         for p in state.get("open_positions", []):
             self._mark_to_market(p, live_by_id.get(p.get("match_id", "")))
         # 3) Consider new orders. Only the rows the upstream tennis
@@ -256,6 +259,27 @@ class TennisLiveExecutor:
         # budgets allow.
         candidates.sort(key=lambda r: float(r.get("buy_score") or 0.0),
                         reverse=True)
+        # Observability: when at max-open capacity, log the top-3
+        # candidates the bot WOULD have evaluated if a slot were
+        # available. Without this, every tick at cap just spams
+        # "max_open_positions reached" with no signal about whether
+        # the bot is even pointed at sensible picks. The log line
+        # carries the side, edge, and EV so the operator can spot-
+        # check whether the model's queue is reasonable.
+        if (len(state.get("open_positions", [])) >= self.max_open
+                and candidates):
+            top = candidates[:3]
+            summary = " | ".join(
+                f"{(r.get('player_a') if r.get('buy_side') == 'A' else r.get('player_b'))} "
+                f"vs opp  edge={float(r.get('buy_side_edge') or 0)*100:+.1f}pp  "
+                f"ev=${float(r.get('buy_side_ev') or 0):+.3f}  "
+                f"score={float(r.get('buy_score') or 0):.3f}"
+                for r in top
+            )
+            log.info(
+                "tennis-live AT CAP — would have considered: %s",
+                summary,
+            )
         for row in candidates:
             ok = self._maybe_place(row, state, live_by_id)
             if not ok:
@@ -662,7 +686,67 @@ class TennisLiveExecutor:
         position["current_market_prob"] = side_prob
         position["unrealized_pnl"] = pnl
 
-    def _reconcile_positions(self, state: dict) -> None:
+    def _should_auto_close(self, p: dict, live_by_id: dict) -> bool:
+        """True when an open position has lingered past its match
+        expiration AND the current YES price is clearly resolved."""
+        match_id = p.get("match_id") or ""
+        live = live_by_id.get(match_id)
+        if not live:
+            return False
+        exp = live.get("expected_expiration_time")
+        if not exp:
+            return False
+        try:
+            exp_ts = datetime.fromisoformat(
+                str(exp).replace("Z", "+00:00")
+            ).timestamp()
+        except (TypeError, ValueError):
+            return False
+        now_ts = datetime.now(timezone.utc).timestamp()
+        hours_past = (now_ts - exp_ts) / 3600.0
+        if hours_past < 24.0:
+            return False
+        # Resolve "what is OUR side's current implied prob".
+        market_prob_a = live.get("market_prob_a")
+        if market_prob_a is None:
+            return False
+        side = p.get("side") or "PLAYER_A"
+        side_prob = (float(market_prob_a) if side == "PLAYER_A"
+                     else 1.0 - float(market_prob_a))
+        # Clearly resolved when our side is at <=10% or >=90%.
+        return side_prob <= 0.10 or side_prob >= 0.90
+
+    def _auto_close(self, p: dict, live_by_id: dict) -> dict:
+        """Close the position locally using the live record's current
+        market_prob. Used when ``_should_auto_close`` returns True."""
+        live = live_by_id.get(p.get("match_id") or "") or {}
+        market_prob_a = float(live.get("market_prob_a") or 0.5)
+        side = p.get("side") or "PLAYER_A"
+        side_prob = (market_prob_a if side == "PLAYER_A"
+                     else 1.0 - market_prob_a)
+        entry = float(p.get("entry_market_prob") or 0.0)
+        contracts = int(p.get("contracts") or 1)
+        # Resolve as 100% / 0% based on which side cleared the 50%
+        # threshold — the position is auto-closed precisely because we
+        # are >90% confident.
+        settle_prob = 1.0 if side_prob >= 0.5 else 0.0
+        realized = (settle_prob - entry) * contracts
+        closed = dict(p)
+        closed.update({
+            "closed_at": datetime.now(timezone.utc).isoformat(),
+            "settle_market_prob": settle_prob,
+            "realized_pnl": realized,
+            "won": settle_prob >= 0.5,
+            "close_reason": "auto_close_past_due",
+            "result": "AUTO_CLOSED",
+            "winner_side": p.get("side") if settle_prob >= 0.5 else (
+                "PLAYER_B" if p.get("side") == "PLAYER_A" else "PLAYER_A"
+            ),
+        })
+        return closed
+
+    def _reconcile_positions(self, state: dict,
+                                live_by_id: dict | None = None) -> None:
         """Two-way sync with Kalshi:
 
         * Anything in our local ``open_positions`` that Kalshi NO
@@ -719,10 +803,39 @@ class TennisLiveExecutor:
             return
 
         # 1) Walk local opens; settle the ones Kalshi no longer lists.
+        live_by_id = live_by_id or {}
         local_open = state.get("open_positions", [])
         still_open: list[dict] = []
         for p in local_open:
             if p.get("ticker") in kalshi_open:
+                # Auto-close the past-due / clearly-resolved tail.
+                # Kalshi sometimes leaves a YES market reading <10¢ or
+                # >90¢ for days after the match has obviously ended,
+                # waiting on "official" result entry. The position
+                # stays open per Kalshi's portfolio API, but the real-
+                # money outcome is already locked in. Force-close
+                # locally when:
+                #   * the live record says the market expired >24h ago
+                #     (so the match has definitely ended and there's
+                #     no live trading happening to change the price)
+                #   * AND the current YES price is outside [10¢, 90¢]
+                #     (≈ 99% certain which side won)
+                # We use the bot's recorded ``side`` to map "YES at 6¢"
+                # to "we lost" when held on the YES contract — the YES
+                # always pays $1 to whichever side resolves YES.
+                if self._should_auto_close(p, live_by_id):
+                    closed = self._auto_close(p, live_by_id)
+                    state.setdefault("closed_positions", []).append(closed)
+                    state.setdefault("last_settled_at_by_match_id",
+                                      {})[p.get("match_id", "")] = closed["closed_at"]
+                    log.info(
+                        "tennis-live AUTO-CLOSED %s — past-expiration "
+                        "+ market resolved at %.2f, %s, realized %+.3f",
+                        p.get("ticker"), closed["settle_market_prob"],
+                        "WON" if closed["won"] else "LOST",
+                        closed["realized_pnl"],
+                    )
+                    continue
                 still_open.append(p)
                 continue
             settle_cents = self._settle_price_cents(p.get("ticker") or "")
