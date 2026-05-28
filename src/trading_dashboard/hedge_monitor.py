@@ -104,19 +104,42 @@ def _close_position(c: sqlite3.Connection, *, position_id: int,
                      entry: int, contracts: int, exit_mark: int,
                      side: str, reason: str) -> int:
     """Mark a position closed in the bot's sim.db. Returns the
-    realized P&L in cents (signed)."""
+    realized P&L in cents (signed).
+
+    Defensive: writes ``error_type`` only when the bot's positions
+    table actually carries that column. Older sim.dbs (notably
+    natural-gas's, which predates the column's introduction) raised
+    ``OperationalError: no such column: error_type`` on every hedge
+    tick before this guard — observed 367 occurrences in one day
+    after the column became standard elsewhere. ALTER-on-startup
+    would also work but requires a schema-write commit per-bot per
+    process; this approach is read-only.
+    """
     pnl_per_contract = _unrealized_pnl_per_contract(side, entry, exit_mark)
     realized_cents = pnl_per_contract * max(1, int(contracts or 1))
-    c.execute(
-        "UPDATE positions SET "
-        "  status = 'closed', "
-        "  exit_price_cents = ?, "
-        "  exited_at = ?, "
-        "  realized_pnl_cents = ?, "
-        "  error_type = ? "
-        "WHERE id = ? AND status = 'open'",
-        (int(exit_mark), _now_iso(), realized_cents, reason, position_id),
-    )
+    col_names = {r["name"] for r in
+                  c.execute("PRAGMA table_info(positions)").fetchall()}
+    if "error_type" in col_names:
+        c.execute(
+            "UPDATE positions SET "
+            "  status = 'closed', "
+            "  exit_price_cents = ?, "
+            "  exited_at = ?, "
+            "  realized_pnl_cents = ?, "
+            "  error_type = ? "
+            "WHERE id = ? AND status = 'open'",
+            (int(exit_mark), _now_iso(), realized_cents, reason, position_id),
+        )
+    else:
+        c.execute(
+            "UPDATE positions SET "
+            "  status = 'closed', "
+            "  exit_price_cents = ?, "
+            "  exited_at = ?, "
+            "  realized_pnl_cents = ? "
+            "WHERE id = ? AND status = 'open'",
+            (int(exit_mark), _now_iso(), realized_cents, position_id),
+        )
     return realized_cents
 
 
