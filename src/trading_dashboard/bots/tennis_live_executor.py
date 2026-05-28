@@ -1006,12 +1006,28 @@ class TennisLiveExecutor:
             return None
         try:
             mkt = (client.get_market(ticker) or {}).get("market") or {}
-            # On a settled market, the YES side resolves to 100 or 0.
+            # 1) ``settlement_value`` in cents — the canonical field, set
+            #    once Kalshi pushes settlement on the market.
             settle = mkt.get("settlement_value")
             if settle is not None:
                 return int(settle)
-            # Fall back to last trade price if settlement_value
-            # isn't published yet.
+            # 2) ``result`` + ``status==finalized``. Observed on
+            #    KXATPMATCH-26MAY28ARNTSI-TSI / KXWTAMATCH-26MAY28MBOSIN
+            #    -SIN — Kalshi marked the market ``finalized`` and set
+            #    ``result: "no"`` (YES side lost) but never populated
+            #    ``settlement_value`` or ``last_price``. The defer-
+            #    don't-guess logic then stranded the positions open
+            #    forever. Map ``result`` to the YES side's resolved
+            #    cents directly: yes → 100, no → 0.
+            status = (mkt.get("status") or "").lower()
+            result = (mkt.get("result") or "").lower()
+            if status == "finalized":
+                if result == "yes":
+                    return 100
+                if result == "no":
+                    return 0
+            # 3) Fall back to last trade price if neither of the above
+            #    is set (intermediate state, transient API timing).
             last = mkt.get("last_price")
             if last is not None:
                 return int(last)
