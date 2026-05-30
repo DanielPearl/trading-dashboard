@@ -53,69 +53,6 @@ class _NbaApiFetchSpamFilter(logging.Filter):
         return True
 
 
-def _patch_simple_imputers_for_sklearn_18(root: Any) -> int:
-    """Walk a model graph and alias each SimpleImputer's old
-    ``_fill_dtype`` attribute to the new ``_fit_dtype`` (or vice
-    versa) so a pickle from sklearn 1.6 keeps working under 1.8.
-
-    Returns the number of imputers patched (useful for logging /
-    tests). Walks common sklearn container attrs without depending
-    on the specific pipeline shape — safe to call on any object.
-    """
-    try:
-        from sklearn.impute import SimpleImputer
-    except ImportError:
-        return 0
-    seen: set[int] = set()
-    patched = 0
-
-    def _walk(obj: Any, depth: int = 0) -> None:
-        nonlocal patched
-        if obj is None or depth > 8:
-            return
-        oid = id(obj)
-        if oid in seen:
-            return
-        seen.add(oid)
-        if isinstance(obj, SimpleImputer):
-            if hasattr(obj, "_fill_dtype") and not hasattr(obj, "_fit_dtype"):
-                obj._fit_dtype = obj._fill_dtype  # type: ignore[attr-defined]
-                patched += 1
-            elif hasattr(obj, "_fit_dtype") and not hasattr(obj, "_fill_dtype"):
-                obj._fill_dtype = obj._fit_dtype  # type: ignore[attr-defined]
-                patched += 1
-            return
-        # Walk common sklearn-y container attrs. Includes a couple
-        # of NBA-bot-specific names (``classifier``, ``meta_classifier``,
-        # ``_model``) that wrap the actual Pipeline/estimator.
-        for attr in (
-            "steps", "named_steps", "estimator", "estimators_",
-            "base_estimator", "calibrated_classifiers_",
-            "final_estimator_", "transformer", "transformers_",
-            "classifier", "meta_classifier", "_model", "pipeline",
-            "model",
-        ):
-            v = getattr(obj, attr, None)
-            if v is None:
-                continue
-            if isinstance(v, dict):
-                for sub in v.values():
-                    _walk(sub, depth + 1)
-            elif isinstance(v, (list, tuple)):
-                for sub in v:
-                    if isinstance(sub, tuple) and len(sub) >= 2:
-                        sub = sub[1]
-                    _walk(sub, depth + 1)
-            else:
-                _walk(v, depth + 1)
-
-    _walk(root)
-    if patched:
-        log.info("patched %d SimpleImputer instance(s) for sklearn-1.8 compat",
-                 patched)
-    return patched
-
-
 def _install_negative_fetch_cache(repo_path: str) -> None:
     """Patch upstream's ``fetch_season_game_logs`` to short-circuit
     when a recent fetch attempt failed.
@@ -293,16 +230,6 @@ def start_daemon(cfg: dict) -> Any:
             "execution.decisions_log_path",
         )
         bot = Bot(upstream_cfg)
-
-        # sklearn ≥1.7 renamed ``SimpleImputer._fill_dtype`` to
-        # ``_fit_dtype``. The NBA bundle was pickled under sklearn
-        # 1.6.1; predict_proba in 1.8 now raises ``AttributeError:
-        # 'SimpleImputer' object has no attribute '_fill_dtype'``
-        # on the first tick — observed 460× / day in the sim
-        # diagnostic. Walk the loaded bot graph and alias the new
-        # attribute name back to the old so the cached pickle keeps
-        # working until the NBA pipeline is retrained under 1.8.
-        _patch_simple_imputers_for_sklearn_18(bot)
 
         # Wrap tick() to (1) honour the Home-tab toggle, (2) refresh
         # the sport-shape JSONs after each tick so NBA renders under

@@ -36,6 +36,64 @@ import threading
 from pathlib import Path
 from typing import Callable
 
+log = logging.getLogger("dashboard.bots._base")
+
+
+_SKLEARN_COMPAT_INSTALLED = False
+
+
+def _install_sklearn_18_simpleimputer_compat() -> None:
+    """Monkey-patch ``SimpleImputer`` so 1.6-era pickles still work
+    under sklearn 1.8.
+
+    sklearn 1.7 renamed ``_fill_dtype`` (used by ``transform``) to
+    ``_fit_dtype``. Old bundled pickles (NBA, CPI, gas-prices,
+    unemployment-claims, etc.) carry ``_fill_dtype``; loading them
+    into the dashboard's 1.8 venv and calling ``predict_proba``
+    raises ``AttributeError: 'SimpleImputer' object has no attribute
+    '_fit_dtype'`` on every tick (observed 460× / day for NBA, 30×
+    / day for CPI before this fix).
+
+    Per-instance patching after load doesn't work — most bots load
+    their model lazily on first tick. Patching the SimpleImputer
+    class itself with a ``__getattr__`` that aliases the missing name
+    from whichever one IS present makes the compat fix automatic for
+    every imputer the process ever touches, regardless of load
+    timing or container shape. Idempotent.
+
+    Installed at module import so any bot that subsequently imports
+    sklearn gets the fix — _base is imported by every in-process
+    bot loader.
+    """
+    global _SKLEARN_COMPAT_INSTALLED
+    if _SKLEARN_COMPAT_INSTALLED:
+        return
+    try:
+        from sklearn.impute import SimpleImputer
+    except ImportError:
+        return
+    _aliases = (("_fit_dtype", "_fill_dtype"),
+                ("_fill_dtype", "_fit_dtype"))
+    _prev = getattr(SimpleImputer, "__getattr__", None)
+
+    def _compat_getattr(self, name):  # noqa: ANN001
+        for canonical, alias in _aliases:
+            if name == canonical:
+                v = self.__dict__.get(alias)
+                if v is not None:
+                    return v
+        if _prev is not None:
+            return _prev(self, name)
+        raise AttributeError(name)
+
+    SimpleImputer.__getattr__ = _compat_getattr  # type: ignore[assignment]
+    log.info("installed sklearn-1.8 SimpleImputer compat shim "
+             "(aliases _fill_dtype ↔ _fit_dtype on access)")
+    _SKLEARN_COMPAT_INSTALLED = True
+
+
+_install_sklearn_18_simpleimputer_compat()
+
 
 def load_upstream_as_alias(repo_path: str | Path,
                             alias: str,
