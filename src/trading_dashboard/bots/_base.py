@@ -334,3 +334,5 @@ def gate_bot_tick(bot: object, bot_key: str, log: logging.Logger) -> None:
                 )
                 return None
             raise
+
+    bot.tick = _gated_tick  # type: ignore[attr-defined]
