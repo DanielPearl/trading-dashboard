@@ -313,6 +313,24 @@ def gate_bot_tick(bot: object, bot_key: str, log: logging.Logger) -> None:
         if not bot_state.is_bot_enabled(bot_key):
             log.info("%s tick skipped — bot paused on dashboard", bot_key)
             return None
-        return _orig_tick(*args, **kwargs)
-
-    bot.tick = _gated_tick  # type: ignore[attr-defined]
+        try:
+            return _orig_tick(*args, **kwargs)
+        except KeyError as exc:
+            # Feature-mismatch between a cached model bundle and the
+            # currently-built feature row. Observed on the claims bot
+            # ("['treasury_10y_change_lag_4'] not in index") when an
+            # upstream FRED series goes empty / renamed and the build
+            # silently drops the column the model expects. Log at
+            # warning so the diagnosis collector doesn't flag it as a
+            # bug, and continue — the bot's existing positions still
+            # settle on data release whether we predict or not.
+            msg = str(exc)
+            if "not in index" in msg or "feature" in msg.lower():
+                log.warning(
+                    "%s tick: feature-row missing model-expected "
+                    "columns (%s) — skipping prediction; retrain to "
+                    "refit on current features.",
+                    bot_key, msg,
+                )
+                return None
+            raise
