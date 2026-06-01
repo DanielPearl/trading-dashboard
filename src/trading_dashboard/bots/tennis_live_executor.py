@@ -85,15 +85,20 @@ _HARD_MAX_HOURS_TO_CLOSE = 24.0    # don't open positions on matches
                                      # priors. Lowering tighter than 24h
                                      # in config is allowed; the hard
                                      # cap is the loosest sane value.
-_HARD_MIN_PROFIT_LOCK_BID = 90    # don't sell into thinner liquidity
-                                     # than 90¢. Profit lock is meant to
-                                     # capture the last few cents of a
-                                     # near-resolved match; lifting it
-                                     # below 90¢ via config typo would
-                                     # turn it into an active mid-band
-                                     # exit policy, which we explicitly
-                                     # don't want. Disable by setting
-                                     # the config value to 0.
+_HARD_MIN_PROFIT_LOCK_BID = 90    # don't sell on the ABSOLUTE bid
+                                     # threshold below 90¢. The absolute
+                                     # lock is meant to capture the last
+                                     # few cents of a near-resolved
+                                     # match; clamping up keeps a config
+                                     # typo from devolving it into a
+                                     # mid-band exit. Set to 0 to
+                                     # disable the absolute threshold.
+_HARD_MIN_PROFIT_LOCK_GAIN = 5    # don't sell on the GAIN-FROM-ENTRY
+                                     # threshold below 5¢. Lower values
+                                     # would fire on noise (1-2¢ moves
+                                     # are routine spread chatter, not
+                                     # real profit). Set to 0 to disable
+                                     # the gain-based threshold.
 
 
 class _DailyOrderCounter:
@@ -218,19 +223,34 @@ class TennisLiveExecutor:
             float(cfg.get("max_hours_to_close_for_open", 12.0)),
             _HARD_MAX_HOURS_TO_CLOSE,
         )
-        # profit_lock_yes_bid_cents: place a real IOC sell on Kalshi
-        # when an open position's YES side has a live bid at or above
-        # this threshold. The sell prices at the actual bid we fetch
-        # mid-tick (not a hardcoded $1) and updates sim_state with
-        # the real fill data, so nothing fictional shows up downstream.
-        # 0 disables the feature entirely; values <90¢ are clamped up
-        # to 90¢ to keep the lock from devolving into a mid-band exit
-        # policy on a config typo.
+        # profit_lock_yes_bid_cents: ABSOLUTE-threshold profit lock —
+        # place a real IOC sell on Kalshi when an open position's YES
+        # side has a live bid at or above this absolute cents value.
+        # Captures "match is essentially over, lock in the win". The
+        # sell prices at the actual bid we fetch mid-tick (not a
+        # hardcoded $1) and updates sim_state with the real fill data,
+        # so nothing fictional shows up downstream. 0 disables this
+        # threshold; values <90¢ are clamped up to 90¢ to keep this
+        # threshold from devolving into a mid-band exit on a typo.
         raw_pl = int(cfg.get("profit_lock_yes_bid_cents", 95) or 0)
         if raw_pl <= 0:
             self.profit_lock_yes_bid = 0
         else:
             self.profit_lock_yes_bid = max(raw_pl, _HARD_MIN_PROFIT_LOCK_BID)
+        # profit_lock_gain_cents: GAIN-FROM-ENTRY profit lock —
+        # complementary trigger that fires when (current_bid - entry)
+        # >= this cents value, regardless of absolute price. Captures
+        # "the line moved in our favor mid-match, take the gain before
+        # it reverses". With underdog entries (30-50¢ typical), a +30¢
+        # gain represents a 60-100% return, which is enough to lock
+        # given the model's current calibration uncertainty.
+        # 0 disables; values <5¢ are clamped up to 5¢ to avoid firing
+        # on routine spread chatter.
+        raw_gn = int(cfg.get("profit_lock_gain_cents", 30) or 0)
+        if raw_gn <= 0:
+            self.profit_lock_gain = 0
+        else:
+            self.profit_lock_gain = max(raw_gn, _HARD_MIN_PROFIT_LOCK_GAIN)
 
         self.state_path = Path(state_path)
         self._daily = _DailyOrderCounter()
@@ -241,12 +261,14 @@ class TennisLiveExecutor:
             "max_orders_per_day=%d, contracts_per_order=%d, "
             "min_edge=%.3f, entry_price=[%d¢, %d¢], "
             "price_deviation_max=%d¢, max_hours_to_close=%.1f, "
-            "profit_lock_yes_bid=%s, state=%s)",
+            "profit_lock_yes_bid=%s, profit_lock_gain=%s, state=%s)",
             self.dry_run, self.max_open, self.max_orders_per_day,
             self.contracts_per_order, self.min_edge,
             self.min_entry_price_cents, self.max_entry_price_cents,
             self.price_deviation_cents, self.max_hours_to_close,
             (f"{self.profit_lock_yes_bid}¢" if self.profit_lock_yes_bid > 0
+             else "disabled"),
+            (f"+{self.profit_lock_gain}¢" if self.profit_lock_gain > 0
              else "disabled"),
             self.state_path,
         )
@@ -819,21 +841,26 @@ class TennisLiveExecutor:
 
     def _maybe_profit_lock(self, state: dict) -> None:
         """For each open position, fetch the live YES bid on OUR side
-        and place a real IOC sell if it's at or above
-        ``self.profit_lock_yes_bid``. The sell prices at the bid we
-        observe; sim_state is updated with the actual order_id +
-        realized P&L AFTER Kalshi confirms an executed status. Failed
-        or no-fill sells leave the position open and we retry on the
-        next tick (Kalshi's idempotency-by-client_order_id will dedupe
-        any successful resubmission).
+        and place a real IOC sell if EITHER profit-lock trigger fires:
 
-        No-ops when:
-          * ``profit_lock_yes_bid <= 0`` (feature disabled in config)
-          * ``dry_run`` is true (paper safety — we never want a paper
-            run to surface fictional profit-lock fills)
-          * the Kalshi client is unavailable
+          * Absolute threshold: bid >= self.profit_lock_yes_bid
+            ("match is essentially over, take the win")
+          * Gain threshold: bid - entry >= self.profit_lock_gain
+            ("line moved in our favor enough to lock the gain")
+
+        The sell prices at the bid we observe; sim_state is updated
+        with the actual order_id + realized P&L AFTER Kalshi confirms
+        an executed status. Failed or no-fill sells leave the position
+        open and we retry on the next tick (idempotent client_order_id
+        dedupes any successful resubmission server-side).
+
+        No-ops when BOTH triggers are disabled (each = 0), when
+        ``dry_run`` is true (paper safety — never surface fictional
+        profit-lock fills), or when the Kalshi client is unavailable.
         """
-        if self.profit_lock_yes_bid <= 0 or self.dry_run:
+        if (self.profit_lock_yes_bid <= 0 and self.profit_lock_gain <= 0):
+            return
+        if self.dry_run:
             return
         client = self._get_client()
         if client is None:
@@ -847,7 +874,23 @@ class TennisLiveExecutor:
                 still_open.append(p)
                 continue
             bid_cents = self._yes_bid_cents(ticker)
-            if bid_cents is None or bid_cents < self.profit_lock_yes_bid:
+            if bid_cents is None:
+                still_open.append(p)
+                continue
+            entry_cents = int(round(
+                float(p.get("entry_market_prob") or 0.0) * 100
+            ))
+            # Evaluate both triggers; the first one that matches wins
+            # and is logged so the operator can tell ABSOLUTE vs GAIN
+            # locks apart in the journal.
+            trigger: str | None = None
+            if (self.profit_lock_yes_bid > 0
+                    and bid_cents >= self.profit_lock_yes_bid):
+                trigger = "absolute"
+            elif (self.profit_lock_gain > 0
+                    and (bid_cents - entry_cents) >= self.profit_lock_gain):
+                trigger = "gain"
+            if trigger is None:
                 still_open.append(p)
                 continue
             # Place an IOC sell at the bid we just observed. Per
@@ -881,9 +924,10 @@ class TennisLiveExecutor:
             # and we'll retry next tick (idempotent client_order_id).
             if not order_id or status != "executed":
                 log.info(
-                    "profit-lock %s @ %d¢ — order_id=%s status=%s "
+                    "profit-lock (%s) %s @ %d¢ — order_id=%s status=%s "
                     "(not executed; keeping open)",
-                    ticker, bid_cents, order_id, status or "unknown",
+                    trigger, ticker, bid_cents, order_id,
+                    status or "unknown",
                 )
                 still_open.append(p)
                 continue
@@ -896,17 +940,18 @@ class TennisLiveExecutor:
                 "settle_market_prob": sell_prob,
                 "realized_pnl": realized,
                 "won": realized > 0,
-                "close_reason": "profit_lock",
+                "close_reason": f"profit_lock_{trigger}",
                 "result": "PROFIT_LOCK",
                 "exit_order_id": order_id,
                 "exit_order_status": status,
+                "profit_lock_trigger": trigger,
             })
             newly_closed.append(closed)
             log.info(
-                "tennis-live PROFIT-LOCKED %s — sold %d YES @ %d¢ "
-                "(entry %d¢) realized %+.3f order_id=%s",
-                ticker, contracts, bid_cents,
-                int(round(entry * 100)), realized, order_id,
+                "tennis-live PROFIT-LOCKED (%s) %s — sold %d YES @ %d¢ "
+                "(entry %d¢, gain %+d¢) realized %+.3f order_id=%s",
+                trigger, ticker, contracts, bid_cents,
+                entry_cents, bid_cents - entry_cents, realized, order_id,
             )
 
         if newly_closed:
