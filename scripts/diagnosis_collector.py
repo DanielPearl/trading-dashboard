@@ -78,10 +78,51 @@ HISTORY_DIR = DIAG_DIR / "history"
 # the full stack as one "bug" item.
 TRACEBACK_RE = re.compile(r"Traceback \(most recent call last\):")
 
-# Heuristic for "real" error lines — case-insensitive.  Used both to
-# bump the per-service error count and to populate the ``notable`` field
-# with the most recent example.
-ERROR_RE = re.compile(r"\b(ERROR|CRITICAL|Exception|Traceback)\b")
+# What counts as an ACTUAL error — used to bump the per-service error
+# count and to populate the ``notable`` field with the most recent
+# example.
+#
+# The previous shape (``\b(ERROR|CRITICAL|Exception|Traceback)\b``)
+# was too permissive:
+#
+#  1. ``Exception`` alone matches the class name in ordinary INFO logs
+#     ("registered Exception handler", etc.). Tracebacks are already
+#     captured separately, so we don't need a keyword fallback.
+#  2. ``ERROR`` / ``CRITICAL`` matched anywhere in the line, so a log
+#     line containing the body text "no ERROR found" or quoting an
+#     error name produced a false positive.
+#  3. ``log.exception(...)`` writes at ERROR level, but many call
+#     sites wrap a known-handled failure (sport-json sync, watchlist
+#     mirror, etc.) and annotate the message ``(non-fatal)``. Those
+#     are RECOVERED failures, not "the bot is broken right now".
+#
+# New shape: require the log-level token to sit at the start of the
+# application's own line (after the journal prefix is removed), then
+# strip any line tagged ``(non-fatal)`` / ``(handled)`` / ``(expected)``
+# / ``(suppressed)`` so explicitly-recovered failures don't degrade
+# the service. ``Traceback`` is kept as a standalone trigger because
+# any unhandled exception worth surfacing produces one.
+_ERROR_LEVEL_RE = re.compile(
+    r"(?:^|[\s:])(?:ERROR|CRITICAL)(?:\s|$)",
+)
+_TRACEBACK_TOKEN_RE = re.compile(r"\bTraceback\b")
+_NON_FATAL_RE = re.compile(
+    r"\((?:non[- ]?fatal|handled|recovered|expected|suppressed|ignored)\)",
+    re.IGNORECASE,
+)
+
+
+def _is_real_error(line: str) -> bool:
+    """True if ``line`` is an actual error worth counting against the
+    service. Filters out lines explicitly tagged as handled / non-fatal
+    by the application — these are recovered failures (e.g. a one-off
+    network blip the bot caught and retried past), not degraded state.
+    """
+    if _NON_FATAL_RE.search(line):
+        return False
+    return bool(_ERROR_LEVEL_RE.search(line) or _TRACEBACK_TOKEN_RE.search(line))
+
+
 WARN_RE = re.compile(r"\b(WARNING|WARN)\b")
 
 
@@ -231,17 +272,22 @@ def _extract_tracebacks(lines: list[str]) -> list[str]:
         if TRACEBACK_RE.search(lines[i]):
             chunk = [lines[i]]
             j = i + 1
-            while j < len(lines) and len(chunk) < 14:
+            while j < len(lines) and len(chunk) < 30:
                 ln = lines[j]
                 if not ln.strip():
                     break
-                content = _strip_journal_prefix(ln)
+                # Keep indent for continuation matching — the regex
+                # leans on "  File ..." / "    code" leading spaces
+                # to distinguish traceback frames from fresh log lines.
+                content = _strip_journal_prefix_keep_indent(ln)
                 if not _CONTINUATION_RE.match(content):
-                    # No longer a traceback line — fresh log entry.
                     break
                 chunk.append(ln)
-                # Exception line marks the end of a traceback.
-                if re.match(r"^\S+(?:Error|Exception)\s*[:\s]", content):
+                # Exception line marks the end of a traceback. Match
+                # against the stripped-and-trimmed view since the
+                # exception line itself has no leading indent.
+                if re.match(r"^\S+(?:Error|Exception)\s*[:\s]",
+                            content.strip()):
                     j += 1
                     break
                 j += 1
@@ -280,6 +326,19 @@ _JOURNAL_PREFIX_RE = re.compile(
 def _strip_journal_prefix(line: str) -> str:
     """Strip a single journalctl short-iso prefix from a log line."""
     return _JOURNAL_PREFIX_RE.sub("", line).strip()
+
+
+def _strip_journal_prefix_keep_indent(line: str) -> str:
+    """Strip the journalctl prefix but preserve the application-level
+    indentation. The traceback continuation regex matches on the
+    ``  File "..."`` / ``    code`` indents — stripping them with
+    ``.strip()`` truncated every traceback to its single header line
+    (``Traceback (most recent call last):``) because no subsequent
+    line satisfied the indent-based continuation patterns. Keep the
+    indent for parsing; the display-side variant above keeps trimming
+    for human-readable output.
+    """
+    return _JOURNAL_PREFIX_RE.sub("", line)
 
 
 def _strip_journal_prefixes(text: str) -> str:
@@ -371,9 +430,34 @@ def collect_service(name: str) -> tuple[dict, list[dict], list[dict]]:
                      if last_start and last_start > h24_ago_iso
                      else h24_ago_iso)
     window_lines = _journal_since(name, window_since)
-    errors = [ln for ln in window_lines if ERROR_RE.search(ln)]
+    errors = [ln for ln in window_lines if _is_real_error(ln)]
     warns = [ln for ln in window_lines if WARN_RE.search(ln)]
-    tracebacks = _dedup_keep_order(_extract_tracebacks(window_lines))
+    raw_tracebacks = _extract_tracebacks(window_lines)
+    # Drop tracebacks whose accompanying error line is tagged
+    # ``(non-fatal)`` / ``(handled)`` etc. — these come from
+    # ``log.exception("... (non-fatal)")`` call sites that caught the
+    # failure and continued. The traceback shape is identical to a
+    # real bug, so we filter by the explicit marker the app emits.
+    # The marker may sit on the same Traceback header line OR on the
+    # preceding "ERROR ... (non-fatal)" line; check both.
+    def _tb_is_non_fatal(tb_text: str, all_lines: list[str]) -> bool:
+        if _NON_FATAL_RE.search(tb_text):
+            return True
+        # The "ERROR ... (non-fatal)" log message usually precedes
+        # the Traceback header by one line. Find the traceback start
+        # in all_lines and peek at the line above.
+        head = tb_text.splitlines()[0]
+        for k, ln in enumerate(all_lines):
+            if ln == head and k > 0:
+                prev = all_lines[k - 1]
+                if _NON_FATAL_RE.search(prev):
+                    return True
+                break
+        return False
+    tracebacks = _dedup_keep_order(
+        tb for tb in raw_tracebacks
+        if not _tb_is_non_fatal(tb, window_lines)
+    )
 
     last_error = errors[-1] if errors else None
     status = _classify(active, len(errors), crash_restarts)
