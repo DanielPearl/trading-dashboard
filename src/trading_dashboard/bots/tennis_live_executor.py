@@ -85,6 +85,15 @@ _HARD_MAX_HOURS_TO_CLOSE = 24.0    # don't open positions on matches
                                      # priors. Lowering tighter than 24h
                                      # in config is allowed; the hard
                                      # cap is the loosest sane value.
+_HARD_MIN_PROFIT_LOCK_BID = 90    # don't sell into thinner liquidity
+                                     # than 90¢. Profit lock is meant to
+                                     # capture the last few cents of a
+                                     # near-resolved match; lifting it
+                                     # below 90¢ via config typo would
+                                     # turn it into an active mid-band
+                                     # exit policy, which we explicitly
+                                     # don't want. Disable by setting
+                                     # the config value to 0.
 
 
 class _DailyOrderCounter:
@@ -153,6 +162,17 @@ def _client_order_id(match_id: str, side: str, ask_cents: int) -> str:
     return hashlib.sha256(seed.encode()).hexdigest()[:32]
 
 
+def _profit_lock_coid(ticker: str, bid_cents: int) -> str:
+    """Distinct idempotency prefix for profit-lock sells, so a retry
+    can't collide with the buy-side ``_client_order_id`` namespace.
+    Stable for the (ticker, bid_cents, day) tuple — a 1¢ price move
+    creates a new key on retry, which is fine because the sell is
+    priced at the bid we just observed."""
+    today = datetime.now(timezone.utc).strftime("%Y%m%d")
+    seed = f"tennis-pl|{ticker}|{bid_cents}|{today}"
+    return "pl-" + hashlib.sha256(seed.encode()).hexdigest()[:28]
+
+
 class TennisLiveExecutor:
     """Stateful executor — keeps a Kalshi client + the rolling
     daily counter alive across ticks so we don't re-auth or
@@ -198,6 +218,19 @@ class TennisLiveExecutor:
             float(cfg.get("max_hours_to_close_for_open", 12.0)),
             _HARD_MAX_HOURS_TO_CLOSE,
         )
+        # profit_lock_yes_bid_cents: place a real IOC sell on Kalshi
+        # when an open position's YES side has a live bid at or above
+        # this threshold. The sell prices at the actual bid we fetch
+        # mid-tick (not a hardcoded $1) and updates sim_state with
+        # the real fill data, so nothing fictional shows up downstream.
+        # 0 disables the feature entirely; values <90¢ are clamped up
+        # to 90¢ to keep the lock from devolving into a mid-band exit
+        # policy on a config typo.
+        raw_pl = int(cfg.get("profit_lock_yes_bid_cents", 95) or 0)
+        if raw_pl <= 0:
+            self.profit_lock_yes_bid = 0
+        else:
+            self.profit_lock_yes_bid = max(raw_pl, _HARD_MIN_PROFIT_LOCK_BID)
 
         self.state_path = Path(state_path)
         self._daily = _DailyOrderCounter()
@@ -208,11 +241,13 @@ class TennisLiveExecutor:
             "max_orders_per_day=%d, contracts_per_order=%d, "
             "min_edge=%.3f, entry_price=[%d¢, %d¢], "
             "price_deviation_max=%d¢, max_hours_to_close=%.1f, "
-            "state=%s)",
+            "profit_lock_yes_bid=%s, state=%s)",
             self.dry_run, self.max_open, self.max_orders_per_day,
             self.contracts_per_order, self.min_edge,
             self.min_entry_price_cents, self.max_entry_price_cents,
             self.price_deviation_cents, self.max_hours_to_close,
+            (f"{self.profit_lock_yes_bid}¢" if self.profit_lock_yes_bid > 0
+             else "disabled"),
             self.state_path,
         )
         if not self.dry_run:
@@ -244,6 +279,12 @@ class TennisLiveExecutor:
         #    settlement_value but the market price has clearly
         #    resolved + the expiration has passed.
         self._reconcile_positions(state, live_by_id)
+        # 1b) Profit-lock check. For each open position, fetch the
+        #     current Kalshi bid for OUR side and place a real IOC
+        #     sell if it's at or above the threshold. Updates state
+        #     only when the sell actually executes — failed/no-fill
+        #     attempts leave the position open.
+        self._maybe_profit_lock(state)
         # 2) Mark-to-market open positions using the current
         #    market prices in live_records. Skip in dry_run to
         #    keep the JSON readable.
@@ -744,6 +785,138 @@ class TennisLiveExecutor:
             ),
         })
         return closed
+
+    def _yes_bid_cents(self, ticker: str) -> int | None:
+        """Fetch the current YES bid in cents for ``ticker``.
+
+        Returns the integer cents value Kalshi is paying RIGHT NOW for
+        the YES contract (i.e. what we'd receive on a sell), or
+        ``None`` if the market doesn't have a bid populated. Used by
+        the profit-lock check so we sell at the live bid rather than
+        guessing.
+        """
+        client = self._get_client()
+        if client is None:
+            return None
+        try:
+            mkt = (client.get_market(ticker) or {}).get("market") or {}
+        except Exception:  # noqa: BLE001
+            log.exception("yes_bid fetch failed for %s", ticker)
+            return None
+        d = mkt.get("yes_bid_dollars")
+        if d is not None:
+            try:
+                return int(round(float(d) * 100))
+            except (TypeError, ValueError):
+                return None
+        cents = mkt.get("yes_bid")
+        if cents is not None:
+            try:
+                return int(cents)
+            except (TypeError, ValueError):
+                return None
+        return None
+
+    def _maybe_profit_lock(self, state: dict) -> None:
+        """For each open position, fetch the live YES bid on OUR side
+        and place a real IOC sell if it's at or above
+        ``self.profit_lock_yes_bid``. The sell prices at the bid we
+        observe; sim_state is updated with the actual order_id +
+        realized P&L AFTER Kalshi confirms an executed status. Failed
+        or no-fill sells leave the position open and we retry on the
+        next tick (Kalshi's idempotency-by-client_order_id will dedupe
+        any successful resubmission).
+
+        No-ops when:
+          * ``profit_lock_yes_bid <= 0`` (feature disabled in config)
+          * ``dry_run`` is true (paper safety — we never want a paper
+            run to surface fictional profit-lock fills)
+          * the Kalshi client is unavailable
+        """
+        if self.profit_lock_yes_bid <= 0 or self.dry_run:
+            return
+        client = self._get_client()
+        if client is None:
+            return
+
+        still_open: list[dict] = []
+        newly_closed: list[dict] = []
+        for p in state.get("open_positions", []):
+            ticker = p.get("ticker") or ""
+            if not ticker:
+                still_open.append(p)
+                continue
+            bid_cents = self._yes_bid_cents(ticker)
+            if bid_cents is None or bid_cents < self.profit_lock_yes_bid:
+                still_open.append(p)
+                continue
+            # Place an IOC sell at the bid we just observed. Per
+            # Kalshi's API the sell price for YES contracts goes in
+            # the ``yes_price`` field.
+            contracts = int(p.get("contracts") or 1)
+            coid = _profit_lock_coid(ticker, bid_cents)
+            try:
+                resp = client.place_order(
+                    ticker=ticker,
+                    side="yes",
+                    action="sell",
+                    count=contracts,
+                    order_type="limit",
+                    yes_price=bid_cents,
+                    time_in_force="immediate_or_cancel",
+                    client_order_id=coid,
+                )
+            except Exception as exc:  # noqa: BLE001
+                log.exception(
+                    "profit-lock place_order failed for %s @ %d¢: %s",
+                    ticker, bid_cents, exc,
+                )
+                still_open.append(p)
+                continue
+            order = (resp or {}).get("order") or {}
+            order_id = order.get("order_id")
+            status = (order.get("status") or "").lower()
+            # Only realize the position when Kalshi confirms execution.
+            # ``submitted`` / ``canceled`` etc. leave us still holding
+            # and we'll retry next tick (idempotent client_order_id).
+            if not order_id or status != "executed":
+                log.info(
+                    "profit-lock %s @ %d¢ — order_id=%s status=%s "
+                    "(not executed; keeping open)",
+                    ticker, bid_cents, order_id, status or "unknown",
+                )
+                still_open.append(p)
+                continue
+            sell_prob = bid_cents / 100.0
+            entry = float(p.get("entry_market_prob") or 0.0)
+            realized = (sell_prob - entry) * contracts
+            closed = dict(p)
+            closed.update({
+                "closed_at": datetime.now(timezone.utc).isoformat(),
+                "settle_market_prob": sell_prob,
+                "realized_pnl": realized,
+                "won": realized > 0,
+                "close_reason": "profit_lock",
+                "result": "PROFIT_LOCK",
+                "exit_order_id": order_id,
+                "exit_order_status": status,
+            })
+            newly_closed.append(closed)
+            log.info(
+                "tennis-live PROFIT-LOCKED %s — sold %d YES @ %d¢ "
+                "(entry %d¢) realized %+.3f order_id=%s",
+                ticker, contracts, bid_cents,
+                int(round(entry * 100)), realized, order_id,
+            )
+
+        if newly_closed:
+            state["open_positions"] = still_open
+            state.setdefault("closed_positions", []).extend(newly_closed)
+            for c in newly_closed:
+                mid = c.get("match_id", "")
+                if mid:
+                    state.setdefault("last_settled_at_by_match_id",
+                                      {})[mid] = c["closed_at"]
 
     def _reconcile_positions(self, state: dict,
                                 live_by_id: dict | None = None) -> None:
