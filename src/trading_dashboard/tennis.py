@@ -1376,11 +1376,16 @@ def _fetch_tennis_fills(force: bool = False) -> list[dict]:
 
 
 def _summarize_fills(fills: list[dict]) -> dict[str, dict]:
-    """Group fills by ticker and compute per-ticker summary used by
-    the History row: contract-weighted average price, total contracts
-    filled, the dominant taker/maker flag, the earliest fill time, and
-    the order_id (just one — multi-fill orders are rare since our
-    bot uses IOC limit orders).
+    """Group fills by ticker, splitting OPEN (action=buy) from CLOSE
+    (action=sell) legs. The earlier shape summed both into a single
+    weighted average, which double-counted contracts and blended the
+    entry and exit prices into a meaningless midpoint — e.g.
+    bought-61¢/closed-60¢ rendered as "50¢ entry · 2 contracts".
+
+    All prices are normalized to yes-equivalent. For a "sell no @ 0.40"
+    close fill, yes_p = 0.60 is the effective price at which the YES
+    position was offset; using yes_p uniformly across buy/sell fills
+    puts entry and exit on the same axis.
     """
     by_ticker: dict[str, dict] = {}
     for f in fills:
@@ -1390,43 +1395,54 @@ def _summarize_fills(fills: list[dict]) -> dict[str, dict]:
         n = float(f.get("count_fp") or 0)
         if n <= 0:
             continue
+        action = (f.get("action") or "").lower()
         side = f.get("side") or "yes"
-        price = float(
-            f.get("yes_price_dollars" if side == "yes" else "no_price_dollars")
-            or 0
-        )
+        yes_p = float(f.get("yes_price_dollars") or 0)
         d = by_ticker.setdefault(t, {
             "ticker": t,
-            "_n_sum": 0.0,
-            "_price_x_n_sum": 0.0,
+            "_open_n_sum": 0.0,
+            "_open_yesp_x_n_sum": 0.0,
+            "_close_n_sum": 0.0,
+            "_close_yesp_x_n_sum": 0.0,
             "is_taker": False,
             "side": side,
             "order_id": f.get("order_id"),
             "first_fill_time": f.get("created_time") or "",
             "fee_sum_dollars": 0.0,
         })
-        d["_n_sum"] += n
-        d["_price_x_n_sum"] += price * n
+        if action == "sell":
+            d["_close_n_sum"] += n
+            d["_close_yesp_x_n_sum"] += yes_p * n
+        else:
+            # action=buy (or missing/unknown — treat as open for back-
+            # compat so the row doesn't disappear). The opened side
+            # comes from the first buy fill seen.
+            if d["_open_n_sum"] == 0:
+                d["side"] = side
+                d["order_id"] = f.get("order_id") or d["order_id"]
+            d["_open_n_sum"] += n
+            d["_open_yesp_x_n_sum"] += yes_p * n
         d["fee_sum_dollars"] += float(f.get("fee_cost") or 0)
-        # Latest is_taker wins (overwrites). For multi-fill orders the
-        # taker/maker mix is rare; the dominant flag is fine.
         if f.get("is_taker"):
             d["is_taker"] = True
-        # Earliest fill time across multi-fill orders.
         ct = f.get("created_time") or ""
         if ct and (not d["first_fill_time"] or ct < d["first_fill_time"]):
             d["first_fill_time"] = ct
-    # Finalize: avg price, contracts filled.
     out: dict[str, dict] = {}
     for t, d in by_ticker.items():
-        n = d["_n_sum"]
-        if n <= 0:
+        open_n = d["_open_n_sum"]
+        close_n = d["_close_n_sum"]
+        if open_n <= 0 and close_n <= 0:
             continue
-        avg_price = d["_price_x_n_sum"] / n
+        avg_open = (d["_open_yesp_x_n_sum"] / open_n) if open_n > 0 else None
+        avg_close = (d["_close_yesp_x_n_sum"] / close_n) if close_n > 0 else None
         out[t] = {
             "ticker": t,
-            "avg_price_dollars": avg_price,
-            "contracts_filled": n,
+            "avg_price_dollars": avg_open,
+            "contracts_filled": open_n,
+            "close_avg_price_dollars": avg_close,
+            "close_contracts": close_n,
+            "closed_pre_settlement": close_n > 0,
             "is_taker": d["is_taker"],
             "side": d["side"],
             "order_id": d["order_id"],
@@ -1639,13 +1655,39 @@ def _join_settlement_with_sim_state(s: dict, sim_state: dict,
 
     yes_total_cost = float(s.get("yes_total_cost_dollars") or 0)
     no_total_cost = float(s.get("no_total_cost_dollars") or 0)
-    total_cost_basis = yes_total_cost if side_held == "yes" else no_total_cost
+    # Settlement records typically carry $0 fee_cost — fees are
+    # attached to individual fills. Pull the fill-level total too so
+    # the cost/return reflect actual cash outlay.
     fee = float(s.get("fee_cost") or 0)
+    if fill_sum:
+        fee += float(fill_sum.get("fee_sum_dollars") or 0)
+    # Offset-closed: bot opened YES then closed via a NO-leg trade.
+    # Kalshi books both legs as held to settlement; cost basis is the
+    # sum of both legs and payout is $1 only on the winning side
+    # (yields the real ~1¢ spread loss/gain rather than the +$0.36
+    # phantom win the side_held-only formula produced).
+    offset_closed = (yes_n_settle > 0 and no_n_settle > 0)
+    if offset_closed:
+        total_cost_basis = yes_total_cost + no_total_cost
+        mr = s.get("market_result")
+        yes_payout = yes_n_settle if mr == "yes" else 0.0
+        no_payout = no_n_settle if mr == "no" else 0.0
+        total_payout = yes_payout + no_payout
+        # Display contracts = opened size (1 here), not yes+no (2).
+        if fill_sum and fill_sum.get("contracts_filled"):
+            contracts = float(fill_sum["contracts_filled"])
+    else:
+        total_cost_basis = (yes_total_cost if side_held == "yes"
+                             else no_total_cost)
+        won_side = (s.get("market_result") == side_held)
+        total_payout = contracts if won_side else 0.0
     total_cost_with_fee = total_cost_basis + fee
-    # Won when the resolved side matches the side we held.
-    won = (s.get("market_result") == side_held)
-    total_payout = contracts if won else 0.0
     total_return = total_payout - total_cost_with_fee
+    # "won" reflects net P&L sign (downstream "WIN/LOSS" badge + the
+    # win-rate aggregate). For offset-closed rows with ~zero spread
+    # the row will fall on the loss side of the badge due to fees,
+    # which matches the real economic outcome.
+    won = (total_return > 0)
     pct_return = (total_return / total_cost_with_fee
                    if total_cost_with_fee > 0 else 0.0)
 
@@ -1689,13 +1731,17 @@ def _join_settlement_with_sim_state(s: dict, sim_state: dict,
     order_type_label = "—"
     fill_time_label = "—"
     if fill_sum:
-        avg_price_dollars = float(fill_sum["avg_price_dollars"])
-        contracts_filled = float(fill_sum["contracts_filled"])
-        # The bot always places limit IOC orders (see
-        # bots/tennis_live_executor.py _submit_order), so the order
-        # type is always Limit; the only variation is taker vs maker.
+        # avg_price_dollars is now the BUY-only average (None if there
+        # are no recorded buy fills — edge case).
+        raw_avg = fill_sum.get("avg_price_dollars")
+        avg_price_dollars = float(raw_avg) if raw_avg is not None else None
+        raw_n = fill_sum.get("contracts_filled")
+        contracts_filled = float(raw_n) if raw_n else None
         taker_label = "Taker" if fill_sum.get("is_taker") else "Maker"
-        order_type_label = f"Limit {int(round(avg_price_dollars*100))}¢ · {taker_label}"
+        if avg_price_dollars is not None:
+            order_type_label = (
+                f"Limit {int(round(avg_price_dollars*100))}¢ · {taker_label}"
+            )
         fill_time_label = _format_fill_time(fill_sum.get("first_fill_time") or "")
 
     return {
