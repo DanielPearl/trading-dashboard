@@ -258,10 +258,13 @@ def _extract_tracebacks(lines: list[str]) -> list[str]:
     #   "The above exception was the direct cause..."  (chained)
     _CONTINUATION_RE = re.compile(
         r"^(?:"
-        r"  [^\s]"               # 2-space indent + non-space (File / >)
-        r"|    \S"               # 4-space indent (code or annotation)
+        r" +\S"                  # any positive indent + non-space
+                                 # — covers "  File", "    code", and
+                                 # the deeply-indented "       ^^^^"
+                                 # caret annotation Python adds for
+                                 # error positions inside expressions
         r"|\t"                   # tab indent
-        r"|\S+(?:Error|Exception)\s*[:\s]"   # final exception line
+        r"|\S+(?:Error|Exception|Warning)\s*[:\s]"   # final exception line
         r"|During handling of"
         r"|The above exception"
         r")"
