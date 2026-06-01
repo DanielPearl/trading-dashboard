@@ -319,7 +319,13 @@ def _dedup_keep_order(items: Iterable[str]) -> list[str]:
 # care which PID or host it came from when they're trying to read
 # what actually broke. Strip aggressively.
 _JOURNAL_PREFIX_RE = re.compile(
-    r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}[+\-]\d{2}:\d{2}\s+\S+\s+\S+:\s*",
+    # Trailing single space — journalctl emits exactly one space
+    # after the "python[PID]:" boundary, and the message body may
+    # itself begin with significant indentation (traceback frames
+    # are 2-space indented, code lines 4-space). The prior ``\s*``
+    # was greedy and consumed those indents, defeating the
+    # traceback-continuation regex that keys on them.
+    r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}[+\-]\d{2}:\d{2}\s+\S+\s+\S+: ",
 )
 
 
