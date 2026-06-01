@@ -468,7 +468,26 @@ def collect_service(name: str) -> tuple[dict, list[dict], list[dict]]:
         if not _tb_is_non_fatal(tb, window_lines)
     )
 
-    last_error = errors[-1] if errors else None
+    # Notable line: prefer the most recent ACTIONABLE error text.
+    # ``errors`` includes both ERROR-level log lines and the bare
+    # ``Traceback (most recent call last):`` headers — using the
+    # latter as the most-recent-error display tells the user
+    # nothing. If we have a parsed traceback, use its final
+    # exception line (the clean ``ValueError: ...`` etc.); else
+    # fall back to the most recent ERROR-level message.
+    last_error: str | None = None
+    if tracebacks:
+        last_tb = tracebacks[-1]
+        last_error = _strip_journal_prefix(last_tb.splitlines()[-1])
+    if not last_error:
+        non_header_errors = [
+            e for e in errors
+            if "Traceback (most recent call last):" not in e
+        ]
+        if non_header_errors:
+            last_error = non_header_errors[-1]
+        elif errors:
+            last_error = errors[-1]
     status = _classify(active, len(errors), crash_restarts)
 
     service_row = {
