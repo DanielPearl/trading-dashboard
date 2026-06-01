@@ -57,6 +57,7 @@ import logging
 import os
 import tempfile
 import threading
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Optional
@@ -1068,12 +1069,24 @@ class TennisLiveExecutor:
                 # populated. Position will eventually settle when Kalshi
                 # publishes the settlement, or the operator can hand-
                 # close it after a void.
-                log.warning(
-                    "tennis-live SETTLE DEFERRED %s — no settlement_value "
-                    "or last_price on Kalshi market; keeping open and "
-                    "retrying next tick",
-                    p.get("ticker"),
-                )
+                #
+                # Throttle the log to once per 30 minutes per ticker —
+                # the bot ticks ~once a minute and a market can sit in
+                # the deferred state for hours, so the unthrottled
+                # warning flooded journalctl + tripped the diagnosis
+                # streamlining list with non-actionable noise.
+                self._defer_log_at = getattr(self, "_defer_log_at", {})
+                tkr = p.get("ticker") or ""
+                now_ts = time.time()
+                last = self._defer_log_at.get(tkr, 0.0)
+                if now_ts - last >= 1800.0:
+                    log.warning(
+                        "tennis-live SETTLE DEFERRED %s — no settlement_value "
+                        "or last_price on Kalshi market; keeping open and "
+                        "retrying next tick",
+                        tkr,
+                    )
+                    self._defer_log_at[tkr] = now_ts
                 still_open.append(p)
                 continue
             settle_prob = float(settle_cents) / 100.0
