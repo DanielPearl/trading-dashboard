@@ -1655,12 +1655,12 @@ def _join_settlement_with_sim_state(s: dict, sim_state: dict,
 
     yes_total_cost = float(s.get("yes_total_cost_dollars") or 0)
     no_total_cost = float(s.get("no_total_cost_dollars") or 0)
-    # Settlement records typically carry $0 fee_cost — fees are
-    # attached to individual fills. Pull the fill-level total too so
-    # the cost/return reflect actual cash outlay.
+    # Kalshi's settlement record already aggregates fees across all
+    # fills for this market (verified empirically). Fall back to the
+    # per-fill sum only when settlement omits it.
     fee = float(s.get("fee_cost") or 0)
-    if fill_sum:
-        fee += float(fill_sum.get("fee_sum_dollars") or 0)
+    if fee == 0 and fill_sum:
+        fee = float(fill_sum.get("fee_sum_dollars") or 0)
     # Offset-closed: bot opened YES then closed via a NO-leg trade.
     # Kalshi books both legs as held to settlement; cost basis is the
     # sum of both legs and payout is $1 only on the winning side
