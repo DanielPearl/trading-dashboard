@@ -1989,6 +1989,13 @@ def _render_model_card_section(metrics: dict, coefficients: dict) -> str:
     blended = metrics.get("blended") or {}
     elo_only = metrics.get("elo_only") or {}
     ens = metrics.get("ensemble") or {}
+    # New (2026-06-02): the multi-model trainer ships ensemble_weights
+    # in metrics and ensemble_components in model_coefficients.json.
+    # Render them when present; fall back silently when an older
+    # bundle is loaded (the trainer-on-droplet might not have run yet).
+    ensemble_weights = metrics.get("ensemble_weights") or {}
+    components = coefficients.get("ensemble_components") or []
+    per_model = metrics.get("per_model") or {}
 
     out: List[str] = []
     # The tennis renderer is reused by the table-tennis bot. Detect the
@@ -1999,26 +2006,42 @@ def _render_model_card_section(metrics: dict, coefficients: dict) -> str:
     is_table_tennis = "diff_style_elo_pre" in elo_feats
     elo_blurb = ("Elo (overall + style)" if is_table_tennis
                   else "Elo (overall + surface)")
-    live_blurb = (
-        "transparent rules layer (score-state momentum, point streaks, "
-        "deuce / game-point / match-point volatility, closing-game flags)"
-        if is_table_tennis else
-        "transparent rules layer (score-state, serve %, momentum, "
-        "tiebreak / decider / medical flags)"
-    )
+    # Live-adjustment blurb. Tennis (2026-06-02): the in-match model is
+    # paused while we rebuild the pre-match ensemble; trades fire on
+    # the calibrated pre-match prob with no in-match nudge.
+    if is_table_tennis:
+        live_blurb = (
+            "transparent rules layer (score-state momentum, point "
+            "streaks, deuce / game-point / match-point volatility, "
+            "closing-game flags)"
+        )
+    elif components:
+        live_blurb = (
+            "currently DISABLED — the bot trades on the calibrated "
+            "pre-match probability only while we rebuild the in-match "
+            "adjustment on top of the new mixed ensemble"
+        )
+    else:
+        live_blurb = (
+            "transparent rules layer (score-state, serve %, momentum, "
+            "tiebreak / decider / medical flags)"
+        )
     out.append(
         "<p class='small gray'>Pre-match probability blends a "
-        f"logistic regression on {elo_blurb} with a calibrated boosted "
-        f"ensemble. Live adjustment is a {live_blurb}. Signals only fire "
-        "when model and market disagree by more than the configured "
-        "edge floor.</p>"
+        f"logistic regression on {elo_blurb} with a calibrated "
+        f"<b>mixed ensemble</b> (HGB + GBM + Random Forest + Extra "
+        f"Trees + full-feature logistic, weights chosen by SLSQP on "
+        f"validation log-loss). Live adjustment is {live_blurb}. "
+        "Signals only fire when model and market disagree by more "
+        "than the configured edge floor.</p>"
     )
     out.append("<h3 class='subhead'>Component breakdown</h3>")
     out.append("<table><thead><tr>"
                "<th>Component</th><th>Accuracy</th><th>Brier</th>"
                "<th>Log loss</th></tr></thead><tbody>")
+    ensemble_label = "Mixed ensemble" if components else "GBT ensemble"
     for name, mm in [("Elo-only logistic", elo_only),
-                      ("GBT ensemble", ens),
+                      (ensemble_label, ens),
                       ("Blended (live)", blended)]:
         if not isinstance(mm.get("brier"), (int, float)):
             out.append(f"<tr><td>{html.escape(name)}</td><td>—</td><td>—</td><td>—</td></tr>")
@@ -2030,6 +2053,50 @@ def _render_model_card_section(metrics: dict, coefficients: dict) -> str:
             f"<td>{mm.get('log_loss'):.3f}</td></tr>"
         )
     out.append("</tbody></table>")
+
+    # Per-base-model component table (only when the trainer emitted
+    # ``ensemble_components`` — older bundles skip this block).
+    if components:
+        # Pretty names for the base estimators.
+        pretty = {
+            "hgb": "HistGradientBoosting",
+            "gbm": "GradientBoosting (sklearn)",
+            "rf": "Random Forest (300, depth 8)",
+            "et": "Extra Trees (300, depth 8)",
+            "lr_full": "Logistic (full features)",
+            "xgb": "XGBoost",
+        }
+        out.append("<h3 class='subhead'>Mixed-ensemble base models</h3>")
+        out.append(
+            "<p class='small gray'>Each base classifier is calibrated "
+            "by sigmoid on its own training-tail. Weights are chosen by "
+            "SLSQP minimising log-loss on a held-out 20% validation "
+            "slice — a weight of 0 means the optimiser found the model "
+            "didn't add signal beyond the others.</p>"
+        )
+        out.append("<table><thead><tr>"
+                   "<th>Base model</th><th>Weight</th>"
+                   "<th>Standalone accuracy</th>"
+                   "<th>Standalone Brier</th>"
+                   "<th>Standalone log loss</th>"
+                   "</tr></thead><tbody>")
+        # Sort by weight desc so the most-relied-on model is on top.
+        comps_sorted = sorted(
+            components,
+            key=lambda c: -float(c.get("weight") or 0.0),
+        )
+        for c in comps_sorted:
+            nm = c.get("name", "")
+            w = float(c.get("weight") or 0.0)
+            mm = c.get("metrics") or per_model.get(nm) or {}
+            out.append(
+                f"<tr><td>{html.escape(pretty.get(nm, nm))}</td>"
+                f"<td class='num'>{w*100:.1f}%</td>"
+                f"<td>{_fmt_pct(mm.get('accuracy'), 1)}</td>"
+                f"<td>{mm.get('brier'):.3f}</td>"
+                f"<td>{mm.get('log_loss'):.3f}</td></tr>"
+            )
+        out.append("</tbody></table>")
 
     log_coefs = coefficients.get("logistic") or {}
     feats = log_coefs.get("features") or []
