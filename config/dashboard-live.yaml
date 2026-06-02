@@ -303,13 +303,34 @@ tennis_trader:
     # confirming the verdicts match what you'd expect.
     dry_run: false
     sim_state_path: /root/tennis-forecast/data/outputs-live/sim_state.json
-    max_open_positions: 10
+    max_open_positions: 5  # tightened from 10 — calibration data shows 35% win rate; halve exposure
     max_orders_per_day: 20
     contracts_per_order: 1
     min_edge_pp: 0.05
     max_entry_price_cents: 70
     min_entry_price_cents: 15
     price_deviation_cents: 3
+    # Pre-match window: how many hours before close the bot is
+    # willing to open. Raised 12h → 24h after the Platt calibration
+    # layer landed — the original 12h cutoff was zeroing out the
+    # day-before opportunity set (SVIKOS etc. were the only
+    # remaining +EV signals once in-day matches were taken).
+    max_hours_to_close_for_open: 24.0
+    # Profit-lock: when an open position's YES side has a live
+    # Kalshi bid >= profit_lock_yes_bid_cents, the executor places
+    # a real IOC sell at that bid. sim_state records the actual
+    # fill (order_id + realized P&L from the executed price), not
+    # a guessed $1. Hard floor 90c — setting this lower in config
+    # is clamped UP, so a config typo can't turn the lock into a
+    # mid-band exit policy. 0 disables.
+    profit_lock_yes_bid_cents: 95
+    # Gain-based profit lock: independent threshold that fires when
+    # (live_yes_bid - entry) >= profit_lock_gain_cents. Captures
+    # mid-match swings (e.g. our underdog pick took the first set,
+    # price moved +30c). Triggers independently of the absolute
+    # threshold above — whichever fires first wins. Hard floor 5c so
+    # a typo can't fire on routine 1-2c spread chatter. 0 disables.
+    profit_lock_gain_cents: 30
 
 unemployment_trader:
   enabled: false
