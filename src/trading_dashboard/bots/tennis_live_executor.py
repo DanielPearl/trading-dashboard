@@ -1257,11 +1257,64 @@ class TennisLiveExecutor:
                     return 100
                 if result == "no":
                     return 0
+                # Non-binary finalized result (``scalar`` /
+                # ``cancelled`` / walkover refund). Observed on
+                # KXATPMATCH-26JUN05ARNCOB-ARN: Arnaldi withdrew
+                # before the match, Kalshi resolved the market at
+                # a "fair price" of 33¢ (per their rules), and the
+                # market endpoint exposed it as ``last_price_dollars
+                # = "0.3300"`` even though ``settlement_value`` and
+                # the integer ``last_price`` field stayed null.
+                # Prefer the dollar-string field here, then the
+                # settlements endpoint as the canonical fallback.
+                if result and result not in ("yes", "no"):
+                    last_dollars = mkt.get("last_price_dollars")
+                    try:
+                        if last_dollars is not None:
+                            return int(round(float(last_dollars) * 100.0))
+                    except (TypeError, ValueError):
+                        pass
+                    # Last-resort lookup via /portfolio/settlements —
+                    # the value there is the canonical resolved-cents
+                    # number Kalshi credited us for the contract.
+                    try:
+                        sr = client._request(
+                            "GET", "/portfolio/settlements",
+                            params={"ticker": ticker, "limit": 1},
+                        )
+                        for s in (sr or {}).get("settlements", []):
+                            if s.get("ticker") == ticker:
+                                v = s.get("value")
+                                if v is not None:
+                                    return int(v)
+                    except Exception:  # noqa: BLE001
+                        log.exception(
+                            "settlements lookup failed for %s; will "
+                            "defer", ticker,
+                        )
+                    log.warning(
+                        "tennis-live %s finalized with non-binary "
+                        "result=%r and no last_price_dollars / "
+                        "settlement value — keeping deferred",
+                        ticker, result,
+                    )
+                    return None
             # 3) Fall back to last trade price if neither of the above
             #    is set (intermediate state, transient API timing).
             last = mkt.get("last_price")
             if last is not None:
                 return int(last)
+            # last_price (cents int) is often null when the bidless
+            # market never traded; last_price_dollars (string) often
+            # is still set. Convert dollars → cents as a final attempt.
+            last_dollars = mkt.get("last_price_dollars")
+            try:
+                if last_dollars is not None:
+                    cents = int(round(float(last_dollars) * 100.0))
+                    if cents > 0:
+                        return cents
+            except (TypeError, ValueError):
+                pass
         except Exception:  # noqa: BLE001
             log.exception("settle_price fetch failed for %s", ticker)
         return None
