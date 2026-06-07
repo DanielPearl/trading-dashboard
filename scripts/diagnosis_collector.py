@@ -236,37 +236,24 @@ def _journal_since(name: str, since: str) -> list[str]:
 def _extract_tracebacks(lines: list[str]) -> list[str]:
     """Group consecutive traceback lines into single error blocks. Each
     returned string is one full traceback (header + frames + exception).
-    Caps at 14 lines per block so a runaway recursion doesn't blow up
-    the JSON.
+    Caps at 30 lines per block so a runaway recursion doesn't blow up
+    the JSON while still leaving room for deeply-nested chains.
 
     Every journal line carries a "YYYY-MM-DDTHH:MM:SS+ZZ host python[PID]:"
-    prefix — so we can't use "starts with timestamp" as the boundary
-    between log entries (it would always trigger and truncate the
-    traceback to two lines). Instead, strip the prefix off each
-    candidate line and inspect what's UNDER it: a traceback
-    continuation looks like ``  File "...", line N, in funcname`` (two-
-    space indent), a code line (four-space indent), or the final
-    ``<ExceptionName>: <message>`` line. Anything else is a new log
-    entry and ends the chunk.
+    prefix, so "starts with timestamp" can't mark a chunk boundary
+    (it'd always trigger). Instead, strip the prefix while preserving
+    indentation and look at the body: a traceback continuation is any
+    positively-indented line, a tab-indented line, the final
+    ``<ExceptionName>: <message>`` line, or one of the chained-
+    exception markers. Anything else ends the chunk.
     """
-    # A continuation line, after the journal prefix is stripped:
-    #   "  File ..."   (indented File frame)
-    #   "    code"     (indented code line)
-    #   "    ^^^^"     (indented carets / annotation)
-    #   "ExceptionType: ..."  (final exception line)
-    #   "During handling of the above exception..." (chained traceback)
-    #   "The above exception was the direct cause..."  (chained)
     _CONTINUATION_RE = re.compile(
         r"^(?:"
-        r" +\S"                  # any positive indent + non-space
-                                 # — covers "  File", "    code", and
-                                 # the deeply-indented "       ^^^^"
-                                 # caret annotation Python adds for
-                                 # error positions inside expressions
-        r"|\t"                   # tab indent
-        r"|\S+(?:Error|Exception|Warning)\s*[:\s]"   # final exception line
-        r"|During handling of"
-        r"|The above exception"
+        r" +\S"                                       # any indented frame
+        r"|\t"                                        # tab indent
+        r"|\S+(?:Error|Exception|Warning)\s*[:\s]"    # final exception line
+        r"|During handling of"                        # chained traceback
+        r"|The above exception"                       # chained traceback
         r")"
     )
     blocks: list[str] = []

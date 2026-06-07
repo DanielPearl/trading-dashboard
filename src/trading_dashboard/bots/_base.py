@@ -34,7 +34,7 @@ import os
 import sys
 import threading
 from pathlib import Path
-from typing import Callable
+from typing import Any, Callable, Iterable
 
 log = logging.getLogger("dashboard.bots._base")
 
@@ -170,6 +170,49 @@ def load_upstream_as_alias(repo_path: str | Path,
         return pkg
     sys.modules[alias] = pkg
     return pkg
+
+
+def register_pickle_aliases(alias: str, modules: Iterable[str],
+                              source_root: str = "src") -> None:
+    """Register ``sys.modules`` aliases mapping ``source_root.<m>`` →
+    ``<alias>.<m>`` for each ``m`` in ``modules`` (plus the parent
+    namespaces). Lets joblib unpickle classes whose ``__module__``
+    was recorded as ``src.models.foo`` at training time even though
+    the dashboard process loads the upstream package under a unique
+    alias like ``tennis_src``.
+
+    Background: joblib pickles by ``(module, qualname)``. Tennis
+    pre-match's WeightedEnsemble was trained from
+    ``/root/tennis-forecast`` with ``src`` on cwd-implicit sys.path,
+    so the recorded module path is ``src.models.train_prematch_model``.
+    The dashboard loads tennis upstream as ``tennis_src`` via
+    :func:`load_upstream_as_alias`, so ``src.*`` is not on the import
+    graph and the unpickle fails — predict.py silently falls back
+    to Elo-only on every prediction.
+
+    ``setdefault`` semantics: we never trample an existing ``src``
+    namespace registered by another bot. The aliasing is per-submodule
+    so the parent ``src`` namespace is only registered when nothing
+    else has it.
+    """
+    import importlib
+    aliased_pkg = sys.modules.get(alias)
+    if aliased_pkg is None:
+        return  # alias hasn't been loaded yet; caller-side bug
+    try:
+        importlib.import_module(f"{alias}.models")
+    except ImportError:
+        # No ``models`` subpackage under the alias — nothing to alias.
+        return
+    for sub in modules:
+        try:
+            m = importlib.import_module(f"{alias}.models.{sub}")
+            sys.modules.setdefault(f"{source_root}.models.{sub}", m)
+        except ImportError:
+            continue
+    sys.modules.setdefault(f"{source_root}.models",
+                            importlib.import_module(f"{alias}.models"))
+    sys.modules.setdefault(source_root, aliased_pkg)
 
 
 def inject_sys_path(repo_path: str | Path, subdir: str | None = "src") -> Path:

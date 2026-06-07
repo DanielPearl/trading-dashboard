@@ -188,74 +188,61 @@ class TennisLiveExecutor:
     """
 
     def __init__(self, cfg: dict, state_path: str) -> None:
-        # Config knobs (clamped to hard caps below).
+        # Config knobs. ``capped`` clamps a numeric cfg value to the
+        # corresponding _HARD_* safety cap so a typo in the YAML
+        # can't unlock unbounded exposure.
+        def capped(key: str, default, hard, *, floor=False, cast=int):
+            v = cast(cfg.get(key, default) or default)
+            return max(v, hard) if floor else min(v, hard)
+
         self.dry_run = bool(cfg.get("dry_run", True))  # safe default
-        self.max_open = min(int(cfg.get("max_open_positions", 5)),
-                             _HARD_MAX_OPEN_POSITIONS)
-        self.max_orders_per_day = min(
-            int(cfg.get("max_orders_per_day", 20)),
-            _HARD_MAX_ORDERS_PER_DAY,
+        self.max_open = capped("max_open_positions", 5,
+                                 _HARD_MAX_OPEN_POSITIONS)
+        self.max_orders_per_day = capped("max_orders_per_day", 20,
+                                            _HARD_MAX_ORDERS_PER_DAY)
+        self.contracts_per_order = capped("contracts_per_order", 1,
+                                            _HARD_MAX_CONTRACTS_PER_ORDER)
+        self.min_edge = capped("min_edge_pp", 0.05, _HARD_MIN_EDGE_PP,
+                                 floor=True, cast=float)
+        self.max_entry_price_cents = capped(
+            "max_entry_price_cents", 70, _HARD_MAX_ENTRY_PRICE_CENTS,
         )
-        self.contracts_per_order = min(
-            int(cfg.get("contracts_per_order", 1)),
-            _HARD_MAX_CONTRACTS_PER_ORDER,
+        self.min_entry_price_cents = capped(
+            "min_entry_price_cents", 15, _HARD_MIN_ENTRY_PRICE_CENTS,
+            floor=True,
         )
-        self.min_edge = max(float(cfg.get("min_edge_pp", 0.05)),
-                             _HARD_MIN_EDGE_PP)
-        self.max_entry_price_cents = min(
-            int(cfg.get("max_entry_price_cents", 70)),
-            _HARD_MAX_ENTRY_PRICE_CENTS,
-        )
-        self.min_entry_price_cents = max(
-            int(cfg.get("min_entry_price_cents", 15)),
-            _HARD_MIN_ENTRY_PRICE_CENTS,
-        )
-        self.price_deviation_cents = min(
-            int(cfg.get("price_deviation_cents", 3)),
-            _HARD_PRICE_DEVIATION_CENTS,
+        self.price_deviation_cents = capped(
+            "price_deviation_cents", 3, _HARD_PRICE_DEVIATION_CENTS,
         )
         # max_hours_to_close_for_open: defer opens until the match's
         # Kalshi market is within this many hours of close. Keeps the
-        # bot from betting overnight on tomorrow's match, where
-        # withdrawal / injury news has a full day to break and shift
-        # the line against us. Default 12h (≈8h before match start
-        # given a ~4h typical match duration). Hard cap 24h.
-        self.max_hours_to_close = min(
-            float(cfg.get("max_hours_to_close_for_open", 12.0)),
-            _HARD_MAX_HOURS_TO_CLOSE,
+        # bot off overnight bets on tomorrow's match, where
+        # withdrawal / injury news has a full day to move the line.
+        self.max_hours_to_close = capped(
+            "max_hours_to_close_for_open", 12.0,
+            _HARD_MAX_HOURS_TO_CLOSE, cast=float,
         )
-        # profit_lock_yes_bid_cents: ABSOLUTE-threshold profit lock —
-        # place a real IOC sell on Kalshi when an open position's YES
-        # side has a live bid at or above this absolute cents value.
-        # Captures "match is essentially over, lock in the win". The
-        # sell prices at the actual bid we fetch mid-tick (not a
-        # hardcoded $1) and updates sim_state with the real fill data,
-        # so nothing fictional shows up downstream. 0 disables this
-        # threshold; values <90¢ are clamped up to 90¢ to keep this
-        # threshold from devolving into a mid-band exit on a typo.
+        # Two profit-lock triggers. Each ``<=0`` disables that branch;
+        # otherwise the value is floored to the hard min so a typo
+        # can't turn the lock into a mid-band exit.
+        #   yes_bid: absolute YES bid threshold (e.g. 95¢ — match is
+        #     essentially over, lock the win).
+        #   gain: bid-minus-entry gain threshold (e.g. 30¢ — line
+        #     moved in our favour mid-match, take the run-up before
+        #     it reverses).
         raw_pl = int(cfg.get("profit_lock_yes_bid_cents", 95) or 0)
-        if raw_pl <= 0:
-            self.profit_lock_yes_bid = 0
-        else:
-            self.profit_lock_yes_bid = max(raw_pl, _HARD_MIN_PROFIT_LOCK_BID)
-        # profit_lock_gain_cents: GAIN-FROM-ENTRY profit lock —
-        # complementary trigger that fires when (current_bid - entry)
-        # >= this cents value, regardless of absolute price. Captures
-        # "the line moved in our favor mid-match, take the gain before
-        # it reverses". With underdog entries (30-50¢ typical), a +30¢
-        # gain represents a 60-100% return, which is enough to lock
-        # given the model's current calibration uncertainty.
-        # 0 disables; values <5¢ are clamped up to 5¢ to avoid firing
-        # on routine spread chatter.
+        self.profit_lock_yes_bid = (max(raw_pl, _HARD_MIN_PROFIT_LOCK_BID)
+                                     if raw_pl > 0 else 0)
         raw_gn = int(cfg.get("profit_lock_gain_cents", 30) or 0)
-        if raw_gn <= 0:
-            self.profit_lock_gain = 0
-        else:
-            self.profit_lock_gain = max(raw_gn, _HARD_MIN_PROFIT_LOCK_GAIN)
+        self.profit_lock_gain = (max(raw_gn, _HARD_MIN_PROFIT_LOCK_GAIN)
+                                  if raw_gn > 0 else 0)
 
         self.state_path = Path(state_path)
         self._daily = _DailyOrderCounter()
         self._client = None  # lazy — see _get_client()
+        # Per-ticker last-warning timestamp so SETTLE DEFERRED warnings
+        # don't flood the journal — see ``_reconcile_positions``.
+        self._defer_log_at: dict[str, float] = {}
 
         log.info(
             "tennis-live-executor configured (dry_run=%s, max_open=%d, "
@@ -780,6 +767,46 @@ class TennisLiveExecutor:
         # Clearly resolved when our side is at <=10% or >=90%.
         return side_prob <= 0.10 or side_prob >= 0.90
 
+    def _build_closed_record(self, p: dict, *, settle_prob: float,
+                                close_reason: str, result: str,
+                                won: bool | None = None,
+                                realized: float | None = None,
+                                **extra: Any) -> dict:
+        """Shared close-record builder. Every settle / hedge / void
+        path used to inline the same ``dict(p) | timestamp + p&l +
+        winner_side`` block; centralising it keeps the schema uniform
+        across paths and makes it cheap to add new fields later.
+
+        ``realized`` and ``won`` default to derived values from
+        ``settle_prob`` vs the recorded entry. Callers may override
+        either (e.g. profit-lock passes the sell-bid-derived realized
+        directly because the lock fires before market settle).
+        ``extra`` is folded in last so caller-specific fields (e.g.
+        ``exit_order_id``) come through.
+        """
+        entry = float(p.get("entry_market_prob") or 0.0)
+        contracts = int(p.get("contracts") or 1)
+        if realized is None:
+            realized = (settle_prob - entry) * contracts
+        if won is None:
+            won = realized > 0
+        side = p.get("side") or "PLAYER_A"
+        winner_side = side if won else (
+            "PLAYER_B" if side == "PLAYER_A" else "PLAYER_A"
+        )
+        closed = dict(p)
+        closed.update({
+            "closed_at": datetime.now(timezone.utc).isoformat(),
+            "settle_market_prob": settle_prob,
+            "realized_pnl": realized,
+            "won": won,
+            "close_reason": close_reason,
+            "result": result,
+            "winner_side": winner_side,
+            **extra,
+        })
+        return closed
+
     def _auto_close(self, p: dict, live_by_id: dict) -> dict:
         """Close the position locally using the live record's current
         market_prob. Used when ``_should_auto_close`` returns True."""
@@ -788,26 +815,16 @@ class TennisLiveExecutor:
         side = p.get("side") or "PLAYER_A"
         side_prob = (market_prob_a if side == "PLAYER_A"
                      else 1.0 - market_prob_a)
-        entry = float(p.get("entry_market_prob") or 0.0)
-        contracts = int(p.get("contracts") or 1)
         # Resolve as 100% / 0% based on which side cleared the 50%
         # threshold — the position is auto-closed precisely because we
         # are >90% confident.
         settle_prob = 1.0 if side_prob >= 0.5 else 0.0
-        realized = (settle_prob - entry) * contracts
-        closed = dict(p)
-        closed.update({
-            "closed_at": datetime.now(timezone.utc).isoformat(),
-            "settle_market_prob": settle_prob,
-            "realized_pnl": realized,
-            "won": settle_prob >= 0.5,
-            "close_reason": "auto_close_past_due",
-            "result": "AUTO_CLOSED",
-            "winner_side": p.get("side") if settle_prob >= 0.5 else (
-                "PLAYER_B" if p.get("side") == "PLAYER_A" else "PLAYER_A"
-            ),
-        })
-        return closed
+        return self._build_closed_record(
+            p, settle_prob=settle_prob,
+            close_reason="auto_close_past_due",
+            result="AUTO_CLOSED",
+            won=settle_prob >= 0.5,
+        )
 
     def _yes_bid_cents(self, ticker: str) -> int | None:
         """Fetch the current YES bid in cents for ``ticker``.
@@ -933,20 +950,15 @@ class TennisLiveExecutor:
                 still_open.append(p)
                 continue
             sell_prob = bid_cents / 100.0
-            entry = float(p.get("entry_market_prob") or 0.0)
-            realized = (sell_prob - entry) * contracts
-            closed = dict(p)
-            closed.update({
-                "closed_at": datetime.now(timezone.utc).isoformat(),
-                "settle_market_prob": sell_prob,
-                "realized_pnl": realized,
-                "won": realized > 0,
-                "close_reason": f"profit_lock_{trigger}",
-                "result": "PROFIT_LOCK",
-                "exit_order_id": order_id,
-                "exit_order_status": status,
-                "profit_lock_trigger": trigger,
-            })
+            closed = self._build_closed_record(
+                p, settle_prob=sell_prob,
+                close_reason=f"profit_lock_{trigger}",
+                result="PROFIT_LOCK",
+                exit_order_id=order_id,
+                exit_order_status=status,
+                profit_lock_trigger=trigger,
+            )
+            realized = closed["realized_pnl"]
             newly_closed.append(closed)
             log.info(
                 "tennis-live PROFIT-LOCKED (%s) %s — sold %d YES @ %d¢ "
@@ -1059,58 +1071,34 @@ class TennisLiveExecutor:
                 continue
             settle_cents = self._settle_price_cents(p.get("ticker") or "")
             if settle_cents is None:
-                # Couldn't determine the settlement price — neither
-                # ``settlement_value`` nor ``last_price`` was published.
-                # Defer settlement: keep the position open and retry on
-                # the next tick. Inventing a default (the prior code
-                # defaulted ``settle_prob`` to ``1.0`` ⇒ ``won = True``)
-                # silently minted fictitious wins on transient API
-                # failures and on voided markets where neither field is
-                # populated. Position will eventually settle when Kalshi
-                # publishes the settlement, or the operator can hand-
-                # close it after a void.
-                #
-                # Throttle the log to once per 30 minutes per ticker —
-                # the bot ticks ~once a minute and a market can sit in
-                # the deferred state for hours, so the unthrottled
-                # warning flooded journalctl + tripped the diagnosis
-                # streamlining list with non-actionable noise.
-                self._defer_log_at = getattr(self, "_defer_log_at", {})
+                # Defer: Kalshi hasn't published settlement_value /
+                # last_price yet. Keep open, retry next tick. (Throttle
+                # the warning to 1/30min per ticker — markets can sit
+                # deferred for hours and the unthrottled log used to
+                # flood journalctl + the diagnosis streamlining list.)
                 tkr = p.get("ticker") or ""
                 now_ts = time.time()
-                last = self._defer_log_at.get(tkr, 0.0)
-                if now_ts - last >= 1800.0:
+                if now_ts - self._defer_log_at.get(tkr, 0.0) >= 1800.0:
                     log.warning(
-                        "tennis-live SETTLE DEFERRED %s — no settlement_value "
-                        "or last_price on Kalshi market; keeping open and "
-                        "retrying next tick",
-                        tkr,
+                        "tennis-live SETTLE DEFERRED %s — no "
+                        "settlement_value or last_price on Kalshi; "
+                        "keeping open and retrying next tick", tkr,
                     )
                     self._defer_log_at[tkr] = now_ts
                 still_open.append(p)
                 continue
             settle_prob = float(settle_cents) / 100.0
-            entry = float(p.get("entry_market_prob") or 0.0)
-            contracts = int(p.get("contracts") or 1)
-            realized = (settle_prob - entry) * contracts
             won = settle_prob > 0.5
-            closed = dict(p)
-            closed.update({
-                "closed_at": datetime.now(timezone.utc).isoformat(),
-                "settle_market_prob": settle_prob,
-                "realized_pnl": realized,
-                "won": won,
-                "close_reason": "settled",
-                "result": "SETTLED",
-                "winner_side": p.get("side") if won else (
-                    "PLAYER_B" if p.get("side") == "PLAYER_A" else "PLAYER_A"
-                ),
-            })
+            closed = self._build_closed_record(
+                p, settle_prob=settle_prob,
+                close_reason="settled", result="SETTLED", won=won,
+            )
             state.setdefault("closed_positions", []).append(closed)
             state.setdefault("last_settled_at_by_match_id",
                               {})[p.get("match_id", "")] = closed["closed_at"]
             log.info("tennis-live SETTLED %s — %s, P&L %+.3f",
-                     p.get("ticker"), "WON" if won else "LOST", realized)
+                     p.get("ticker"), "WON" if won else "LOST",
+                     closed["realized_pnl"])
 
         # 2) Catch-up: anything Kalshi lists but local missed.
         local_tickers = {p.get("ticker") for p in still_open}

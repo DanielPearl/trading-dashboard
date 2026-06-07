@@ -42,42 +42,19 @@ def _load_upstream(repo_path: str) -> dict[str, Callable[..., Any]]:
     """Load tennis-forecast's pure functions under a unique alias so
     its ``src/`` package doesn't collide with table-tennis or darts'
     same-named ``src/`` packages. See ``_base.load_upstream_as_alias``.
+
+    Also registers ``src.models.*`` -> ``tennis_src.models.*`` pickle
+    aliases so joblib can unpickle the prematch bundle's
+    WeightedEnsemble class (recorded under its training-time module
+    path ``src.models.train_prematch_model``).
     """
     import importlib
-    import sys
     _base.load_upstream_as_alias(repo_path, "tennis_src", subdir="src")
-
-    # The tennis prematch bundle pickles a custom ``WeightedEnsemble``
-    # class defined in ``src.models.train_prematch_model``. Joblib
-    # looks the class up via its ``__module__`` attribute, which at
-    # training time was recorded as ``src.models.train_prematch_model``
-    # (the training script runs from /root/tennis-forecast where ``src``
-    # is on cwd-implicit sys.path). The dashboard process doesn't
-    # have a plain ``src`` package — only ``tennis_src`` — so the
-    # unpickle fails and predict_match falls back to Elo-only on
-    # every prediction (and the calibration layer then squishes
-    # everything toward 50/50).
-    #
-    # Register sys.modules aliases so ``src.models.train_prematch_model``
-    # resolves to the same class object as
-    # ``tennis_src.models.train_prematch_model``. Per-submodule so the
-    # ``src`` namespace at the dashboard process root doesn't shadow
-    # anything for other bots; ``setdefault`` to be safe if some other
-    # path already registered a partial ``src``.
-    try:
-        importlib.import_module("tennis_src.models")
-        for sub in ("train_prematch_model", "predict",
-                    "calibration_layer", "live_adjustment_model",
-                    "predict_inmatch"):
-            m = importlib.import_module(f"tennis_src.models.{sub}")
-            sys.modules.setdefault(f"src.models.{sub}", m)
-        sys.modules.setdefault("src.models",
-                                 importlib.import_module("tennis_src.models"))
-        sys.modules.setdefault("src", sys.modules["tennis_src"])
-    except Exception:  # noqa: BLE001
-        # If aliasing fails, predict.py will still try the import-as-is
-        # path; this shim is best-effort.
-        pass
+    _base.register_pickle_aliases(
+        "tennis_src",
+        ("train_prematch_model", "predict", "calibration_layer",
+         "live_adjustment_model", "predict_inmatch"),
+    )
 
     kalshi_markets = importlib.import_module("tennis_src.data.kalshi_markets")
     api_tennis_live = importlib.import_module("tennis_src.data.api_tennis_live")
