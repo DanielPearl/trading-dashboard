@@ -108,6 +108,39 @@ bots:
       # NBA games settle the same evening — "Predicted next game"
       # makes more sense than "next month" or "next week".
       prediction_period_label: this game
+  - key: wnba
+    name: WNBA Forecast
+    # WNBA is a head-to-head sport bot ("Will Team A win?") — same
+    # match-row shape as NBA / tennis, so it renders under the unified
+    # ``dashboard_type: sport`` page. Its loop writes the standard-bot
+    # sim.db schema (positions, market_views, model_snapshots);
+    # bots/_sport_adapter.py reads that after each Bot.tick() and emits
+    # sport-shape watchlist.json + sim_state.json at the paths below.
+    dashboard_type: sport
+    db_path: /root/wnba/data/sim.db
+    decisions_path: /root/wnba/data/decisions.jsonl
+    watchlist_json_path: /root/wnba/data/outputs/watchlist.json
+    sim_state_path: /root/wnba/data/outputs/sim_state.json
+    # bots/_sport_adapter.py synthesises this metrics.json from the
+    # latest model_snapshots row after each tick so the sport Models
+    # tab renders WNBA's accuracy / brier / log-loss / ROC AUC card.
+    # Shared with the live dashboard (training artifacts are
+    # mode-agnostic).
+    metrics_path: /root/wnba/data/processed/artifacts/metrics.json
+    series_ticker: KXWNBAGAME
+    data_source: "ESPN box scores (no API key)"
+    # WNBA regular season runs ~mid-May through September.
+    seasons:
+      - name: "WNBA 2026 Season"
+        start: "2026-05-01T00:00:00Z"
+        end:   "2026-10-31T03:00:00Z"
+    display:
+      underlying_label: Home team ELO (pre-game)
+      underlying_unit: ""
+      underlying_decimals: 0
+      unit_position: none
+      chart_period_minutes: 1440
+      prediction_period_label: this game
   - key: cpi
     name: Consumer Price Index
     db_path: /root/cpi/data/sim.db
@@ -397,6 +430,16 @@ nba_trader:
   # ``nba_bot.main.Bot``. Per memory the droplet repo is /root/nba.
   repo_path: /root/nba
   config_path: /root/nba/config/config.yaml
+
+wnba_trader:
+  enabled: true
+  # Path to the wnba-forecast repo. Bot module injects
+  # ``<repo_path>/src`` onto sys.path and imports
+  # ``wnba_bot.main.Bot``. Droplet repo is /root/wnba. Pure-ESPN
+  # data layer — no API key, no stats.nba.com rate-limit handling
+  # needed.
+  repo_path: /root/wnba
+  config_path: /root/wnba/config/config.yaml
 
 gas_trader:
   enabled: true

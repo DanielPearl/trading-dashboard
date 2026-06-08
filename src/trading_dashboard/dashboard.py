@@ -12317,6 +12317,7 @@ def serve(host: str, port: int, bots: List[dict], risk_caps: dict,
           unemployment_trader_cfg: dict | None = None,
           cpi_trader_cfg: dict | None = None,
           nba_trader_cfg: dict | None = None,
+          wnba_trader_cfg: dict | None = None,
           gas_trader_cfg: dict | None = None,
           survivor_trader_cfg: dict | None = None,
           table_tennis_trader_cfg: dict | None = None,
@@ -12373,6 +12374,10 @@ def serve(host: str, port: int, bots: List[dict], risk_caps: dict,
     if nba_trader_cfg:
         from .bots import nba as nba_bot
         nba_bot.start_daemon(nba_trader_cfg)
+    # WNBA trader. Shape A — game-outcome forecast (ESPN data, no key).
+    if wnba_trader_cfg:
+        from .bots import wnba as wnba_bot
+        wnba_bot.start_daemon(wnba_trader_cfg)
     # Gas-prices trader. Shape A with an internal light-tick
     # subthread spawned by Bot.run() (see bots/gas_prices.py).
     if gas_trader_cfg:
@@ -12569,6 +12574,7 @@ def main(argv: list[str] | None = None) -> int:
     unemployment_trader_cfg = cfg.raw.get("unemployment_trader") or {}
     cpi_trader_cfg = cfg.raw.get("cpi_trader") or {}
     nba_trader_cfg = cfg.raw.get("nba_trader") or {}
+    wnba_trader_cfg = cfg.raw.get("wnba_trader") or {}
     gas_trader_cfg = cfg.raw.get("gas_trader") or {}
     survivor_trader_cfg = cfg.raw.get("survivor_trader") or {}
     table_tennis_trader_cfg = cfg.raw.get("table_tennis_trader") or {}
@@ -12590,8 +12596,8 @@ def main(argv: list[str] | None = None) -> int:
     if cfg.mode == "live":
         for trader_cfg in (
             tennis_trader_cfg, unemployment_trader_cfg, cpi_trader_cfg,
-            nba_trader_cfg, gas_trader_cfg, survivor_trader_cfg,
-            table_tennis_trader_cfg, darts_trader_cfg,
+            nba_trader_cfg, wnba_trader_cfg, gas_trader_cfg,
+            survivor_trader_cfg, table_tennis_trader_cfg, darts_trader_cfg,
             natgas_trader_cfg, billboard_trader_cfg,
         ):
             live_block = (trader_cfg or {}).get("live") or {}
@@ -12604,6 +12610,7 @@ def main(argv: list[str] | None = None) -> int:
           unemployment_trader_cfg=unemployment_trader_cfg,
           cpi_trader_cfg=cpi_trader_cfg,
           nba_trader_cfg=nba_trader_cfg,
+          wnba_trader_cfg=wnba_trader_cfg,
           gas_trader_cfg=gas_trader_cfg,
           survivor_trader_cfg=survivor_trader_cfg,
           table_tennis_trader_cfg=table_tennis_trader_cfg,

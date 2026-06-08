@@ -87,6 +87,31 @@ bots:
       unit_position: none
       chart_period_minutes: 1440
       prediction_period_label: this game
+  - key: wnba
+    name: WNBA Forecast
+    dashboard_type: sport
+    db_path: /root/wnba/data/live.db
+    decisions_path: /root/wnba/data/decisions-live.jsonl
+    watchlist_json_path: /root/wnba/data/outputs-live/watchlist.json
+    sim_state_path: /root/wnba/data/outputs-live/sim_state.json
+    # Shared with sim — training artifacts are mode-agnostic. The sport
+    # adapter (run on the SIM side) writes this file from WNBA's sim.db
+    # model_snapshots table; the live side just reads it so the Models
+    # tab + model cards render even though the live loop is disabled.
+    metrics_path: /root/wnba/data/processed/artifacts/metrics.json
+    series_ticker: KXWNBAGAME
+    data_source: "ESPN box scores (no API key)"
+    seasons:
+      - name: "WNBA 2026 Season"
+        start: "2026-05-01T00:00:00Z"
+        end:   "2026-10-31T03:00:00Z"
+    display:
+      underlying_label: Home team ELO (pre-game)
+      underlying_unit: ""
+      underlying_decimals: 0
+      unit_position: none
+      chart_period_minutes: 1440
+      prediction_period_label: this game
   - key: cpi
     name: Consumer Price Index
     db_path: /root/cpi/data/live.db
@@ -346,6 +371,11 @@ nba_trader:
   enabled: false
   repo_path: /root/nba
   config_path: /root/nba/config/config.yaml
+
+wnba_trader:
+  enabled: false
+  repo_path: /root/wnba
+  config_path: /root/wnba/config/config.yaml
 
 gas_trader:
   enabled: false
