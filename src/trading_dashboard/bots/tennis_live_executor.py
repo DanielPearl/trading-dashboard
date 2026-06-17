@@ -546,18 +546,21 @@ class TennisLiveExecutor:
             # already incremented above, so we won't immediately
             # retry on the next tick.
             return False
-        if self.dry_run:
-            log.info(
-                "DRY-RUN would BUY %d %s on %s (%s vs %s, side=%s) "
-                "at %d¢ — edge=%.3f buy_score=%.4f",
-                self.contracts_per_order, "YES (player_a)" if side_letter == "A" else "YES (player_b)",
-                ticker, row.get("player_a"), row.get("player_b"),
-                side_letter, current_ask, edge,
-                row.get("buy_score") or 0.0,
-            )
-            return True
 
-        # Real order — record the position.
+        # Record the position. In dry-run mode we mint a synthetic
+        # ``DRY-RUN-...`` order_id and DO append to open_positions —
+        # the sim dashboard runs the executor in dry-run mode so it
+        # uses the exact same gates as live (same edge floor, same
+        # model-favourite gate, same model_source gate), and would be
+        # useless if dry-run never accumulated paper positions in
+        # sim_state. Downstream renderers treat the synthetic
+        # order_id the same as a real one.
+        if self.dry_run:
+            order_id = (f"DRY-RUN-{int(datetime.now(timezone.utc).timestamp())}"
+                         f"-{side_letter}")
+            order_status = "dry_run_simulated"
+        live_p_a = row.get("live_prob_a") or row.get("pre_match_prob_a") or 0.0
+        model_p_side = float(live_p_a) if side_letter == "A" else 1.0 - float(live_p_a)
         position = {
             "position_id": f"{match_id}-{side_letter}-{int(datetime.now(timezone.utc).timestamp())}",
             "order_id": order_id,
@@ -571,13 +574,9 @@ class TennisLiveExecutor:
             "side": "PLAYER_A" if side_letter == "A" else "PLAYER_B",
             "side_player": side_player,
             "entry_market_prob": float(current_ask) / 100.0,
-            "entry_model_prob": float(row.get(
-                "live_prob_a" if side_letter == "A" else "live_prob_b"
-            ) or 0.0),
+            "entry_model_prob": model_p_side,
             "current_market_prob": float(current_ask) / 100.0,
-            "current_model_prob": float(row.get(
-                "live_prob_a" if side_letter == "A" else "live_prob_b"
-            ) or 0.0),
+            "current_model_prob": model_p_side,
             "stake": (current_ask * self.contracts_per_order) / 100.0,
             "contracts": self.contracts_per_order,
             "slippage": 0.0,
@@ -590,8 +589,9 @@ class TennisLiveExecutor:
         }
         state.setdefault("open_positions", []).append(position)
         log.info(
-            "tennis-live PLACED order %s — BUY %d YES on %s (%s, "
-            "side=%s) at %d¢ edge=%.3f",
+            "tennis-live %s %s — BUY %d YES on %s (%s, side=%s) "
+            "at %d¢ edge=%.3f",
+            "DRY-RUN OPENED" if self.dry_run else "PLACED order",
             order_id, self.contracts_per_order, ticker, side_player,
             side_letter, current_ask, edge,
         )
@@ -915,13 +915,13 @@ class TennisLiveExecutor:
         open and we retry on the next tick (idempotent client_order_id
         dedupes any successful resubmission server-side).
 
-        No-ops when BOTH triggers are disabled (each = 0), when
-        ``dry_run`` is true (paper safety — never surface fictional
-        profit-lock fills), or when the Kalshi client is unavailable.
+        No-ops when BOTH triggers are disabled (each = 0) or when the
+        Kalshi client is unavailable. In dry-run mode the close
+        executes against the observed bid as if it had filled, so the
+        sim dashboard's paper-trade history reflects the same
+        profit-lock behaviour as live.
         """
         if (self.profit_lock_yes_bid <= 0 and self.profit_lock_gain <= 0):
-            return
-        if self.dry_run:
             return
         client = self._get_client()
         if client is None:
@@ -954,44 +954,56 @@ class TennisLiveExecutor:
             if trigger is None:
                 still_open.append(p)
                 continue
-            # Place an IOC sell at the bid we just observed. Per
-            # Kalshi's API the sell price for YES contracts goes in
-            # the ``yes_price`` field.
             contracts = int(p.get("contracts") or 1)
-            coid = _profit_lock_coid(ticker, bid_cents)
-            try:
-                resp = client.place_order(
-                    ticker=ticker,
-                    side="yes",
-                    action="sell",
-                    count=contracts,
-                    order_type="limit",
-                    yes_price=bid_cents,
-                    time_in_force="immediate_or_cancel",
-                    client_order_id=coid,
+            if self.dry_run:
+                # Paper close: pretend the IOC sell filled at the
+                # observed bid. Synthetic order_id matches the OPEN
+                # convention so downstream code can't accidentally
+                # confuse a dry-run lock with a real fill.
+                order_id = (
+                    f"DRY-RUN-LOCK-"
+                    f"{int(datetime.now(timezone.utc).timestamp())}"
                 )
-            except Exception as exc:  # noqa: BLE001
-                log.exception(
-                    "profit-lock place_order failed for %s @ %d¢: %s",
-                    ticker, bid_cents, exc,
-                )
-                still_open.append(p)
-                continue
-            order = (resp or {}).get("order") or {}
-            order_id = order.get("order_id")
-            status = (order.get("status") or "").lower()
-            # Only realize the position when Kalshi confirms execution.
-            # ``submitted`` / ``canceled`` etc. leave us still holding
-            # and we'll retry next tick (idempotent client_order_id).
-            if not order_id or status != "executed":
-                log.info(
-                    "profit-lock (%s) %s @ %d¢ — order_id=%s status=%s "
-                    "(not executed; keeping open)",
-                    trigger, ticker, bid_cents, order_id,
-                    status or "unknown",
-                )
-                still_open.append(p)
-                continue
+                status = "dry_run_simulated"
+            else:
+                # Place an IOC sell at the bid we just observed. Per
+                # Kalshi's API the sell price for YES contracts goes
+                # in the ``yes_price`` field.
+                coid = _profit_lock_coid(ticker, bid_cents)
+                try:
+                    resp = client.place_order(
+                        ticker=ticker,
+                        side="yes",
+                        action="sell",
+                        count=contracts,
+                        order_type="limit",
+                        yes_price=bid_cents,
+                        time_in_force="immediate_or_cancel",
+                        client_order_id=coid,
+                    )
+                except Exception as exc:  # noqa: BLE001
+                    log.exception(
+                        "profit-lock place_order failed for %s @ %d¢: %s",
+                        ticker, bid_cents, exc,
+                    )
+                    still_open.append(p)
+                    continue
+                order = (resp or {}).get("order") or {}
+                order_id = order.get("order_id")
+                status = (order.get("status") or "").lower()
+                # Only realize when Kalshi confirms execution. Other
+                # statuses (submitted/canceled) leave us still holding
+                # and we'll retry next tick — idempotent client_order_id
+                # dedupes any successful resubmission server-side.
+                if not order_id or status != "executed":
+                    log.info(
+                        "profit-lock (%s) %s @ %d¢ — order_id=%s "
+                        "status=%s (not executed; keeping open)",
+                        trigger, ticker, bid_cents, order_id,
+                        status or "unknown",
+                    )
+                    still_open.append(p)
+                    continue
             sell_prob = bid_cents / 100.0
             closed = self._build_closed_record(
                 p, settle_prob=sell_prob,
