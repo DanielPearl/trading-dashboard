@@ -331,7 +331,7 @@ tennis_trader:
     max_open_positions: 10  # restored to 10 per user (2026-06-07) — calibration data improving
     max_orders_per_day: 20
     contracts_per_order: 1
-    min_edge_pp: 0.10  # raised from 0.05 (2026-06-17): historical 5-10pp bucket won 47% / +$0.015 per bet (break-even after fees) vs 10-15pp at 50% / +$0.046 — 3x return per bet
+    min_edge_pp: 0.09  # ratcheted 0.05 → 0.10 → 0.09 (2026-06-17). The 5-10pp bucket was break-even after fees on 240 historical bets; 9pp keeps the same intent (skip the noisy lower-edge cohort) while not gating quite as aggressively as 10pp
     max_entry_price_cents: 70
     min_entry_price_cents: 15
     price_deviation_cents: 3
