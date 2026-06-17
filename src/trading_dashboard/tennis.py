@@ -1789,6 +1789,44 @@ def _join_settlement_with_sim_state(s: dict, sim_state: dict,
     }
 
 
+def _merge_with_live_sim_state(primary: dict) -> dict:
+    """Return a sim_state whose closed_positions is the union of the
+    primary file's records and the live ``outputs-live/sim_state.json``
+    snapshot. Used to give the SIM dashboard's Kalshi-driven history
+    table access to the live-mode bot's stored per-bet model prob /
+    player names — without that, real Kalshi trades render with
+    'My prob' = '—' on the sim dashboard because the sim simulator
+    has no record of them.
+
+    Lookup is by ``ticker`` first, then ``match_id`` — primary wins
+    on collision so the simulation's own paper-trade history still
+    takes precedence in sim mode.
+    """
+    out = dict(primary or {})
+    primary_closed = list(out.get("closed_positions") or [])
+    seen_tickers = {c.get("ticker") for c in primary_closed if c.get("ticker")}
+    seen_match_ids = {c.get("match_id") for c in primary_closed
+                      if c.get("match_id")}
+    try:
+        live_path = Path("/root/tennis-forecast/data/outputs-live/sim_state.json")
+        if not live_path.exists():
+            return out
+        with live_path.open("r", encoding="utf-8") as f:
+            live = json.load(f) or {}
+    except (OSError, json.JSONDecodeError):
+        return out
+    extra: list[dict] = []
+    for c in (live.get("closed_positions") or []):
+        if c.get("ticker") and c["ticker"] in seen_tickers:
+            continue
+        if c.get("match_id") and c["match_id"] in seen_match_ids:
+            continue
+        extra.append(c)
+    if extra:
+        out["closed_positions"] = primary_closed + extra
+    return out
+
+
 def build_tennis_history_for_page(sim_state: dict) -> list[dict]:
     """Return the enriched, phantom-filtered, settled-bet rows that
     drive the History tab. Caller can pass them to the page-level
@@ -1802,7 +1840,17 @@ def build_tennis_history_for_page(sim_state: dict) -> list[dict]:
     """
     settlements = _fetch_tennis_settlements()
     fills_by_ticker = _summarize_fills(_fetch_tennis_fills())
-    rows = [_join_settlement_with_sim_state(s, sim_state, fills_by_ticker)
+    # Kalshi settlements are platform-wide (one set per account), but
+    # the join with sim_state for per-bet model prob / matchup is
+    # mode-specific: the SIM dashboard reads paper trades from
+    # ``data/outputs/sim_state.json`` and never sees the live
+    # executor's records. Merge in the live sim_state's closed_positions
+    # so the sim history table can render the same prob / player names
+    # the live page shows for real Kalshi trades. The primary sim_state
+    # takes precedence on ticker collisions; live records only fill
+    # rows the primary lacks.
+    merged = _merge_with_live_sim_state(sim_state)
+    rows = [_join_settlement_with_sim_state(s, merged, fills_by_ticker)
             for s in settlements]
     rows = [r for r in rows if r is not None]
     rows.sort(key=lambda r: r.get("settled_time") or "", reverse=True)
