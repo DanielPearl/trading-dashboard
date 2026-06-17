@@ -444,6 +444,31 @@ class TennisLiveExecutor:
                      self.min_edge)
             return False
 
+        # Model-favourite gate. Refuse to buy a side unless the model
+        # itself predicts that side wins (prob > 0.50). Without this,
+        # the bot would buy contrarian underdogs whenever the model's
+        # disagreement with the market produced an edge — but on a
+        # side the model still believes will LOSE. That's how the
+        # bot historically wound up holding 30¢ YES on a player the
+        # model rated at 35%: edge looked good vs a 25¢ market, but
+        # the model's own prediction said "expected to lose". The
+        # ``model_p_side`` value below is the trained-model probability
+        # for the side we'd buy; require >0.50.
+        live_prob_a = row.get("live_prob_a")
+        if live_prob_a is None:
+            live_prob_a = row.get("pre_match_prob_a")
+        if live_prob_a is not None:
+            model_p_side = (float(live_prob_a) if side_letter == "A"
+                              else 1.0 - float(live_prob_a))
+            if model_p_side <= 0.50:
+                log.info(
+                    "tennis-live skip %s side %s: model prob for this "
+                    "side %.3f ≤ 0.50 (model predicts this side LOSES; "
+                    "edge alone isn't enough)",
+                    match_id, side_letter, model_p_side,
+                )
+                return False
+
         # Pre-flight: re-check the current Kalshi ask vs the
         # watchlist's recorded ask. The watchlist row is up to
         # 60s stale; if the market moved >3¢ since then, the
