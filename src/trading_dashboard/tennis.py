@@ -1693,7 +1693,30 @@ def _join_settlement_with_sim_state(s: dict, sim_state: dict,
 
     # Sim-state join for model prob + matchup + player name.
     closed = (sim_state or {}).get("closed_positions") or []
+    # Primary join: side-specific ticker. Falls back to the event
+    # ticker (= ``match_id`` in the upstream sim simulator, which
+    # historically didn't persist the side-specific ticker) so the
+    # 'My prob' / Predicted-winner columns aren't blank for the
+    # 385-ish older sim rows recorded before the ticker field was
+    # added. Side disambiguation uses ``side_player`` matching the
+    # ticker's trailing 3-letter suffix when both records exist.
     sim_row = next((c for c in closed if c.get("ticker") == ticker), None)
+    if sim_row is None and event_ticker:
+        tri = ticker.rsplit("-", 1)[-1] if "-" in ticker else ""
+        for c in closed:
+            if c.get("match_id") != event_ticker:
+                continue
+            # If both legs of an event appear, prefer the row whose
+            # side_player initials match the side-ticker's trailing
+            # tricode (e.g. ``-NAV`` -> "Yunchaokete Bu" rejected,
+            # "Cristian Garin" accepted when its tricode is NAV).
+            sp = (c.get("side_player") or "").upper()
+            if tri and sp and not any(part.startswith(tri[:2]) or part[:3] == tri
+                                        for part in sp.split()):
+                sim_row = sim_row or c  # weak match — keep as fallback
+                continue
+            sim_row = c
+            break
     side_player = ""
     matchup = ""
     tournament = ""
