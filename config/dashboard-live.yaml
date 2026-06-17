@@ -328,10 +328,10 @@ tennis_trader:
     # confirming the verdicts match what you'd expect.
     dry_run: false
     sim_state_path: /root/tennis-forecast/data/outputs-live/sim_state.json
-    max_open_positions: 5  # tightened from 10 — calibration data shows 35% win rate; halve exposure
+    max_open_positions: 10  # restored to 10 per user (2026-06-07) — calibration data improving
     max_orders_per_day: 20
     contracts_per_order: 1
-    min_edge_pp: 0.05
+    min_edge_pp: 0.10  # raised from 0.05 (2026-06-17): historical 5-10pp bucket won 47% / +$0.015 per bet (break-even after fees) vs 10-15pp at 50% / +$0.046 — 3x return per bet
     max_entry_price_cents: 70
     min_entry_price_cents: 15
     price_deviation_cents: 3
