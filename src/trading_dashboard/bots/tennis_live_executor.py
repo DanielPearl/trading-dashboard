@@ -361,6 +361,24 @@ class TennisLiveExecutor:
         if side_letter not in ("A", "B"):
             return False
 
+        # Safety gate: refuse to place orders when the watchlist row's
+        # probability didn't come from the trained model. Elo-only and
+        # 50/50 fallbacks happen when predict.py can't load the bundle
+        # (sklearn version drift, joblib unpickle error, missing
+        # artifact). Trading on those produces phantom edges driven by
+        # Elo / market disagreement alone — exactly the regime where
+        # the bot loses money fastest. Treat absence of the field as
+        # "trained" only when the row pre-dates this gate; new builds
+        # of the watchlist must opt in explicitly.
+        model_source = row.get("model_source")
+        if model_source not in (None, "trained"):
+            log.info(
+                "tennis-live skip %s: model_source=%r (not a trained "
+                "prediction — gate refuses to bet on fallback probs)",
+                match_id, model_source,
+            )
+            return False
+
         # Cap: max open positions
         if len(state.get("open_positions", [])) >= self.max_open:
             log.info("tennis-live skip %s: max_open_positions reached "
