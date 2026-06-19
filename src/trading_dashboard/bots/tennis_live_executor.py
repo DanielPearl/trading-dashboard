@@ -1156,6 +1156,20 @@ class TennisLiveExecutor:
                      closed["realized_pnl"])
 
         # 2) Catch-up: anything Kalshi lists but local missed.
+        #
+        # SKIPPED ENTIRELY IN DRY-RUN: sim and live share one Kalshi
+        # account, so sim's reconcile would see LIVE's positions and
+        # try to "restore" them into sim's state. With profit-lock
+        # then re-closing the restored position the very next tick,
+        # we'd see a flap loop (restored → DRY-RUN-LOCK closed →
+        # restored → DRY-RUN-LOCK closed → …) firing 1×/min and
+        # spamming the diagnosis streamlining list. In dry-run the
+        # only correct catch-up source is settlements (handled in
+        # branch 1 above); Kalshi's open-positions list is LIVE's
+        # business, not sim's.
+        if self.dry_run:
+            state["open_positions"] = still_open
+            return
         local_tickers = {p.get("ticker") for p in still_open}
         # Also check the closed list — if a wrongly-settled position
         # is still actually open on Kalshi, restore it from the
