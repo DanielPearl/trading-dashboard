@@ -3482,9 +3482,11 @@ def _build_kalshi_only_rows(tour_filter: str | None) -> List[Dict[str, Any]]:
             continue
         sp = ko.get("side_player") or ""
         op = ko.get("other_player") or ""
-        # No need to filter against already-covered matches: the SQL
-        # SELECT above only returns kalshi_bets where match_id IS NULL,
-        # i.e. bets the backfill couldn't link to any row in matches.
+        pair = frozenset({sp, op})
+        if (date, pair) in covered:
+            # The training data has this match — it'll be decorated
+            # with the Kalshi bet info in the main loop below.
+            continue
         # Resolve the actual winner from Kalshi's settled result. Our
         # side is ``side_player``; ``won == 1`` means our side won,
         # which means the side_player tricode won. Non-binary results
