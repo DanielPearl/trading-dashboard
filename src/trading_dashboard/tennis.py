@@ -3253,31 +3253,35 @@ def render_training_data_panel(*, current_bot: str | None,
         out.append("<span class='tab-pill tab-pill-disabled'>Next →</span>")
     out.append("</div>")
 
-    # ── Column-definition modal + inline JS ──────────────────────────
-    # Builds a small JS map of every column's full definition and pops
-    # up a centred panel when any column header is clicked. Self-
-    # contained so the existing dashboard CSS / JS doesn't need to know
-    # this panel exists.
+    # ── Column-definition popover + inline JS ────────────────────────
+    # Lightweight tooltip-style panel that anchors below the clicked
+    # column header — no backdrop, no page dim, dismissed by clicking
+    # away or pressing Escape. Re-uses the same defs map keyed by
+    # SQL column name; positioned at render time via
+    # ``getBoundingClientRect`` of the clicked button.
     import json as _json
     defs = {sql: {"label": label, "def": definition}
              for sql, label, definition in _TRAINING_COLUMNS}
-    out.append("<dialog id='col-def-modal' class='col-def-modal'>"
-                "<form method='dialog'>"
-                "<h3 id='col-def-title'></h3>"
-                "<p id='col-def-body'></p>"
-                "<button type='submit'>Close</button>"
-                "</form></dialog>")
+    out.append(
+        "<div id='col-def-pop' class='col-def-pop' hidden>"
+        "<div class='col-def-pop-title'></div>"
+        "<div class='col-def-pop-body'></div>"
+        "</div>"
+    )
     out.append(
         "<style>"
         ".col-def-btn { background:none; border:0; color:inherit; "
         "font:inherit; cursor:pointer; padding:0; "
         "text-decoration:underline dotted; }"
         ".col-def-btn:hover { color:#79c0ff; }"
-        ".col-def-modal { max-width:520px; padding:16px 20px; "
-        "border:1px solid #30363d; background:#0d1117; color:#c9d1d9; }"
-        ".col-def-modal::backdrop { background:rgba(0,0,0,.6); }"
-        ".col-def-modal h3 { margin:0 0 8px; }"
-        ".col-def-modal p { margin:0 0 12px; line-height:1.5; }"
+        ".col-def-pop { position:absolute; z-index:1000; max-width:320px; "
+        "padding:10px 12px; background:#0d1117; color:#c9d1d9; "
+        "border:1px solid #30363d; border-radius:6px; "
+        "box-shadow:0 6px 20px rgba(0,0,0,.45); font-size:12px; "
+        "line-height:1.45; pointer-events:auto; }"
+        ".col-def-pop[hidden] { display:none; }"
+        ".col-def-pop-title { font-weight:700; margin-bottom:4px; "
+        "color:#f0f6fc; }"
         ".training-data-table { font-size:12px; }"
         ".training-data-table th { white-space:nowrap; }"
         ".training-data-table td { white-space:nowrap; }"
@@ -3286,17 +3290,49 @@ def render_training_data_panel(*, current_bot: str | None,
     out.append(
         "<script>(function(){"
         "var defs = " + _json.dumps(defs) + ";"
-        "var modal = document.getElementById('col-def-modal');"
-        "if (!modal || !modal.showModal) return;"
+        "var pop = document.getElementById('col-def-pop');"
+        "if (!pop) return;"
+        "var titleEl = pop.querySelector('.col-def-pop-title');"
+        "var bodyEl = pop.querySelector('.col-def-pop-body');"
+        "var currentBtn = null;"
+        "function hide(){ pop.hidden = true; currentBtn = null; }"
+        "function show(btn){"
+        "  var d = defs[btn.dataset.col];"
+        "  if (!d) return;"
+        "  titleEl.textContent = d.label;"
+        "  bodyEl.textContent = d['def'];"
+        "  pop.hidden = false;"
+        "  var rect = btn.getBoundingClientRect();"
+        "  pop.style.visibility = 'hidden';"
+        "  pop.style.left = '0px';"
+        "  pop.style.top = '0px';"
+        "  var popRect = pop.getBoundingClientRect();"
+        "  var pageX = window.scrollX, pageY = window.scrollY;"
+        "  var left = rect.left + pageX;"
+        "  var top = rect.bottom + pageY + 6;"
+        "  var maxLeft = pageX + window.innerWidth - popRect.width - 8;"
+        "  if (left > maxLeft) left = Math.max(pageX + 8, maxLeft);"
+        "  pop.style.left = left + 'px';"
+        "  pop.style.top = top + 'px';"
+        "  pop.style.visibility = 'visible';"
+        "  currentBtn = btn;"
+        "}"
         "document.querySelectorAll('.col-def-btn').forEach(function(b){"
-        "  b.addEventListener('click', function(){"
-        "    var d = defs[b.dataset.col];"
-        "    if (!d) return;"
-        "    document.getElementById('col-def-title').textContent = d.label;"
-        "    document.getElementById('col-def-body').textContent = d['def'];"
-        "    modal.showModal();"
+        "  b.addEventListener('click', function(e){"
+        "    e.stopPropagation();"
+        "    if (currentBtn === b) { hide(); return; }"
+        "    show(b);"
         "  });"
         "});"
+        "document.addEventListener('click', function(e){"
+        "  if (pop.hidden) return;"
+        "  if (!pop.contains(e.target)) hide();"
+        "});"
+        "document.addEventListener('keydown', function(e){"
+        "  if (e.key === 'Escape') hide();"
+        "});"
+        "window.addEventListener('scroll', hide, true);"
+        "window.addEventListener('resize', hide);"
         "})();</script>"
     )
 
