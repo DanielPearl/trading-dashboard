@@ -2827,7 +2827,7 @@ _TRAINING_DB_PATH = Path("/root/tennis-forecast/data/training_history.db")
 # The order here is the rendered column order.
 _TRAINING_COLUMNS: list[tuple[str, str, str]] = [
     # ── Match identity ───────────────────────────────────────────────
-    ("match_date", "Date",
+    ("tourney_date", "Date",
      "Date of the match's tournament round, in YYYY-MM-DD."),
     ("tourney_name", "Tournament",
      "Tournament name from the official ATP/WTA tour calendar."),
@@ -2849,79 +2849,54 @@ _TRAINING_COLUMNS: list[tuple[str, str, str]] = [
     ("best_of", "BO",
      "Best-of-3 or best-of-5 sets. Slams + Davis Cup men's are "
      "best-of-5; everything else is best-of-3."),
-    ("score", "Score",
-     "Final set scores in shorthand, e.g. ``6-4 7-6(3)``. Empty for "
-     "matches the bot recorded on Kalshi but the Sackmann panel "
-     "hasn't seen yet."),
-    ("minutes", "Min",
-     "Total match duration in minutes."),
-    # ── Winner identity + attributes ────────────────────────────────
-    ("winner_name", "Winner",
+    # ── Outcome ─────────────────────────────────────────────────────
+    ("player_a", "Player A",
+     "First player in the matchup. Each historical match is stored "
+     "twice in the training panel — once with Player A = the actual "
+     "winner and once with Player A = the actual loser — so the "
+     "feature differences cancel and the trained model isn't biased "
+     "toward putting the winner on either side."),
+    ("player_b", "Player B",
+     "Second player in the matchup. See Player A for the orientation "
+     "note."),
+    ("winner", "Winner",
      "Name of the player who actually won this match."),
-    ("winner_country", "W country",
-     "Winner's nationality (IOC 3-letter code)."),
-    ("winner_hand", "W hand",
-     "Winner's playing hand: R = right, L = left, U = unknown."),
-    ("winner_height_cm", "W height",
-     "Winner's listed height in centimetres."),
-    ("winner_age", "W age",
-     "Winner's age in years at match start."),
-    ("winner_rank", "W rank",
-     "Winner's ATP/WTA singles ranking at the time of the match."),
-    ("winner_rank_points", "W pts",
-     "Winner's ranking points entering the match."),
-    ("winner_seed", "W seed",
-     "Winner's seeding in this draw, if seeded."),
-    ("winner_entry", "W entry",
-     "How the winner entered the draw: Q = qualifier, WC = wild "
-     "card, LL = lucky loser, SE = special exempt, ALT = alternate, "
+    # ── Player A raw attributes ─────────────────────────────────────
+    ("a_age", "A age",
+     "Player A's age in years at match start."),
+    ("a_height_cm", "A height",
+     "Player A's listed height in centimetres."),
+    ("a_hand", "A hand",
+     "Player A's playing hand: R = right, L = left, U = unknown / "
+     "ambidextrous."),
+    ("a_country", "A country",
+     "Player A's nationality (IOC 3-letter code)."),
+    ("a_rank", "A rank",
+     "Player A's ATP/WTA singles ranking at the time of the match. "
+     "Lower number = better."),
+    ("a_rank_points", "A pts",
+     "Player A's ranking points entering the match."),
+    ("a_seed", "A seed",
+     "Player A's seeding in this draw, if seeded."),
+    ("a_entry", "A entry",
+     "How Player A entered the draw: Q = qualifier, WC = wild card, "
+     "LL = lucky loser, SE = special exempt, ALT = alternate, "
      "PR = protected ranking."),
-    # ── Loser identity + attributes ─────────────────────────────────
-    ("loser_name", "Loser",
-     "Name of the player who lost the match."),
-    ("loser_country", "L country",
-     "Loser's nationality (IOC 3-letter code)."),
-    ("loser_hand", "L hand", "Loser's playing hand (R / L / U)."),
-    ("loser_height_cm", "L height", "Loser's listed height in cm."),
-    ("loser_age", "L age", "Loser's age at match start."),
-    ("loser_rank", "L rank", "Loser's pre-match ranking."),
-    ("loser_rank_points", "L pts",
-     "Loser's pre-match ranking points."),
-    ("loser_seed", "L seed", "Loser's seeding in this draw."),
-    ("loser_entry", "L entry",
-     "Loser's entry route into the draw."),
-    # ── Winner match stats (per Sackmann's post-match summary) ──────
-    ("w_aces", "W aces",
-     "Aces the winner hit during the match."),
-    ("w_df", "W DF",
-     "Double faults the winner committed."),
-    ("w_svpt", "W svPts",
-     "Total service points the winner played."),
-    ("w_1stIn", "W 1stIn",
-     "First serves in (winner)."),
-    ("w_1stWon", "W 1stWon",
-     "First serve points won (winner)."),
-    ("w_2ndWon", "W 2ndWon",
-     "Second serve points won (winner)."),
-    ("w_SvGms", "W SvGms",
-     "Service games (winner)."),
-    ("w_bpSaved", "W BPsv",
-     "Break points saved by the winner."),
-    ("w_bpFaced", "W BPfc",
-     "Break points the winner faced."),
-    # ── Loser match stats ────────────────────────────────────────────
-    ("l_aces", "L aces", "Aces the loser hit."),
-    ("l_df", "L DF", "Double faults the loser committed."),
-    ("l_svpt", "L svPts",
-     "Total service points the loser played."),
-    ("l_1stIn", "L 1stIn", "First serves in (loser)."),
-    ("l_1stWon", "L 1stWon",
-     "First serve points won (loser)."),
-    ("l_2ndWon", "L 2ndWon",
-     "Second serve points won (loser)."),
-    ("l_SvGms", "L SvGms", "Service games (loser)."),
-    ("l_bpSaved", "L BPsv", "Break points saved by the loser."),
-    ("l_bpFaced", "L BPfc", "Break points the loser faced."),
+    # ── Player B raw attributes ─────────────────────────────────────
+    ("b_age", "B age", "Player B's age in years at match start."),
+    ("b_height_cm", "B height", "Player B's listed height in cm."),
+    ("b_hand", "B hand",
+     "Player B's playing hand: R = right, L = left, U = unknown."),
+    ("b_country", "B country",
+     "Player B's nationality (IOC 3-letter code)."),
+    ("b_rank", "B rank",
+     "Player B's ATP/WTA singles ranking at match time."),
+    ("b_rank_points", "B pts",
+     "Player B's ranking points entering the match."),
+    ("b_seed", "B seed",
+     "Player B's seeding in this draw, if seeded."),
+    ("b_entry", "B entry",
+     "Player B's entry route into the draw (Q, WC, LL, SE, ALT, PR)."),
     # ── Engineered features the model actually trains on ─────────────
     ("diff_elo_pre", "Elo Δ",
      "Player A's pre-match overall Elo minus Player B's. Computed "
@@ -2966,19 +2941,29 @@ _TRAINING_COLUMNS: list[tuple[str, str, str]] = [
     ("round_rank", "Round rank",
      "Round depth as a numeric code: R128 = 1, R64 = 2, R32 = 3, "
      "R16 = 4, QF = 5, SF = 6, F = 8. ⚙ MODEL FEATURE."),
-    # ── Kalshi bet info (joined via matches.match_id) ───────────────
-    ("bet_ticker", "Bet ticker",
-     "Kalshi ticker we held on this match, if any. Joined via "
-     "kalshi_bets.match_id."),
-    ("bet_side", "Bet on",
-     "Which player we bought YES on (3-letter Kalshi tricode)."),
-    ("bet_entry", "Bet entry",
-     "YES price in dollars at order fill."),
-    ("bet_won", "Bet result",
-     "WIN if our side won the underlying match, LOSS if it didn't, "
-     "VOID if Kalshi resolved the market non-binary."),
-    ("bet_pnl", "P&L",
-     "Realized profit/loss in dollars on this Kalshi position."),
+    # ── Derived / candidate features (NOT currently selected) ───────
+    ("age_diff", "Age Δ",
+     "Player A's age minus B's. Negative = Player A is younger. "
+     "Computed but not currently in the selected feature list — "
+     "tracked here in case it surfaces signal in a future search."),
+    ("height_diff_cm", "Height Δ",
+     "Player A's height minus B's, in cm. Taller players historically "
+     "have an edge on fast surfaces. Candidate feature, not yet "
+     "selected."),
+    ("rank_points_diff", "Rank pts Δ",
+     "Player A's ranking points minus B's. A continuous version of "
+     "the rank diff that's more sensitive to the gap between top-5 "
+     "and top-20. Candidate feature."),
+    ("seed_diff", "Seed Δ",
+     "Player B's seed minus A's. Positive = A is higher-seeded. "
+     "Candidate feature."),
+    ("hand_match", "Same hand?",
+     "1 if both players are right-handed or both left-handed, "
+     "0 if one is left and one is right (the lefty advantage case), "
+     "blank when at least one is unknown. Candidate feature."),
+    ("same_country", "Same flag?",
+     "1 if both players share the same IOC country code, else 0. "
+     "Captures the rare same-country matchup. Candidate feature."),
 ]
 
 # Backwards-compat alias used in older render code paths. Maps the
@@ -3053,13 +3038,14 @@ def render_training_data_panel(*, current_bot: str | None,
     split_filter = split_filter if split_filter in ("train", "val",
                                                        "test") else None
 
-    # Kalshi-only rows: bets on matches the Sackmann panel hasn't
-    # seen yet. We pull these from kalshi_bets where match_id IS NULL
-    # — those are the unresolved-by-join rows the v2 schema flags.
+    # Kalshi-only rows are matches the bot recorded on Kalshi that
+    # the Sackmann panel doesn't have yet (the source updates on a
+    # lag). They're date-newer than every historical training row, so
+    # they sit at the top of the sort.
     kalshi_only_all = _build_kalshi_only_rows(tour_filter)
     n_kalshi = len(kalshi_only_all)
-    n_historical = db_mod.count_combined_matches(
-        _TRAINING_DB_PATH, tour=tour_filter,
+    n_historical = db_mod.count_training_matches(
+        _TRAINING_DB_PATH, tour=tour_filter, split=split_filter,
     )
     total = n_kalshi + n_historical
     total_pages = max(1, (total + page_size - 1) // page_size)
@@ -3080,26 +3066,22 @@ def render_training_data_panel(*, current_bot: str | None,
         hist_offset = max(0, start - n_kalshi)
         hist_limit = end - max(start, n_kalshi)
         if hist_limit > 0:
-            rows = db_mod.fetch_combined_matches(
+            rows = db_mod.fetch_training_matches(
                 _TRAINING_DB_PATH,
                 offset=hist_offset, limit=hist_limit,
-                tour=tour_filter,
+                tour=tour_filter, split=split_filter,
             )
 
-    # Normalise the bet_won INTEGER column from the v2 join into a
-    # human-readable WIN / LOSS / VOID label so the cell formatter
-    # has something to colour. Done here so the SQL stays simple.
-    for r in rows + kalshi_only_rows:
-        wv = r.get("bet_won")
-        mr = (r.get("bet_market_result") or "").lower()
-        if mr and mr not in ("yes", "no"):
-            r["bet_won"] = "VOID"
-        elif wv == 1:
-            r["bet_won"] = "WIN"
-        elif wv == 0:
-            r["bet_won"] = "LOSS"
-        elif wv is None:
-            r["bet_won"] = None
+    # Derive Winner from label for every training row (label=1 means
+    # player_a won; label=0 means player_b won). Done here rather
+    # than in SQL because the column is computed only at render time.
+    for r in rows:
+        label_v = r.get("label")
+        if label_v is None:
+            r["winner"] = None
+        else:
+            r["winner"] = (r.get("player_a") if int(label_v) == 1
+                            else r.get("player_b"))
 
 
     out: List[str] = []
@@ -3160,11 +3142,9 @@ def render_training_data_panel(*, current_bot: str | None,
         # Numeric columns get .num for right-alignment; player names /
         # categorical attrs stay left-aligned for readability.
         is_num = sql not in {
-            "match_date", "tourney_name", "tour", "surface", "level",
-            "round", "score",
-            "winner_name", "winner_country", "winner_hand", "winner_entry",
-            "loser_name", "loser_country", "loser_hand", "loser_entry",
-            "bet_ticker", "bet_side", "bet_won",
+            "tourney_date", "tourney_name", "tour", "surface", "level",
+            "round", "player_a", "player_b", "a_hand", "a_country",
+            "a_entry", "b_hand", "b_country", "b_entry",
         }
         cls = " class='num'" if is_num else ""
         out.append(
@@ -3182,19 +3162,10 @@ def render_training_data_panel(*, current_bot: str | None,
     def _fmt_cell(sql: str, v: Any) -> str:
         if v is None or v == "":
             return "—"
-        if sql in {"winner_hand", "loser_hand"}:
+        if sql in {"a_hand", "b_hand"}:
             return html.escape(str(v))
-        if sql == "bet_won":
-            colour = ("green" if v == "WIN"
-                       else "red" if v == "LOSS" else "gray")
-            return f"<span class='{colour}'>{html.escape(str(v))}</span>"
-        if sql == "bet_entry":
-            return f"${float(v):.2f}"
-        if sql == "bet_pnl":
-            v = float(v)
-            sign = "+" if v >= 0 else "−"
-            colour = "green" if v > 0 else "red" if v < 0 else "gray"
-            return f"<span class='{colour}'>{sign}${abs(v):.3f}</span>"
+        if sql in {"hand_match", "same_country"}:
+            return "Yes" if int(v) == 1 else "No"
         if isinstance(v, float):
             # Diffs render with a sign; raw stats render plain.
             if sql.endswith("_diff") or sql.startswith("diff_") or \
@@ -3212,12 +3183,9 @@ def render_training_data_panel(*, current_bot: str | None,
         for sql, _, _ in _TRAINING_COLUMNS:
             v = r.get(sql)
             is_num = sql not in {
-                "match_date", "tourney_name", "tour", "surface", "level",
-                "round", "score",
-                "winner_name", "winner_country", "winner_hand",
-                "winner_entry",
-                "loser_name", "loser_country", "loser_hand", "loser_entry",
-                "bet_ticker", "bet_side", "bet_won",
+                "tourney_date", "tourney_name", "tour", "surface", "level",
+                "round", "player_a", "player_b", "a_hand", "a_country",
+                "a_entry", "b_hand", "b_country", "b_entry",
             }
             cls = " class='num'" if is_num else ""
             out.append(f"<td{cls}>{_fmt_cell(sql, v)}</td>")
@@ -3420,10 +3388,10 @@ def _load_event_ticker_enrichment() -> Dict[str, Dict[str, Any]]:
 
 
 def _build_kalshi_only_rows(tour_filter: str | None) -> List[Dict[str, Any]]:
-    """Return Kalshi bets whose ``match_id`` is NULL in kalshi_bets —
-    those are matches the Sackmann panel hasn't seen yet. Shaped to
-    match the v2 combined column layout (winner_name / loser_name /
-    bet_*) so they slot into the same render loop.
+    """Return Kalshi bets that don't have a matching training_matches
+    row, shaped to fit the same column layout. Used on page 1 so the
+    combined table includes the bot's live activity even when the
+    underlying Sackmann panel hasn't caught up yet.
 
     For each unmatched Kalshi outcome:
       * Date is decoded from the ``YYMMMDD`` segment of event_ticker
@@ -3446,18 +3414,25 @@ def _build_kalshi_only_rows(tour_filter: str | None) -> List[Dict[str, Any]]:
                                 check_same_thread=False)
         try:
             cur = conn.execute(
-                "SELECT ticker, event_ticker, side_tricode, other_tricode, "
+                "SELECT ticker, event_ticker, side_player, other_player, "
                 "market_result, settle_value, won, entry_price, "
                 "settle_price, realized_pnl, fee_cost, closed_at "
-                "FROM kalshi_bets WHERE match_id IS NULL "
-                "ORDER BY closed_at DESC"
+                "FROM kalshi_outcomes ORDER BY closed_at DESC"
             )
             cols = [c[0] for c in cur.description]
             kalshi_records = [dict(zip(cols, r)) for r in cur.fetchall()]
-            # Normalise to old-style key names for the existing flow.
-            for kr in kalshi_records:
-                kr["side_player"] = kr.pop("side_tricode", None)
-                kr["other_player"] = kr.pop("other_tricode", None)
+            # Get the set of (date, tricodes) already covered by training
+            # rows so we don't duplicate when both are present.
+            cur2 = conn.execute(
+                "SELECT tourney_date, player_a, player_b FROM training_matches"
+            )
+            covered: set[tuple[str, frozenset]] = set()
+            for date, pa, pb in cur2.fetchall():
+                if not date or not pa or not pb:
+                    continue
+                covered.add((date, frozenset({
+                    _player_tricode(pa), _player_tricode(pb)
+                })))
         finally:
             conn.close()
     except sqlite3.OperationalError:
@@ -3502,31 +3477,56 @@ def _build_kalshi_only_rows(tour_filter: str | None) -> List[Dict[str, Any]]:
             winner = op
         else:
             winner = None
-        # Pull the bot's recorded metadata if we have it: full names,
-        # tournament, surface — fields Kalshi's settlement payload
-        # doesn't carry but the live executor stamped on each closed
-        # position at order time.
+        # Pull the bot's recorded metadata if we have it. Maps the
+        # tricodes back to full player names + tournament + surface
+        # so the table shows e.g. "Frances Tiafoe" / "Hard" / "Roland
+        # Garros" instead of just "TIA" / "—" / "—".
         meta = enrichment.get(ev, {}) or {}
         full_a, full_b = meta.get("player_a"), meta.get("player_b")
         side_full = meta.get("side_player") or ""
-        # Determine winner / loser by the bet outcome + side mapping.
-        # ``won == 1`` means our side won; resolve the actual full
-        # name when sim_state has it.
-        if not (full_a and full_b):
-            full_a, full_b = sp, op
-        # Side_full is the full name we bet on, if recorded.
-        if won_v == 1:
-            winner_name = side_full or sp
-            loser_name = (full_b if winner_name == full_a else full_a)
-        elif won_v == 0:
-            loser_name = side_full or sp
-            winner_name = (full_b if loser_name == full_a else full_a)
+        # Decide which side is A vs B by matching side_player full
+        # name to the recorded side_player tricode.
+        if full_a and full_b:
+            a_last_initial = _player_tricode(full_a)
+            if side_full and side_full == full_a:
+                # full_a is the side we bet on (sp)
+                player_a, player_b = full_a, full_b
+            elif side_full and side_full == full_b:
+                player_a, player_b = full_b, full_a
+            elif a_last_initial == sp:
+                player_a, player_b = full_a, full_b
+            else:
+                player_a, player_b = full_b, full_a
         else:
-            winner_name, loser_name = None, None
+            player_a, player_b = sp, op
+        # Recompute winner against the resolved full names.
         if market_result not in ("yes", "no"):
-            winner_name, loser_name = None, None
+            winner = None
+        elif won_v == 1:
+            winner = player_a if side_full == player_a or sp == _player_tricode(
+                player_a) else (
+                player_a if sp != _player_tricode(player_b) else player_b
+            )
+            # Simpler: side_player (our side) won. Map sp tricode to
+            # whichever of (player_a, player_b) has that initial.
+            if _player_tricode(player_a) == sp:
+                winner = player_a
+            elif _player_tricode(player_b) == sp:
+                winner = player_b
+            else:
+                winner = player_a  # safe default — won_v=1 means our side won
+        elif won_v == 0:
+            # Our side lost → the OTHER side won.
+            if _player_tricode(player_a) == sp:
+                winner = player_b
+            elif _player_tricode(player_b) == sp:
+                winner = player_a
+            else:
+                winner = player_b
+        else:
+            winner = None
         out_rows.append({
-            "match_date": date,
+            "tourney_date": date,
             "tourney_name": (meta.get("tournament")
                               or meta.get("event_title")
                               or ev),
@@ -3536,24 +3536,9 @@ def _build_kalshi_only_rows(tour_filter: str | None) -> List[Dict[str, Any]]:
             "round": None,
             "draw_size": None,
             "best_of": None,
-            "score": None,
-            "minutes": None,
-            "winner_name": winner_name,
-            "loser_name": loser_name,
-            "winner_country": None, "winner_hand": None,
-            "winner_height_cm": None, "winner_age": None,
-            "winner_rank": None, "winner_rank_points": None,
-            "winner_seed": None, "winner_entry": None,
-            "loser_country": None, "loser_hand": None,
-            "loser_height_cm": None, "loser_age": None,
-            "loser_rank": None, "loser_rank_points": None,
-            "loser_seed": None, "loser_entry": None,
-            "bet_ticker": ko.get("ticker"),
-            "bet_side": sp,
-            "bet_entry": ko.get("entry_price"),
-            "bet_pnl": ko.get("realized_pnl"),
-            "bet_won": won_v,
-            "bet_market_result": ko.get("market_result"),
+            "player_a": player_a,
+            "player_b": player_b,
+            "winner": winner,
         })
     return out_rows
 
