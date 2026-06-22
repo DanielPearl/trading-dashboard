@@ -2819,62 +2819,157 @@ def render_page(*, metrics_path: str | None, coefficients_path: str | None,
 # the dashboard shows a populated table or a "not initialised yet" stub.
 _TRAINING_DB_PATH = Path("/root/tennis-forecast/data/training_history.db")
 
-# Human-friendly labels and units for the 12 feature columns. Used by the
-# Training Data table to render a column header tooltip explaining what
-# each feature means without forcing the operator to read the trainer's
-# source code.
+# All training-data table columns and their definitions. Each entry is
+# (sql-column, short-label, full-definition). The short label goes in
+# the table header; clicking it pops up a definition modal. ``None``
+# label hides the column from rendering (e.g. internal IDs).
+#
+# The order here is the rendered column order.
+_TRAINING_COLUMNS: list[tuple[str, str, str]] = [
+    # ── Match identity ───────────────────────────────────────────────
+    ("tourney_date", "Date",
+     "Date of the match's tournament round, in YYYY-MM-DD."),
+    ("tourney_name", "Tournament",
+     "Tournament name from the official ATP/WTA tour calendar."),
+    ("tour", "Tour",
+     "ATP (men's) or WTA (women's). Determined by which Sackmann "
+     "match file the row came from."),
+    ("surface", "Surface",
+     "Hard / Clay / Grass / Carpet — the playing surface."),
+    ("level", "Level",
+     "Tournament tier raw code: G = Grand Slam, M = Masters 1000, "
+     "A = ATP 500/250 or WTA tier-equivalent, F = Tour Finals, "
+     "D = Davis Cup, C = Challenger, S = ITF Futures."),
+    ("round", "Round",
+     "Round of the match: R128, R64, R32, R16, QF, SF, F (final), "
+     "RR = round-robin, BR = bronze."),
+    ("draw_size", "Draw",
+     "Total number of players in the main draw. 128 for a Slam, 64 "
+     "for most Masters, 32 for most 250s."),
+    ("best_of", "BO",
+     "Best-of-3 or best-of-5 sets. Slams + Davis Cup men's are "
+     "best-of-5; everything else is best-of-3."),
+    # ── Outcome ─────────────────────────────────────────────────────
+    ("player_a", "Player A",
+     "Player A (the side the model is predicting for). Each match "
+     "appears twice — once with player A = winner (label 1) and once "
+     "with player A = loser (label 0) — so the training set is "
+     "orientation-balanced."),
+    ("player_b", "Player B",
+     "Player B (the opponent). See Player A for the orientation note."),
+    ("label", "Won?",
+     "1 if Player A won the match, 0 if Player B won."),
+    # ── Player A raw attributes ─────────────────────────────────────
+    ("a_age", "A age",
+     "Player A's age in years at match start."),
+    ("a_height_cm", "A height",
+     "Player A's listed height in centimetres."),
+    ("a_hand", "A hand",
+     "Player A's playing hand: R = right, L = left, U = unknown / "
+     "ambidextrous."),
+    ("a_country", "A country",
+     "Player A's nationality (IOC 3-letter code)."),
+    ("a_rank", "A rank",
+     "Player A's ATP/WTA singles ranking at the time of the match. "
+     "Lower number = better."),
+    ("a_rank_points", "A pts",
+     "Player A's ranking points entering the match."),
+    ("a_seed", "A seed",
+     "Player A's seeding in this draw, if seeded."),
+    ("a_entry", "A entry",
+     "How Player A entered the draw: Q = qualifier, WC = wild card, "
+     "LL = lucky loser, SE = special exempt, ALT = alternate, "
+     "PR = protected ranking."),
+    # ── Player B raw attributes ─────────────────────────────────────
+    ("b_age", "B age", "Player B's age in years at match start."),
+    ("b_height_cm", "B height", "Player B's listed height in cm."),
+    ("b_hand", "B hand",
+     "Player B's playing hand: R = right, L = left, U = unknown."),
+    ("b_country", "B country",
+     "Player B's nationality (IOC 3-letter code)."),
+    ("b_rank", "B rank",
+     "Player B's ATP/WTA singles ranking at match time."),
+    ("b_rank_points", "B pts",
+     "Player B's ranking points entering the match."),
+    ("b_seed", "B seed",
+     "Player B's seeding in this draw, if seeded."),
+    ("b_entry", "B entry",
+     "Player B's entry route into the draw (Q, WC, LL, SE, ALT, PR)."),
+    # ── Engineered features the model actually trains on ─────────────
+    ("diff_elo_pre", "Elo Δ",
+     "Player A's pre-match overall Elo minus Player B's. Computed "
+     "rolling through the historical match panel. Larger positive = "
+     "Player A is the all-surface favourite. ⚙ MODEL FEATURE."),
+    ("diff_surface_elo_pre", "Surface Elo Δ",
+     "Surface-specific Elo difference (A − B) for this match's "
+     "surface. Captures the fact that some players are clay "
+     "specialists, others grass specialists, etc. ⚙ MODEL FEATURE."),
+    ("diff_form_last5", "Form 5 Δ",
+     "Win-rate over the last 5 matches (A − B). Captures short-term "
+     "momentum / cold streaks. ⚙ MODEL FEATURE."),
+    ("diff_form_last10", "Form 10 Δ",
+     "Win-rate over the last 10 matches (A − B). Smoother form "
+     "signal that's less reactive to a single bad day. ⚙ MODEL "
+     "FEATURE."),
+    ("diff_avg_serve_pts_won_10", "Serve % Δ",
+     "Average serve points won % over the last 10 matches (A − B). "
+     "A direct measure of who's holding serve better recently. "
+     "⚙ MODEL FEATURE."),
+    ("diff_avg_return_pts_won_10", "Return % Δ",
+     "Average return points won % over the last 10 matches (A − B). "
+     "Captures who's been breaking serve / pressuring the opponent's "
+     "delivery. ⚙ MODEL FEATURE."),
+    ("diff_avg_bp_saved_10", "BP saved Δ",
+     "Average break-points saved % over the last 10 matches (A − B). "
+     "Clutch-on-serve indicator. ⚙ MODEL FEATURE."),
+    ("diff_days_rest", "Days rest Δ",
+     "Days since each player's last match (A − B). Positive = "
+     "Player A had more rest. Top permutation-importance feature in "
+     "the current model. ⚙ MODEL FEATURE."),
+    ("h2h_a_wins_minus_b_wins", "H2H Δ",
+     "Career head-to-head record up to (not including) this match: "
+     "A's wins minus B's wins. ⚙ MODEL FEATURE."),
+    ("rank_diff", "Rank Δ",
+     "B's ranking minus A's ranking (so positive = A is higher-"
+     "ranked / better). ⚙ MODEL FEATURE."),
+    ("level_rank", "Level rank",
+     "Tournament tier as a numeric code: Grand Slam = 4, Masters / "
+     "WTA 1000 = 3, ATP 500 / WTA 500 / ATP 250 / WTA 250 = 2, "
+     "Davis Cup / Challenger / other = 1. ⚙ MODEL FEATURE."),
+    ("round_rank", "Round rank",
+     "Round depth as a numeric code: R128 = 1, R64 = 2, R32 = 3, "
+     "R16 = 4, QF = 5, SF = 6, F = 8. ⚙ MODEL FEATURE."),
+    # ── Derived / candidate features (NOT currently selected) ───────
+    ("age_diff", "Age Δ",
+     "Player A's age minus B's. Negative = Player A is younger. "
+     "Computed but not currently in the selected feature list — "
+     "tracked here in case it surfaces signal in a future search."),
+    ("height_diff_cm", "Height Δ",
+     "Player A's height minus B's, in cm. Taller players historically "
+     "have an edge on fast surfaces. Candidate feature, not yet "
+     "selected."),
+    ("rank_points_diff", "Rank pts Δ",
+     "Player A's ranking points minus B's. A continuous version of "
+     "the rank diff that's more sensitive to the gap between top-5 "
+     "and top-20. Candidate feature."),
+    ("seed_diff", "Seed Δ",
+     "Player B's seed minus A's. Positive = A is higher-seeded. "
+     "Candidate feature."),
+    ("hand_match", "Same hand?",
+     "1 if both players are right-handed or both left-handed, "
+     "0 if one is left and one is right (the lefty advantage case), "
+     "blank when at least one is unknown. Candidate feature."),
+    ("same_country", "Same flag?",
+     "1 if both players share the same IOC country code, else 0. "
+     "Captures the rare same-country matchup. Candidate feature."),
+]
+
+# Backwards-compat alias used in older render code paths. Maps the
+# columns the rendered table previously knew about to the new
+# (label, definition) pair the modal reads.
 _FEATURE_LABELS: Dict[str, Tuple[str, str]] = {
-    "diff_elo_pre": (
-        "Elo Δ",
-        "Player A's pre-match overall Elo minus player B's. Larger "
-        "positive = A is the favourite per the ATP/WTA Elo history.",
-    ),
-    "diff_surface_elo_pre": (
-        "Surface Elo Δ",
-        "Surface-specific Elo difference (A − B) for the match's surface.",
-    ),
-    "diff_form_last5": (
-        "Form 5 Δ",
-        "Win-rate over the last 5 matches (A − B).",
-    ),
-    "diff_form_last10": (
-        "Form 10 Δ",
-        "Win-rate over the last 10 matches (A − B).",
-    ),
-    "diff_avg_serve_pts_won_10": (
-        "Serve % Δ",
-        "Average serve points won % over last 10 matches (A − B).",
-    ),
-    "diff_avg_return_pts_won_10": (
-        "Return % Δ",
-        "Average return points won % over last 10 matches (A − B).",
-    ),
-    "diff_avg_bp_saved_10": (
-        "BP saved Δ",
-        "Average break-points saved % over last 10 matches (A − B).",
-    ),
-    "diff_days_rest": (
-        "Days rest Δ",
-        "Days since each player's last match (A − B). Top permutation-"
-        "importance feature in the current model.",
-    ),
-    "h2h_a_wins_minus_b_wins": (
-        "H2H Δ",
-        "Career head-to-head record: A's wins minus B's wins.",
-    ),
-    "rank_diff": (
-        "Rank Δ",
-        "Pre-match ATP/WTA ranking (B − A) so positive favours A.",
-    ),
-    "level_rank": (
-        "Level",
-        "Tournament tier code: Grand Slam=4, Masters=3, ATP/WTA 250s=2, "
-        "Davis Cup/Challenger=1.",
-    ),
-    "round_rank": (
-        "Round",
-        "Round code: R128=1 up to Final=8.",
-    ),
+    sql: (label, definition)
+    for sql, label, definition in _TRAINING_COLUMNS
 }
 
 
@@ -2988,64 +3083,73 @@ def render_training_data_panel(*, current_bot: str | None,
     out.append(_filter_link("tour", None, "All", tour_filter is None))
     out.append(_filter_link("tour", "ATP", "ATP", tour_filter == "ATP"))
     out.append(_filter_link("tour", "WTA", "WTA", tour_filter == "WTA"))
-    out.append("<span class='small gray' style='margin:0 8px 0 16px;'>Split:</span>")
-    out.append(_filter_link("split", None, "All", split_filter is None))
-    out.append(_filter_link("split", "train", "Train",
-                              split_filter == "train"))
-    out.append(_filter_link("split", "val", "Val", split_filter == "val"))
-    out.append(_filter_link("split", "test", "Test", split_filter == "test"))
     out.append("</div>")
+    out.append(
+        "<p class='small gray' style='margin-top:8px;'>"
+        "Click any column header for its definition. Columns marked "
+        "<b>⚙ MODEL FEATURE</b> in the definition are the ones the "
+        "current model actually trains on; everything else is a "
+        "candidate feature carried for review.</p>"
+    )
 
-    # Table
+    # Table — every column is a clickable header that opens a modal
+    # with the column's definition (see the inline script below).
     out.append("<div style='overflow-x:auto;margin-top:12px;'>")
-    out.append("<table><thead><tr>")
-    out.append("<th>Date</th>")
-    out.append("<th>Tour</th>")
-    out.append("<th>Surface</th>")
-    out.append("<th>Round</th>")
-    out.append("<th>Player A</th>")
-    out.append("<th>Player B</th>")
-    out.append("<th>Winner</th>")
-    out.append("<th>Split</th>")
-    for col, (label, tip) in _FEATURE_LABELS.items():
+    out.append("<table class='training-data-table'><thead><tr>")
+    for sql, label, _ in _TRAINING_COLUMNS:
+        # Numeric columns get .num for right-alignment; player names /
+        # categorical attrs stay left-aligned for readability.
+        is_num = sql not in {
+            "tourney_date", "tourney_name", "tour", "surface", "level",
+            "round", "player_a", "player_b", "a_hand", "a_country",
+            "a_entry", "b_hand", "b_country", "b_entry",
+        }
+        cls = " class='num'" if is_num else ""
         out.append(
-            f"<th class='num' title='{html.escape(tip)}'>"
-            f"{html.escape(label)}</th>"
+            f"<th{cls}><button type='button' class='col-def-btn' "
+            f"data-col='{html.escape(sql)}'>"
+            f"{html.escape(label)}</button></th>"
         )
     out.append("</tr></thead><tbody>")
     if not rows:
         out.append(
-            f"<tr><td colspan='{8 + len(_FEATURE_LABELS)}' "
+            f"<tr><td colspan='{len(_TRAINING_COLUMNS)}' "
             f"class='empty'>No rows for the selected filter.</td></tr>"
         )
+
+    def _fmt_cell(sql: str, v: Any) -> str:
+        if v is None or v == "":
+            return "—"
+        # Label column gets a Yes / No render so the outcome is
+        # immediately readable instead of "1" / "0".
+        if sql == "label":
+            return ("<span class='green'>Yes</span>"
+                    if int(v) == 1 else "<span class='red'>No</span>")
+        if sql in {"a_hand", "b_hand"}:
+            return html.escape(str(v))
+        if sql in {"hand_match", "same_country"}:
+            return "Yes" if int(v) == 1 else "No"
+        if isinstance(v, float):
+            # Diffs render with a sign; raw stats render plain.
+            if sql.endswith("_diff") or sql.startswith("diff_") or \
+                    sql == "h2h_a_wins_minus_b_wins":
+                return f"{v:+.3f}"
+            return f"{v:.3f}" if abs(v) < 1000 else f"{int(v):,}"
+        if isinstance(v, int):
+            return f"{v:,}" if abs(v) >= 1000 else str(v)
+        return html.escape(str(v))
+
     for r in rows:
-        winner_label = "A" if int(r.get("label") or 0) == 1 else "B"
-        winner_name = (r.get("player_a") if winner_label == "A"
-                        else r.get("player_b"))
         out.append("<tr>")
-        out.append(f"<td>{html.escape(str(r.get('tourney_date') or ''))}</td>")
-        out.append(f"<td>{html.escape(str(r.get('tour') or '—'))}</td>")
-        out.append(f"<td>{html.escape(str(r.get('surface') or '—'))}</td>")
-        out.append(f"<td>{html.escape(str(r.get('round') or '—'))}</td>")
-        out.append(f"<td>{html.escape(str(r.get('player_a') or '?'))}</td>")
-        out.append(f"<td>{html.escape(str(r.get('player_b') or '?'))}</td>")
-        out.append(
-            f"<td title='{html.escape(str(winner_name or ''))}'>"
-            f"{winner_label} <span class='small gray'>·</span> "
-            f"<span class='small'>{html.escape(str(winner_name or '—'))}</span>"
-            f"</td>"
-        )
-        split_v = r.get("used_in_split") or "—"
-        out.append(f"<td>{html.escape(split_v)}</td>")
-        for col in _FEATURE_LABELS:
-            v = r.get(col)
-            if v is None:
-                cell = "—"
-            elif isinstance(v, float):
-                cell = f"{v:+.3f}"
-            else:
-                cell = html.escape(str(v))
-            out.append(f"<td class='num'>{cell}</td>")
+        for sql, _, _ in _TRAINING_COLUMNS:
+            v = r.get(sql)
+            is_num = sql not in {
+                "tourney_date", "tourney_name", "tour", "surface", "level",
+                "round", "player_a", "player_b", "a_hand", "a_country",
+                "a_entry", "b_hand", "b_country", "b_entry",
+            }
+            cls = " class='num'" if is_num else ""
+            out.append(f"<td{cls}>{_fmt_cell(sql, v)}</td>")
         out.append("</tr>")
     out.append("</tbody></table></div>")
 
@@ -3110,5 +3214,143 @@ def render_training_data_panel(*, current_bot: str | None,
         out.append("<span class='tab-pill tab-pill-disabled'>Next →</span>")
     out.append("</div>")
 
-    out.append("</div></section>")
+    out.append("</div>")  # /training-data section body
+
+    # ── Kalshi outcomes — every settled tennis bet on the account ──
+    try:
+        outcomes_count, outcome_rows = _fetch_kalshi_outcomes(50)
+    except Exception:  # noqa: BLE001
+        outcomes_count, outcome_rows = 0, []
+    out.append("<h3 class='subhead' style='margin-top:24px;'>"
+                "Kalshi outcomes</h3>")
+    out.append(
+        "<p class='small gray'>Every settled tennis ticker the "
+        f"account has touched (<b>{outcomes_count:,}</b> total — "
+        "most recent 50 shown). Joined from /portfolio/fills and "
+        "/portfolio/settlements by the daily sync; refreshed by "
+        "<code>scripts/sync_kalshi_outcomes.py</code>.</p>"
+    )
+    out.append("<div style='overflow-x:auto;margin-top:8px;'>")
+    out.append("<table><thead><tr>")
+    for label in ("Settled", "Ticker", "Side player", "Opponent",
+                   "Result", "Settle ¢", "Won?", "Entry $",
+                   "Realized $", "Fees $"):
+        out.append(f"<th class='num' style='text-align:left;'>"
+                    f"{html.escape(label)}</th>")
+    out.append("</tr></thead><tbody>")
+    if not outcome_rows:
+        out.append("<tr><td colspan='10' class='empty'>"
+                    "No Kalshi outcomes synced yet. Run "
+                    "<code>scripts/sync_kalshi_outcomes.py</code> on "
+                    "the droplet to backfill.</td></tr>")
+    for o in outcome_rows:
+        won = o.get("won")
+        won_cell = "—"
+        if won == 1:
+            won_cell = "<span class='green'>WIN</span>"
+        elif won == 0:
+            won_cell = "<span class='red'>LOSS</span>"
+        entry = o.get("entry_price")
+        realized = o.get("realized_pnl")
+        fee = o.get("fee_cost")
+        def _fmt_money(v):
+            if v is None:
+                return "—"
+            sign = "+" if v >= 0 else "−"
+            return f"{sign}${abs(v):.3f}"
+        out.append("<tr>")
+        out.append(f"<td>{html.escape((o.get('closed_at') or '')[:19])}</td>")
+        out.append(f"<td>{html.escape(o.get('ticker') or '—')}</td>")
+        out.append(f"<td>{html.escape(o.get('side_player') or '—')}</td>")
+        out.append(f"<td>{html.escape(o.get('other_player') or '—')}</td>")
+        out.append(f"<td>{html.escape((o.get('market_result') or '').upper())}</td>")
+        out.append(
+            f"<td class='num'>{o.get('settle_value') if o.get('settle_value') is not None else '—'}</td>"
+        )
+        out.append(f"<td>{won_cell}</td>")
+        out.append(f"<td class='num'>{(f'${entry:.2f}' if entry is not None else '—')}</td>")
+        out.append(f"<td class='num'>{_fmt_money(realized)}</td>")
+        out.append(f"<td class='num'>{(f'${fee:.3f}' if fee is not None else '—')}</td>")
+        out.append("</tr>")
+    out.append("</tbody></table></div>")
+
+    # ── Column-definition modal + inline JS ──────────────────────────
+    # Builds a small JS map of every column's full definition and pops
+    # up a centred panel when any column header is clicked. Self-
+    # contained so the existing dashboard CSS / JS doesn't need to know
+    # this panel exists.
+    import json as _json
+    defs = {sql: {"label": label, "def": definition}
+             for sql, label, definition in _TRAINING_COLUMNS}
+    out.append("<dialog id='col-def-modal' class='col-def-modal'>"
+                "<form method='dialog'>"
+                "<h3 id='col-def-title'></h3>"
+                "<p id='col-def-body'></p>"
+                "<button type='submit'>Close</button>"
+                "</form></dialog>")
+    out.append(
+        "<style>"
+        ".col-def-btn { background:none; border:0; color:inherit; "
+        "font:inherit; cursor:pointer; padding:0; "
+        "text-decoration:underline dotted; }"
+        ".col-def-btn:hover { color:#79c0ff; }"
+        ".col-def-modal { max-width:520px; padding:16px 20px; "
+        "border:1px solid #30363d; background:#0d1117; color:#c9d1d9; }"
+        ".col-def-modal::backdrop { background:rgba(0,0,0,.6); }"
+        ".col-def-modal h3 { margin:0 0 8px; }"
+        ".col-def-modal p { margin:0 0 12px; line-height:1.5; }"
+        ".training-data-table { font-size:12px; }"
+        ".training-data-table th { white-space:nowrap; }"
+        ".training-data-table td { white-space:nowrap; }"
+        "</style>"
+    )
+    out.append(
+        "<script>(function(){"
+        "var defs = " + _json.dumps(defs) + ";"
+        "var modal = document.getElementById('col-def-modal');"
+        "if (!modal || !modal.showModal) return;"
+        "document.querySelectorAll('.col-def-btn').forEach(function(b){"
+        "  b.addEventListener('click', function(){"
+        "    var d = defs[b.dataset.col];"
+        "    if (!d) return;"
+        "    document.getElementById('col-def-title').textContent = d.label;"
+        "    document.getElementById('col-def-body').textContent = d['def'];"
+        "    modal.showModal();"
+        "  });"
+        "});"
+        "})();</script>"
+    )
+
+    out.append("</section>")
     return "".join(out)
+
+
+def _fetch_kalshi_outcomes(limit: int = 50) -> Tuple[int, List[Dict[str, Any]]]:
+    """Pull the most-recent N Kalshi outcomes plus a total count. Lives
+    in the same SQLite DB as the training panel; gracefully degrades
+    to ``(0, [])`` if the table isn't there yet (older DB schema)."""
+    if not _TRAINING_DB_PATH.exists():
+        return 0, []
+    import sqlite3
+    try:
+        conn = sqlite3.connect(str(_TRAINING_DB_PATH),
+                                check_same_thread=False)
+        try:
+            total = int(
+                conn.execute("SELECT COUNT(*) FROM kalshi_outcomes")
+                    .fetchone()[0]
+            )
+            cur = conn.execute(
+                "SELECT ticker, event_ticker, side_player, other_player, "
+                "market_result, settle_value, won, entry_price, "
+                "settle_price, realized_pnl, fee_cost, closed_at "
+                "FROM kalshi_outcomes ORDER BY closed_at DESC LIMIT ?",
+                (limit,),
+            )
+            cols = [c[0] for c in cur.description]
+            rows = [dict(zip(cols, r)) for r in cur.fetchall()]
+            return total, rows
+        finally:
+            conn.close()
+    except sqlite3.OperationalError:
+        return 0, []
