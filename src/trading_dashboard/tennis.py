@@ -31,7 +31,7 @@ import logging
 import math
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Tuple
 
 log = logging.getLogger("dashboard.tennis")
 
@@ -2807,4 +2807,308 @@ def render_page(*, metrics_path: str | None, coefficients_path: str | None,
         out.append("</div></div>")  # /body /section
 
     out.append("</body></html>")
+    return "".join(out)
+
+
+# --------------------------------------------------------------------------- #
+# Training Data tab                                                           #
+# --------------------------------------------------------------------------- #
+
+# Default location of the tennis training DB on the droplet — matches the
+# trainer's ``upsert_training_panel`` path. ``Path.exists`` decides whether
+# the dashboard shows a populated table or a "not initialised yet" stub.
+_TRAINING_DB_PATH = Path("/root/tennis-forecast/data/training_history.db")
+
+# Human-friendly labels and units for the 12 feature columns. Used by the
+# Training Data table to render a column header tooltip explaining what
+# each feature means without forcing the operator to read the trainer's
+# source code.
+_FEATURE_LABELS: Dict[str, Tuple[str, str]] = {
+    "diff_elo_pre": (
+        "Elo Δ",
+        "Player A's pre-match overall Elo minus player B's. Larger "
+        "positive = A is the favourite per the ATP/WTA Elo history.",
+    ),
+    "diff_surface_elo_pre": (
+        "Surface Elo Δ",
+        "Surface-specific Elo difference (A − B) for the match's surface.",
+    ),
+    "diff_form_last5": (
+        "Form 5 Δ",
+        "Win-rate over the last 5 matches (A − B).",
+    ),
+    "diff_form_last10": (
+        "Form 10 Δ",
+        "Win-rate over the last 10 matches (A − B).",
+    ),
+    "diff_avg_serve_pts_won_10": (
+        "Serve % Δ",
+        "Average serve points won % over last 10 matches (A − B).",
+    ),
+    "diff_avg_return_pts_won_10": (
+        "Return % Δ",
+        "Average return points won % over last 10 matches (A − B).",
+    ),
+    "diff_avg_bp_saved_10": (
+        "BP saved Δ",
+        "Average break-points saved % over last 10 matches (A − B).",
+    ),
+    "diff_days_rest": (
+        "Days rest Δ",
+        "Days since each player's last match (A − B). Top permutation-"
+        "importance feature in the current model.",
+    ),
+    "h2h_a_wins_minus_b_wins": (
+        "H2H Δ",
+        "Career head-to-head record: A's wins minus B's wins.",
+    ),
+    "rank_diff": (
+        "Rank Δ",
+        "Pre-match ATP/WTA ranking (B − A) so positive favours A.",
+    ),
+    "level_rank": (
+        "Level",
+        "Tournament tier code: Grand Slam=4, Masters=3, ATP/WTA 250s=2, "
+        "Davis Cup/Challenger=1.",
+    ),
+    "round_rank": (
+        "Round",
+        "Round code: R128=1 up to Final=8.",
+    ),
+}
+
+
+def _open_training_db():
+    """Try to import the trainer-side training_db module to reuse its
+    pagination helpers. Returns ``None`` if tennis-forecast's ``src/``
+    isn't on sys.path (which happens at dashboard startup before the
+    bots' upstream packages are loaded — the alias registered by
+    bots/tennis.py adds ``src.data`` to sys.modules)."""
+    try:
+        # The tennis bot loads its upstream package under the alias
+        # ``tennis_src`` (see bots/_base.load_upstream_as_alias) and
+        # registers ``src`` -> ``tennis_src`` aliases for joblib unpickle.
+        # That alias chain also makes ``src.data.training_db`` reachable.
+        import importlib
+        return importlib.import_module("src.data.training_db")
+    except ImportError:
+        try:
+            return importlib.import_module("tennis_src.data.training_db")
+        except Exception:  # noqa: BLE001
+            return None
+
+
+def render_training_data_panel(*, current_bot: str | None,
+                                  page: int = 1, page_size: int = 50,
+                                  tour_filter: str | None = None,
+                                  split_filter: str | None = None,
+                                  current_tab: str = "training",
+                                  period_key: str = "all") -> str:
+    """Render the Training Data tab. Tennis-only — the panel reads the
+    rows the trainer wrote to ``training_history.db`` and paginates
+    over them. Shows the 12 engineered features the model trains on,
+    the binary winner label, and which train/val/test split slice the
+    row belongs to.
+
+    Other bots see a brief explanation: this DB is tennis-specific
+    until their trainers also adopt the pattern.
+    """
+    if current_bot and current_bot != "tennis":
+        return (
+            "<section class='card'><div class='body'>"
+            "<h2>Training Data</h2>"
+            "<p class='small gray'>The Training Data tab is currently "
+            "tennis-only. Each row shown reflects what the model trained "
+            "on — engineered features and the binary winner label. "
+            "Other bots haven't been wired into the training database "
+            "yet.</p></div></section>"
+        )
+    db_mod = _open_training_db()
+    if db_mod is None or not _TRAINING_DB_PATH.exists():
+        return (
+            "<section class='card'><div class='body'>"
+            "<h2>Training Data — tennis</h2>"
+            "<p class='small gray'>The training database hasn't been "
+            "populated yet. It's written by the daily tennis-forecast "
+            "retrain (see <code>src/models/train_prematch_model.py</code>'s "
+            "<code>upsert_training_panel</code> call). Run the trainer "
+            "once and the rows appear here.</p></div></section>"
+        )
+
+    # Whitelist filter values so a malformed query string can't be
+    # forwarded into the SQL.
+    tour_filter = tour_filter if tour_filter in ("ATP", "WTA") else None
+    split_filter = split_filter if split_filter in ("train", "val",
+                                                       "test") else None
+
+    total = db_mod.count_training_matches(_TRAINING_DB_PATH,
+                                            tour=tour_filter,
+                                            split=split_filter)
+    total_pages = max(1, (total + page_size - 1) // page_size)
+    page = min(max(1, page), total_pages)
+    rows = db_mod.fetch_training_matches(
+        _TRAINING_DB_PATH, page=page, page_size=page_size,
+        tour=tour_filter, split=split_filter,
+    )
+
+    out: List[str] = []
+    out.append("<section class='card'><div class='body'>")
+    out.append("<h2>Training Data — tennis</h2>")
+    out.append(
+        f"<p class='small gray'>Every row the prematch model trained on "
+        f"in its most recent fit. <b>{total:,}</b> match observations "
+        f"across the full history; this page shows {len(rows)} sorted "
+        f"newest first. Each row carries the 12 engineered features the "
+        f"model actually saw — same fields as the bundle's "
+        f"<code>feature_list</code>.</p>"
+    )
+
+    # Tour / split filter pills. Hand-rolled query-string preservation
+    # so the pagination links below also keep the active filter.
+    def _filter_link(key: str, value: str | None, label: str,
+                      active: bool) -> str:
+        params = [("tab", current_tab)]
+        if current_bot:
+            params.append(("bot", current_bot))
+        if period_key and period_key != "all":
+            params.append(("period", period_key))
+        # Preserve the OTHER filter dim
+        if key != "tour" and tour_filter:
+            params.append(("tour", tour_filter))
+        if key != "split" and split_filter:
+            params.append(("split", split_filter))
+        if value is not None:
+            params.append((key, value))
+        qs = "&".join(f"{k}={v}" for k, v in params)
+        cls = "tab-pill" + (" tab-pill-active" if active else "")
+        return f"<a class='{cls}' href='?{qs}'>{html.escape(label)}</a>"
+
+    out.append("<div class='tab-bar' style='margin-top:8px;'>")
+    out.append("<span class='small gray' style='margin-right:8px;'>Tour:</span>")
+    out.append(_filter_link("tour", None, "All", tour_filter is None))
+    out.append(_filter_link("tour", "ATP", "ATP", tour_filter == "ATP"))
+    out.append(_filter_link("tour", "WTA", "WTA", tour_filter == "WTA"))
+    out.append("<span class='small gray' style='margin:0 8px 0 16px;'>Split:</span>")
+    out.append(_filter_link("split", None, "All", split_filter is None))
+    out.append(_filter_link("split", "train", "Train",
+                              split_filter == "train"))
+    out.append(_filter_link("split", "val", "Val", split_filter == "val"))
+    out.append(_filter_link("split", "test", "Test", split_filter == "test"))
+    out.append("</div>")
+
+    # Table
+    out.append("<div style='overflow-x:auto;margin-top:12px;'>")
+    out.append("<table><thead><tr>")
+    out.append("<th>Date</th>")
+    out.append("<th>Tour</th>")
+    out.append("<th>Surface</th>")
+    out.append("<th>Round</th>")
+    out.append("<th>Player A</th>")
+    out.append("<th>Player B</th>")
+    out.append("<th>Winner</th>")
+    out.append("<th>Split</th>")
+    for col, (label, tip) in _FEATURE_LABELS.items():
+        out.append(
+            f"<th class='num' title='{html.escape(tip)}'>"
+            f"{html.escape(label)}</th>"
+        )
+    out.append("</tr></thead><tbody>")
+    if not rows:
+        out.append(
+            f"<tr><td colspan='{8 + len(_FEATURE_LABELS)}' "
+            f"class='empty'>No rows for the selected filter.</td></tr>"
+        )
+    for r in rows:
+        winner_label = "A" if int(r.get("label") or 0) == 1 else "B"
+        winner_name = (r.get("player_a") if winner_label == "A"
+                        else r.get("player_b"))
+        out.append("<tr>")
+        out.append(f"<td>{html.escape(str(r.get('tourney_date') or ''))}</td>")
+        out.append(f"<td>{html.escape(str(r.get('tour') or '—'))}</td>")
+        out.append(f"<td>{html.escape(str(r.get('surface') or '—'))}</td>")
+        out.append(f"<td>{html.escape(str(r.get('round') or '—'))}</td>")
+        out.append(f"<td>{html.escape(str(r.get('player_a') or '?'))}</td>")
+        out.append(f"<td>{html.escape(str(r.get('player_b') or '?'))}</td>")
+        out.append(
+            f"<td title='{html.escape(str(winner_name or ''))}'>"
+            f"{winner_label} <span class='small gray'>·</span> "
+            f"<span class='small'>{html.escape(str(winner_name or '—'))}</span>"
+            f"</td>"
+        )
+        split_v = r.get("used_in_split") or "—"
+        out.append(f"<td>{html.escape(split_v)}</td>")
+        for col in _FEATURE_LABELS:
+            v = r.get(col)
+            if v is None:
+                cell = "—"
+            elif isinstance(v, float):
+                cell = f"{v:+.3f}"
+            else:
+                cell = html.escape(str(v))
+            out.append(f"<td class='num'>{cell}</td>")
+        out.append("</tr>")
+    out.append("</tbody></table></div>")
+
+    # Pagination — Prev | page N of M | Next + jump-to dropdown
+    def _page_link(p: int) -> str:
+        params = [("tab", current_tab)]
+        if current_bot:
+            params.append(("bot", current_bot))
+        if period_key and period_key != "all":
+            params.append(("period", period_key))
+        if tour_filter:
+            params.append(("tour", tour_filter))
+        if split_filter:
+            params.append(("split", split_filter))
+        params.append(("page", str(p)))
+        return "?" + "&".join(f"{k}={v}" for k, v in params)
+
+    out.append("<div class='small' style='margin-top:14px;display:flex;"
+                "align-items:center;gap:12px;'>")
+    if page > 1:
+        out.append(f"<a class='tab-pill' href='{_page_link(page - 1)}'>← Prev</a>")
+    else:
+        out.append("<span class='tab-pill tab-pill-disabled'>← Prev</span>")
+    out.append(
+        f"<span>Page <b>{page:,}</b> of <b>{total_pages:,}</b> "
+        f"<span class='gray'>({total:,} rows)</span></span>"
+    )
+    # Jump-to dropdown — covers up to 1000 pages cheaply; beyond that
+    # rendering options gets heavy, so fall back to a small text input.
+    if total_pages <= 1000:
+        out.append("<form method='get' style='display:inline;'>")
+        # Preserve filters as hidden fields so the dropdown's submit
+        # navigates to the right URL.
+        out.append(f"<input type='hidden' name='tab' value='{html.escape(current_tab)}'>")
+        if current_bot:
+            out.append(f"<input type='hidden' name='bot' value='{html.escape(current_bot)}'>")
+        if period_key and period_key != "all":
+            out.append(f"<input type='hidden' name='period' value='{html.escape(period_key)}'>")
+        if tour_filter:
+            out.append(f"<input type='hidden' name='tour' value='{html.escape(tour_filter)}'>")
+        if split_filter:
+            out.append(f"<input type='hidden' name='split' value='{html.escape(split_filter)}'>")
+        out.append("<label class='gray' style='margin-right:6px;'>Jump:</label>")
+        out.append("<select name='page' onchange='this.form.submit()'>")
+        for p in range(1, total_pages + 1):
+            sel = " selected" if p == page else ""
+            out.append(f"<option value='{p}'{sel}>{p}</option>")
+        out.append("</select></form>")
+    else:
+        out.append(
+            "<form method='get' style='display:inline;'>"
+            f"<input type='hidden' name='tab' value='{html.escape(current_tab)}'>"
+            f"<input type='hidden' name='bot' value='{html.escape(current_bot or '')}'>"
+            "<label class='gray' style='margin-right:6px;'>Jump to:</label>"
+            f"<input type='number' name='page' min='1' max='{total_pages}' "
+            f"value='{page}' style='width:80px;'><button type='submit'>Go</button>"
+            "</form>"
+        )
+    if page < total_pages:
+        out.append(f"<a class='tab-pill' href='{_page_link(page + 1)}'>Next →</a>")
+    else:
+        out.append("<span class='tab-pill tab-pill-disabled'>Next →</span>")
+    out.append("</div>")
+
+    out.append("</div></section>")
     return "".join(out)

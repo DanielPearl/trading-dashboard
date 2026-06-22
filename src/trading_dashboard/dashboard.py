@@ -3280,6 +3280,7 @@ def render_page(
     threshold_source: dict | None = None,
     mode: str = "sim",
     live_state_paths: list[str] | None = None,
+    query_string: str = "",
 ) -> str:
     # Mode-driven page chrome. ``mode`` is "sim" (paper-trading
     # default) or "live" (real-money dashboard). Anything not
@@ -3348,6 +3349,7 @@ def render_page(
         ("home", "Home"),
         ("watchlist", "Watchlist"),
         ("models", "Models"),
+        ("training", "Training Data"),
         ("history", "History"),
         ("seasons", "Seasons"),
     ]
@@ -3465,6 +3467,35 @@ def render_page(
         bot_closed_positions=bot_closed_positions,
     )
     out.append("</div>")  # /models panel
+
+    # ── TRAINING DATA tab — tennis model's training panel + Kalshi outcomes
+    # Sourced from data/training_history.db on the tennis-forecast
+    # droplet. Currently tennis-only since it's the only bot whose
+    # trainer writes to the DB; tab still renders for other bots with
+    # an explanatory message rather than blank.
+    _open_panel("training")
+    try:
+        from . import tennis as _tennis_mod
+        from urllib.parse import parse_qs as _parse_qs
+        _td_qs = _parse_qs(query_string)
+        try:
+            _page = max(1, int(_td_qs.get("page", ["1"])[0]))
+        except (TypeError, ValueError):
+            _page = 1
+        out.append(_tennis_mod.render_training_data_panel(
+            current_bot=current_bot,
+            page=_page,
+            page_size=50,
+            tour_filter=_td_qs.get("tour", [None])[0],
+            split_filter=_td_qs.get("split", [None])[0],
+            current_tab=active_tab,
+            period_key=period_key,
+        ))
+    except Exception:  # noqa: BLE001
+        log.exception("training data panel failed to render")
+        out.append("<div class='empty'>Training Data unavailable — "
+                    "see dashboard log for details.</div>")
+    out.append("</div>")  # /training panel
 
     # ── HISTORY tab — closed-bet history across all bots ──────────────
     _open_panel("history")
@@ -11651,7 +11682,7 @@ class Handler(BaseHTTPRequestHandler):
                 if tab_key == "performance":
                     tab_key = "home"
                 if tab_key not in {"home", "watchlist", "models",
-                                    "history", "seasons"}:
+                                    "training", "history", "seasons"}:
                     tab_key = "home"
                 # Models tab supports a pregame / ingame view toggle on
                 # sport bots. Defaults to pregame; ignored for non-sport
@@ -12132,6 +12163,7 @@ class Handler(BaseHTTPRequestHandler):
                     model_view=model_view,
                     mode=self.mode,
                     live_state_paths=self.live_state_paths,
+                    query_string=parsed.query,
                 )
             except Exception:  # noqa: BLE001
                 log.exception("dashboard render failed")
