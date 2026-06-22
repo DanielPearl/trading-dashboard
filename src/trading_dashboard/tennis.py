@@ -2851,14 +2851,16 @@ _TRAINING_COLUMNS: list[tuple[str, str, str]] = [
      "best-of-5; everything else is best-of-3."),
     # ── Outcome ─────────────────────────────────────────────────────
     ("player_a", "Player A",
-     "Player A (the side the model is predicting for). Each match "
-     "appears twice — once with player A = winner (label 1) and once "
-     "with player A = loser (label 0) — so the training set is "
-     "orientation-balanced."),
+     "First player in the matchup. Each historical match is stored "
+     "twice in the training panel — once with Player A = the actual "
+     "winner and once with Player A = the actual loser — so the "
+     "feature differences cancel and the trained model isn't biased "
+     "toward putting the winner on either side."),
     ("player_b", "Player B",
-     "Player B (the opponent). See Player A for the orientation note."),
-    ("label", "Won?",
-     "1 if Player A won the match, 0 if Player B won."),
+     "Second player in the matchup. See Player A for the orientation "
+     "note."),
+    ("winner", "Winner",
+     "Name of the player who actually won this match."),
     # ── Player A raw attributes ─────────────────────────────────────
     ("a_age", "A age",
      "Player A's age in years at match start."),
@@ -2895,25 +2897,6 @@ _TRAINING_COLUMNS: list[tuple[str, str, str]] = [
      "Player B's seeding in this draw, if seeded."),
     ("b_entry", "B entry",
      "Player B's entry route into the draw (Q, WC, LL, SE, ALT, PR)."),
-    # ── Kalshi bet info (populated when we actually placed a bet) ───
-    ("bet_placed", "Bet?",
-     "Whether the bot placed a real Kalshi order on this match. "
-     "Yes/No. Joined from /portfolio/fills + /portfolio/settlements "
-     "by matching the ticker's encoded player tricodes against the "
-     "last-name initials of player A and player B on the same date."),
-    ("bet_side", "Bet on",
-     "Which player we bought YES on, when a bet was placed. Shown as "
-     "the Kalshi 3-letter tricode."),
-    ("bet_entry_price", "Entry",
-     "The YES price (in dollars) we paid at order fill, when a bet "
-     "was placed."),
-    ("bet_outcome", "Bet result",
-     "WIN if our side won the underlying match, LOSS if it didn't, "
-     "VOID if Kalshi resolved the market non-binary (e.g. walkover). "
-     "Blank when no bet was placed."),
-    ("bet_realized", "P&L",
-     "Realized profit/loss in dollars on this Kalshi position "
-     "(settle minus entry minus fees), when a bet was placed."),
     # ── Engineered features the model actually trains on ─────────────
     ("diff_elo_pre", "Elo Δ",
      "Player A's pre-match overall Elo minus Player B's. Computed "
@@ -3074,62 +3057,32 @@ def render_training_data_panel(*, current_bot: str | None,
     kalshi_only_rows = _build_kalshi_only_rows(tour_filter) if page == 1 else []
     total_with_kalshi = total + len(kalshi_only_rows)
 
-    # ── Join each training row with its Kalshi bet, if one exists ───
-    # Kalshi tickers encode the date as YYMMMDD (e.g. 26JUN17) and a
-    # 6-letter player suffix that's the concatenation of each
-    # player's last-name initials (3 chars each). Match against
-    # training rows by computing the tricodes from player_a/b
-    # last names and comparing as an unordered pair on the same date.
-    page_dates = {r.get("tourney_date") for r in rows if r.get("tourney_date")}
-    kalshi_index = _load_kalshi_outcomes_index(page_dates) if page_dates else {}
+    # Derive Winner from label for every training row (label=1 means
+    # player_a won; label=0 means player_b won). Done here rather
+    # than in SQL because the column is computed only at render time.
     for r in rows:
-        date = r.get("tourney_date")
-        if not date or not kalshi_index:
-            continue
-        tri_a = _player_tricode(r.get("player_a"))
-        tri_b = _player_tricode(r.get("player_b"))
-        if not (tri_a and tri_b):
-            continue
-        # Look up on (date, frozenset(tricodes)) — order-insensitive
-        # because Kalshi's ticker encoding isn't deterministic by
-        # alphabetical order.
-        key = (date, frozenset({tri_a, tri_b}))
-        ko = kalshi_index.get(key)
-        if ko is None:
-            continue
-        # Decorate this row with bet info. Map side_player tricode
-        # back to whichever player full name in this row it matches.
-        side_tri = ko.get("side_player") or ""
-        if side_tri == tri_a:
-            r["bet_side"] = r.get("player_a")
-        elif side_tri == tri_b:
-            r["bet_side"] = r.get("player_b")
+        label_v = r.get("label")
+        if label_v is None:
+            r["winner"] = None
         else:
-            r["bet_side"] = side_tri  # unmatched — fall back to tricode
-        r["bet_placed"] = 1
-        r["bet_entry_price"] = ko.get("entry_price")
-        won_v = ko.get("won")
-        if ko.get("market_result") and \
-                str(ko.get("market_result")).lower() not in ("yes", "no"):
-            r["bet_outcome"] = "VOID"
-        elif won_v == 1:
-            r["bet_outcome"] = "WIN"
-        elif won_v == 0:
-            r["bet_outcome"] = "LOSS"
-        r["bet_realized"] = ko.get("realized_pnl")
+            r["winner"] = (r.get("player_a") if int(label_v) == 1
+                            else r.get("player_b"))
+
 
     out: List[str] = []
     out.append("<section class='card'><div class='body'>")
     out.append("<h2>Training Data — tennis</h2>")
     out.append(
-        f"<p class='small gray'>Combined view of every match the model "
-        f"trained on PLUS every Kalshi bet the bot has placed. "
-        f"<b>{total:,}</b> historical training rows + "
-        f"<b>{len(kalshi_only_rows):,}</b> live Kalshi bets without a "
-        f"matching historical row (the Sackmann panel updates "
-        f"periodically and lags the live calendar). Sorted newest "
-        f"first; columns marked ⚙ MODEL FEATURE in their definition "
-        f"are the ones the model actually trains on.</p>"
+        f"<p class='small gray'>All matches across the historical "
+        f"training panel and the live Kalshi calendar — "
+        f"<b>{total:,}</b> from the trainer's most recent fit, plus "
+        f"<b>{len(kalshi_only_rows):,}</b> recorded on Kalshi but not "
+        f"yet in the Sackmann panel (it updates on a lag). Each row "
+        f"is a single match with the winner and every candidate "
+        f"feature; rows duplicate when the same match exists in both "
+        f"sources. Sorted newest first; columns flagged "
+        f"⚙ MODEL FEATURE in their definition are the ones the model "
+        f"actually trains on.</p>"
     )
 
     # Tour / split filter pills. Hand-rolled query-string preservation
@@ -3194,26 +3147,6 @@ def render_training_data_panel(*, current_bot: str | None,
     def _fmt_cell(sql: str, v: Any) -> str:
         if v is None or v == "":
             return "—"
-        # Label column gets a Yes / No render so the outcome is
-        # immediately readable instead of "1" / "0".
-        if sql == "label":
-            return ("<span class='green'>Yes</span>"
-                    if int(v) == 1 else "<span class='red'>No</span>")
-        if sql == "bet_placed":
-            return ("<span class='green'>Yes</span>"
-                    if int(v) == 1 else "—")
-        if sql == "bet_outcome":
-            colour = ("green" if v == "WIN"
-                       else "red" if v == "LOSS"
-                       else "gray")
-            return f"<span class='{colour}'>{html.escape(v)}</span>"
-        if sql == "bet_entry_price":
-            return f"${float(v):.2f}"
-        if sql == "bet_realized":
-            v = float(v)
-            sign = "+" if v >= 0 else "−"
-            colour = "green" if v > 0 else "red" if v < 0 else "gray"
-            return f"<span class='{colour}'>{sign}${abs(v):.3f}</span>"
         if sql in {"a_hand", "b_hand"}:
             return html.escape(str(v))
         if sql in {"hand_match", "same_country"}:
@@ -3430,20 +3363,21 @@ def _build_kalshi_only_rows(tour_filter: str | None) -> List[Dict[str, Any]]:
             # The training data has this match — it'll be decorated
             # with the Kalshi bet info in the main loop below.
             continue
-        # Build a virtual training_matches row from what we know.
+        # Resolve the actual winner from Kalshi's settled result. Our
+        # side is ``side_player``; ``won == 1`` means our side won,
+        # which means the side_player tricode won. Non-binary results
+        # (scalar / void / walkover) leave the winner as unknown
+        # rather than guessing.
         won_v = ko.get("won")
         market_result = (ko.get("market_result") or "").lower()
-        if market_result and market_result not in ("yes", "no"):
-            bet_outcome = "VOID"
+        if market_result not in ("yes", "no"):
+            winner = None
         elif won_v == 1:
-            bet_outcome = "WIN"
+            winner = sp
         elif won_v == 0:
-            bet_outcome = "LOSS"
+            winner = op
         else:
-            bet_outcome = None
-        # Map the won flag back to the label space (1 = player_a won).
-        # Player A = our side; we won → A won → label=1.
-        label = 1 if won_v == 1 else 0 if won_v == 0 else None
+            winner = None
         out_rows.append({
             "tourney_date": date,
             "tourney_name": ev,  # ticker stands in for unknown name
@@ -3455,12 +3389,7 @@ def _build_kalshi_only_rows(tour_filter: str | None) -> List[Dict[str, Any]]:
             "best_of": None,
             "player_a": sp,
             "player_b": op,
-            "label": label,
-            "bet_placed": 1,
-            "bet_side": sp,
-            "bet_entry_price": ko.get("entry_price"),
-            "bet_outcome": bet_outcome,
-            "bet_realized": ko.get("realized_pnl"),
+            "winner": winner,
         })
     return out_rows
 
@@ -3478,65 +3407,3 @@ def _player_tricode(full_name: str | None) -> str:
     return parts[-1][:3].upper()
 
 
-def _load_kalshi_outcomes_index(
-    page_dates: set[str],
-) -> Dict[tuple, Dict[str, Any]]:
-    """Build a ``(date, frozenset[tricode_a, tricode_b]) -> outcome``
-    lookup table for the dates visible on the current page.
-
-    Kalshi tickers carry the event date as YYMMMDD in the
-    ``event_ticker`` (e.g. ``KXATPMATCH-26JUN17ANNGOL``). Parse it
-    out and convert to YYYY-MM-DD so the lookup keys align with
-    ``training_matches.tourney_date``. The matching is also done with
-    ±1 day tolerance because the bot occasionally lists a match under
-    its Kalshi-scheduled close date rather than the actual played
-    date.
-    """
-    if not _TRAINING_DB_PATH.exists() or not page_dates:
-        return {}
-    import sqlite3
-    from datetime import datetime, timedelta
-    index: Dict[tuple, Dict[str, Any]] = {}
-    try:
-        conn = sqlite3.connect(str(_TRAINING_DB_PATH),
-                                check_same_thread=False)
-        try:
-            cur = conn.execute(
-                "SELECT ticker, event_ticker, side_player, other_player, "
-                "market_result, settle_value, won, entry_price, "
-                "settle_price, realized_pnl, fee_cost, closed_at "
-                "FROM kalshi_outcomes"
-            )
-            cols = [c[0] for c in cur.description]
-            for raw in cur.fetchall():
-                ko = dict(zip(cols, raw))
-                ev = ko.get("event_ticker") or ""
-                # YYMMMDD lives at offset 0 of the post-prefix segment.
-                # ``KXATPMATCH-26JUN17ANNGOL`` -> the 7-char ``26JUN17``.
-                if "-" not in ev:
-                    continue
-                tail = ev.split("-", 1)[1]
-                if len(tail) < 7:
-                    continue
-                date_part = tail[:7]
-                try:
-                    dt = datetime.strptime(date_part, "%y%b%d")
-                except ValueError:
-                    continue
-                base_date = dt.strftime("%Y-%m-%d")
-                sp = ko.get("side_player") or ""
-                op = ko.get("other_player") or ""
-                if not sp or not op:
-                    continue
-                pair = frozenset({sp, op})
-                # Index against ±1 day for the rare schedule-slip case.
-                for offset in (-1, 0, 1):
-                    d = (dt + timedelta(days=offset)).strftime("%Y-%m-%d")
-                    if d in page_dates:
-                        # First-write-wins (offset=0 has priority).
-                        index.setdefault((d, pair), ko)
-        finally:
-            conn.close()
-    except sqlite3.OperationalError:
-        return {}
-    return index
