@@ -3038,24 +3038,39 @@ def render_training_data_panel(*, current_bot: str | None,
     split_filter = split_filter if split_filter in ("train", "val",
                                                        "test") else None
 
-    total = db_mod.count_training_matches(_TRAINING_DB_PATH,
-                                            tour=tour_filter,
-                                            split=split_filter)
+    # Kalshi-only rows are matches the bot recorded on Kalshi that
+    # the Sackmann panel doesn't have yet (the source updates on a
+    # lag). They're date-newer than every historical training row, so
+    # they sit at the top of the sort.
+    kalshi_only_all = _build_kalshi_only_rows(tour_filter)
+    n_kalshi = len(kalshi_only_all)
+    n_historical = db_mod.count_training_matches(
+        _TRAINING_DB_PATH, tour=tour_filter, split=split_filter,
+    )
+    total = n_kalshi + n_historical
     total_pages = max(1, (total + page_size - 1) // page_size)
     page = min(max(1, page), total_pages)
-    rows = db_mod.fetch_training_matches(
-        _TRAINING_DB_PATH, page=page, page_size=page_size,
-        tour=tour_filter, split=split_filter,
-    )
 
-    # ── Kalshi-only rows: bets the bot placed on matches that haven't
-    # been added to matches_clean.csv yet (Sackmann data is updated
-    # periodically and runs ~6 months behind the live calendar). These
-    # are the bot's actual results; surfacing them on page 1 of the
-    # combined table makes the table genuinely "all matches we touched
-    # OR considered". On pages 2+ the historical data dominates.
-    kalshi_only_rows = _build_kalshi_only_rows(tour_filter) if page == 1 else []
-    total_with_kalshi = total + len(kalshi_only_rows)
+    # Slice the combined window. The combined sort order is:
+    #   indices [0,           n_kalshi)               -> Kalshi-only rows
+    #   indices [n_kalshi,    n_kalshi + n_historical) -> historical
+    start = (page - 1) * page_size
+    end = start + page_size
+
+    kalshi_only_rows: List[Dict[str, Any]] = []
+    if start < n_kalshi:
+        kalshi_only_rows = kalshi_only_all[start:min(end, n_kalshi)]
+
+    rows: List[Dict[str, Any]] = []
+    if end > n_kalshi and n_historical > 0:
+        hist_offset = max(0, start - n_kalshi)
+        hist_limit = end - max(start, n_kalshi)
+        if hist_limit > 0:
+            rows = db_mod.fetch_training_matches(
+                _TRAINING_DB_PATH,
+                offset=hist_offset, limit=hist_limit,
+                tour=tour_filter, split=split_filter,
+            )
 
     # Derive Winner from label for every training row (label=1 means
     # player_a won; label=0 means player_b won). Done here rather
