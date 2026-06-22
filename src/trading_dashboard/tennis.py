@@ -3153,7 +3153,7 @@ def render_training_data_panel(*, current_bot: str | None,
             f"{html.escape(label)}</button></th>"
         )
     out.append("</tr></thead><tbody>")
-    if not rows:
+    if not rows and not kalshi_only_rows:
         out.append(
             f"<tr><td colspan='{len(_TRAINING_COLUMNS)}' "
             f"class='empty'>No rows for the selected filter.</td></tr>"
