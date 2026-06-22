@@ -3289,6 +3289,53 @@ def render_training_data_panel(*, current_bot: str | None,
     return "".join(out)
 
 
+# Path to the live executor's sim_state — used to enrich Kalshi-only
+# rows with full player names + tournament metadata recorded at order-
+# placement time (Kalshi's /portfolio/settlements doesn't carry those).
+_LIVE_SIM_STATE_PATH = Path(
+    "/root/tennis-forecast/data/outputs-live/sim_state.json"
+)
+
+
+def _load_event_ticker_enrichment() -> Dict[str, Dict[str, Any]]:
+    """Build an ``event_ticker -> match_metadata`` lookup from the
+    live executor's sim_state.json closed_positions. The bot
+    recorded each closed position with full player names, tournament,
+    and surface at order-placement time — exactly the fields the
+    Kalshi outcomes table lacks.
+
+    Cheap to call per render: file is ~500KB and we read once. Falls
+    back to an empty dict if the file isn't present (e.g. local dev).
+    """
+    if not _LIVE_SIM_STATE_PATH.exists():
+        return {}
+    try:
+        with _LIVE_SIM_STATE_PATH.open("r", encoding="utf-8") as f:
+            state = json.load(f) or {}
+    except (OSError, json.JSONDecodeError):
+        return {}
+    out: Dict[str, Dict[str, Any]] = {}
+    for p in (state.get("closed_positions") or []):
+        mid = p.get("match_id") or ""
+        if not mid:
+            continue
+        # Prefer richer records: a later close on the same match_id
+        # may have player names that an earlier one was missing.
+        existing = out.get(mid) or {}
+        merged = {
+            "player_a": p.get("player_a") or existing.get("player_a"),
+            "player_b": p.get("player_b") or existing.get("player_b"),
+            "side_player": p.get("side_player") or existing.get("side_player"),
+            "tournament": (p.get("tournament")
+                            or existing.get("tournament")),
+            "surface": p.get("surface") or existing.get("surface"),
+            "event_title": (p.get("event_title")
+                              or existing.get("event_title")),
+        }
+        out[mid] = merged
+    return out
+
+
 def _build_kalshi_only_rows(tour_filter: str | None) -> List[Dict[str, Any]]:
     """Return Kalshi bets that don't have a matching training_matches
     row, shaped to fit the same column layout. Used on page 1 so the
@@ -3310,6 +3357,7 @@ def _build_kalshi_only_rows(tour_filter: str | None) -> List[Dict[str, Any]]:
     import sqlite3
     from datetime import datetime
     out_rows: List[Dict[str, Any]] = []
+    enrichment = _load_event_ticker_enrichment()
     try:
         conn = sqlite3.connect(str(_TRAINING_DB_PATH),
                                 check_same_thread=False)
@@ -3378,17 +3426,67 @@ def _build_kalshi_only_rows(tour_filter: str | None) -> List[Dict[str, Any]]:
             winner = op
         else:
             winner = None
+        # Pull the bot's recorded metadata if we have it. Maps the
+        # tricodes back to full player names + tournament + surface
+        # so the table shows e.g. "Frances Tiafoe" / "Hard" / "Roland
+        # Garros" instead of just "TIA" / "—" / "—".
+        meta = enrichment.get(ev, {}) or {}
+        full_a, full_b = meta.get("player_a"), meta.get("player_b")
+        side_full = meta.get("side_player") or ""
+        # Decide which side is A vs B by matching side_player full
+        # name to the recorded side_player tricode.
+        if full_a and full_b:
+            a_last_initial = _player_tricode(full_a)
+            if side_full and side_full == full_a:
+                # full_a is the side we bet on (sp)
+                player_a, player_b = full_a, full_b
+            elif side_full and side_full == full_b:
+                player_a, player_b = full_b, full_a
+            elif a_last_initial == sp:
+                player_a, player_b = full_a, full_b
+            else:
+                player_a, player_b = full_b, full_a
+        else:
+            player_a, player_b = sp, op
+        # Recompute winner against the resolved full names.
+        if market_result not in ("yes", "no"):
+            winner = None
+        elif won_v == 1:
+            winner = player_a if side_full == player_a or sp == _player_tricode(
+                player_a) else (
+                player_a if sp != _player_tricode(player_b) else player_b
+            )
+            # Simpler: side_player (our side) won. Map sp tricode to
+            # whichever of (player_a, player_b) has that initial.
+            if _player_tricode(player_a) == sp:
+                winner = player_a
+            elif _player_tricode(player_b) == sp:
+                winner = player_b
+            else:
+                winner = player_a  # safe default — won_v=1 means our side won
+        elif won_v == 0:
+            # Our side lost → the OTHER side won.
+            if _player_tricode(player_a) == sp:
+                winner = player_b
+            elif _player_tricode(player_b) == sp:
+                winner = player_a
+            else:
+                winner = player_b
+        else:
+            winner = None
         out_rows.append({
             "tourney_date": date,
-            "tourney_name": ev,  # ticker stands in for unknown name
+            "tourney_name": (meta.get("tournament")
+                              or meta.get("event_title")
+                              or ev),
             "tour": tour,
-            "surface": None,
+            "surface": meta.get("surface"),
             "level": None,
             "round": None,
             "draw_size": None,
             "best_of": None,
-            "player_a": sp,
-            "player_b": op,
+            "player_a": player_a,
+            "player_b": player_b,
             "winner": winner,
         })
     return out_rows

@@ -3485,7 +3485,7 @@ def render_page(
         out.append(_tennis_mod.render_training_data_panel(
             current_bot=current_bot,
             page=_page,
-            page_size=50,
+            page_size=20,
             tour_filter=_td_qs.get("tour", [None])[0],
             split_filter=_td_qs.get("split", [None])[0],
             current_tab=active_tab,
