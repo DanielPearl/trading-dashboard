@@ -49,12 +49,25 @@ def _load_upstream(repo_path: str) -> dict[str, Callable[..., Any]]:
     path ``src.models.train_prematch_model``).
     """
     import importlib
+    import sys
     _base.load_upstream_as_alias(repo_path, "tennis_src", subdir="src")
     _base.register_pickle_aliases(
         "tennis_src",
         ("train_prematch_model", "predict", "calibration_layer",
          "live_adjustment_model", "predict_inmatch"),
     )
+
+    # Bundles trained via `python -m src.models.train_prematch_model`
+    # pickle WeightedEnsemble under module `__main__` (because the
+    # trainer ran AS __main__). The dashboard's __main__ is dashboard.py,
+    # so joblib's unpickle `getattr(__main__, "WeightedEnsemble")` would
+    # AttributeError without this shim.
+    trainer_mod = importlib.import_module(
+        "tennis_src.models.train_prematch_model"
+    )
+    main_mod = sys.modules.get("__main__")
+    if main_mod is not None and hasattr(trainer_mod, "WeightedEnsemble"):
+        setattr(main_mod, "WeightedEnsemble", trainer_mod.WeightedEnsemble)
 
     kalshi_markets = importlib.import_module("tennis_src.data.kalshi_markets")
     api_tennis_live = importlib.import_module("tennis_src.data.api_tennis_live")
