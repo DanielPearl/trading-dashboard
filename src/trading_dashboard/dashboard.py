@@ -5672,6 +5672,45 @@ def _render_bot_cards(out: List[str], rollup: dict,
                     f"{html.escape(str(ds))}</dd>"
                 )
             out.append("</dl>")
+            # True per-unit model coefficients — only bots whose card
+            # summary supplies them (currently World Cup's pruned
+            # logistic). Log-odds change in P(team1 win) per +1 raw
+            # unit of the feature.
+            card_coefs = m.get("coefficients") or []
+            if card_coefs:
+                out.append(
+                    "<div style='margin-top:8px;border-top:1px solid "
+                    "#30363d;padding-top:6px;font-size:11px;'>"
+                    "<div class='gray' style='margin-bottom:3px;' "
+                    "title='Coefficients of the pruned multinomial "
+                    "logistic in natural units: the change in "
+                    "log-odds of a team1 win per +1 raw unit of each "
+                    "feature (per Elo point, per goal, etc.). Ordered "
+                    "by standardized magnitude — strongest signal "
+                    "first.'>Coefficients "
+                    "<span style='font-weight:400;'>(log-odds of "
+                    "team1 win per +1 unit)</span></div>"
+                )
+                out.append(
+                    "<dl style='display:grid;"
+                    "grid-template-columns:auto max-content;"
+                    "gap:1px 12px;margin:0;'>"
+                )
+                for c in card_coefs:
+                    try:
+                        v = float(c.get("per_unit"))
+                    except (TypeError, ValueError):
+                        continue
+                    out.append(
+                        f"<dt class='gray' style='margin:0;'>"
+                        f"<code>{html.escape(str(c.get('feature')))}"
+                        f"</code></dt>"
+                        f"<dd style='margin:0;text-align:right;"
+                        f"font-variant-numeric:tabular-nums;"
+                        f"color:{'#3fb950' if v >= 0 else '#f85149'};'>"
+                        f"{v:+.4f}</dd>"
+                    )
+                out.append("</dl></div>")
 
         # Footer hints at the click affordance — same idiom as the
         # ticker cells in the watchlist (subtle "go here" signal).

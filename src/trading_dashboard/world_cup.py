@@ -97,6 +97,19 @@ def model_summary_for_card(model_report_path: str | None) -> Dict[str, Any]:
         "rows_test": split.get("rows_test"),
         "actual_wins": 0,
         "actual_losses": 0,
+        # True per-unit coefficients from the pruned logistic (the
+        # interpretable cousin of the winning forest): log-odds change
+        # in P(team1 win) per +1 raw unit of each feature. Ordered by
+        # standardized magnitude so the strongest signals list first.
+        "coefficients": [
+            {"feature": c.get("feature"),
+             "per_unit": c.get("team1_per_unit"),
+             "std": c.get("team1")}
+            for c in sorted(
+                report.get("coefficients_pruned_logistic") or [],
+                key=lambda c: abs(c.get("team1") or 0), reverse=True)
+            if c.get("team1_per_unit") is not None
+        ],
     }
 
 
@@ -280,17 +293,23 @@ def render_models_panel(bot: dict) -> str:
     if coefs:
         out.append(
             "<h3 class='subhead'>What moves the prediction "
-            "<span class='small gray'>(pruned-logistic coefficients on "
-            "standardized features — the interpretable cousin of the "
-            "winning forest)</span></h3>"
+            "<span class='small gray'>(pruned-logistic coefficients — "
+            "the interpretable cousin of the winning forest; "
+            "'per +1 SD' compares feature strength, 'per unit' is the "
+            "true coefficient in natural units, e.g. per Elo point)"
+            "</span></h3>"
         )
         out.append("<table><thead><tr><th>Feature</th>"
-                   "<th class='num'>team1 win</th><th class='num'>draw</th>"
-                   "<th class='num'>team2 win</th></tr></thead><tbody>")
+                   "<th class='num'>team1 win / +1 SD</th>"
+                   "<th class='num'>team1 win / unit</th>"
+                   "<th class='num'>draw / +1 SD</th>"
+                   "<th class='num'>team2 win / +1 SD</th>"
+                   "</tr></thead><tbody>")
         for c in coefs:
             out.append(
                 f"<tr><td><code>{html.escape(c.get('feature', ''))}</code></td>"
                 f"<td class='num'>{_fnum(c.get('team1'), 3, signed=True)}</td>"
+                f"<td class='num'>{_fnum(c.get('team1_per_unit'), 4, signed=True)}</td>"
                 f"<td class='num'>{_fnum(c.get('draw'), 3, signed=True)}</td>"
                 f"<td class='num'>{_fnum(c.get('team2'), 3, signed=True)}</td>"
                 "</tr>"
