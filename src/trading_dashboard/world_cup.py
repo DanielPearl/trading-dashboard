@@ -117,7 +117,8 @@ def model_summary_for_card(model_report_path: str | None,
 _FAMILY_LABELS = {
     "logistic": "Logistic regression",
     "tree ensemble": "Tree ensemble",
-    "scoreline": "Scoreline (Poisson)",
+    "scoreline": "Scoreline (Dixon-Coles)",
+    "ensemble": "Calibrated blend",
 }
 
 
@@ -207,6 +208,58 @@ def render_models_panel(bot: dict) -> str:
             f"<p class='small gray' style='margin:0 0 12px 0;'>"
             f"{html.escape(report['shipped_note'])}</p>"
         )
+
+    # ── Market benchmark ────────────────────────────────────────────
+    mb = report.get("market_benchmark")
+    if mb:
+        model_ll, mkt_ll = mb.get("model_log_loss"), mb.get("market_log_loss")
+        if model_ll is not None and mkt_ll is not None:
+            gap = model_ll - mkt_ll
+            verdict = ("model beats the market"
+                       if gap < 0 else "market still leads")
+            color = "#3fb950" if gap < 0 else "#d29922"
+            out.append(
+                f"<p class='small' style='margin:0 0 12px 0;padding:8px "
+                f"12px;border:1px solid #30363d;border-radius:6px;'>"
+                f"<b>Market benchmark</b> — on the same "
+                f"{mb.get('n_matches', 0)} settled 2026 matches, Kalshi's "
+                f"pre-kickoff prices score <b>{mkt_ll:.4f}</b> log loss "
+                f"vs the model's <b>{model_ll:.4f}</b> "
+                f"(<span style='color:{color};font-weight:600;'>"
+                f"{gap:+.4f} — {verdict}</span>). "
+                f"<span class='gray'>{html.escape(mb.get('note') or '')}"
+                f"</span></p>"
+            )
+
+    # ── Ensemble composition ────────────────────────────────────────
+    ens = report.get("ensemble") or {}
+    comps = ens.get("components") or []
+    if comps:
+        out.append(
+            f"<h3 class='subhead'>Ensemble composition "
+            f"<span class='small gray'>(weights searched on 2010–2014 "
+            f"validation; per-model temperature calibration; "
+            f"Dixon-Coles rho = {ens.get('dc_rho', 0):+.2f}; training "
+            f"decay half-life {ens.get('decay_half_life_years', 0):.0f} "
+            f"years)</span></h3>"
+        )
+        out.append("<table><thead><tr><th>Component</th>"
+                   "<th class='num'>Blend weight</th>"
+                   "<th class='num'>Temperature</th>"
+                   "<th class='num'>Features</th></tr></thead><tbody>")
+        for c in sorted(comps, key=lambda c: -(c.get("weight") or 0)):
+            w = float(c.get("weight") or 0)
+            bar = (f"<div style='display:inline-block;height:8px;"
+                   f"width:{max(2, round(w * 120))}px;"
+                   f"background:#58a6ff;margin-right:6px;"
+                   f"vertical-align:middle;'></div>")
+            out.append(
+                f"<tr><td><code>{html.escape(str(c.get('key')))}</code></td>"
+                f"<td class='num'>{bar}{w * 100:.1f}%</td>"
+                f"<td class='num'>{_fnum(c.get('temperature'), 2)}</td>"
+                f"<td class='num'>{c.get('n_features', '—')}</td></tr>"
+            )
+        out.append("</tbody></table>")
 
     # ── Bake-off table ──────────────────────────────────────────────
     out.append(
