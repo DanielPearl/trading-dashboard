@@ -202,6 +202,11 @@ def render_models_panel(bot: dict) -> str:
             f"{html.escape(str(value))}</dd>"
         )
     out.append("</dl>")
+    if report.get("shipped_note"):
+        out.append(
+            f"<p class='small gray' style='margin:0 0 12px 0;'>"
+            f"{html.escape(report['shipped_note'])}</p>"
+        )
 
     # ── Bake-off table ──────────────────────────────────────────────
     out.append(
