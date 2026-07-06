@@ -3038,39 +3038,27 @@ def render_training_data_panel(*, current_bot: str | None,
     split_filter = split_filter if split_filter in ("train", "val",
                                                        "test") else None
 
-    # Kalshi-only rows are matches the bot recorded on Kalshi that
-    # the Sackmann panel doesn't have yet (the source updates on a
-    # lag). They're date-newer than every historical training row, so
-    # they sit at the top of the sort.
-    kalshi_only_all = _build_kalshi_only_rows(tour_filter)
-    n_kalshi = len(kalshi_only_all)
+    # Only surface fully-populated historical rows. Kalshi-only bookings
+    # (matches the bot recorded on Kalshi before Sackmann caught up)
+    # would render with every engineered feature blank — they don't
+    # represent training data the model ever saw and the mostly-empty
+    # rows just add noise here. They're still tracked in
+    # ``kalshi_outcomes`` for the P&L / bookings views elsewhere.
     n_historical = db_mod.count_training_matches(
         _TRAINING_DB_PATH, tour=tour_filter, split=split_filter,
     )
-    total = n_kalshi + n_historical
+    total = n_historical
     total_pages = max(1, (total + page_size - 1) // page_size)
     page = min(max(1, page), total_pages)
 
-    # Slice the combined window. The combined sort order is:
-    #   indices [0,           n_kalshi)               -> Kalshi-only rows
-    #   indices [n_kalshi,    n_kalshi + n_historical) -> historical
-    start = (page - 1) * page_size
-    end = start + page_size
-
     kalshi_only_rows: List[Dict[str, Any]] = []
-    if start < n_kalshi:
-        kalshi_only_rows = kalshi_only_all[start:min(end, n_kalshi)]
-
     rows: List[Dict[str, Any]] = []
-    if end > n_kalshi and n_historical > 0:
-        hist_offset = max(0, start - n_kalshi)
-        hist_limit = end - max(start, n_kalshi)
-        if hist_limit > 0:
-            rows = db_mod.fetch_training_matches(
-                _TRAINING_DB_PATH,
-                offset=hist_offset, limit=hist_limit,
-                tour=tour_filter, split=split_filter,
-            )
+    if n_historical > 0:
+        rows = db_mod.fetch_training_matches(
+            _TRAINING_DB_PATH,
+            page=page, page_size=page_size,
+            tour=tour_filter, split=split_filter,
+        )
 
     # Derive Winner from label for every training row (label=1 means
     # player_a won; label=0 means player_b won). Done here rather
@@ -3088,16 +3076,12 @@ def render_training_data_panel(*, current_bot: str | None,
     out.append("<section class='card'><div class='body'>")
     out.append("<h2>Training Data — tennis</h2>")
     out.append(
-        f"<p class='small gray'>All matches across the historical "
-        f"training panel and the live Kalshi calendar — "
-        f"<b>{total:,}</b> from the trainer's most recent fit, plus "
-        f"<b>{len(kalshi_only_rows):,}</b> recorded on Kalshi but not "
-        f"yet in the Sackmann panel (it updates on a lag). Each row "
-        f"is a single match with the winner and every candidate "
-        f"feature; rows duplicate when the same match exists in both "
-        f"sources. Sorted newest first; columns flagged "
-        f"⚙ MODEL FEATURE in their definition are the ones the model "
-        f"actually trains on.</p>"
+        f"<p class='small gray'>Every fully-populated match the model "
+        f"actually trained on — <b>{total:,}</b> rows from the trainer's "
+        f"most recent fit. Each row is a single match with the winner "
+        f"and every candidate feature. Sorted newest first; columns "
+        f"flagged ⚙ MODEL FEATURE in their definition are the ones the "
+        f"model actually trains on.</p>"
     )
 
     # Tour / split filter pills. Hand-rolled query-string preservation
