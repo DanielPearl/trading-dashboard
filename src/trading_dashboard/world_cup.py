@@ -453,6 +453,9 @@ _TD_COLUMNS: List[tuple] = [
      "strongest predictor."),
     ("abs_elo_diff", "|Elo Δ|", "Absolute Elo gap — mismatch size "
      "regardless of side; large gaps suppress the draw probability."),
+    ("elo_sum", "Elo Σ",
+     "Sum of both teams' Elo — overall match quality; closer, stronger "
+     "pairings draw more often."),
     ("form5_diff", "Form 5 Δ",
      "Avg points per match (3/1/0) over each team's last 5 "
      "internationals, team1 − team2."),
