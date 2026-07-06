@@ -10915,7 +10915,8 @@ def _render_watchlist(out: List[str], watchlist: List[dict],
             watchlist=watchlist,
             event_title=event_title,
             is_sport_bot=(current_bot in
-                          {"nba", "tennis", "table-tennis", "darts"}),
+                          {"nba", "tennis", "table-tennis", "darts",
+                           "world-cup"}),
             display=display)
         out.append("</div>")
     else:
@@ -10990,7 +10991,8 @@ def _render_watchlist(out: List[str], watchlist: List[dict],
     # |best EV| descending — mirroring the tennis-specific table the
     # standard renderer is replacing. Non-sport bots keep the strike
     # ascending sort that drives the natural ladder layout.
-    is_sport_bot = current_bot in {"nba", "tennis", "table-tennis", "darts"}
+    is_sport_bot = current_bot in {"nba", "tennis", "table-tennis", "darts",
+                                   "world-cup"}
     is_billboard_bot = current_bot == "billboard"
     if is_sport_bot:
         def _sport_sort_key(r: dict) -> Tuple[int, float]:
@@ -11857,6 +11859,7 @@ class Handler(BaseHTTPRequestHandler):
                     # client returns every market with a future close.
                     all_open_events = bot.get("key") in {
                         "nba", "tennis", "table-tennis", "darts",
+                        "world-cup",
                     }
                     try:
                         (kalshi_history, atm_market, kalshi_markets,
