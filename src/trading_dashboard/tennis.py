@@ -2381,16 +2381,30 @@ def _render_tennis_models_page(metrics: dict, coefficients: dict,
                 last_retrain = mt.strftime("%Y-%m-%d %H:%M UTC")
             except (OSError, OverflowError):
                 pass
+    # Blend weights: read the actual persisted values from the bundle's
+    # metrics rather than a static string, so the label stays honest
+    # whenever the trainer picks non-default weights.
+    m = metrics or {}
+    w_ens = m.get("blend_weight_ensemble")
+    w_log = m.get("blend_weight_logistic")
+    if w_ens is not None and w_log is not None:
+        blend_label = (f"{int(round(float(w_ens) * 100))}% calibrated "
+                        f"ensemble + {int(round(float(w_log) * 100))}% "
+                        f"logistic (Elo-only)")
+    else:
+        blend_label = "70% calibrated ensemble + 30% logistic (Elo-only)"
+    n_val = int(m.get("rows_val") or 0)
+    val_row = ([("Validation rows", f"{n_val:,}")] if n_val else [])
     overview_items = [
         ("Last retrained", last_retrain),
         ("Training rows",
-            f"{int((metrics or {}).get('rows_train') or 0):,}"),
+            f"{int(m.get('rows_train') or 0):,}"),
+        *val_row,
         ("Held-out rows",
-            f"{int((metrics or {}).get('rows_test') or 0):,}"),
+            f"{int(m.get('rows_test') or 0):,}"),
         ("Train/test cutoff",
-            (metrics or {}).get("cutoff_date") or "—"),
-        ("Blend weights",
-            "70% calibrated GBT + 30% logistic (ELO-only)"),
+            m.get("cutoff_date") or "—"),
+        ("Blend weights", blend_label),
     ]
     out.append("<h3 class='subhead'>Model overview "
                 "<span class='small gray'>(from training "
