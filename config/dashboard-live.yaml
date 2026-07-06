@@ -425,19 +425,30 @@ darts_trader:
   repo_path: /root/darts-forecast
   interval_seconds: 60
 
-# World Cup: sim-only bot — the paper-trading daemon runs in the SIM
-# dashboard process. Never enable here without a real live executor.
-# World Cup: the daemon (paper sim + live executor) runs in the SIM
-# dashboard process — keep enabled: false here so two copies never
-# race. The live block below only tells THIS dashboard where the
-# executor's real-money state lives, so the Home tab's live-positions
-# table includes world-cup.
+# World Cup real-money executor — runs in THIS (live) process, so the
+# live page's world-cup toggle (bot_states_live.json) gates real
+# orders and the sim process stays paper-only. dry_run: true means it
+# evaluates + records every order it WOULD place but never touches
+# Kalshi's order endpoint; flipping it to false (and restarting
+# trading-dashboard-live.service) arms real orders — a deliberate
+# manual operator action. 1 contract per order, hard-capped in code.
 world_cup_trader:
-  enabled: false
+  enabled: true
   repo_path: /root/world-cup
   interval_seconds: 300
   live:
+    dry_run: true
     sim_state_path: /root/world-cup/data/outputs-live/sim_state.json
+    max_open_positions: 4
+    max_orders_per_day: 6
+    contracts_per_order: 1
+    min_edge_pp: 0.08
+    max_entry_price_cents: 85
+    min_entry_price_cents: 10
+    price_deviation_cents: 3
+    prematch_buffer_minutes: 15
+    profit_lock_yes_bid_cents: 95
+
 
 natgas_trader:
   enabled: false

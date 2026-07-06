@@ -534,30 +534,10 @@ world_cup_trader:
   enabled: true
   repo_path: /root/world-cup
   interval_seconds: 300
-  # Live executor — runs ALONGSIDE the paper simulator in this (sim)
-  # dashboard process; writes real-money state to outputs-live/ which
-  # the LIVE dashboard reads. dry_run: true means it logs + records
-  # every order it WOULD place but never touches Kalshi's order
-  # endpoint. Flipping dry_run to false (and restarting
-  # trading-dashboard-sim.service) arms real orders — a deliberate
-  # manual operator action. 1 contract per order at <= 85c means at
-  # most $0.85 risked per position, hard-capped in code as well.
-  live:
-    dry_run: true
-    sim_state_path: /root/world-cup/data/outputs-live/sim_state.json
-    max_open_positions: 4
-    max_orders_per_day: 6
-    contracts_per_order: 1
-    min_edge_pp: 0.08
-    max_entry_price_cents: 85
-    min_entry_price_cents: 10
-    price_deviation_cents: 3
-    prematch_buffer_minutes: 15
-    profit_lock_yes_bid_cents: 95
+  # Paper simulator only — the real-money executor lives in the LIVE
+  # dashboard process (see dashboard-live.yaml).
 
-# Natural-gas trader. Cron-scheduled — see bots/natural_gas.py for
-# the firing-time logic. Repo lives at /root/peak-load on the
-# droplet (legacy path, predates the natural-gas rename).
+
 natgas_trader:
   enabled: true
   repo_path: /root/peak-load

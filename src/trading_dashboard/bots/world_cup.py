@@ -59,7 +59,24 @@ def _load_upstream(repo_path: str) -> dict[str, Callable[..., Any]]:
 
 
 def _one_tick(upstream: dict[str, Callable[..., Any]],
-              live_executor: Any = None) -> None:
+              live_executor: Any = None,
+              paper_sim: bool = True) -> None:
+    """One tick. Which book it trades depends on the hosting process:
+
+      SIM dashboard process  (paper_sim=True, no executor)
+        → paper simulator writes data/outputs/ for the sim site.
+      LIVE dashboard process (paper_sim=False, executor set)
+        → real-money executor writes data/outputs-live/ for the live
+          site (dry_run inside the executor gates actual orders); the
+          watchlist is mirrored there so the live page shows the same
+          rows the executor evaluated.
+
+    Each process fetches Kalshi and builds rows itself, so neither
+    depends on the other being up. The Home-tab toggle read here is
+    per-process (the live service points KALSHI_BOT_STATES_PATH at
+    bot_states_live.json), so the LIVE page's world-cup toggle gates
+    real orders and the SIM page's toggle gates paper trades.
+    """
     global _prev_market_by_ticker
 
     raw_markets = upstream["fetch_markets"]()
@@ -68,30 +85,26 @@ def _one_tick(upstream: dict[str, Callable[..., Any]],
         raw_markets, prev_markets_by_ticker=_prev_market_by_ticker,
     )
     _prev_market_by_ticker = new_prev
-    upstream["write_live_state"](records)
 
     rows = upstream["build_watchlist_records"](records)
-    upstream["export_watchlist"](rows)
 
     enabled = bot_state.is_bot_enabled(BOT_KEY)
-    rows_for_sim = rows if enabled else []
-    state = upstream["simulator_tick"](rows_for_sim, records)
+    rows_for_trading = rows if enabled else []
 
-    # Live executor runs ALONGSIDE the paper simulator (unlike tennis,
-    # which swaps them): the sim site keeps its paper book while the
-    # live side trades real money into data/outputs-live/. Inside,
-    # dry_run gates whether REAL orders fire.
+    state = None
     live_label = ""
+    if paper_sim:
+        upstream["write_live_state"](records)
+        upstream["export_watchlist"](rows)
+        state = upstream["simulator_tick"](rows_for_trading, records)
     if live_executor is not None:
-        live_state = live_executor.tick(rows_for_sim, records)
+        live_state = live_executor.tick(rows_for_trading, records)
         live_label = (
             " [LIVE — DRY-RUN]" if getattr(live_executor, "dry_run", True)
             else " [LIVE — REAL ORDERS]")
         live_label += (f" live_open={live_state['stats'].get('open_count', 0)}"
                        f" live_pnl={live_state['stats'].get('total_realized_pnl', 0.0):+.2f}")
-        # Mirror the watchlist next to the live state so the live
-        # dashboard (which reads outputs-live/) shows the same rows
-        # as sim — the two sites stay identical.
+        # Watchlist mirror for the live page (reads outputs-live/).
         try:
             import json as _json
             from datetime import datetime as _dt, timezone as _tz
@@ -104,6 +117,8 @@ def _one_tick(upstream: dict[str, Callable[..., Any]],
             tmp.replace(live_dir / "watchlist.json")
         except Exception:  # noqa: BLE001 — mirror is best-effort
             log.exception("watchlist mirror to outputs-live failed")
+        if state is None:
+            state = live_state
 
     log.info(
         "world-cup tick — %d markets / %d matches / %d rows / "
@@ -128,13 +143,18 @@ def start_daemon(cfg: dict) -> Any:
     enabled = bool(cfg.get("enabled"))
     repo_path = cfg.get("repo_path", "/root/world-cup")
     interval = int(cfg.get("interval_seconds", 300))
-    live_cfg = cfg.get("live")  # None → paper sim only
+    live_cfg = cfg.get("live")  # present → this process runs the
+    #                              real-money executor
+    # Paper sim runs unless a live block is present (the sim dashboard
+    # config has no live block; the live dashboard config does).
+    # Overridable with an explicit paper_sim: key.
+    paper_sim = bool(cfg.get("paper_sim", live_cfg is None))
 
     def _run() -> None:
         from pathlib import Path
         log.info("world-cup-bot starting (interval=%ds, repo=%s, "
-                 "live=%s)", interval, repo_path,
-                 "yes" if live_cfg else "no")
+                 "paper_sim=%s, live=%s)", interval, repo_path,
+                 paper_sim, "yes" if live_cfg else "no")
         _base.require_kalshi_creds()
         upstream = _load_upstream(repo_path)
         executor = None
@@ -149,7 +169,8 @@ def start_daemon(cfg: dict) -> Any:
         log.info("world-cup-bot upstream loaded; entering tick loop")
         while True:
             try:
-                _one_tick(upstream, live_executor=executor)
+                _one_tick(upstream, live_executor=executor,
+                          paper_sim=paper_sim)
             except Exception:  # noqa: BLE001
                 log.exception("world-cup-bot tick failed")
             time.sleep(interval)
