@@ -427,10 +427,17 @@ darts_trader:
 
 # World Cup: sim-only bot — the paper-trading daemon runs in the SIM
 # dashboard process. Never enable here without a real live executor.
+# World Cup: the daemon (paper sim + live executor) runs in the SIM
+# dashboard process — keep enabled: false here so two copies never
+# race. The live block below only tells THIS dashboard where the
+# executor's real-money state lives, so the Home tab's live-positions
+# table includes world-cup.
 world_cup_trader:
   enabled: false
   repo_path: /root/world-cup
   interval_seconds: 300
+  live:
+    sim_state_path: /root/world-cup/data/outputs-live/sim_state.json
 
 natgas_trader:
   enabled: false

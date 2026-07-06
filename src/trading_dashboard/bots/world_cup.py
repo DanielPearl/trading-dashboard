@@ -58,7 +58,8 @@ def _load_upstream(repo_path: str) -> dict[str, Callable[..., Any]]:
     }
 
 
-def _one_tick(upstream: dict[str, Callable[..., Any]]) -> None:
+def _one_tick(upstream: dict[str, Callable[..., Any]],
+              live_executor: Any = None) -> None:
     global _prev_market_by_ticker
 
     raw_markets = upstream["fetch_markets"]()
@@ -76,13 +77,42 @@ def _one_tick(upstream: dict[str, Callable[..., Any]]) -> None:
     rows_for_sim = rows if enabled else []
     state = upstream["simulator_tick"](rows_for_sim, records)
 
+    # Live executor runs ALONGSIDE the paper simulator (unlike tennis,
+    # which swaps them): the sim site keeps its paper book while the
+    # live side trades real money into data/outputs-live/. Inside,
+    # dry_run gates whether REAL orders fire.
+    live_label = ""
+    if live_executor is not None:
+        live_state = live_executor.tick(rows_for_sim, records)
+        live_label = (
+            " [LIVE — DRY-RUN]" if getattr(live_executor, "dry_run", True)
+            else " [LIVE — REAL ORDERS]")
+        live_label += (f" live_open={live_state['stats'].get('open_count', 0)}"
+                       f" live_pnl={live_state['stats'].get('total_realized_pnl', 0.0):+.2f}")
+        # Mirror the watchlist next to the live state so the live
+        # dashboard (which reads outputs-live/) shows the same rows
+        # as sim — the two sites stay identical.
+        try:
+            import json as _json
+            from datetime import datetime as _dt, timezone as _tz
+            live_dir = live_executor.state_path.parent
+            live_dir.mkdir(parents=True, exist_ok=True)
+            tmp = live_dir / "watchlist.json.tmp"
+            tmp.write_text(_json.dumps(
+                {"generated_at": _dt.now(_tz.utc).isoformat(
+                    timespec="seconds"), "rows": rows}, default=str))
+            tmp.replace(live_dir / "watchlist.json")
+        except Exception:  # noqa: BLE001 — mirror is best-effort
+            log.exception("watchlist mirror to outputs-live failed")
+
     log.info(
         "world-cup tick — %d markets / %d matches / %d rows / "
-        "%d open / %d closed (P&L %+.3f)%s",
+        "%d open / %d closed (P&L %+.3f)%s%s",
         len(raw_markets), len(records), len(rows),
         state["stats"].get("open_count", 0),
         state["stats"].get("total_closed", 0),
         state["stats"].get("total_realized_pnl", 0.0),
+        live_label,
         ("" if enabled else " [PAUSED]"),
     )
 
@@ -98,16 +128,28 @@ def start_daemon(cfg: dict) -> Any:
     enabled = bool(cfg.get("enabled"))
     repo_path = cfg.get("repo_path", "/root/world-cup")
     interval = int(cfg.get("interval_seconds", 300))
+    live_cfg = cfg.get("live")  # None → paper sim only
 
     def _run() -> None:
-        log.info("world-cup-bot starting (interval=%ds, repo=%s)",
-                 interval, repo_path)
+        from pathlib import Path
+        log.info("world-cup-bot starting (interval=%ds, repo=%s, "
+                 "live=%s)", interval, repo_path,
+                 "yes" if live_cfg else "no")
         _base.require_kalshi_creds()
         upstream = _load_upstream(repo_path)
+        executor = None
+        if live_cfg is not None:
+            from . import world_cup_live_executor
+            state_path = live_cfg.get(
+                "sim_state_path",
+                str(Path(repo_path) / "data" / "outputs-live"
+                    / "sim_state.json"))
+            executor = world_cup_live_executor.WorldCupLiveExecutor(
+                cfg=live_cfg, state_path=state_path)
         log.info("world-cup-bot upstream loaded; entering tick loop")
         while True:
             try:
-                _one_tick(upstream)
+                _one_tick(upstream, live_executor=executor)
             except Exception:  # noqa: BLE001
                 log.exception("world-cup-bot tick failed")
             time.sleep(interval)
