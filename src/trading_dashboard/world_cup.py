@@ -735,25 +735,10 @@ def render_training_data_panel(*, bot: dict, current_bot: str | None,
         f"features that survived pruning.</p>"
     )
 
-    # Segment filter pills (same idiom as the tennis panel's tour pills).
-    def _seg_link(value: str | None, label: str, active: bool) -> str:
-        params = [("tab", current_tab)]
-        if current_bot:
-            params.append(("bot", current_bot))
-        if period_key and period_key != "all":
-            params.append(("period", period_key))
-        if value:
-            params.append(("seg", value))
-        qs = "&".join(f"{k}={v}" for k, v in params)
-        cls = "tab-pill" + (" tab-pill-active" if active else "")
-        return f"<a class='{cls}' href='?{qs}'>{html.escape(label)}</a>"
-
-    out.append("<div class='tab-bar' style='margin-top:8px;'>")
-    out.append("<span class='small gray' style='margin-right:8px;'>"
-               "Competition:</span>")
-    for value, label in _SEGMENTS:
-        out.append(_seg_link(value, label, segment == value))
-    out.append("</div>")
+    # No competition filter (removed per operator request) — the table
+    # always pages the full grain; the Tournament column still shows
+    # each row's competition. The ``seg`` query param stays supported
+    # for hand-built URLs but no UI emits it.
 
     defs: Dict[str, Dict[str, str]] = {}
     out.append("<div style='overflow-x:auto;margin-top:12px;'>")
