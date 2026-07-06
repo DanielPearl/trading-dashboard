@@ -3416,53 +3416,38 @@ def render_page(
 
     # ── WATCHLIST tab — chart + strike ladder + Kalshi rules ─────────
     _open_panel("watchlist")
-    # World-cup arm switch (LIVE site only): the executor evaluates
-    # every tick regardless; this button is the operator action that
-    # lets it place REAL orders. Written to arm.json, re-read by the
-    # executor each tick — no restart. Disarm any time; the world-cup
-    # Home toggle also halts new orders instantly.
+    # World-cup live-trading status (LIVE site only). The Home-tab
+    # world-cup toggle IS the switch: explicitly ON in
+    # bot_states_live.json → the executor places real Kalshi orders
+    # from its next tick; OFF → no new orders (existing positions
+    # still settle). This banner just reflects that state.
     if mode == "live" and current_bot == "world-cup":
-        _wc_bot = next((b for b in available_bots
-                        if b.get("key") == "world-cup"), None)
-        _armed = False
-        _ss = (_wc_bot or {}).get("sim_state_path")
-        if _ss:
-            try:
-                _arm_file = Path(_ss).parent / "arm.json"
-                if _arm_file.exists():
-                    _armed = bool((json.loads(_arm_file.read_text())
-                                   or {}).get("armed"))
-            except (OSError, ValueError):
-                pass
+        from . import bot_state as _bot_state
+        _entry = _bot_state.get_all_states().get("world-cup") or {}
+        _armed = _entry.get("enabled") is True
         if _armed:
             out.append(
                 "<div class='section'><div class='body' "
                 "style='border:1px solid #f85149;border-radius:6px;"
                 "padding:10px 14px;'>"
-                "<b style='color:#f85149;'>REAL ORDERS ARMED</b> "
-                "<span class='small gray'>— the world-cup executor is "
-                "placing real Kalshi orders when the edge criteria are "
-                "met (1 contract per order).</span> "
-                "<button onclick=\"fetch('/api/worldcup/arm?armed=false',"
-                "{method:'POST'}).then(()=>location.reload())\" "
-                "style='margin-left:10px;'>Disarm</button>"
-                "</div></div>"
+                "<b style='color:#f85149;'>LIVE TRADING ON</b> "
+                "<span class='small gray'>— the world-cup toggle on "
+                "the Home tab is on: real Kalshi orders are placed "
+                "when the edge criteria are met (1 contract per "
+                "order). Flip the toggle off to stop new orders "
+                "instantly.</span></div></div>"
             )
         else:
             out.append(
                 "<div class='section'><div class='body' "
                 "style='border:1px solid #d29922;border-radius:6px;"
                 "padding:10px 14px;'>"
-                "<b style='color:#d29922;'>DRY-RUN</b> "
+                "<b style='color:#d29922;'>LIVE TRADING OFF</b> "
                 "<span class='small gray'>— the executor evaluates "
-                "every tick and records the orders it would place, but "
-                "nothing reaches Kalshi until you arm it.</span> "
-                "<button onclick=\"if(prompt('Type ARM to place real "
-                "Kalshi orders (1 contract per order, real money):')"
-                "==='ARM'){fetch('/api/worldcup/arm?armed=true',"
-                "{method:'POST'}).then(()=>location.reload())}\" "
-                "style='margin-left:10px;color:#f85149;"
-                "font-weight:600;'>Arm real orders…</button>"
+                "every tick but places nothing. Flip the world-cup "
+                "toggle on this site's Home tab to begin placing real "
+                "Kalshi orders (1 contract per order, real money); it "
+                "takes effect on the next 5-minute tick.</span>"
                 "</div></div>"
             )
     if (not watchlist and not latest_active
@@ -11825,6 +11810,23 @@ class Handler(BaseHTTPRequestHandler):
                         bot.get("sim_state_path"),
                         watchlist_path=bot.get("watchlist_json_path"),
                     )
+                    # LIVE world-cup watchlist shows ONLY contracts
+                    # actually bought (open positions on Kalshi) — the
+                    # full candidate slate lives on the sim site. The
+                    # rows' ticker is the match/event id, which the
+                    # executor stores as each position's match_id.
+                    if (self.mode == "live"
+                            and bot.get("key") == "world-cup"):
+                        held_ids = {str(ab.get("ticker") or "")
+                                    for ab in bot_active_bets}
+                        held_ids |= {str(ab.get("match_id") or "")
+                                     for ab in bot_active_bets}
+                        watchlist = [
+                            r for r in watchlist
+                            if str(r.get("ticker") or "") in held_ids
+                        ]
+                        for r in watchlist:
+                            r["_skip_oi_filter"] = True
                     for ab in bot_active_bets:
                         ab.setdefault("_display", bot.get("display") or {})
                     # Sport bots have no per-bot "latest open position"
@@ -12425,52 +12427,6 @@ class Handler(BaseHTTPRequestHandler):
                 "enabled": entry["enabled"],
                 "updated_at": entry["updated_at"],
             }).encode("utf-8")
-            self.send_response(200)
-            self.send_header("Content-Type", "application/json")
-            self.send_header("Cache-Control", "no-store")
-            self.send_header("Content-Length", str(len(payload)))
-            self.end_headers()
-            self.wfile.write(payload)
-            return
-        if parsed.path == "/api/worldcup/arm":
-            # Operator arm switch for the world-cup live executor.
-            # Writes arm.json next to the executor's state file; the
-            # executor re-reads it every tick, so arming/disarming
-            # takes effect without a restart. Only meaningful on the
-            # LIVE dashboard (the sim process runs no executor), and
-            # the button is only rendered there — but the endpoint
-            # also refuses in sim mode as a belt-and-braces guard.
-            if self.mode != "live":
-                self.send_error(403, "arm switch is live-mode only")
-                return
-            qs = parse_qs(parsed.query)
-            want = (qs.get("armed", [""])[0] or "").strip().lower()
-            if want not in ("true", "false"):
-                self.send_error(400, "need ?armed=true|false")
-                return
-            wc = next((b for b in self.bots
-                       if b.get("key") == "world-cup"), None)
-            sim_state = (wc or {}).get("sim_state_path")
-            if not sim_state:
-                self.send_error(500, "world-cup sim_state_path not "
-                                     "configured")
-                return
-            arm_path = Path(sim_state).parent / "arm.json"
-            try:
-                arm_path.parent.mkdir(parents=True, exist_ok=True)
-                arm_path.write_text(json.dumps({
-                    "armed": want == "true",
-                    "updated_at": datetime.now(timezone.utc)
-                    .isoformat(timespec="seconds"),
-                }))
-            except OSError:
-                log.exception("arm.json write failed")
-                self.send_error(500, "arm write failed")
-                return
-            log.warning("world-cup live executor %s via dashboard "
-                        "button", "ARMED" if want == "true"
-                        else "DISARMED")
-            payload = json.dumps({"armed": want == "true"}).encode()
             self.send_response(200)
             self.send_header("Content-Type", "application/json")
             self.send_header("Cache-Control", "no-store")

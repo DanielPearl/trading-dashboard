@@ -70,13 +70,6 @@ class WorldCupLiveExecutor:
         self.profit_lock_yes_bid = (max(raw_pl, _HARD_MIN_PROFIT_LOCK_BID)
                                     if raw_pl > 0 else 0)
         self.state_path = Path(state_path)
-        # Operator arm switch — written by the live dashboard's "Arm
-        # real orders" button. Re-read every tick so arming/disarming
-        # needs no restart. Real orders require config dry_run false
-        # OR this file's {"armed": true}; either alone suffices, and
-        # deleting the file / clicking Disarm restores dry-run when
-        # the config default is safe.
-        self.arm_path = self.state_path.parent / "arm.json"
         self._config_dry_run = self.dry_run
         self._daily = core.DailyOrderCounter()
         self._session = core.KalshiSession("world-cup")
@@ -98,30 +91,24 @@ class WorldCupLiveExecutor:
 
     # ── tick ────────────────────────────────────────────────────────
 
-    def _armed_by_file(self) -> bool:
-        try:
-            if self.arm_path.exists():
-                import json
-                return bool((json.loads(self.arm_path.read_text())
-                             or {}).get("armed"))
-        except (OSError, ValueError):
-            log.exception("arm.json unreadable — treating as DISARMED")
-        return False
-
     def tick(self, watchlist_rows: list[dict],
-             records: list[dict]) -> dict:
-        # Effective mode for THIS tick: config opt-in or the dashboard
-        # arm button. Log transitions so the journal shows exactly when
-        # the operator armed/disarmed.
+             records: list[dict], armed: bool = False) -> dict:
+        """One executor tick. ``armed`` comes from the LIVE dashboard's
+        world-cup Home-tab toggle (explicitly ON in bot_states_live) —
+        flipping that toggle IS the live-trading switch: ON → real
+        Kalshi orders from the next tick; OFF → no new orders (existing
+        positions still settle). Config dry_run: false also arms,
+        independent of the toggle."""
         was_dry = self.dry_run
-        self.dry_run = self._config_dry_run and not self._armed_by_file()
+        self.dry_run = self._config_dry_run and not armed
         if was_dry != self.dry_run:
             if self.dry_run:
-                log.warning("wc-live DISARMED — back to dry-run; no "
+                log.warning("wc-live DISARMED (toggle off) — no "
                             "further real orders")
             else:
-                log.warning("wc-live ARMED by operator — real Kalshi "
-                            "orders will be placed from this tick on")
+                log.warning("wc-live ARMED via Home-tab toggle — real "
+                            "Kalshi orders will be placed from this "
+                            "tick on")
         state = self._load_state()
         if not self.dry_run:
             voided = core.void_dry_run_positions(state)

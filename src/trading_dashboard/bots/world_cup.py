@@ -98,7 +98,13 @@ def _one_tick(upstream: dict[str, Callable[..., Any]],
         upstream["export_watchlist"](rows)
         state = upstream["simulator_tick"](rows_for_trading, records)
     if live_executor is not None:
-        live_state = live_executor.tick(rows_for_trading, records)
+        # Arming requires the toggle to be EXPLICITLY on in this
+        # process's bot-states file (bot_states_live.json) — a missing
+        # entry means dry-run, never "default armed".
+        entry = bot_state.get_all_states().get(BOT_KEY) or {}
+        armed = entry.get("enabled") is True
+        live_state = live_executor.tick(rows_for_trading, records,
+                                        armed=armed)
         live_label = (
             " [LIVE — DRY-RUN]" if getattr(live_executor, "dry_run", True)
             else " [LIVE — REAL ORDERS]")
