@@ -11810,23 +11810,6 @@ class Handler(BaseHTTPRequestHandler):
                         bot.get("sim_state_path"),
                         watchlist_path=bot.get("watchlist_json_path"),
                     )
-                    # LIVE world-cup watchlist shows ONLY contracts
-                    # actually bought (open positions on Kalshi) — the
-                    # full candidate slate lives on the sim site. The
-                    # rows' ticker is the match/event id, which the
-                    # executor stores as each position's match_id.
-                    if (self.mode == "live"
-                            and bot.get("key") == "world-cup"):
-                        held_ids = {str(ab.get("ticker") or "")
-                                    for ab in bot_active_bets}
-                        held_ids |= {str(ab.get("match_id") or "")
-                                     for ab in bot_active_bets}
-                        watchlist = [
-                            r for r in watchlist
-                            if str(r.get("ticker") or "") in held_ids
-                        ]
-                        for r in watchlist:
-                            r["_skip_oi_filter"] = True
                     for ab in bot_active_bets:
                         ab.setdefault("_display", bot.get("display") or {})
                     # Sport bots have no per-bot "latest open position"
