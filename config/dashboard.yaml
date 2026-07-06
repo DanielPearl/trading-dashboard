@@ -334,6 +334,32 @@ bots:
       - name: "PDC World Championship 2026-27"
         start: "2026-12-15T19:00:00Z"
         end:   "2027-01-03T23:30:00Z"
+  - key: world-cup
+    name: World Cup Forecast
+    # ADVISORY ONLY — the World Cup model is not wired into any trading
+    # loop (live or sim) yet. This entry exists so the Models tab
+    # (offline bake-off report) and Training Data tab (historical
+    # WC-finals match grain with the who-won label) render. Both read
+    # static artifacts from the world-cup repo; there is no watchlist,
+    # sim.db, or service behind this bot. dashboard_type stays "sport"
+    # so the shared chrome (empty watchlist, unavailable home card)
+    # degrades gracefully; the Models/Training renderers branch on the
+    # bot key before the generic sport path.
+    dashboard_type: sport
+    # No sim.db exists (no trading loop). db_path points at the
+    # training CSV so (a) availability tracks the repo pull and
+    # (b) live_bootstrap skips it (it only auto-creates .db/.json
+    # placeholders, which would clobber real artifacts here).
+    db_path: /root/world-cup/data/training_data.csv
+    decisions_path: /root/world-cup/data/training_data.csv
+    series_ticker: KXWC26GAME
+    data_source: "martj42/international_results (open data, no API key)"
+    model_report_path: /root/world-cup/data/processed/artifacts/model_report.json
+    training_data_path: /root/world-cup/data/training_data.csv
+    seasons:
+      - name: "FIFA World Cup 2026"
+        start: "2026-06-11T00:00:00Z"
+        end:   "2026-07-19T23:59:00Z"
 
 # ---------------------------------------------------------------------------
 # Display thresholds. Mirror the gas-bot's gates so the buy-criteria panel

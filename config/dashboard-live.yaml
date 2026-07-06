@@ -235,6 +235,26 @@ bots:
       - name: "PDC World Championship 2026-27"
         start: "2026-12-15T19:00:00Z"
         end:   "2027-01-03T23:30:00Z"
+  - key: world-cup
+    name: World Cup Forecast
+    # ADVISORY ONLY — no trading loop (live or sim) is wired up yet.
+    # Model artifacts are mode-agnostic, so live reads the same
+    # bake-off report + training CSV as sim.
+    dashboard_type: sport
+    # No sim.db exists (no trading loop). db_path points at the
+    # training CSV so (a) availability tracks the repo pull and
+    # (b) live_bootstrap skips it (it only auto-creates .db/.json
+    # placeholders, which would clobber real artifacts here).
+    db_path: /root/world-cup/data/training_data.csv
+    decisions_path: /root/world-cup/data/training_data.csv
+    series_ticker: KXWC26GAME
+    data_source: "martj42/international_results (open data, no API key)"
+    model_report_path: /root/world-cup/data/processed/artifacts/model_report.json
+    training_data_path: /root/world-cup/data/training_data.csv
+    seasons:
+      - name: "FIFA World Cup 2026"
+        start: "2026-06-11T00:00:00Z"
+        end:   "2026-07-19T23:59:00Z"
 
 # Display thresholds — same defaults as sim. Each bot's effective_config
 # would override these once it's actually running, same as the sim side.

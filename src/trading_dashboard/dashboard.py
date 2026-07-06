@@ -3482,15 +3482,28 @@ def render_page(
             _page = max(1, int(_td_qs.get("page", ["1"])[0]))
         except (TypeError, ValueError):
             _page = 1
-        out.append(_tennis_mod.render_training_data_panel(
-            current_bot=current_bot,
-            page=_page,
-            page_size=20,
-            tour_filter=_td_qs.get("tour", [None])[0],
-            split_filter=_td_qs.get("split", [None])[0],
-            current_tab=active_tab,
-            period_key=period_key,
-        ))
+        if current_bot == "world-cup":
+            # World Cup ships its own training panel — the full
+            # historical WC-finals match grain with the who-won label.
+            from . import world_cup as _wc_mod
+            out.append(_wc_mod.render_training_data_panel(
+                bot=current_bot_dict or {},
+                current_bot=current_bot,
+                page=_page,
+                page_size=20,
+                current_tab=active_tab,
+                period_key=period_key,
+            ))
+        else:
+            out.append(_tennis_mod.render_training_data_panel(
+                current_bot=current_bot,
+                page=_page,
+                page_size=20,
+                tour_filter=_td_qs.get("tour", [None])[0],
+                split_filter=_td_qs.get("split", [None])[0],
+                current_tab=active_tab,
+                period_key=period_key,
+            ))
     except Exception:  # noqa: BLE001
         log.exception("training data panel failed to render")
         out.append("<div class='empty'>Training Data unavailable — "
@@ -10184,6 +10197,14 @@ def _render_models_panel(out: List[str], bot: dict, model: dict | None,
                                      bot_closed_positions or [])
         out.append("</div></div>")
         return
+    # World Cup is advisory-only (no trading loop yet) — its Models tab
+    # renders the offline bake-off report instead of the live-metrics
+    # card the other sport bots get.
+    if bot_key == "world-cup":
+        from . import world_cup as _world_cup
+        out.append(_world_cup.render_models_panel(bot))
+        out.append("</div></div>")
+        return
     # Tennis-shape bots (tennis / table-tennis / darts) don't have a
     # sim.db — they keep their model artifacts in metrics.json +
     # coefficients.json. Delegate to the tennis renderer; Phase 2b
@@ -12580,6 +12601,8 @@ def main(argv: list[str] | None = None) -> int:
             "metrics_path": b.metrics_path,
             "coefficients_path": b.coefficients_path,
             "sim_state_path": b.sim_state_path,
+            "model_report_path": b.model_report_path,
+            "training_data_path": b.training_data_path,
             "series_ticker": b.series_ticker,
             "seasons": [
                 {"name": s.name, "start": s.start, "end": s.end}
