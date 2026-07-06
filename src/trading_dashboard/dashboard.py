@@ -3416,40 +3416,6 @@ def render_page(
 
     # ── WATCHLIST tab — chart + strike ladder + Kalshi rules ─────────
     _open_panel("watchlist")
-    # World-cup live-trading status (LIVE site only). The Home-tab
-    # world-cup toggle IS the switch: explicitly ON in
-    # bot_states_live.json → the executor places real Kalshi orders
-    # from its next tick; OFF → no new orders (existing positions
-    # still settle). This banner just reflects that state.
-    if mode == "live" and current_bot == "world-cup":
-        from . import bot_state as _bot_state
-        _entry = _bot_state.get_all_states().get("world-cup") or {}
-        _armed = _entry.get("enabled") is True
-        if _armed:
-            out.append(
-                "<div class='section'><div class='body' "
-                "style='border:1px solid #f85149;border-radius:6px;"
-                "padding:10px 14px;'>"
-                "<b style='color:#f85149;'>LIVE TRADING ON</b> "
-                "<span class='small gray'>— the world-cup toggle on "
-                "the Home tab is on: real Kalshi orders are placed "
-                "when the edge criteria are met (1 contract per "
-                "order). Flip the toggle off to stop new orders "
-                "instantly.</span></div></div>"
-            )
-        else:
-            out.append(
-                "<div class='section'><div class='body' "
-                "style='border:1px solid #d29922;border-radius:6px;"
-                "padding:10px 14px;'>"
-                "<b style='color:#d29922;'>LIVE TRADING OFF</b> "
-                "<span class='small gray'>— the executor evaluates "
-                "every tick but places nothing. Flip the world-cup "
-                "toggle on this site's Home tab to begin placing real "
-                "Kalshi orders (1 contract per order, real money); it "
-                "takes effect on the next 5-minute tick.</span>"
-                "</div></div>"
-            )
     if (not watchlist and not latest_active
             and not [b for b in available_bots
                      if b["key"] == current_bot and b.get("available")]):
