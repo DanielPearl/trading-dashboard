@@ -3491,6 +3491,7 @@ def render_page(
                 current_bot=current_bot,
                 page=_page,
                 page_size=20,
+                segment=_td_qs.get("seg", [None])[0],
                 current_tab=active_tab,
                 period_key=period_key,
             ))
@@ -12622,6 +12623,7 @@ def main(argv: list[str] | None = None) -> int:
             "sim_state_path": b.sim_state_path,
             "model_report_path": b.model_report_path,
             "training_data_path": b.training_data_path,
+            "training_db_path": b.training_db_path,
             "series_ticker": b.series_ticker,
             "seasons": [
                 {"name": s.name, "start": s.start, "end": s.end}

@@ -101,11 +101,14 @@ class BotEntry:
     metrics_path: str | None = None
     coefficients_path: str | None = None
     sim_state_path: str | None = None
-    # World Cup (advisory-only) inputs — offline bake-off report +
-    # training-dataset CSV written by the world-cup repo's scripts.
-    # No trading loop writes these; see world_cup.py.
+    # World Cup inputs — offline bake-off report + training-dataset
+    # files written by the world-cup repo's scripts (the sim trader
+    # doesn't write these; see world_cup.py). training_db_path is the
+    # full ~49k-match SQLite grain; training_data_path is the WC-finals
+    # CSV kept as a fallback.
     model_report_path: str | None = None
     training_data_path: str | None = None
+    training_db_path: str | None = None
     # Kalshi series_ticker for the family the bot trades (e.g.
     # "KXAAAGASW", "KXNATGASD", "KXJOBLESSCLAIMS"). The dashboard uses
     # this to fetch live candlesticks straight from Kalshi for the

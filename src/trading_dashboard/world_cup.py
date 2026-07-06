@@ -396,6 +396,10 @@ def render_models_panel(bot: dict) -> str:
 # list so the table stays honest after a retrain changes the set.
 _TD_COLUMNS: List[tuple] = [
     ("date", "Date", "Match date, YYYY-MM-DD."),
+    ("tournament", "Tournament",
+     "Competition the match was played in — FIFA World Cup, World Cup "
+     "qualification, continental championships, friendlies, and every "
+     "other official international."),
     ("team1", "Team 1",
      "First team as listed in the source data (the nominal 'home' side; "
      "most World Cup matches are on neutral ground)."),
@@ -465,7 +469,41 @@ _DIFF_SOURCES = {
     "streak_diff": ("team1_streak", "team2_streak"),
 }
 
-_TEXT_COLS = {"date", "team1", "team2", "winner", "score", "country"}
+_TEXT_COLS = {"date", "tournament", "team1", "team2", "winner", "score",
+              "country"}
+
+# Segment filter pills: query value -> label. Values match the
+# ``segment`` column build_training_data.py writes.
+_SEGMENTS = [
+    (None, "All"),
+    ("wc_finals", "WC finals"),
+    ("wc_qualifier", "WC qualifiers"),
+    ("continental", "Continental"),
+    ("friendly", "Friendlies"),
+    ("other", "Other"),
+]
+_SEGMENT_VALUES = {s for s, _ in _SEGMENTS if s}
+
+
+def _query_history_db(db_path: str, segment: str | None,
+                      offset: int, limit: int):
+    """(total, rows) page from the full-grain SQLite, newest first."""
+    import sqlite3
+    con = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
+    con.row_factory = sqlite3.Row
+    try:
+        where = "WHERE segment = ?" if segment else ""
+        args = [segment] if segment else []
+        total = con.execute(
+            f"SELECT COUNT(*) FROM matches {where}", args).fetchone()[0]
+        cur = con.execute(
+            f"SELECT * FROM matches {where} "
+            f"ORDER BY date DESC, rowid DESC LIMIT ? OFFSET ?",
+            args + [limit, offset])
+        rows = [dict(r) for r in cur.fetchall()]
+    finally:
+        con.close()
+    return total, rows
 
 
 def _derive(row: Dict[str, Any], key: str) -> Any:
@@ -500,47 +538,93 @@ def _derive(row: Dict[str, Any], key: str) -> Any:
 
 def render_training_data_panel(*, bot: dict, current_bot: str | None,
                                   page: int = 1, page_size: int = 20,
+                                  segment: str | None = None,
                                   current_tab: str = "training",
                                   period_key: str = "all") -> str:
-    rows = _load_training_rows(bot.get("training_data_path"))
     report = load_report(bot.get("model_report_path"))
     selected = set(report.get("selected_features") or [])
+    segment = segment if segment in _SEGMENT_VALUES else None
 
     out: List[str] = []
     out.append("<section class='card'><div class='body'>")
     out.append("<h2>Training Data — World Cup</h2>")
 
-    if not rows:
-        out.append(
-            "<p class='small gray'>The training dataset hasn't been "
-            "generated on this host yet. Run "
-            "<code>src/build_training_data.py</code> in the World Cup "
-            "Forecast repo (writes <code>data/training_data.csv</code>) "
-            "and pull the repo here.</p></div></section>"
-        )
-        return "".join(out)
+    # Full-grain SQLite is the primary source; the WC-finals CSV keeps
+    # the page alive on hosts that predate the history DB.
+    db_path = bot.get("training_db_path")
+    total = 0
+    window: List[Dict[str, Any]] = []
+    if db_path and Path(db_path).exists():
+        total_pages = 1  # recomputed below once total is known
+        page = max(1, page)
+        try:
+            total, window = _query_history_db(
+                db_path, segment, (page - 1) * page_size, page_size)
+        except Exception:  # noqa: BLE001
+            total, window = 0, []
+        if total and not window and page > 1:
+            # page beyond the end (e.g. filter changed) — clamp to last
+            total_pages = max(1, (total + page_size - 1) // page_size)
+            page = total_pages
+            _, window = _query_history_db(
+                db_path, segment, (page - 1) * page_size, page_size)
+    if not window:
+        rows = _load_training_rows(bot.get("training_data_path"))
+        if not rows:
+            out.append(
+                "<p class='small gray'>The training dataset hasn't been "
+                "generated on this host yet. Run "
+                "<code>src/build_training_data.py</code> in the World Cup "
+                "Forecast repo (writes <code>data/training_history.db</code>)"
+                " and pull the repo here.</p></div></section>"
+            )
+            return "".join(out)
+        segment = None
+        total = len(rows)
+        view = sorted(rows, key=lambda r: r.get("date", ""), reverse=True)
+        total_pages = max(1, (total + page_size - 1) // page_size)
+        page = min(max(1, page), total_pages)
+        window = view[(page - 1) * page_size:(page - 1) * page_size
+                      + page_size]
 
-    total = len(rows)
     total_pages = max(1, (total + page_size - 1) // page_size)
     page = min(max(1, page), total_pages)
 
     out.append(
-        f"<p class='small gray'>Every FIFA World Cup finals match ever "
-        f"played — <b>{total:,}</b> matches, 1930 through the current "
-        f"tournament. One row per match; <b>Winner</b> is the dependent "
-        f"variable the models are trained to predict (3-way: team1 / "
-        f"draw / team2). All features are computed strictly from "
-        f"matches played <i>before</i> the row's date by replaying the "
-        f"full 49k-match international history, so nothing leaks the "
-        f"outcome. Sorted newest first. Click a column header for its "
-        f"definition; ⚙ MODEL FEATURE marks the "
-        f"{len(selected)} features that survived pruning.</p>"
+        f"<p class='small gray'>Every official men's international "
+        f"since 1872 — <b>{total:,}</b> matches"
+        f"{' in this slice' if segment else ''}. One row per match; "
+        f"<b>Winner</b> is the dependent variable the models are "
+        f"trained to predict (3-way: team1 / draw / team2). All "
+        f"features are computed strictly from matches played "
+        f"<i>before</i> the row's date by replaying the full history in "
+        f"order, so nothing leaks the outcome. The shipped model trains "
+        f"on the WC-finals slice; the bake-off's augmentation variants "
+        f"train on the qualifier and all-competitive slices shown here. "
+        f"Sorted newest first. Click a column header for its "
+        f"definition; ⚙ MODEL FEATURE marks the {len(selected)} "
+        f"features that survived pruning.</p>"
     )
 
-    # newest first
-    view = sorted(rows, key=lambda r: r.get("date", ""), reverse=True)
-    start = (page - 1) * page_size
-    window = view[start:start + page_size]
+    # Segment filter pills (same idiom as the tennis panel's tour pills).
+    def _seg_link(value: str | None, label: str, active: bool) -> str:
+        params = [("tab", current_tab)]
+        if current_bot:
+            params.append(("bot", current_bot))
+        if period_key and period_key != "all":
+            params.append(("period", period_key))
+        if value:
+            params.append(("seg", value))
+        qs = "&".join(f"{k}={v}" for k, v in params)
+        cls = "tab-pill" + (" tab-pill-active" if active else "")
+        return f"<a class='{cls}' href='?{qs}'>{html.escape(label)}</a>"
+
+    out.append("<div class='tab-bar' style='margin-top:8px;'>")
+    out.append("<span class='small gray' style='margin-right:8px;'>"
+               "Competition:</span>")
+    for value, label in _SEGMENTS:
+        out.append(_seg_link(value, label, segment == value))
+    out.append("</div>")
 
     defs: Dict[str, Dict[str, str]] = {}
     out.append("<div style='overflow-x:auto;margin-top:12px;'>")
@@ -587,6 +671,8 @@ def render_training_data_panel(*, bot: dict, current_bot: str | None,
             params.append(("bot", current_bot))
         if period_key and period_key != "all":
             params.append(("period", period_key))
+        if segment:
+            params.append(("seg", segment))
         params.append(("page", str(p)))
         return "?" + "&".join(f"{k}={v}" for k, v in params)
 
@@ -608,12 +694,25 @@ def render_training_data_panel(*, bot: dict, current_bot: str | None,
     if period_key and period_key != "all":
         out.append(f"<input type='hidden' name='period' "
                    f"value='{html.escape(period_key)}'>")
+    if segment:
+        out.append(f"<input type='hidden' name='seg' "
+                   f"value='{html.escape(segment)}'>")
     out.append("<label class='gray' style='margin-right:6px;'>Jump:</label>")
-    out.append("<select name='page' onchange='this.form.submit()'>")
-    for p in range(1, total_pages + 1):
-        sel = " selected" if p == page else ""
-        out.append(f"<option value='{p}'{sel}>{p}</option>")
-    out.append("</select></form>")
+    if total_pages <= 400:
+        out.append("<select name='page' onchange='this.form.submit()'>")
+        for p in range(1, total_pages + 1):
+            sel = " selected" if p == page else ""
+            out.append(f"<option value='{p}'{sel}>{p}</option>")
+        out.append("</select>")
+    else:
+        # Full history is ~2,500 pages — a dropdown that size bloats
+        # every render, so fall back to a numeric jump box.
+        out.append(
+            f"<input type='number' name='page' min='1' "
+            f"max='{total_pages}' value='{page}' style='width:80px;'>"
+            "<button type='submit'>Go</button>"
+        )
+    out.append("</form>")
     if page < total_pages:
         out.append(f"<a class='tab-pill' href='{_page_link(page + 1)}'>"
                    "Next →</a>")

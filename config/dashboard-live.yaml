@@ -258,6 +258,7 @@ bots:
     data_source: "martj42/international_results (open data, no API key)"
     model_report_path: /root/world-cup/data/processed/artifacts/model_report.json
     training_data_path: /root/world-cup/data/training_data.csv
+    training_db_path: /root/world-cup/data/training_history.db
     seasons:
       - name: "FIFA World Cup 2026"
         start: "2026-06-11T00:00:00Z"
