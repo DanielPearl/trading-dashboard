@@ -1392,51 +1392,6 @@ def pick_recent_market_view_ticker(db_path: str) -> str | None:
     return (dict(row).get("ticker") if row else None)
 
 
-def _wc_candle_prob_history(ticker: str, series_ticker: str,
-                            hours: int = 72) -> List[dict]:
-    """Hourly YES-price history for one Kalshi market, in the
-    ``prob_history`` row shape ({ts, value} with value in 0–100 %) the
-    watchlist hero chart consumes. Mid of the bid/ask closes; falls
-    back to the trade-price close when the book was empty. Empty list
-    on any failure — the hero degrades to its no-history frame."""
-    from . import kalshi_client as _kc
-    now_ts = int(datetime.now(timezone.utc).timestamp())
-    client = _kc.get_client()
-    try:
-        resp = client.get_market_candlesticks(
-            ticker=ticker, series_ticker=series_ticker,
-            start_ts=now_ts - hours * 3600, end_ts=now_ts,
-            period_interval=60)
-    except Exception:  # noqa: BLE001
-        log.exception("wc candlesticks failed for %s", ticker)
-        return []
-    out: List[dict] = []
-    for c in ((resp or {}).get("candlesticks") or []):
-        def _close(key):
-            blk = c.get(key) or {}
-            v = blk.get("close_dollars")
-            if v is not None:
-                try:
-                    return float(v) * 100.0
-                except (TypeError, ValueError):
-                    pass
-            v = blk.get("close")
-            try:
-                return float(v) if v is not None else None
-            except (TypeError, ValueError):
-                return None
-        bid, ask = _close("yes_bid"), _close("yes_ask")
-        if bid is not None and ask is not None and ask > 0:
-            val = (bid + ask) / 2.0
-        else:
-            val = _close("price")
-        ts = c.get("end_period_ts")
-        if val is None or ts is None:
-            continue
-        out.append({"ts": int(ts), "value": round(val, 1)})
-    return out
-
-
 def fetch_ticker_yes_prob_history(db_path: str, ticker: str | None,
                                     hours: int = 168) -> List[dict]:
     """Time-series of YES probability (in cents, 0-100) for one ticker.
@@ -12021,32 +11976,6 @@ class Handler(BaseHTTPRequestHandler):
                             db_path, t, hours=7 * 24)
                         if prob_history:
                             break
-
-                # World-cup hero chart: Kalshi-page-style price line
-                # from the market's own candlesticks. Anchor = the
-                # first held contract's market (what the operator most
-                # wants to watch), else the ATM anchor of the most
-                # imminent match. Values are the hourly mid of
-                # bid/ask closes in % so the hero's probability mode
-                # (y pinned 0–100) renders it like Kalshi's chart.
-                if bot.get("key") == "world-cup" and not prob_history:
-                    anchor_ticker = None
-                    try:
-                        ss = bot.get("sim_state_path")
-                        if ss and Path(ss).exists():
-                            _st = json.loads(Path(ss).read_text())
-                            for p in (_st.get("open_positions") or []):
-                                if p.get("ticker"):
-                                    anchor_ticker = p["ticker"]
-                                    break
-                    except (OSError, ValueError):
-                        pass
-                    if not anchor_ticker and atm_market:
-                        anchor_ticker = atm_market.get("ticker")
-                    if anchor_ticker:
-                        prob_history = _wc_candle_prob_history(
-                            anchor_ticker,
-                            bot.get("series_ticker") or "KXWCADVANCE")
 
                 # Chart shows only the current event's data. The local
                 # model_snapshots merge was retired with the 5-day view.
