@@ -3656,6 +3656,15 @@ def render_page(
     out.append(_HISTORY_CHART_JS)
     out.append(_SEASON_COUNTDOWN_JS)
     out.append(_live_update_script(current_bot, period_key=period_key))
+    # Freshness stamp — makes a stale browser tab self-evident: if this
+    # timestamp is old, the page predates the latest deploy/restart and
+    # needs a reload. Renders on every tab of both sites.
+    out.append(
+        f"<div class='small gray' style='margin:18px 0 8px 0;"
+        f"text-align:center;opacity:0.7;'>page rendered "
+        f"{datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S')} UTC"
+        f" · reload for latest</div>"
+    )
     out.append("</body></html>")
     return "".join(out)
 
