@@ -97,19 +97,6 @@ def model_summary_for_card(model_report_path: str | None) -> Dict[str, Any]:
         "rows_test": split.get("rows_test"),
         "actual_wins": 0,
         "actual_losses": 0,
-        # True per-unit coefficients from the pruned logistic (the
-        # interpretable cousin of the winning forest): log-odds change
-        # in P(team1 win) per +1 raw unit of each feature. Ordered by
-        # standardized magnitude so the strongest signals list first.
-        "coefficients": [
-            {"feature": c.get("feature"),
-             "per_unit": c.get("team1_per_unit"),
-             "std": c.get("team1")}
-            for c in sorted(
-                report.get("coefficients_pruned_logistic") or [],
-                key=lambda c: abs(c.get("team1") or 0), reverse=True)
-            if c.get("team1_per_unit") is not None
-        ],
     }
 
 
