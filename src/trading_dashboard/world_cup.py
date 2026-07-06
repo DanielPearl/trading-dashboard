@@ -178,14 +178,16 @@ def render_models_panel(bot: dict) -> str:
     ds = report.get("dataset") or {}
     overview = [
         ("Task", "3-way match outcome: team1 win / draw / team2 win"),
-        ("Training matches", split.get("train", "—")),
+        ("Winner trains on", report.get("training_slice")
+         or split.get("train", "—")),
+        ("Training pool", split.get("train", "—")),
         ("Validation (feature pruning)", split.get("validation", "—")),
         ("Held-out test", split.get("test", "—")),
         ("History replayed for features",
-         f"{ds.get('n_matches', 0):,} World Cup matches "
+         f"{ds.get('n_all_matches') or ds.get('n_matches', 0):,} "
+         f"internationals "
          f"({(ds.get('date_range') or ['?', '?'])[0][:4]}–"
-         f"{(ds.get('date_range') or ['?', '?'])[1][:4]}), features "
-         "computed from the full 1872-present international history"),
+         f"{(ds.get('date_range') or ['?', '?'])[1][:4]})"),
         ("Data source", ds.get("source", "—")),
         ("Report generated", (report.get("generated_at") or "—")[:19]
          .replace("T", " ") + " UTC"),
@@ -210,7 +212,9 @@ def render_models_panel(bot: dict) -> str:
     )
     out.append(
         "<table><thead><tr><th>Model</th><th>Family</th>"
-        "<th class='num'>Features</th><th class='num'>Log loss</th>"
+        "<th class='num'>Features</th>"
+        "<th class='num' title='Matches the model was fitted on'>"
+        "Train rows</th><th class='num'>Log loss</th>"
         "<th class='num'>Brier</th><th class='num'>Accuracy</th>"
         "<th>Notes</th></tr></thead><tbody>"
     )
@@ -219,10 +223,12 @@ def render_models_panel(bot: dict) -> str:
         is_best = m.get("key") == best_key
         style = " style='color:#3fb950;font-weight:600;'" if is_best else ""
         name = html.escape(m.get("name", "?")) + (" ★" if is_best else "")
+        rows_train = m.get("rows_train")
         out.append(
             f"<tr><td{style}>{name}</td>"
             f"<td>{html.escape(_FAMILY_LABELS.get(m.get('family', ''), m.get('family', '—')))}</td>"
             f"<td class='num'>{m.get('n_features', '—')}</td>"
+            f"<td class='num'>{f'{int(rows_train):,}' if rows_train else '—'}</td>"
             f"<td class='num'{style}>{_fnum(m.get('log_loss'), 4)}</td>"
             f"<td class='num'>{_fnum(m.get('brier'), 4)}</td>"
             f"<td class='num'>{float(m.get('accuracy', 0)) * 100:.1f}%</td>"
@@ -233,6 +239,7 @@ def render_models_panel(bot: dict) -> str:
         out.append(
             f"<tr><td class='gray'>Class priors (know-nothing floor)</td>"
             f"<td class='gray'>baseline</td><td class='num gray'>0</td>"
+            f"<td class='num gray'>—</td>"
             f"<td class='num gray'>{_fnum(baseline_ll, 4)}</td>"
             f"<td class='num gray'>—</td><td class='num gray'>—</td>"
             f"<td class='small gray'>Always predicts the historical "
@@ -242,10 +249,11 @@ def render_models_panel(bot: dict) -> str:
 
     # ── Feature selection ───────────────────────────────────────────
     out.append(
-        "<h3 class='subhead'>Candidate features "
-        "<span class='small gray'>(18 candidates → greedy backward "
-        "elimination on expanding-window CV log loss; ✓ = survives "
-        "pruning and is used by the shipped models)</span></h3>"
+        f"<h3 class='subhead'>Candidate features "
+        f"<span class='small gray'>({len(candidates)} candidates → "
+        f"pruned per track: backward elimination on finals CV, "
+        f"permutation importance on the full history; ✓ = used by the "
+        f"shipped winner)</span></h3>"
     )
     out.append(
         "<table><thead><tr><th></th><th>Feature</th><th>Definition</th>"
@@ -276,8 +284,8 @@ def render_models_panel(bot: dict) -> str:
         for i, h in enumerate(prune_history):
             removed = h.get("removed")
             removed_cell = (f"<code>{html.escape(removed)}</code>" if removed
-                            else "<span class='gray'>(start — all 18)"
-                                 "</span>")
+                            else "<span class='gray'>(start — all "
+                                 f"{len(candidates)})</span>")
             out.append(
                 f"<tr><td>{i}</td><td>{removed_cell}</td>"
                 f"<td class='num'>{h.get('n_features', '—')}</td>"
@@ -285,16 +293,36 @@ def render_models_panel(bot: dict) -> str:
             )
         out.append("</tbody></table></details>")
 
+    perm = report.get("permutation_importance") or []
+    if perm:
+        out.append("<details style='margin:8px 0 12px 0;'>"
+                   "<summary class='small gray' style='cursor:pointer;'>"
+                   "Permutation importance (all-matches track — mean "
+                   "log-loss impact of shuffling each feature on "
+                   "2010–2014 validation)</summary>")
+        out.append("<table><thead><tr><th>Feature</th>"
+                   "<th class='num'>Importance</th></tr></thead><tbody>")
+        for p in perm:
+            v = p.get("importance")
+            style = "" if (v or 0) > 0 else " class='gray'"
+            out.append(
+                f"<tr{style}><td><code>{html.escape(p.get('feature', ''))}"
+                f"</code></td>"
+                f"<td class='num'>{_fnum(v, 5, signed=True)}</td></tr>")
+        out.append("</tbody></table></details>")
+
     # ── Logistic coefficients (interpretability) ────────────────────
     coefs = report.get("coefficients_pruned_logistic") or []
     if coefs:
+        coef_src = ("full-history logistic"
+                    if report.get("coefficients_source") == "logit_all"
+                    else "pruned finals logistic")
         out.append(
-            "<h3 class='subhead'>What moves the prediction "
-            "<span class='small gray'>(pruned-logistic coefficients — "
-            "the interpretable cousin of the winning forest; "
-            "'per +1 SD' compares feature strength, 'per unit' is the "
-            "true coefficient in natural units, e.g. per Elo point)"
-            "</span></h3>"
+            f"<h3 class='subhead'>What moves the prediction "
+            f"<span class='small gray'>({coef_src} — the interpretable "
+            f"cousin of the winning model; 'per +1 SD' compares feature "
+            f"strength, 'per unit' is the true coefficient in natural "
+            f"units, e.g. per Elo point)</span></h3>"
         )
         out.append("<table><thead><tr><th>Feature</th>"
                    "<th class='num'>team1 win / +1 SD</th>"
@@ -454,6 +482,46 @@ _TD_COLUMNS: List[tuple] = [
      "(0 when they never met)."),
     ("h2h_t1_gd", "H2H GD",
      "Team 1's average goal difference across prior meetings."),
+    ("atk_diff", "Attack Δ",
+     "Dixon-Coles-style attack rating difference — multiplicative "
+     "goal-scoring strength, EWMA-updated against opponent defense."),
+    ("defw_diff", "Def leak Δ",
+     "Defensive-weakness rating difference (positive = team1 concedes "
+     "more than its opposition quality explains)."),
+    ("elo_mom_diff", "Elo mom Δ",
+     "Elo momentum: rating change over each team's last 10 matches "
+     "(diff) — rising vs fading sides."),
+    ("sos10_diff", "SoS Δ",
+     "Strength of schedule: average opponent Elo over the last 10 "
+     "matches (diff) — who earned their recent form."),
+    ("cleansheet10_diff", "Clean sheet Δ",
+     "Clean-sheet rate over the last 10 matches (diff)."),
+    ("blank10_diff", "Blanked Δ",
+     "Failed-to-score rate over the last 10 matches (diff)."),
+    ("congest30_diff", "Congestion Δ",
+     "Matches played in the last 30 days (diff) — fixture load."),
+    ("edition_matches_diff", "Edition Δ",
+     "Matches already played in this tournament edition (diff)."),
+    ("late_stage", "Late stage?",
+     "1 when both sides have played 3+ matches in a finals-tournament "
+     "edition — a knockout-round proxy."),
+    ("importance", "Importance",
+     "Match importance tier derived from the Elo K-factor: 4 = WC "
+     "finals, ~3.3 = continental finals, ~2.7 = qualifiers, 1.33 = "
+     "friendly."),
+    ("same_confed", "Same confed?",
+     "1 if both teams belong to the same confederation."),
+    ("uefa_diff", "UEFA Δ",
+     "UEFA membership, team1 − team2 (+1 = only team1 is European)."),
+    ("conmebol_diff", "CONMEBOL Δ",
+     "CONMEBOL membership, team1 − team2 (+1 = only team1 is South "
+     "American)."),
+    ("travel_diff_km", "Travel Δ",
+     "Distance from each team's home country to the host country "
+     "(team1 − team2, km) — positive = team1 travelled farther."),
+    ("altitude_m", "Altitude",
+     "Venue altitude in metres (0 outside known high-altitude "
+     "venues such as Mexico City or La Paz)."),
 ]
 
 # Map derived diff key -> (team1 csv col, team2 csv col)
@@ -599,8 +667,8 @@ def render_training_data_panel(*, bot: dict, current_bot: str | None,
         f"features are computed strictly from matches played "
         f"<i>before</i> the row's date by replaying the full history in "
         f"order, so nothing leaks the outcome. The shipped model trains "
-        f"on the WC-finals slice; the bake-off's augmentation variants "
-        f"train on the qualifier and all-competitive slices shown here. "
+        f"on {html.escape(report.get('training_slice') or 'the WC-finals slice')}; "
+        f"the bake-off races finals-only and full-history variants. "
         f"Sorted newest first. Click a column header for its "
         f"definition; ⚙ MODEL FEATURE marks the {len(selected)} "
         f"features that survived pruning.</p>"
@@ -649,8 +717,11 @@ def render_training_data_panel(*, bot: dict, current_bot: str | None,
                 cell = "—"
             elif key in _TEXT_COLS:
                 cell = html.escape(str(v))
-            elif key in ("team1_host", "team2_host", "neutral", "shootout"):
+            elif key in ("team1_host", "team2_host", "neutral", "shootout",
+                         "late_stage", "same_confed"):
                 cell = "Yes" if str(v) in ("1", "1.0") else "No"
+            elif key in ("altitude_m", "importance"):
+                cell = _fnum(v, 2 if key == "importance" else 0)
             elif key.endswith("_diff") or key in ("h2h_t1_edge", "h2h_t1_gd"):
                 cell = _fnum(v, 2, signed=True)
             elif key in ("team1_elo", "team2_elo"):
