@@ -237,17 +237,24 @@ bots:
         end:   "2027-01-03T23:30:00Z"
   - key: world-cup
     name: World Cup Forecast
-    # ADVISORY ONLY — no trading loop (live or sim) is wired up yet.
-    # Model artifacts are mode-agnostic, so live reads the same
-    # bake-off report + training CSV as sim.
+    # LIVE trading is OFF for world-cup (sim-only bot; the sim daemon
+    # runs in the SIM dashboard process). This entry renders the
+    # Models / Training Data tabs from the shared artifacts and shows
+    # the sim watchlist read-only so the live site sees the same
+    # signal picture.
     dashboard_type: sport
-    # No sim.db exists (no trading loop). db_path points at the
-    # training CSV so (a) availability tracks the repo pull and
-    # (b) live_bootstrap skips it (it only auto-creates .db/.json
+    # No sim.db exists (no live loop). db_path points at the training
+    # CSV so (a) availability tracks the repo pull and (b)
+    # live_bootstrap skips it (it only auto-creates .db/.json
     # placeholders, which would clobber real artifacts here).
     db_path: /root/world-cup/data/training_data.csv
     decisions_path: /root/world-cup/data/training_data.csv
-    series_ticker: KXWC26GAME
+    # Parallel live paths, same idiom as WNBA — they stay as the
+    # empty shells live_bootstrap creates until a live executor
+    # exists, so the real-money site never displays paper positions.
+    watchlist_json_path: /root/world-cup/data/outputs-live/watchlist.json
+    sim_state_path: /root/world-cup/data/outputs-live/sim_state.json
+    series_ticker: KXWCGAME
     data_source: "martj42/international_results (open data, no API key)"
     model_report_path: /root/world-cup/data/processed/artifacts/model_report.json
     training_data_path: /root/world-cup/data/training_data.csv
@@ -416,6 +423,13 @@ darts_trader:
   enabled: false
   repo_path: /root/darts-forecast
   interval_seconds: 60
+
+# World Cup: sim-only bot — the paper-trading daemon runs in the SIM
+# dashboard process. Never enable here without a real live executor.
+world_cup_trader:
+  enabled: false
+  repo_path: /root/world-cup
+  interval_seconds: 300
 
 natgas_trader:
   enabled: false

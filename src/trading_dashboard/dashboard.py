@@ -11966,12 +11966,13 @@ class Handler(BaseHTTPRequestHandler):
                         else:
                             adapter = _tennis
                         if b.get("key") == "world-cup":
-                            # Advisory-only bot — no metrics.json; the
-                            # card summary comes from the offline
-                            # bake-off report instead.
+                            # No metrics.json — the card summary comes
+                            # from the offline bake-off report, plus
+                            # the sim trader's win/loss ledger.
                             from . import world_cup as _world_cup
                             m = _world_cup.model_summary_for_card(
-                                b.get("model_report_path"))
+                                b.get("model_report_path"),
+                                b.get("sim_state_path"))
                         else:
                             m = adapter.model_summary_for_card(
                                 b.get("metrics_path"),
@@ -12385,6 +12386,7 @@ def serve(host: str, port: int, bots: List[dict], risk_caps: dict,
           darts_trader_cfg: dict | None = None,
           natgas_trader_cfg: dict | None = None,
           billboard_trader_cfg: dict | None = None,
+          world_cup_trader_cfg: dict | None = None,
           mode: str = "sim",
           live_state_paths: List[str] | None = None) -> None:
     Handler.bots = bots
@@ -12456,6 +12458,12 @@ def serve(host: str, port: int, bots: List[dict], risk_caps: dict,
     if darts_trader_cfg:
         from .bots import darts as darts_bot
         darts_bot.start_daemon(darts_trader_cfg)
+    # World Cup trader — sim-only for now (no live executor). Trades
+    # the three per-match outcome markets (team A / team B / TIE) with
+    # the same binary buy/sell logic as the tennis-shape bots.
+    if world_cup_trader_cfg:
+        from .bots import world_cup as world_cup_bot
+        world_cup_bot.start_daemon(world_cup_trader_cfg)
     # Natural-gas trader. The only Tier-3 bot — cron-scheduled
     # (3x/day UTC), so the in-process daemon is a scheduler that
     # sleeps between firings rather than a tight poll loop.
@@ -12644,6 +12652,7 @@ def main(argv: list[str] | None = None) -> int:
     darts_trader_cfg = cfg.raw.get("darts_trader") or {}
     natgas_trader_cfg = cfg.raw.get("natgas_trader") or {}
     billboard_trader_cfg = cfg.raw.get("billboard_trader") or {}
+    world_cup_trader_cfg = cfg.raw.get("world_cup_trader") or {}
 
     host = args.host or cfg.host
     port = args.port or cfg.port
@@ -12680,6 +12689,7 @@ def main(argv: list[str] | None = None) -> int:
           darts_trader_cfg=darts_trader_cfg,
           natgas_trader_cfg=natgas_trader_cfg,
           billboard_trader_cfg=billboard_trader_cfg,
+          world_cup_trader_cfg=world_cup_trader_cfg,
           mode=cfg.mode,
           live_state_paths=live_state_paths)
     return 0

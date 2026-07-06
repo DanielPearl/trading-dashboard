@@ -68,16 +68,26 @@ def _fnum(v: Any, decimals: int = 3, signed: bool = False) -> str:
     return fmt.format(x)
 
 
-def model_summary_for_card(model_report_path: str | None) -> Dict[str, Any]:
+def model_summary_for_card(model_report_path: str | None,
+                           sim_state_path: str | None = None,
+                           ) -> Dict[str, Any]:
     """Home-tab bot card summary, shaped like ``fetch_latest_model`` /
     ``tennis.model_summary_for_card`` output so the cross-bot card grid
-    renders World Cup with the same cells as every other bot. Metrics
-    come from the bake-off winner on the held-out test slice; there is
-    no trading loop, so the actual-win ledger is always 0/0.
+    renders World Cup with the same cells as every other bot. Model
+    metrics come from the bake-off winner on the held-out test slice;
+    the actual-win ledger comes from the sim trader's state file.
     """
     report = load_report(model_report_path)
     if not report:
         return {}
+    stats: Dict[str, Any] = {}
+    if sim_state_path:
+        p = Path(sim_state_path)
+        if p.exists():
+            try:
+                stats = (json.loads(p.read_text()) or {}).get("stats") or {}
+            except (OSError, json.JSONDecodeError):
+                stats = {}
     models = report.get("models") or []
     best = next((m for m in models if m.get("key") == report.get("best_model")),
                 models[0] if models else {})
@@ -95,8 +105,8 @@ def model_summary_for_card(model_report_path: str | None) -> Dict[str, Any]:
         "feature_count": len(report.get("selected_features") or []),
         "rows_train": split.get("rows_train"),
         "rows_test": split.get("rows_test"),
-        "actual_wins": 0,
-        "actual_losses": 0,
+        "actual_wins": int(stats.get("wins") or 0),
+        "actual_losses": int(stats.get("losses") or 0),
     }
 
 

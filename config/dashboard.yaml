@@ -336,23 +336,22 @@ bots:
         end:   "2027-01-03T23:30:00Z"
   - key: world-cup
     name: World Cup Forecast
-    # ADVISORY ONLY — the World Cup model is not wired into any trading
-    # loop (live or sim) yet. This entry exists so the Models tab
-    # (offline bake-off report) and Training Data tab (historical
-    # WC-finals match grain with the who-won label) render. Both read
-    # static artifacts from the world-cup repo; there is no watchlist,
-    # sim.db, or service behind this bot. dashboard_type stays "sport"
-    # so the shared chrome (empty watchlist, unavailable home card)
-    # degrades gracefully; the Models/Training renderers branch on the
-    # bot key before the generic sport path.
+    # SIM trading enabled (see world_cup_trader below) — the in-process
+    # daemon trades the three per-match KXWCGAME outcome markets
+    # (team A / team B / TIE in regulation) with the same binary
+    # buy/sell logic as the tennis-shape bots. Live trading stays OFF.
+    # Models tab renders the offline bake-off report; Training Data tab
+    # pages the historical WC-finals match grain.
     dashboard_type: sport
-    # No sim.db exists (no trading loop). db_path points at the
-    # training CSV so (a) availability tracks the repo pull and
-    # (b) live_bootstrap skips it (it only auto-creates .db/.json
-    # placeholders, which would clobber real artifacts here).
+    # No sim.db exists (positions live in sim_state.json). db_path
+    # points at the training CSV so (a) availability tracks the repo
+    # pull and (b) live_bootstrap skips it (it only auto-creates
+    # .db/.json placeholders, which would clobber real artifacts here).
     db_path: /root/world-cup/data/training_data.csv
     decisions_path: /root/world-cup/data/training_data.csv
-    series_ticker: KXWC26GAME
+    watchlist_json_path: /root/world-cup/data/outputs/watchlist.json
+    sim_state_path: /root/world-cup/data/outputs/sim_state.json
+    series_ticker: KXWCGAME
     data_source: "martj42/international_results (open data, no API key)"
     model_report_path: /root/world-cup/data/processed/artifacts/model_report.json
     training_data_path: /root/world-cup/data/training_data.csv
@@ -524,6 +523,16 @@ darts_trader:
   enabled: true
   repo_path: /root/darts-forecast
   interval_seconds: 60
+
+# World Cup trader — SIM ONLY (no live executor exists). Trades the
+# three per-match KXWCGAME outcome markets pre-match with the standard
+# edge/EV/price-band gates; positions settle in-play as Kalshi
+# finalizes markets. 5-minute ticks — soccer markets move slower than
+# tennis and there are at most a handful of matches per day.
+world_cup_trader:
+  enabled: true
+  repo_path: /root/world-cup
+  interval_seconds: 300
 
 # Natural-gas trader. Cron-scheduled — see bots/natural_gas.py for
 # the firing-time logic. Repo lives at /root/peak-load on the
