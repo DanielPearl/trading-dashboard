@@ -254,7 +254,7 @@ bots:
     # exists, so the real-money site never displays paper positions.
     watchlist_json_path: /root/world-cup/data/outputs-live/watchlist.json
     sim_state_path: /root/world-cup/data/outputs-live/sim_state.json
-    series_ticker: KXWCGAME
+    series_ticker: KXWCADVANCE
     data_source: "martj42/international_results (open data, no API key)"
     model_report_path: /root/world-cup/data/processed/artifacts/model_report.json
     training_data_path: /root/world-cup/data/training_data.csv
