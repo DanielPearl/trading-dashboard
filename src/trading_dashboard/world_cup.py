@@ -68,6 +68,38 @@ def _fnum(v: Any, decimals: int = 3, signed: bool = False) -> str:
     return fmt.format(x)
 
 
+def model_summary_for_card(model_report_path: str | None) -> Dict[str, Any]:
+    """Home-tab bot card summary, shaped like ``fetch_latest_model`` /
+    ``tennis.model_summary_for_card`` output so the cross-bot card grid
+    renders World Cup with the same cells as every other bot. Metrics
+    come from the bake-off winner on the held-out test slice; there is
+    no trading loop, so the actual-win ledger is always 0/0.
+    """
+    report = load_report(model_report_path)
+    if not report:
+        return {}
+    models = report.get("models") or []
+    best = next((m for m in models if m.get("key") == report.get("best_model")),
+                models[0] if models else {})
+    split = report.get("split") or {}
+    return {
+        "classifier_accuracy": best.get("accuracy"),
+        "training_brier": best.get("brier"),
+        "training_log_loss": best.get("log_loss"),
+        "training_f1": best.get("f1"),
+        "training_precision": best.get("precision"),
+        "training_recall": best.get("recall"),
+        # ROC AUC of the binary "team1 wins" probability — the closest
+        # 3-class analogue to the other bots' binary AUC.
+        "training_roc_auc": best.get("roc_auc_team1"),
+        "feature_count": len(report.get("selected_features") or []),
+        "rows_train": split.get("rows_train"),
+        "rows_test": split.get("rows_test"),
+        "actual_wins": 0,
+        "actual_losses": 0,
+    }
+
+
 # --------------------------------------------------------------------------- #
 # Models tab                                                                  #
 # --------------------------------------------------------------------------- #

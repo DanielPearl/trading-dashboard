@@ -11965,10 +11965,18 @@ class Handler(BaseHTTPRequestHandler):
                             adapter = _billboard
                         else:
                             adapter = _tennis
-                        m = adapter.model_summary_for_card(
-                            b.get("metrics_path"),
-                            b.get("sim_state_path"),
-                        )
+                        if b.get("key") == "world-cup":
+                            # Advisory-only bot — no metrics.json; the
+                            # card summary comes from the offline
+                            # bake-off report instead.
+                            from . import world_cup as _world_cup
+                            m = _world_cup.model_summary_for_card(
+                                b.get("model_report_path"))
+                        else:
+                            m = adapter.model_summary_for_card(
+                                b.get("metrics_path"),
+                                b.get("sim_state_path"),
+                            )
                         bot_models.append({
                             "bot": b,
                             "model": m,
