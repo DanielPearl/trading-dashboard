@@ -123,6 +123,17 @@ _FAMILY_LABELS = {
 
 
 def render_models_panel(bot: dict) -> str:
+    """World Cup Models tab — two-section layout shared with every
+    other bot: (1) a table of every model the trainer produced with
+    the same stats surfaced on the home-page model cards plus Brier,
+    and (2) the readable-features panel with permutation-importance
+    bars. All other historical sections (calibration table, upcoming
+    matches, ensemble breakdown, etc.) have been removed to keep the
+    layout identical across sports.
+    """
+    from .dashboard import (  # local import — avoids cycle
+        _render_models_run_table, _render_feature_source_table,
+    )
     report = load_report(bot.get("model_report_path"))
     out: List[str] = []
 
@@ -135,341 +146,67 @@ def render_models_panel(bot: dict) -> str:
             "and pull the repo onto this host.</div>"
         )
 
-    # ── Advisory banner ─────────────────────────────────────────────
-    out.append(
-        "<p class='small' style='margin:0 0 12px 0;padding:8px 12px;"
-        "border:1px solid #d29922;border-radius:6px;color:#d29922;'>"
-        "Advisory only — this model is <b>not wired into live or sim "
-        "trading</b>. The pages here exist to evaluate the model before "
-        "any capital (paper or real) follows it."
-        "</p>"
-    )
-
     models = report.get("models") or []
-    best_key = report.get("best_model")
-    best = next((m for m in models if m.get("key") == best_key),
-                models[0] if models else {})
-    selected = report.get("selected_features") or []
     candidates = report.get("candidate_features") or []
     split = report.get("split") or {}
+    best_key = report.get("best_model")
 
-    # ── Headline cards ──────────────────────────────────────────────
-    out.append(
-        "<div class='cards' style='display:grid;"
-        "grid-template-columns:repeat(6, 1fr);gap:10px;width:100%;'>"
-    )
-    cards = [
-        ("Best model", best.get("name", "—")),
-        ("Test log loss", _fnum(best.get("log_loss"), 4)),
-        ("Brier", _fnum(best.get("brier"), 4)),
-        ("Accuracy", (f"{float(best.get('accuracy', 0)) * 100:.1f}%"
-                      if best.get("accuracy") is not None else "—")),
-        ("Features", f"{len(selected)} of {len(candidates)}"),
-        ("Held-out matches", f"{int(split.get('rows_test') or 0):,}"),
-    ]
-    for label, value in cards:
-        out.append(
-            f"<div class='card'><div class='label'>{html.escape(label)}"
-            f"</div><div class='value' style='font-size:15px;'>"
-            f"{html.escape(str(value))}</div></div>"
-        )
-    out.append("</div>")
+    # Rows_train/test come from the split blob (strings like "2010-2014");
+    # the shared table also accepts numeric counts — pass through when
+    # present so the two units read consistently.
+    rows_train = split.get("rows_train")
+    rows_test = split.get("rows_test")
+    generated = (report.get("generated_at") or "")[:10]
 
-    # ── Model overview ──────────────────────────────────────────────
-    ds = report.get("dataset") or {}
-    overview = [
-        ("Task", "3-way match outcome: team1 win / draw / team2 win"),
-        ("Winner trains on", report.get("training_slice")
-         or split.get("train", "—")),
-        ("Training pool", split.get("train", "—")),
-        ("Validation (feature pruning)", split.get("validation", "—")),
-        ("Held-out test", split.get("test", "—")),
-        ("History replayed for features",
-         f"{ds.get('n_all_matches') or ds.get('n_matches', 0):,} "
-         f"internationals "
-         f"({(ds.get('date_range') or ['?', '?'])[0][:4]}–"
-         f"{(ds.get('date_range') or ['?', '?'])[1][:4]})"),
-        ("Data source", ds.get("source", "—")),
-        ("Report generated", (report.get("generated_at") or "—")[:19]
-         .replace("T", " ") + " UTC"),
-    ]
-    out.append("<h3 class='subhead'>Model overview</h3>")
-    out.append("<dl style='display:grid;grid-template-columns:auto 1fr;"
-               "gap:6px 18px;margin:0 0 12px 0;font-size:13px;'>")
-    for label, value in overview:
-        out.append(
-            f"<dt class='gray' style='margin:0;'>{html.escape(label)}</dt>"
-            f"<dd style='margin:0;color:#c9d1d9;'>"
-            f"{html.escape(str(value))}</dd>"
-        )
-    out.append("</dl>")
-    if report.get("shipped_note"):
-        out.append(
-            f"<p class='small gray' style='margin:0 0 12px 0;'>"
-            f"{html.escape(report['shipped_note'])}</p>"
-        )
+    # Shape the models list into the trainer-metrics.json ``per_model``
+    # convention the shared table consumes: one entry per model, keyed
+    # by a human name. Sort so the winning model floats to the top.
+    per_model: Dict[str, Dict[str, Any]] = {}
+    models_sorted = sorted(models,
+                            key=lambda m: (float(m.get("log_loss") or 1e9),
+                                            0 if m.get("key") == best_key
+                                                else 1))
+    for m in models_sorted:
+        name = m.get("name") or m.get("key") or "?"
+        star = " ★" if m.get("key") == best_key else ""
+        per_model[f"{name}{star}"] = {
+            "accuracy": m.get("accuracy"),
+            "log_loss": m.get("log_loss"),
+            "brier": m.get("brier"),
+            # F1 / precision / recall aren't computed for the 3-way
+            # match-outcome trainer — leaving them absent renders as "—".
+        }
+    metrics_shim: Dict[str, Any] = {
+        "per_model": per_model,
+        "rows_train": rows_train,
+        "rows_test": rows_test,
+    }
+    out.append(_render_models_run_table(
+        metrics_shim,
+        feature_count=len(candidates) if candidates else None,
+        last_trained=generated or "—",
+    ))
 
-    # ── Market benchmark ────────────────────────────────────────────
-    mb = report.get("market_benchmark")
-    if mb:
-        model_ll, mkt_ll = mb.get("model_log_loss"), mb.get("market_log_loss")
-        if model_ll is not None and mkt_ll is not None:
-            gap = model_ll - mkt_ll
-            verdict = ("model beats the market"
-                       if gap < 0 else "market still leads")
-            color = "#3fb950" if gap < 0 else "#d29922"
-            out.append(
-                f"<p class='small' style='margin:0 0 12px 0;padding:8px "
-                f"12px;border:1px solid #30363d;border-radius:6px;'>"
-                f"<b>Market benchmark</b> — on the same "
-                f"{mb.get('n_matches', 0)} settled 2026 matches, Kalshi's "
-                f"pre-kickoff prices score <b>{mkt_ll:.4f}</b> log loss "
-                f"vs the model's <b>{model_ll:.4f}</b> "
-                f"(<span style='color:{color};font-weight:600;'>"
-                f"{gap:+.4f} — {verdict}</span>). "
-                f"<span class='gray'>{html.escape(mb.get('note') or '')}"
-                f"</span></p>"
-            )
-
-    # ── Ensemble composition ────────────────────────────────────────
-    ens = report.get("ensemble") or {}
-    comps = ens.get("components") or []
-    if comps:
-        out.append(
-            f"<h3 class='subhead'>Ensemble composition "
-            f"<span class='small gray'>(weights searched on 2010–2014 "
-            f"validation; per-model temperature calibration; "
-            f"Dixon-Coles rho = {ens.get('dc_rho', 0):+.2f}; training "
-            f"decay half-life {ens.get('decay_half_life_years', 0):.0f} "
-            f"years)</span></h3>"
-        )
-        out.append("<table><thead><tr><th>Component</th>"
-                   "<th class='num'>Blend weight</th>"
-                   "<th class='num'>Temperature</th>"
-                   "<th class='num'>Features</th></tr></thead><tbody>")
-        for c in sorted(comps, key=lambda c: -(c.get("weight") or 0)):
-            w = float(c.get("weight") or 0)
-            bar = (f"<div style='display:inline-block;height:8px;"
-                   f"width:{max(2, round(w * 120))}px;"
-                   f"background:#58a6ff;margin-right:6px;"
-                   f"vertical-align:middle;'></div>")
-            out.append(
-                f"<tr><td><code>{html.escape(str(c.get('key')))}</code></td>"
-                f"<td class='num'>{bar}{w * 100:.1f}%</td>"
-                f"<td class='num'>{_fnum(c.get('temperature'), 2)}</td>"
-                f"<td class='num'>{c.get('n_features', '—')}</td></tr>"
-            )
-        out.append("</tbody></table>")
-
-    # ── Bake-off table ──────────────────────────────────────────────
-    out.append(
-        "<h3 class='subhead'>Model bake-off "
-        "<span class='small gray'>(every family scored on the same "
-        "untouched 2018–2026 test matches; lower log loss is better)"
-        "</span></h3>"
-    )
-    out.append(
-        "<table><thead><tr><th>Model</th><th>Family</th>"
-        "<th class='num'>Features</th>"
-        "<th class='num' title='Matches the model was fitted on'>"
-        "Train rows</th><th class='num'>Log loss</th>"
-        "<th class='num'>Brier</th><th class='num'>Accuracy</th>"
-        "<th>Notes</th></tr></thead><tbody>"
-    )
-    baseline_ll = report.get("class_baseline_log_loss")
-    for m in models:
-        is_best = m.get("key") == best_key
-        style = " style='color:#3fb950;font-weight:600;'" if is_best else ""
-        name = html.escape(m.get("name", "?")) + (" ★" if is_best else "")
-        rows_train = m.get("rows_train")
-        out.append(
-            f"<tr><td{style}>{name}</td>"
-            f"<td>{html.escape(_FAMILY_LABELS.get(m.get('family', ''), m.get('family', '—')))}</td>"
-            f"<td class='num'>{m.get('n_features', '—')}</td>"
-            f"<td class='num'>{f'{int(rows_train):,}' if rows_train else '—'}</td>"
-            f"<td class='num'{style}>{_fnum(m.get('log_loss'), 4)}</td>"
-            f"<td class='num'>{_fnum(m.get('brier'), 4)}</td>"
-            f"<td class='num'>{float(m.get('accuracy', 0)) * 100:.1f}%</td>"
-            f"<td class='small gray'>{html.escape(m.get('note') or '')}</td>"
-            "</tr>"
-        )
-    if baseline_ll is not None:
-        out.append(
-            f"<tr><td class='gray'>Class priors (know-nothing floor)</td>"
-            f"<td class='gray'>baseline</td><td class='num gray'>0</td>"
-            f"<td class='num gray'>—</td>"
-            f"<td class='num gray'>{_fnum(baseline_ll, 4)}</td>"
-            f"<td class='num gray'>—</td><td class='num gray'>—</td>"
-            f"<td class='small gray'>Always predicts the historical "
-            f"win/draw/loss base rates.</td></tr>"
-        )
-    out.append("</tbody></table>")
-
-    # ── Feature selection ───────────────────────────────────────────
-    out.append(
-        f"<h3 class='subhead'>Candidate features "
-        f"<span class='small gray'>({len(candidates)} candidates → "
-        f"pruned per track: backward elimination on finals CV, "
-        f"permutation importance on the full history; ✓ = used by the "
-        f"shipped winner)</span></h3>"
-    )
-    out.append(
-        "<table><thead><tr><th></th><th>Feature</th><th>Definition</th>"
-        "</tr></thead><tbody>"
-    )
+    # Features section — shape the candidate list into the shared
+    # feature-importance CSV convention (feature / mean_importance /
+    # positive_folds / selected) using permutation importance when
+    # available, and the selected/candidate flag otherwise.
+    perm = {p.get("feature"): p.get("importance") or 0.0
+             for p in (report.get("permutation_importance") or [])
+             if p.get("feature")}
+    feats: List[Dict[str, Any]] = []
     for c in candidates:
-        sel = c.get("selected")
-        mark = ("<span style='color:#3fb950;font-weight:700;'>✓</span>"
-                if sel else "<span class='gray'>✗</span>")
-        name_style = "" if sel else " class='gray'"
-        out.append(
-            f"<tr><td>{mark}</td>"
-            f"<td{name_style}><code>{html.escape(c.get('name', ''))}</code></td>"
-            f"<td class='small gray'>{html.escape(c.get('description', ''))}</td>"
-            "</tr>"
-        )
-    out.append("</tbody></table>")
-
-    prune_history = report.get("prune_history") or []
-    if prune_history:
-        out.append("<details style='margin:8px 0 12px 0;'>"
-                   "<summary class='small gray' style='cursor:pointer;'>"
-                   "Pruning order (each step removes the feature whose "
-                   "removal most improves CV log loss)</summary>")
-        out.append("<table><thead><tr><th>Step</th><th>Removed</th>"
-                   "<th class='num'>Features left</th>"
-                   "<th class='num'>CV log loss</th></tr></thead><tbody>")
-        for i, h in enumerate(prune_history):
-            removed = h.get("removed")
-            removed_cell = (f"<code>{html.escape(removed)}</code>" if removed
-                            else "<span class='gray'>(start — all "
-                                 f"{len(candidates)})</span>")
-            out.append(
-                f"<tr><td>{i}</td><td>{removed_cell}</td>"
-                f"<td class='num'>{h.get('n_features', '—')}</td>"
-                f"<td class='num'>{_fnum(h.get('cv_log_loss'), 5)}</td></tr>"
-            )
-        out.append("</tbody></table></details>")
-
-    perm = report.get("permutation_importance") or []
-    if perm:
-        out.append("<details style='margin:8px 0 12px 0;'>"
-                   "<summary class='small gray' style='cursor:pointer;'>"
-                   "Permutation importance (all-matches track — mean "
-                   "log-loss impact of shuffling each feature on "
-                   "2010–2014 validation)</summary>")
-        out.append("<table><thead><tr><th>Feature</th>"
-                   "<th class='num'>Importance</th></tr></thead><tbody>")
-        for p in perm:
-            v = p.get("importance")
-            style = "" if (v or 0) > 0 else " class='gray'"
-            out.append(
-                f"<tr{style}><td><code>{html.escape(p.get('feature', ''))}"
-                f"</code></td>"
-                f"<td class='num'>{_fnum(v, 5, signed=True)}</td></tr>")
-        out.append("</tbody></table></details>")
-
-    # ── Logistic coefficients (interpretability) ────────────────────
-    coefs = report.get("coefficients_pruned_logistic") or []
-    if coefs:
-        coef_src = ("full-history logistic"
-                    if report.get("coefficients_source") == "logit_all"
-                    else "pruned finals logistic")
-        out.append(
-            f"<h3 class='subhead'>What moves the prediction "
-            f"<span class='small gray'>({coef_src} — the interpretable "
-            f"cousin of the winning model; 'per +1 SD' compares feature "
-            f"strength, 'per unit' is the true coefficient in natural "
-            f"units, e.g. per Elo point)</span></h3>"
-        )
-        out.append("<table><thead><tr><th>Feature</th>"
-                   "<th class='num'>team1 win / +1 SD</th>"
-                   "<th class='num'>team1 win / unit</th>"
-                   "<th class='num'>draw / +1 SD</th>"
-                   "<th class='num'>team2 win / +1 SD</th>"
-                   "</tr></thead><tbody>")
-        for c in coefs:
-            out.append(
-                f"<tr><td><code>{html.escape(c.get('feature', ''))}</code></td>"
-                f"<td class='num'>{_fnum(c.get('team1'), 3, signed=True)}</td>"
-                f"<td class='num'>{_fnum(c.get('team1_per_unit'), 4, signed=True)}</td>"
-                f"<td class='num'>{_fnum(c.get('draw'), 3, signed=True)}</td>"
-                f"<td class='num'>{_fnum(c.get('team2'), 3, signed=True)}</td>"
-                "</tr>"
-            )
-        out.append("</tbody></table>")
-
-    # ── Calibration ─────────────────────────────────────────────────
-    cal = report.get("calibration_team1_win") or []
-    filled = [b for b in cal if b.get("n")]
-    if filled:
-        out.append(
-            "<h3 class='subhead'>Calibration — P(team1 wins) "
-            "<span class='small gray'>(held-out test set; a "
-            "well-calibrated model's observed bar matches its "
-            "predicted bar in every bin)</span></h3>"
-        )
-        out.append("<table><thead><tr><th>Predicted bin</th>"
-                   "<th class='num'>Matches</th>"
-                   "<th class='num'>Avg predicted</th>"
-                   "<th class='num'>Observed win rate</th>"
-                   "<th style='width:40%;'>Predicted vs observed</th>"
-                   "</tr></thead><tbody>")
-        for b in filled:
-            pred = float(b["pred"]) if b.get("pred") is not None else 0.0
-            obs = float(b["obs"]) if b.get("obs") is not None else 0.0
-            bar = (
-                "<div style='position:relative;height:14px;'>"
-                f"<div style='position:absolute;left:0;top:0;height:6px;"
-                f"width:{pred * 100:.0f}%;background:#58a6ff;'></div>"
-                f"<div style='position:absolute;left:0;top:8px;height:6px;"
-                f"width:{obs * 100:.0f}%;background:#3fb950;'></div></div>"
-            )
-            out.append(
-                f"<tr><td>{b['lo']:.1f}–{b['hi']:.1f}</td>"
-                f"<td class='num'>{b['n']}</td>"
-                f"<td class='num'>{pred:.2f}</td>"
-                f"<td class='num'>{obs:.2f}</td>"
-                f"<td>{bar}</td></tr>"
-            )
-        out.append("</tbody></table>")
-        out.append(
-            "<p class='small gray' style='margin-top:4px;'>"
-            "<span style='color:#58a6ff;'>■</span> predicted&nbsp;&nbsp;"
-            "<span style='color:#3fb950;'>■</span> observed</p>"
-        )
-
-    # ── Upcoming matches (advisory) ─────────────────────────────────
-    upcoming = report.get("upcoming_predictions") or []
-    if upcoming:
-        out.append(
-            "<h3 class='subhead'>Upcoming World Cup matches "
-            "<span class='small gray'>(scored by the winning model — "
-            "advisory only, nothing is traded)</span></h3>"
-        )
-        out.append("<table><thead><tr><th>Date</th><th>Match</th>"
-                   "<th class='num'>Team 1 wins</th>"
-                   "<th class='num'>Draw</th>"
-                   "<th class='num'>Team 2 wins</th></tr></thead><tbody>")
-        for u in upcoming:
-            probs = [float(u.get("p_team1") or 0),
-                     float(u.get("p_draw") or 0),
-                     float(u.get("p_team2") or 0)]
-            hi = probs.index(max(probs))
-            cells = []
-            for i, p in enumerate(probs):
-                style = (" style='color:#3fb950;font-weight:600;'"
-                         if i == hi else "")
-                cells.append(f"<td class='num'{style}>{p * 100:.0f}%</td>")
-            out.append(
-                f"<tr><td>{html.escape(u.get('date', ''))}</td>"
-                f"<td>{html.escape(u.get('team1', ''))} vs "
-                f"{html.escape(u.get('team2', ''))}</td>"
-                + "".join(cells) + "</tr>"
-            )
-        out.append("</tbody></table>")
-
+        name = c.get("name") or ""
+        feats.append({
+            "feature": name,
+            "mean_importance": float(perm.get(name, 0.0) or 0.0),
+            "positive_folds": 5 if c.get("selected") else 0,
+            "selected": bool(c.get("selected")),
+        })
+    out.append(_render_feature_source_table(feats))
     return "".join(out)
+
+
 
 
 # --------------------------------------------------------------------------- #

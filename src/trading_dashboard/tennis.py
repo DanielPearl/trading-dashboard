@@ -146,6 +146,20 @@ def model_summary_for_card(metrics_path: str | None,
     blended = metrics.get("blended") or metrics.get("ensemble") or {}
     sim = load_sim_state(sim_state_path) if sim_state_path else {}
     stats = (sim or {}).get("stats") or {}
+    # Real feature count from the trainer's importance file so this
+    # doesn't drift when the panel changes — falls back to the length
+    # of the trainer's per-model output only if the file is absent.
+    feature_count: int | None = None
+    try:
+        from pathlib import Path
+        if metrics_path:
+            fi_path = Path(metrics_path).parent / "feature_importance.csv"
+            if fi_path.exists():
+                with fi_path.open("r", encoding="utf-8") as _f:
+                    # subtract the header line
+                    feature_count = sum(1 for _ in _f) - 1
+    except (OSError, ValueError):
+        feature_count = None
     return {
         "classifier_accuracy": blended.get("accuracy"),
         "training_brier": blended.get("brier"),
@@ -154,7 +168,7 @@ def model_summary_for_card(metrics_path: str | None,
         "training_precision": blended.get("precision"),
         "training_recall": blended.get("recall"),
         "training_roc_auc": blended.get("roc_auc"),
-        "feature_count": 12,
+        "feature_count": feature_count,
         # Training- and held-out test-set sizes. Surface on the Home
         # tab's bot card as "Train rows" / "Test rows".
         "rows_train": metrics.get("rows_train"),
@@ -2286,90 +2300,31 @@ def _render_tennis_confidence_card(out: List[str], conf: dict) -> None:
 def _render_tennis_models_page(metrics: dict, coefficients: dict,
                                 sim_state: dict,
                                 metrics_path: str | None = None) -> str:
-    """Tennis Models tab. Mirrors the standard sim.db-bot model page
-    section by section (confidence banner → top features → headline
-    cards → model overview → ROC + confusion → historical calibration
-    → live calibration), so a user navigating between bots sees the
-    same structure regardless of bot type.
+    """Tennis Models tab — unified two-section layout used across every
+    bot: (1) a table of every model the trainer produced with the same
+    stats surfaced on the home-page model cards plus Brier, and
+    (2) the readable-features panel with source colouring and
+    permutation-importance bars. Everything else on this page has been
+    stripped so the layout is identical across sports.
     """
     from pathlib import Path
     from .dashboard import (  # type: ignore
-        _read_feature_importance, _read_holdout_predictions,
-        _holdout_confidence, _render_confidence_card,
-        _render_feature_source_table, _svg_roc_curve, _svg_confusion,
-        _svg_calibration, roc_from_holdout, confusion_from_holdout,
-        calibration_from_holdout,
+        _read_feature_importance, _render_feature_source_table,
+        _render_models_run_table,
     )
     out: List[str] = []
 
-    # Holdout predictions drive the confidence tier (rendered next to
-    # the ROC + Confusion grid below where the user looks for held-out
-    # context) and the chart data. Tennis trainer dumps
-    # holdout_predictions.csv into the same artifacts dir as
-    # metrics.json — fall back to the metrics.json rows_test count for
-    # older trainer outputs that don't write the CSV.
-    artifacts_dir = (Path(metrics_path).parent if metrics_path
-                     else None)
-    holdout_pairs: List = []
-    if artifacts_dir:
-        holdout_path = artifacts_dir / "holdout_predictions.csv"
-        if holdout_path.exists():
-            holdout_pairs = _read_holdout_predictions(str(holdout_path))
-    if holdout_pairs:
-        conf = _holdout_confidence(holdout_pairs)
-    else:
-        rows_test = int((metrics or {}).get("rows_test") or 0)
-        conf = _tennis_confidence(rows_test)
+    artifacts_dir = (Path(metrics_path).parent if metrics_path else None)
 
-    # Feature artifacts are loaded once here so both the headline
-    # metrics (above the fold) and the feature chart / table below
-    # share the same ``feats`` list.
+    # Feature-importance CSV — powers both the readable table and the
+    # feature count that shows in the shared models table.
     feats: List[dict] = []
     if artifacts_dir:
         fi_path = artifacts_dir / "feature_importance.csv"
         if fi_path.exists():
             feats = _read_feature_importance(str(fi_path))
 
-    # ── Headline metrics cards row — at the top, matching the Home /
-    # Watchlist tabs. Surfaces the bottom-line numbers (accuracy / F1
-    # / precision / recall / ROC AUC / feature count) up front before
-    # the deep-dive chart and table.
-    blended = (metrics or {}).get("blended") or {}
-    if blended:
-        out.append(
-            "<div class='cards' "
-            "style='display:grid;grid-template-columns:repeat(6, 1fr);"
-            "gap:10px;width:100%;'>"
-        )
-
-        def _pct(v, decimals=0):
-            try:
-                return f"{float(v) * 100:.{decimals}f}%"
-            except (TypeError, ValueError):
-                return "—"
-
-        n_features = len(feats) if feats else "—"
-        cards = [
-            ("Accuracy", _pct(blended.get("accuracy"), 1)),
-            ("F1", _pct(blended.get("f1"), 0)),
-            ("Precision", _pct(blended.get("precision"), 0)),
-            ("Recall", _pct(blended.get("recall"), 0)),
-            ("ROC AUC", _pct(blended.get("roc_auc"), 0)),
-            ("Features", str(n_features)),
-        ]
-        for label, value in cards:
-            out.append(
-                f"<div class='card'><div class='label'>"
-                f"{html.escape(label)}</div>"
-                f"<div class='value'>{html.escape(str(value))}</div></div>"
-            )
-        out.append("</div>")
-
-    # ── Top features — bars + readable table in one aligned panel ──
-    if feats:
-        out.append(_render_feature_source_table(feats))
-
-    # ── Model overview (training-set provenance) ───────────────────
+    # Bundle mtime → "Last trained" for the table.
     last_retrain = "—"
     if artifacts_dir:
         bundle_path = artifacts_dir / "prematch_model.joblib"
@@ -2378,230 +2333,24 @@ def _render_tennis_models_page(metrics: dict, coefficients: dict,
                 import datetime as _dt
                 mt = _dt.datetime.fromtimestamp(
                     bundle_path.stat().st_mtime, tz=_dt.timezone.utc)
-                last_retrain = mt.strftime("%Y-%m-%d %H:%M UTC")
+                last_retrain = mt.strftime("%Y-%m-%d")
             except (OSError, OverflowError):
                 pass
-    # Blend weights: read the actual persisted values from the bundle's
-    # metrics rather than a static string, so the label stays honest
-    # whenever the trainer picks non-default weights.
-    m = metrics or {}
-    w_ens = m.get("blend_weight_ensemble")
-    w_log = m.get("blend_weight_logistic")
-    if w_ens is not None and w_log is not None:
-        blend_label = (f"{int(round(float(w_ens) * 100))}% calibrated "
-                        f"ensemble + {int(round(float(w_log) * 100))}% "
-                        f"logistic (Elo-only)")
+
+    # 1) Table of models run.
+    out.append(_render_models_run_table(
+        metrics or {},
+        feature_count=len(feats) if feats else None,
+        last_trained=last_retrain,
+    ))
+
+    # 2) Features with definitions and bars.
+    if feats:
+        out.append(_render_feature_source_table(feats))
     else:
-        blend_label = "70% calibrated ensemble + 30% logistic (Elo-only)"
-    n_val = int(m.get("rows_val") or 0)
-    val_row = ([("Validation rows", f"{n_val:,}")] if n_val else [])
-    overview_items = [
-        ("Last retrained", last_retrain),
-        ("Training rows",
-            f"{int(m.get('rows_train') or 0):,}"),
-        *val_row,
-        ("Held-out rows",
-            f"{int(m.get('rows_test') or 0):,}"),
-        ("Train/test cutoff",
-            m.get("cutoff_date") or "—"),
-        ("Blend weights", blend_label),
-    ]
-    out.append("<h3 class='subhead'>Model overview "
-                "<span class='small gray'>(from training "
-                "artifacts)</span></h3>")
-    out.append(
-        "<dl class='model-overview-dl' "
-        "style='display:grid;grid-template-columns:auto 1fr;"
-        "gap:6px 18px;margin:0 0 12px 0;font-size:13px;'>"
-    )
-    for label, value in overview_items:
-        out.append(
-            f"<dt class='gray' style='margin:0;'>"
-            f"{html.escape(label)}</dt>"
-            f"<dd style='margin:0;color:#c9d1d9;'>"
-            f"{html.escape(str(value))}</dd>"
-        )
-    out.append("</dl>")
-
-    # ── ROC curve + confusion matrix from the historical holdout ───
-    if holdout_pairs:
-        roc_points = roc_from_holdout(holdout_pairs)
-        cm = confusion_from_holdout(holdout_pairs, threshold=0.5)
-        n_pairs = len(holdout_pairs)
-        auc_scalar = blended.get("roc_auc") if blended else None
-        out.append(
-            f"<p class='small gray' style='margin:0 0 6px 0;'>"
-            f"Sourced from the trainer's held-out historical test "
-            f"set ({n_pairs:,} match predictions vs ground-truth "
-            f"outcomes). The model never saw this slice during "
-            f"training.</p>"
-        )
-        # Compact held-out row count + confidence tier, surfaced next
-        # to the plots it grades (moved out of the top-of-page banner).
-        _render_confidence_card(out, conf)
-    elif conf:
-        # No held-out CSV but the tennis fallback tier is still
-        # meaningful; show the confidence card alone. (The previous
-        # version of this branch tried to also render an ROC curve
-        # + confusion matrix, but those references — roc_points,
-        # cm, n_pairs — only get defined in the ``if holdout_pairs:``
-        # branch above, so it 500'd the moment a sport bot landed
-        # here. NBA was the first bot in production to do so since
-        # it has a model accuracy metric but no held-out CSV.)
-        _render_tennis_confidence_card(out, conf)
-
-        out.append("<h3 class='subhead'>Calibration "
-                    "<span class='small gray'>(historical held-out "
-                    "test set, predicted prob vs observed positive "
-                    "rate)</span></h3>")
-        cal_bins = calibration_from_holdout(holdout_pairs, n_bins=10)
-        out.append(_svg_calibration(cal_bins))
-
-    # ── Held-out metrics by component (the existing tennis-only
-    # comparison row, kept underneath the standard sections so the
-    # user can still see what each blend component contributes). ──
-    components = [
-        ("elo_only", "ELO baseline"),
-        ("ensemble", "Gradient-boost ensemble"),
-        ("blended", "Blended (final)"),
-    ]
-    rows = []
-    for key, label in components:
-        c = (metrics or {}).get(key) or {}
-        if not c:
-            continue
-        rows.append((label, c))
-    if rows:
-        out.append("<h3 class='subhead'>Held-out metrics by component"
-                    " <span class='small gray'>(test set, "
-                    f"{int((metrics or {}).get('rows_test') or 0):,} rows)"
-                    "</span></h3>")
-        out.append("<table><thead><tr><th>Model</th>"
-                    "<th class='num'>Accuracy</th>"
-                    "<th class='num'>F1</th>"
-                    "<th class='num'>Precision</th>"
-                    "<th class='num'>Recall</th>"
-                    "<th class='num'>ROC AUC</th>"
-                    "<th class='num'>Brier</th>"
-                    "<th class='num'>Log loss</th>"
-                    "</tr></thead><tbody>")
-        for label, c in rows:
-            out.append(
-                f"<tr><td>{html.escape(label)}</td>"
-                f"<td class='num'>{_fmt_pct(c.get('accuracy'), 1)}</td>"
-                f"<td class='num'>{_fmt_pct(c.get('f1'), 1)}</td>"
-                f"<td class='num'>{_fmt_pct(c.get('precision'), 1)}</td>"
-                f"<td class='num'>{_fmt_pct(c.get('recall'), 1)}</td>"
-                f"<td class='num'>{_fmt_pct(c.get('roc_auc'), 1)}</td>"
-                f"<td class='num'>{(c.get('brier') or 0):.4f}</td>"
-                f"<td class='num'>{(c.get('log_loss') or 0):.4f}</td>"
-                "</tr>"
-            )
-        out.append("</tbody></table>")
-
-    # Full feature list — every coefficient the bot uses to score a
-    # match (the user explicitly asked for "all features being used to
-    # make decisions"). Sorted by absolute coefficient size so the
-    # most-influential ones float to the top.
-    coeffs = (coefficients or {}).get("coefficients") or {}
-    if isinstance(coeffs, dict) and coeffs:
-        items = sorted(coeffs.items(),
-                        key=lambda kv: abs(float(kv[1] or 0)),
-                        reverse=True)
-        out.append(
-            f"<h3 class='subhead'>Features the model uses to make decisions"
-            f" <span class='small gray'>({len(items)} total)</span></h3>"
-        )
-        out.append("<p class='small gray' style='margin:0 0 8px 0;'>"
-                    "Per-feature coefficient on the live blended logistic. "
-                    "<span style='color:#3fb950;'>Green</span> bars push "
-                    "toward player A winning; "
-                    "<span style='color:#f85149;'>red</span> push toward "
-                    "player B.</p>")
-        max_abs = max((abs(float(v or 0)) for _, v in items), default=1.0) or 1.0
-        out.append("<svg viewBox='0 0 760 "
-                    f"{30 + len(items) * 18}' "
-                    "style='width:100%;height:auto;display:block;"
-                    "background:#0d1117;border:1px solid #21262d;"
-                    "border-radius:6px;'>")
-        for i, (name, val) in enumerate(items):
-            try:
-                v = float(val or 0)
-            except (TypeError, ValueError):
-                v = 0.0
-            y = 16 + i * 18
-            mid = 280
-            bar_w = abs(v) / max_abs * 380
-            color = "#3fb950" if v >= 0 else "#f85149"
-            x = mid if v >= 0 else mid - bar_w
-            display_name = name if len(name) <= 32 else name[:29] + "…"
-            out.append(
-                f"<g><title>{html.escape(name)} · coef {v:+.4f}</title>"
-                f"<text x='270' y='{y + 4}' fill='#c9d1d9' font-size='11' "
-                f"text-anchor='end' "
-                f"font-family='ui-monospace,SFMono-Regular,monospace'>"
-                f"{html.escape(display_name)}</text>"
-                f"<line x1='{mid}' y1='{y - 6}' x2='{mid}' y2='{y + 6}' "
-                f"stroke='#484f58'/>"
-                f"<rect x='{x:.1f}' y='{y - 4}' width='{bar_w:.1f}' "
-                f"height='8' fill='{color}' rx='1'/>"
-                f"<text x='{(x + bar_w + 6) if v >= 0 else (x - 6):.1f}' "
-                f"y='{y + 4}' fill='#8b949e' font-size='10' "
-                f"text-anchor='{'start' if v >= 0 else 'end'}'>"
-                f"{v:+.3f}</text></g>"
-            )
-        out.append("</svg>")
-    else:
-        out.append("<div class='empty'>Coefficients file not "
-                    "available — feature list will populate after the "
-                    "next retrain.</div>")
-
-    # Live calibration on closed paper bets — same shape as the sim.db
-    # bots' calibration plot, just sourced from sim_state instead of a
-    # SQL table. Kept simple: bin by predicted side-prob at entry,
-    # measure realized win rate.
-    closed = list((sim_state or {}).get("closed_positions") or [])
-    if closed:
-        n_bins = 10
-        bins = [{"lo": i / n_bins, "hi": (i + 1) / n_bins,
-                 "n": 0, "wins": 0} for i in range(n_bins)]
-        for c in closed:
-            entry_p = c.get("entry_model_prob")
-            if entry_p is None:
-                continue
-            try:
-                p = float(entry_p)
-            except (TypeError, ValueError):
-                continue
-            idx = min(n_bins - 1, max(0, int(p * n_bins)))
-            bins[idx]["n"] += 1
-            if (c.get("result") or "").upper() == "WIN":
-                bins[idx]["wins"] += 1
-        populated = [b for b in bins if b["n"] > 0]
-        if populated:
-            out.append("<h3 class='subhead'>Live calibration "
-                        "<span class='small gray'>(closed paper bets, "
-                        f"{len(closed)} total)</span></h3>")
-            from .dashboard import _svg_calibration  # type: ignore
-            out.append(_svg_calibration(bins))
-
-    # Kalshi-bet calibration — the honest "how is the model doing on
-    # real money?" panel. Sourced from
-    # ``data/processed/artifacts/kalshi_calibration.json`` which the
-    # daily retrain timer writes after refitting the model. Reads
-    # the per-bet rows and presents the same metric trio as the
-    # held-out card (Brier / accuracy / win rate) plus the
-    # calibration gap (mean predicted prob − actual win rate).
-    if artifacts_dir:
-        kalshi_path = artifacts_dir / "kalshi_calibration.json"
-        if kalshi_path.exists():
-            try:
-                with kalshi_path.open("r", encoding="utf-8") as f:
-                    kcal = json.load(f)
-            except (OSError, ValueError):
-                kcal = None
-            if kcal and (kcal.get("n") or 0) > 0:
-                out.append(_render_kalshi_calibration_card(kcal))
+        out.append("<div class='empty' style='margin-top:12px;'>"
+                    "Feature importance not yet written for this bot — "
+                    "the file lands after the next retrain.</div>")
 
     return "".join(out)
 

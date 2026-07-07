@@ -8631,6 +8631,130 @@ def _readable_feature_name(name: str) -> str:
     return s[:1].upper() + s[1:] if s else ""
 
 
+def _render_models_run_table(
+    metrics: Dict[str, Any] | None,
+    *,
+    feature_count: int | None = None,
+    last_trained: str = "—",
+    fallback_rows: List[Tuple[str, Dict[str, Any]]] | None = None,
+) -> str:
+    """Unified 'Models run' table used on every bot's Models tab.
+
+    One row per model the trainer produced; columns match the home-page
+    model cards (Accuracy / F1 / Precision / Recall / ROC AUC /
+    Features / Train rows / Test rows / Last trained) plus Brier per
+    the user's spec.
+
+    ``metrics`` is the trainer's metrics.json dict. Tennis-shape trainers
+    populate ``per_model`` (dict of model_name → metric dict) plus an
+    ``elo_only`` baseline and separate ``ensemble`` / ``blended`` rollups.
+    sim.db-shape trainers store just the final classifier's numbers at
+    the top level (``blended``); callers pass those via ``fallback_rows``
+    when the ``per_model`` dict is missing.
+    """
+    metrics = metrics or {}
+    rows_source: List[Tuple[str, Dict[str, Any]]] = []
+
+    # Order rows: baseline first (grounds every other number), then
+    # each per-model entry in a stable order, then the rollups.
+    if metrics.get("elo_only"):
+        rows_source.append(("Elo baseline", metrics["elo_only"]))
+    per_model = metrics.get("per_model") or {}
+    if isinstance(per_model, dict):
+        # Stable order — the trainer key order isn't guaranteed by
+        # json.load, so we sort by best Brier ascending so the strongest
+        # component sits at the top of its group.
+        pm_sorted = sorted(
+            per_model.items(),
+            key=lambda kv: (float(kv[1].get("brier") or 1.0), kv[0]),
+        )
+        for name, block in pm_sorted:
+            if isinstance(block, dict):
+                rows_source.append((name.upper(), block))
+    if metrics.get("ensemble"):
+        rows_source.append(("Ensemble", metrics["ensemble"]))
+    if metrics.get("blended"):
+        rows_source.append(("Blended (final)", metrics["blended"]))
+    if not rows_source and fallback_rows:
+        rows_source = list(fallback_rows)
+
+    rows_train = metrics.get("rows_train")
+    rows_test = metrics.get("rows_test")
+
+    def _pct(v: Any, decimals: int = 1) -> str:
+        try:
+            return f"{float(v) * 100:.{decimals}f}%"
+        except (TypeError, ValueError):
+            return "—"
+
+    def _num(v: Any, fmt: str = "{:.4f}") -> str:
+        try:
+            return fmt.format(float(v))
+        except (TypeError, ValueError):
+            return "—"
+
+    def _int_str(v: Any) -> str:
+        try:
+            return f"{int(v):,}"
+        except (TypeError, ValueError):
+            return "—"
+
+    parts: List[str] = []
+    parts.append(
+        "<h3 class='subhead'>Models run "
+        "<span class='small gray'>(held-out test set — same stats as "
+        "the home-page model cards plus Brier)</span></h3>"
+    )
+    parts.append(
+        "<div style='overflow-x:auto;margin-bottom:14px;'>"
+        "<table class='models-run-table' "
+        "style='width:100%;border-collapse:collapse;font-size:12.5px;'>"
+    )
+    parts.append(
+        "<thead><tr>"
+        "<th style='text-align:left;'>Model</th>"
+        "<th class='num'>Accuracy</th>"
+        "<th class='num'>F1</th>"
+        "<th class='num'>Precision</th>"
+        "<th class='num'>Recall</th>"
+        "<th class='num'>ROC AUC</th>"
+        "<th class='num'>Brier</th>"
+        "<th class='num'>Features</th>"
+        "<th class='num'>Train rows</th>"
+        "<th class='num'>Test rows</th>"
+        "<th class='num'>Last trained</th>"
+        "</tr></thead><tbody>"
+    )
+    if not rows_source:
+        parts.append(
+            "<tr><td colspan='11' class='gray' "
+            "style='text-align:center;padding:10px;'>"
+            "No model metrics available — the trainer has not written "
+            "metrics.json yet.</td></tr>"
+        )
+    else:
+        for label, block in rows_source:
+            parts.append(
+                "<tr>"
+                f"<td>{html.escape(str(label))}</td>"
+                f"<td class='num'>{_pct(block.get('accuracy'))}</td>"
+                f"<td class='num'>{_pct(block.get('f1'))}</td>"
+                f"<td class='num'>{_pct(block.get('precision'))}</td>"
+                f"<td class='num'>{_pct(block.get('recall'))}</td>"
+                f"<td class='num'>{_pct(block.get('roc_auc'))}</td>"
+                f"<td class='num'>{_num(block.get('brier'))}</td>"
+                f"<td class='num'>"
+                f"{feature_count if feature_count is not None else '—'}"
+                f"</td>"
+                f"<td class='num'>{_int_str(rows_train)}</td>"
+                f"<td class='num'>{_int_str(rows_test)}</td>"
+                f"<td class='num'>{html.escape(str(last_trained))}</td>"
+                "</tr>"
+            )
+    parts.append("</tbody></table></div>")
+    return "".join(parts)
+
+
 def _render_feature_source_table(features: List[dict]) -> str:
     """Aligned feature table with the importance bar on the right.
 
@@ -10109,193 +10233,45 @@ def _render_models_panel(out: List[str], bot: dict, model: dict | None,
     pairs = _read_holdout_predictions(str(holdout_path))
     conf = _holdout_confidence(pairs)
 
-    # Training artifacts are loaded once here so both the headline
-    # metrics (above the fold) and the feature chart / table below
-    # share the same `feats` + `overview` data.
+    # Training artifacts — feature-importance drives the readable
+    # features section; ``model`` (already loaded above) provides the
+    # blended-model metrics for the fallback row in the models table.
     fi_path = _find_training_artifact(
         db_path, "feature_importance.csv")
     feats = _read_feature_importance(str(fi_path))
-    overview = fetch_model_overview(db_path, str(fi_path), feats)
-    n_total = overview["n_considered"]
-    n_kept = overview["n_kept"]
-    top_imp = overview.get("top_importance")
-    top_imp_str = (f"{top_imp:.4f}" if isinstance(top_imp, (int, float))
-                    else "—")
 
-    # ── Model coefficient cards — positioned at the top of the panel,
-    # using the same .row / .card styling as the Home tab. Surfaces
-    # the bottom-line training metrics (Accuracy / F1 / Precision /
-    # Recall / ROC AUC / Features) up front before the deep-dive
-    # chart and confusion matrix below.
-    def _pct(v: object, decimals: int = 0) -> str:
-        if v is None:
-            return "—"
-        try:
-            return f"{float(v)*100:.{decimals}f}%"
-        except (TypeError, ValueError):
-            return "—"
+    # sim.db-shape trainers only store the final classifier's numbers
+    # (there's no per_model breakdown), so we shape a single-row
+    # fallback for the shared table using the same field names.
+    fallback_rows: List[Tuple[str, Dict[str, Any]]] = []
+    if model:
+        fallback_rows.append(("Blended (final)", {
+            "accuracy":  model.get("classifier_accuracy"),
+            "f1":        model.get("training_f1"),
+            "precision": model.get("training_precision"),
+            "recall":    model.get("training_recall"),
+            "roc_auc":   model.get("training_roc_auc"),
+            "brier":     model.get("training_brier"),
+        }))
+    metrics_shim: Dict[str, Any] = {
+        "rows_train": (model or {}).get("rows_train"),
+        "rows_test":  (model or {}).get("rows_test"),
+    }
+    captured = (model or {}).get("captured_at") or ""
+    last_trained = str(captured)[:10] if captured else "—"
 
-    out.append("<div class='row compact'>")
-    if not model:
-        out.append("<div class='card'><div class='label'>Model</div>"
-                   "<div class='value'>No snapshot yet</div></div>")
-    else:
-        def _int_str(v: object) -> str:
-            if v is None:
-                return "—"
-            try:
-                return f"{int(v):,}"
-            except (TypeError, ValueError):
-                return "—"
+    # 1) Table of models run.
+    out.append(_render_models_run_table(
+        metrics_shim,
+        feature_count=(int((model or {}).get("feature_count"))
+                        if (model or {}).get("feature_count") is not None
+                        else (len(feats) if feats else None)),
+        last_trained=last_trained,
+        fallback_rows=fallback_rows,
+    ))
 
-        def _short_date(v: object) -> str:
-            if not v:
-                return "—"
-            s = str(v)
-            # captured_at is an ISO8601 string like "2026-05-20T14:22:34..."
-            return s[:10] if len(s) >= 10 else s
-
-        metric_cards = [
-            ("Accuracy",
-             "Held-out classifier accuracy on the trainer's test set.",
-             _pct(model.get("classifier_accuracy"), 1)),
-            ("F1",
-             "Harmonic mean of precision and recall on the test set.",
-             _pct(model.get("training_f1"))),
-            ("Precision",
-             "Fraction of predicted positives that were correct.",
-             _pct(model.get("training_precision"))),
-            ("Recall",
-             "Fraction of actual positives the model caught.",
-             _pct(model.get("training_recall"))),
-            ("ROC AUC",
-             "Area under the ROC curve on the test set. "
-             "0.5 = random, 1.0 = perfect.",
-             _pct(model.get("training_roc_auc"))),
-            ("Features",
-             "Number of input features the model uses.",
-             (str(int(model.get("feature_count")))
-              if model.get("feature_count") is not None else "—")),
-            ("Train rows",
-             "Number of historical observations the model trained on. "
-             "More rows = the model has seen more market regimes.",
-             _int_str(model.get("rows_train"))),
-            ("Test rows",
-             "Held-out test rows the metrics above are computed on.",
-             _int_str(model.get("rows_test"))),
-            ("Last trained",
-             "Date the current model snapshot was captured.",
-             _short_date(model.get("captured_at"))),
-        ]
-        for label, title, value in metric_cards:
-            out.append(
-                f"<div class='card'><div class='label' "
-                f"title='{html.escape(title)}'>"
-                f"{html.escape(label)}</div>"
-                f"<div class='value'>{html.escape(value)}</div></div>"
-            )
-        # Data source banner — surfaces what training data feeds the
-        # model, pulled from dashboard.yaml. Spans the full card row.
-        ds = (bot or {}).get("data_source")
-        if ds:
-            out.append(
-                f"<div class='card' style='grid-column:1/-1;text-align:left;'>"
-                f"<div class='label' title='Where the model'"
-                f"&#39;s training data comes from. Real public source — "
-                f"never synthetic.'>Source</div>"
-                f"<div class='value' style='font-size:1em;'>"
-                f"{html.escape(str(ds))}</div></div>"
-            )
-    out.append("</div>")
-
-    # ── Top features — bars + readable table in one aligned panel ───
+    # 2) Features with definitions and bars.
     out.append(_render_feature_source_table(feats))
-
-    # ── ROC curve + confusion matrix — both sourced from the
-    # trainer's held-out predictions (data/holdout_predictions.csv).
-    # That file is the model's evaluation against historical
-    # ground-truth (game outcomes / claims releases / etc.) — what
-    # the user sees as "the model's accuracy", separate from any
-    # closed-bet noise.
-    auc_scalar = (model or {}).get("training_roc_auc")
-    # `pairs` was already loaded up top; reuse it here so the page only
-    # reads holdout_predictions.csv once.
-    roc_points = roc_from_holdout(pairs)
-    n_pairs = len(pairs)
-    holdout_blurb = (
-        "Sourced from the trainer's held-out historical test set — "
-        "predictions the model never saw during training, so the "
-        "numbers below are its honest evaluation against past reality, "
-        "not a re-run of the live closed-bet ledger."
-    )
-    out.append(
-        f"<p class='small gray' style='margin:0 0 6px 0;'>"
-        f"{html.escape(holdout_blurb)}</p>"
-    )
-    # Held-out row count + confidence tier — same data the section
-    # headers below quote, surfaced once here as a compact one-liner
-    # so the trust signal lives next to the held-out plots it grades.
-    _render_confidence_card(out, conf)
-    out.append("<h3 class='subhead' style='margin-top:0;'>"
-                "ROC curve <span class='small gray'>(historical "
-                f"held-out test set, {n_pairs:,} predictions)</span></h3>")
-    out.append(_svg_roc_curve(roc_points, auc_scalar=auc_scalar))
-
-    # ── Calibration curve from the held-out predictions ─────────────
-    out.append("<h3 class='subhead'>Calibration "
-                "<span class='small gray'>(historical held-out test "
-                "set, predicted prob vs observed positive rate)"
-                "</span></h3>")
-    cal_bins = calibration_from_holdout(pairs, n_bins=10)
-    live_cal_bins = calibration_from_live_bets(db_path, n_bins=10)
-    out.append(_svg_calibration(cal_bins, live_bins=live_cal_bins))
-
-    # ── Per-strike accuracy ─────────────────────────────────────────
-    rows = fetch_per_strike_accuracy(db_path)
-    out.append("<h3 class='subhead'>Accuracy by strike band "
-                "<span class='small gray'>(closed bets only)</span></h3>")
-    if not rows:
-        out.append("<div class='empty'>No closed bets to break down by "
-                    "strike yet.</div>")
-    else:
-        out.append("<table><thead><tr>"
-                    "<th>Strike</th><th>Direction</th>"
-                    "<th class='num'>Bets</th><th class='num'>Wins</th>"
-                    "<th class='num'>Losses</th><th class='num'>Accuracy</th>"
-                    "</tr></thead><tbody>")
-        for r in rows:
-            sl = r.get("floor_strike")
-            sh = r.get("cap_strike")
-            direction = r.get("direction") or "—"
-            qstr = question_str(direction, sl, sh, display=display)
-            acc = r["accuracy"]
-            cls = ("green" if acc > 0.6 else
-                   "yellow" if acc > 0.5 else
-                   "red")
-            out.append(
-                f"<tr><td>{html.escape(qstr)}</td>"
-                f"<td>{html.escape(direction)}</td>"
-                f"<td class='num'>{r['n']}</td>"
-                f"<td class='num green'>{r['wins']}</td>"
-                f"<td class='num red'>{r['losses']}</td>"
-                f"<td class='num {cls}'>{acc*100:.0f}%</td></tr>"
-            )
-        out.append("</tbody></table>")
-
-    # ── Predicted vs realized EV ────────────────────────────────────
-    # The "did the model's edge survive contact with the market?" check.
-    # For each predicted-EV bucket: did realized ¢/contract roughly
-    # track the predicted EV? If yes, the edge is real. If realized
-    # systematically lags predicted, fees + slippage are eating the
-    # edge. If realized is negative where predicted was positive,
-    # the model is mis-calibrated (anti-edge).
-    _render_ev_realized_table(out, fetch_ev_realized_buckets(db_path))
-
-    # ── Hedge effectiveness audit ───────────────────────────────────
-    # "Did the hedge_monitor's profit-lock / stop-loss exits actually
-    # net make money vs. just holding to settlement?" Empty when no
-    # hedge events have fired yet.
-    _render_hedge_audit(out, fetch_hedge_audit(db_path))
 
     out.append("</div></div>")
 
