@@ -359,7 +359,7 @@ tennis_trader:
     max_open_positions: 10  # restored to 10 per user (2026-06-07) — calibration data improving
     max_orders_per_day: 20
     contracts_per_order: 1
-    min_edge_pp: 0.09  # ratcheted 0.05 → 0.10 → 0.09 (2026-06-17). The 5-10pp bucket was break-even after fees on 240 historical bets; 9pp keeps the same intent (skip the noisy lower-edge cohort) while not gating quite as aggressively as 10pp
+    min_edge_pp: 0.15  # ratcheted 0.05 → 0.10 → 0.09 → 0.15 (2026-07-07). Post-audit: 695-trade paper history showed 5-15pp cohort ran -0.7% ROI (436 trades); 15pp+ cohort ran +2-9%. Matches tennis-forecast/config.yaml small_edge_min so the watchlist gate and the executor's belt-and-braces floor line up. Note this only bites in dry_run since prod already reads buy_eligible off the watchlist.
     max_entry_price_cents: 70
     min_entry_price_cents: 15
     price_deviation_cents: 3

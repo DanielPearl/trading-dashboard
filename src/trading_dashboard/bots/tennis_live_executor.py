@@ -837,6 +837,27 @@ class TennisLiveExecutor:
         winner_side = side if won else (
             "PLAYER_B" if side == "PLAYER_A" else "PLAYER_A"
         )
+        # ``exit_reason`` — machine-readable tag mirroring the paper
+        # simulator's schema so analytics can group live + paper closes
+        # by the same categories. Derived from ``close_reason`` (which
+        # may carry a free-form suffix like ``profit_lock_bid``) so
+        # every caller gets tagged without having to remember to pass
+        # both. Order matters — the more specific prefixes first.
+        cr_lower = str(close_reason or "").lower()
+        if cr_lower.startswith("profit_lock"):
+            exit_reason = "profit_lock"
+        elif cr_lower.startswith("auto_close"):
+            exit_reason = "auto_close"
+        elif cr_lower.startswith("stop_loss") or cr_lower.startswith("hedge_sl"):
+            exit_reason = "stop_loss"
+        elif cr_lower.startswith("hedge_pl"):
+            exit_reason = "profit_lock"
+        elif cr_lower.startswith("void") or cr_lower.startswith("cancel"):
+            exit_reason = "voided"
+        elif cr_lower.startswith("settled"):
+            exit_reason = "settled_match"
+        else:
+            exit_reason = cr_lower or "unknown"
         closed = dict(p)
         closed.update({
             "closed_at": datetime.now(timezone.utc).isoformat(),
@@ -844,6 +865,7 @@ class TennisLiveExecutor:
             "realized_pnl": realized,
             "won": won,
             "close_reason": close_reason,
+            "exit_reason": exit_reason,
             "result": result,
             "winner_side": winner_side,
             **extra,
