@@ -100,6 +100,17 @@ _HARD_MIN_PROFIT_LOCK_GAIN = 5    # don't sell on the GAIN-FROM-ENTRY
                                      # are routine spread chatter, not
                                      # real profit). Set to 0 to disable
                                      # the gain-based threshold.
+_HARD_MIN_STOP_LOSS_CENTS = 15    # don't cut on a loss smaller than 15¢
+                                     # from entry. Anything tighter would
+                                     # be closing on ordinary book noise
+                                     # + widening spreads on illiquid
+                                     # markets. Set to 0 to disable the
+                                     # stop-loss branch entirely.
+_HARD_MAX_STOP_LOSS_CENTS = 40    # don't let a typo raise the stop-loss
+                                     # above 40¢ from entry. A 40¢ loss
+                                     # on a 25¢ entry is essentially a
+                                     # full write-off; anything larger
+                                     # would just be holding to expiry.
 
 
 class _DailyOrderCounter:
@@ -236,6 +247,19 @@ class TennisLiveExecutor:
         raw_gn = int(cfg.get("profit_lock_gain_cents", 30) or 0)
         self.profit_lock_gain = (max(raw_gn, _HARD_MIN_PROFIT_LOCK_GAIN)
                                   if raw_gn > 0 else 0)
+        # Stop-loss (negative-gain) trigger. Sells at the market bid
+        # when the position has lost >= ``stop_loss_cents`` from entry.
+        # Clamped INTO the safe band by both floor and ceiling so a
+        # config typo can't make the stop-loss fire on noise or ride a
+        # position all the way to zero. 0 disables the branch — which
+        # is what production ran before the 2026-07-08 audit found
+        # 264 settled trades averaging -35% ROI with no cut-loss rule.
+        raw_sl = int(cfg.get("stop_loss_cents", 0) or 0)
+        if raw_sl <= 0:
+            self.stop_loss = 0
+        else:
+            self.stop_loss = max(_HARD_MIN_STOP_LOSS_CENTS,
+                                   min(_HARD_MAX_STOP_LOSS_CENTS, raw_sl))
 
         self.state_path = Path(state_path)
         self._daily = _DailyOrderCounter()
@@ -249,7 +273,8 @@ class TennisLiveExecutor:
             "max_orders_per_day=%d, contracts_per_order=%d, "
             "min_edge=%.3f, entry_price=[%d¢, %d¢], "
             "price_deviation_max=%d¢, max_hours_to_close=%.1f, "
-            "profit_lock_yes_bid=%s, profit_lock_gain=%s, state=%s)",
+            "profit_lock_yes_bid=%s, profit_lock_gain=%s, "
+            "stop_loss=%s, state=%s)",
             self.dry_run, self.max_open, self.max_orders_per_day,
             self.contracts_per_order, self.min_edge,
             self.min_entry_price_cents, self.max_entry_price_cents,
@@ -257,6 +282,8 @@ class TennisLiveExecutor:
             (f"{self.profit_lock_yes_bid}¢" if self.profit_lock_yes_bid > 0
              else "disabled"),
             (f"+{self.profit_lock_gain}¢" if self.profit_lock_gain > 0
+             else "disabled"),
+            (f"-{self.stop_loss}¢" if self.stop_loss > 0
              else "disabled"),
             self.state_path,
         )
@@ -782,7 +809,17 @@ class TennisLiveExecutor:
 
     def _should_auto_close(self, p: dict, live_by_id: dict) -> bool:
         """True when an open position has lingered past its match
-        expiration AND the current YES price is clearly resolved."""
+        expiration AND the current YES price is clearly resolved.
+
+        2026-07-08 audit: the 24h grace window was firing on 45 real
+        positions where the local force-close cemented a -95% ROI on
+        the cohort (~$18 in unnecessary write-offs). Kalshi routinely
+        takes 2-3 days to publish official settlement values on smaller
+        matches. Widening the grace to 72h lets the natural
+        ``settled`` path pick these up at the real final price
+        instead of the executor guessing 0¢ / 100¢ from a possibly
+        stale mid.
+        """
         match_id = p.get("match_id") or ""
         live = live_by_id.get(match_id)
         if not live:
@@ -798,7 +835,7 @@ class TennisLiveExecutor:
             return False
         now_ts = datetime.now(timezone.utc).timestamp()
         hours_past = (now_ts - exp_ts) / 3600.0
-        if hours_past < 24.0:
+        if hours_past < 72.0:
             return False
         # Resolve "what is OUR side's current implied prob".
         market_prob_a = live.get("market_prob_a")
@@ -924,12 +961,18 @@ class TennisLiveExecutor:
 
     def _maybe_profit_lock(self, state: dict) -> None:
         """For each open position, fetch the live YES bid on OUR side
-        and place a real IOC sell if EITHER profit-lock trigger fires:
+        and place a real IOC sell if ANY exit trigger fires:
 
           * Absolute threshold: bid >= self.profit_lock_yes_bid
             ("match is essentially over, take the win")
           * Gain threshold: bid - entry >= self.profit_lock_gain
             ("line moved in our favor enough to lock the gain")
+          * Stop-loss:  entry - bid >= self.stop_loss
+            ("line moved AGAINST us by the configured cut — take
+            the recoverable stake off the table before it drifts to
+            zero"). Added 2026-07-08 after the audit found 264
+            settled trades averaging -35% ROI held all the way to
+            expiry because the executor had no cut-loss rule.
 
         The sell prices at the bid we observe; sim_state is updated
         with the actual order_id + realized P&L AFTER Kalshi confirms
@@ -937,13 +980,14 @@ class TennisLiveExecutor:
         open and we retry on the next tick (idempotent client_order_id
         dedupes any successful resubmission server-side).
 
-        No-ops when BOTH triggers are disabled (each = 0) or when the
-        Kalshi client is unavailable. In dry-run mode the close
-        executes against the observed bid as if it had filled, so the
-        sim dashboard's paper-trade history reflects the same
-        profit-lock behaviour as live.
+        No-ops when ALL triggers are disabled or when the Kalshi
+        client is unavailable. In dry-run mode the close executes
+        against the observed bid as if it had filled, so the sim
+        dashboard's paper-trade history reflects the same behaviour
+        as live.
         """
-        if (self.profit_lock_yes_bid <= 0 and self.profit_lock_gain <= 0):
+        if (self.profit_lock_yes_bid <= 0 and self.profit_lock_gain <= 0
+                and self.stop_loss <= 0):
             return
         client = self._get_client()
         if client is None:
@@ -963,9 +1007,15 @@ class TennisLiveExecutor:
             entry_cents = int(round(
                 float(p.get("entry_market_prob") or 0.0) * 100
             ))
-            # Evaluate both triggers; the first one that matches wins
-            # and is logged so the operator can tell ABSOLUTE vs GAIN
-            # locks apart in the journal.
+            # Evaluate every trigger; the first that matches wins and
+            # is logged so the operator can tell ABSOLUTE / GAIN /
+            # STOP_LOSS closes apart in the journal. Stop-loss is
+            # ordered LAST — a position that has BOTH gained enough to
+            # profit-lock AND then whipsawed into the stop-loss band
+            # should never happen on the same tick, but if it did the
+            # profit-lock takes precedence because the gain leg is a
+            # done fact and the stop-loss leg would just be locking a
+            # reversal at the top.
             trigger: str | None = None
             if (self.profit_lock_yes_bid > 0
                     and bid_cents >= self.profit_lock_yes_bid):
@@ -973,6 +1023,9 @@ class TennisLiveExecutor:
             elif (self.profit_lock_gain > 0
                     and (bid_cents - entry_cents) >= self.profit_lock_gain):
                 trigger = "gain"
+            elif (self.stop_loss > 0
+                    and (entry_cents - bid_cents) >= self.stop_loss):
+                trigger = "stop_loss"
             if trigger is None:
                 still_open.append(p)
                 continue
@@ -1027,19 +1080,24 @@ class TennisLiveExecutor:
                     still_open.append(p)
                     continue
             sell_prob = bid_cents / 100.0
+            is_stop = (trigger == "stop_loss")
+            close_reason = ("stop_loss" if is_stop
+                              else f"profit_lock_{trigger}")
+            result = "STOP_LOSS" if is_stop else "PROFIT_LOCK"
             closed = self._build_closed_record(
                 p, settle_prob=sell_prob,
-                close_reason=f"profit_lock_{trigger}",
-                result="PROFIT_LOCK",
+                close_reason=close_reason,
+                result=result,
                 exit_order_id=order_id,
                 exit_order_status=status,
-                profit_lock_trigger=trigger,
+                profit_lock_trigger=(None if is_stop else trigger),
             )
             realized = closed["realized_pnl"]
             newly_closed.append(closed)
             log.info(
-                "tennis-live PROFIT-LOCKED (%s) %s — sold %d YES @ %d¢ "
-                "(entry %d¢, gain %+d¢) realized %+.3f order_id=%s",
+                "tennis-live %s (%s) %s — sold %d YES @ %d¢ "
+                "(entry %d¢, delta %+d¢) realized %+.3f order_id=%s",
+                "STOP-LOSS" if is_stop else "PROFIT-LOCKED",
                 trigger, ticker, contracts, bid_cents,
                 entry_cents, bid_cents - entry_cents, realized, order_id,
             )
@@ -1123,9 +1181,10 @@ class TennisLiveExecutor:
                 # stays open per Kalshi's portfolio API, but the real-
                 # money outcome is already locked in. Force-close
                 # locally when:
-                #   * the live record says the market expired >24h ago
-                #     (so the match has definitely ended and there's
-                #     no live trading happening to change the price)
+                #   * the live record says the market expired >72h ago
+                #     (widened from 24h → 72h after 2026-07-08 audit;
+                #     Kalshi routinely takes 2-3 days to publish real
+                #     settle values on smaller matches)
                 #   * AND the current YES price is outside [10¢, 90¢]
                 #     (≈ 99% certain which side won)
                 # We use the bot's recorded ``side`` to map "YES at 6¢"
