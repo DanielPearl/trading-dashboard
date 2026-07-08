@@ -10893,6 +10893,76 @@ def _render_watchlist_hero(out: List[str],
     out.append("</div>")
 
 
+# Tennis-shape ``rules_primary`` sentences are boilerplate of the form
+# "If X wins the {matchup} professional tennis match in the
+# {YEAR} {Event} after a ball has been played, then the market
+# resolves to Yes." The regex below captures the {Event} substring —
+# the run of words between the year and the round marker.
+_TENNIS_EVENT_RE = re.compile(
+    r"20\d{2}\s+(.+?)"
+    r"\s+(?:Round of \d+|Round\b|Semifinal|Quarterfinal"
+    r"|Final|Match|R\d+|QF|SF|Grand Final|First Round"
+    r"|Second Round|Third Round|Fourth Round)",
+    re.IGNORECASE,
+)
+
+
+def _tennis_event_label(rules: str | None, title: str | None = None) -> str:
+    """Return a short 'TOUR · Event' label parsed from Kalshi tennis
+    ``rules_primary`` text. Empty string when the rules don't match the
+    template (billboard / non-tennis contracts) or the parser can't
+    identify a tour.
+
+    Examples:
+      "…in the 2026 Wimbledon Men Singles Semifinal…"   → "ATP · Wimbledon"
+      "…in the 2026 Wimbledon Women Singles Semifinal…" → "WTA · Wimbledon"
+      "…in the 2026 M15 Tokyo Round of 16…"             → "ITF · M15 Tokyo"
+      "…in the 2026 ATP Miami Open Round of 32…"        → "ATP · Miami Open"
+    """
+    if not rules:
+        return ""
+    m = _TENNIS_EVENT_RE.search(rules)
+    if not m:
+        return ""
+    event = m.group(1).strip()
+    low = event.lower()
+
+    # Tour detection — precedence: explicit "Women/Men Singles" >
+    # explicit "ATP"/"WTA" prefix > Futures M/W tier prefix > Challenger.
+    # "Women Singles" must be checked BEFORE "Men Singles" because the
+    # substring "men singles" occurs inside "women singles" and would
+    # otherwise misclassify every WTA match as ATP.
+    tour = ""
+    if "women singles" in low or "women's singles" in low:
+        tour = "WTA"
+    elif "men singles" in low or "men's singles" in low:
+        tour = "ATP"
+    elif low.startswith("atp "):
+        tour = "ATP"
+    elif low.startswith("wta "):
+        tour = "WTA"
+    elif re.match(r"^m\d+\b", low):
+        tour = "ITF"          # M-tier Futures (men)
+    elif re.match(r"^w\d+\b", low):
+        tour = "ITF"          # W-tier Futures (women)
+    elif "challenger" in low:
+        tour = "ATP-CH"
+
+    # Strip tour-hint tokens from the visible event name so we don't
+    # render "ATP · ATP Miami Open".
+    event = re.sub(
+        r"\b(Men's Singles|Women's Singles|Men Singles|Women Singles"
+        r"|ATP|WTA)\b",
+        "",
+        event,
+        flags=re.IGNORECASE,
+    ).strip()
+    event = re.sub(r"\s{2,}", " ", event)
+    if not event:
+        return ""
+    return f"{tour} · {event}" if tour else event
+
+
 def _render_watchlist(out: List[str], watchlist: List[dict],
                       model: dict | None,
                       underlying_history: List[dict] | None = None,
@@ -11280,12 +11350,27 @@ def _render_watchlist(out: List[str], watchlist: List[dict],
                 "<th class='num' title='Kalshi entry cost — entry price × contracts, before fees. Blank when no position is held on this row.'>Kalshi entry cost</th>"
                 "<th class='num' title='Total cash out at open — Kalshi entry cost + Kalshi entry fee. Blank when no position is held on this row.'>Total cost</th>"
             )
+        # Event column — only shown on the sport-bot Model-vs-market
+        # section per the user's request. Derived at render time from
+        # each row's Kalshi ``rules_primary`` text (see
+        # ``_tennis_event_label``), so it's live without a bot
+        # redeploy and stays in sync with whatever Kalshi is quoting.
+        _show_event_col = (is_sport_bot
+                            and _ctx.get("kind") == "model-vs-market")
+        event_head = (
+            "<th title='Tour and tournament parsed from the Kalshi "
+            "rules text (e.g. ATP · Wimbledon, WTA · Rome, "
+            "ITF · M15 Tokyo). Blank when the rules don’t "
+            "match the tennis template.'>Event</th>"
+            if _show_event_col else ""
+        )
         out.append("<div class='watchlist-scroll'>"
                    "<table><thead><tr>"
                    # Rules is the leftmost column — click the ``i`` to
                    # read the Kalshi resolution rule before doing
                    # anything else with the row.
                    "<th title='Kalshi resolution rule for this contract — click to read.'>Rules</th>"
+                   f"{event_head}"
                    f"{head_cols}"
                    "<th class='num' title='Open interest — total contracts currently held open across all traders on this strike.'>Total contracts</th>"
                    "<th class='num' title='Pinnacle sportsbook devigged probability (sharp global reference from The Odds API). Em-dash for matches Pinnacle does not list (Challenger/ITF/between-tournaments) or when the API key isn&apos;t set. YES on top, NO on bottom.'>Pinnacle %</th>"
@@ -11730,10 +11815,24 @@ def _render_watchlist(out: List[str], watchlist: List[dict],
                 )
             else:
                 rules_cell = "<td data-field='rules'></td>"
+            # Event cell — sits between Rules and the row's identifying
+            # cells; only rendered on Model-vs-market. Parsed live from
+            # ``rules_primary``; blank when the rules text doesn't
+            # match the tennis event template.
+            if _show_event_col:
+                _ev = _tennis_event_label(v.get("rules_primary"),
+                                           v.get("title"))
+                event_cell = (
+                    f"<td data-field='event'>{html.escape(_ev)}</td>"
+                    if _ev else "<td data-field='event'></td>"
+                )
+            else:
+                event_cell = ""
             out.append(f"<tr{row_cls} data-ticker='{tt_esc}'{strike_attr}{yes_attr}>"
                        # Rules cell is the leftmost cell in every row —
                        # header ordering above matches.
                        f"{rules_cell}"
+                       f"{event_cell}"
                        f"{middle_cells}"
                        f"<td class='num' data-field='oi'>{oi_str}</td>"
                        f"{pinnacle_cell}"
