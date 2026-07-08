@@ -10781,7 +10781,16 @@ def _render_watchlist(out: List[str], watchlist: List[dict],
         na = v.get("no_ask_cents")
         spread = v.get("spread_cents") or 0
         half_spread_d = (spread / 2.0) / 100.0
-        p_yes_blend = v.get("model_prob_yes")
+        # Reference prob for EV — Pinnacle when the sport bot ships it,
+        # else the bot's own model. Same rule as the Edge column below,
+        # so EV and Edge tell the user the same story about the same
+        # reference book. Sort-by-best-EV downstream is what drives the
+        # "top of the watchlist" ordering the user actually acts on;
+        # basing that on Pinnacle (when we have it) keeps the ordering
+        # honest.
+        p_yes_blend = v.get("pinnacle_prob_yes")
+        if p_yes_blend is None:
+            p_yes_blend = v.get("model_prob_yes")
         be_yes = (ya / 100.0) if ya is not None else None
         be_no = (na / 100.0) if na is not None else None
         # Net-of-fee EV. The Kalshi entry fee (ceil(0.07 × p × (1−p))
@@ -11118,18 +11127,30 @@ def _render_watchlist(out: List[str], watchlist: List[dict],
         ev_yes_str, ev_yes_cls = _ev_cell(ev_yes_v)
         ev_no_str, ev_no_cls = _ev_cell(ev_no_v)
 
-        # Edge cells — model probability for the side minus Kalshi's
-        # ask price for the same side. Positive = bot's model disagrees
-        # with Kalshi in that side's favour. Half-spread is NOT
-        # subtracted here (that's what the EV column is for); Edge is
-        # the raw model-vs-market gap so the user can read the bot's
-        # underlying view independent of liquidity cost.
+        # Edge cells — reference probability for the side minus Kalshi's
+        # ask price for the same side. Positive = the reference sharp
+        # book disagrees with Kalshi in that side's favour. Half-spread
+        # is NOT subtracted here (that's what the EV column is for);
+        # Edge is the raw reference-vs-market gap so the user can read
+        # the bot's underlying view independent of liquidity cost.
+        #
+        # Preference order for the reference prob:
+        #   1. Pinnacle devigged (sharp global book) — when the sport
+        #      bot ships it. This is the same reference the buy gate
+        #      uses, so Edge finally lines up with the verdict column.
+        #   2. Bot's own model — the legacy behaviour, kept as the
+        #      fallback so bots that don't wire in Pinnacle (NBA / WNBA
+        #      / World Cup / non-tennis strike bots) still get a
+        #      meaningful Edge from their own model.
+        edge_ref = v.get("pinnacle_prob_yes")
+        if edge_ref is None:
+            edge_ref = p
         def _edge(p: float | None, ask_c: int | None) -> float | None:
             if p is None or ask_c is None:
                 return None
             return float(p) - (int(ask_c) / 100.0)
-        edge_yes_v = _edge(p, ya_c)
-        edge_no_v = _edge((1.0 - float(p)) if p is not None else None,
+        edge_yes_v = _edge(edge_ref, ya_c)
+        edge_no_v = _edge((1.0 - float(edge_ref)) if edge_ref is not None else None,
                            na_c)
         def _edge_cell(e: float | None) -> tuple[str, str]:
             if e is None:
