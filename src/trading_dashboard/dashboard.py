@@ -11281,8 +11281,11 @@ def _render_watchlist(out: List[str], watchlist: List[dict],
                    "</th>"
                    "<th class='num' title='Time until the contract settles. Parsed from the Kalshi ticker&apos;s encoded date.'>Closes in</th>"
                    "<th>Verdict</th>"
-                   "<th title='Kalshi resolution rule for this contract — click to read.'>Rules</th>"
+                   # Rules moved after the position columns so it sits
+                   # all the way to the right regardless of whether the
+                   # position triplet renders on this bot.
                    f"{pos_head}"
+                   "<th title='Kalshi resolution rule for this contract — click to read.'>Rules</th>"
                    f"</tr></thead><tbody id='{html.escape(_tbody_id)}'>")
         for v in _rows_to_emit:
             ticker = v.get("ticker", "")
@@ -11723,8 +11726,11 @@ def _render_watchlist(out: List[str], watchlist: List[dict],
                        f"{ev_cell}"
                        f"{closes_in_cell}"
                        f"<td data-field='verdict'>{badge}</td>"
-                       f"{rules_cell}"
-                       f"{position_cells}</tr>")
+                       # Rules cell sits after the position columns so it
+                       # always renders as the rightmost cell. Header
+                       # order in the ``<thead>`` above matches this.
+                       f"{position_cells}"
+                       f"{rules_cell}</tr>")
         out.append("</tbody></table></div>")
         # For sport bots, close the per-table `<div class='section'>`
         # wrapper opened at the top of this loop iteration.
