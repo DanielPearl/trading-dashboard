@@ -2502,11 +2502,15 @@ table.criteria code { background: transparent; color: #c9d1d9; padding: 0; }
 .bar { display: flex; align-items: baseline; gap: 8px; }
 .bar .small, .small { font-size: 11px; color: #8b949e; }
 td.mono, code { font-family: ui-monospace, SFMono-Regular, Consolas, monospace; font-size: 12px; }
-/* Watchlist ticker links — keep the cell looking like the rest of the
-   table at rest, only flip color + underline on hover so the affordance
-   is discoverable without making the table feel like a wall of links. */
-td.mono a.ticker-link { color: inherit; text-decoration: none; }
-td.mono a.ticker-link:hover { color: #58a6ff; text-decoration: underline; }
+/* Watchlist ticker/title links — keep the cell looking like the rest
+   of the table at rest, only flip color + underline on hover so the
+   affordance is discoverable without making the table feel like a
+   wall of links. Applies whether the link sits in the Ticker cell
+   (td.mono, non-sport bots) or the Title cell (sport bots, where the
+   ticker column was dropped and the Title itself became the click
+   target). */
+a.ticker-link { color: inherit; text-decoration: none; }
+a.ticker-link:hover { color: #58a6ff; text-decoration: underline; }
 /* Bot-name link in the active-bets / bet-history tables — same
    restraint as the ticker links so the table stays readable. */
 a.bot-link { color: inherit; text-decoration: none; }
@@ -3154,7 +3158,7 @@ tr.row-suspect td { opacity: 0.55; }
 tr.row-bought td { opacity: 1 !important; color: #ffffff !important;
     font-weight: 600 !important; }
 tr.row-bought td:first-child { border-left: 3px solid #8b949e; }
-tr.row-bought td.mono a.ticker-link,
+tr.row-bought td a.ticker-link,
 tr.row-bought td.mono { color: #ffffff; }
 /* Watchlist table: fixed scrolling viewport so the strike list never
    pushes the rest of the page off-screen. Sticky header keeps the
@@ -10662,9 +10666,48 @@ def _render_watchlist(out: List[str], watchlist: List[dict],
                       available_bots: List[dict] | None = None,
                       current_bot: str = "",
                       period_key: str = "all") -> None:
-    out.append("<div class='section'><h2>"
-               "Watchlist — model vs market</h2>"
-               "<div class='body'>")
+    # Buy-criteria reference button — a small circle-i info icon that
+    # opens the shared rules modal. Built up-front so the sport-bot
+    # header can pin it to the top-right of the h2 row; non-sport bots
+    # still use the same html further below (inline with the Active
+    # bets h3).
+    rules_payload = json.dumps({
+        "edge": edge_cfg or {},
+        "validators": validator_cfg or {},
+        "risk": risk_caps or {},
+        "hedge": hedge_cfg or {},
+        "_source": threshold_source or {"source": "fallback",
+                                          "captured_at": None,
+                                          "missing_keys": []},
+    }, separators=(",", ":"), default=str)
+    rules_icon_html = (
+        "<button type='button' class='criteria-rules-btn' "
+        f"data-rules='{html.escape(rules_payload)}' "
+        f"title=\"What does this bot need before it'll buy?\">"
+        "i</button>"
+    )
+
+    # Section header layout — sport bots pin the Buy-criteria rules
+    # button to the top-right of the header row (across from the h2
+    # title). Non-sport bots leave the h2 alone; their rules button
+    # still sits inline with the Active-bets h3 further below.
+    _is_sport = current_bot in {"nba", "tennis", "table-tennis", "darts",
+                                 "world-cup"}
+    if _is_sport:
+        out.append("<div class='section'>")
+        out.append(
+            "<div style='display:flex;align-items:center;"
+            "justify-content:space-between;gap:12px;padding:14px 18px 0 18px;'>"
+            "<h2 style='margin:0;'>Watchlist — model vs market</h2>"
+            "<div style='display:flex;align-items:center;gap:8px;'>"
+            "<span class='small gray'>Buy criteria</span>"
+            f"{rules_icon_html}"
+            "</div></div><div class='body'>"
+        )
+    else:
+        out.append("<div class='section'><h2>"
+                   "Watchlist — model vs market</h2>"
+                   "<div class='body'>")
     # Bot dropdown moved above the tab bar (per user request) so it
     # applies uniformly across tabs.
 
@@ -10681,26 +10724,6 @@ def _render_watchlist(out: List[str], watchlist: List[dict],
     )
     _render_current_prediction(out, model, display=display,
                                  contract_is_closed=contract_is_closed)
-
-    # Buy-criteria reference button — rendered as a small circle-i info
-    # icon inline with the Active-bet h3 so it sits next to the
-    # section title (compact, doesn't take a row of its own). Click
-    # opens the same shared modal with the full rules.
-    rules_payload = json.dumps({
-        "edge": edge_cfg or {},
-        "validators": validator_cfg or {},
-        "risk": risk_caps or {},
-        "hedge": hedge_cfg or {},
-        "_source": threshold_source or {"source": "fallback",
-                                          "captured_at": None,
-                                          "missing_keys": []},
-    }, separators=(",", ":"), default=str)
-    rules_icon_html = (
-        "<button type='button' class='criteria-rules-btn' "
-        f"data-rules='{html.escape(rules_payload)}' "
-        f"title=\"What does this bot need before it'll buy?\">"
-        "i</button>"
-    )
 
     # ── Build the held-tickers map (needed by the verdict cell + row
     # sort even when we don't render the Active bets section below).
@@ -10720,16 +10743,10 @@ def _render_watchlist(out: List[str], watchlist: List[dict],
     is_sport_bot = current_bot in {"nba", "tennis", "table-tennis", "darts",
                                    "world-cup"}
     if is_sport_bot:
-        # Rules button still needs a home — render it on a compact
-        # standalone row where the Active-bets h3 used to be. Keeps
-        # the "how do I read the buy criteria" affordance one click
-        # away without pulling in the full section.
-        out.append(
-            "<div style='display:flex;align-items:center;gap:8px;"
-            "margin:12px 0;'>"
-            f"<span class='small gray'>Buy criteria</span>{rules_icon_html}"
-            "</div>"
-        )
+        # Sport bots: nothing else to render here — the section header
+        # already carries the Buy-criteria button in its top-right
+        # corner, and the table below is what the user acts on.
+        pass
     else:
         # Non-sport bots: full Active-bets section + hero chart, same as
         # before.
