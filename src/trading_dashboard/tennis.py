@@ -2646,10 +2646,13 @@ _TRAINING_DB_PATH = Path("/root/tennis-forecast/data/training_history.db")
 # The order here is the rendered column order.
 _TRAINING_COLUMNS: list[tuple[str, str, str]] = [
     # ── Match identity ───────────────────────────────────────────────
-    ("tourney_date", "Date",
-     "Date of the match's tournament round, in YYYY-MM-DD."),
+    # Tournament is deliberately the leftmost column — it's the most
+    # recognisable per-row identifier, and users scanning the table
+    # anchor on tournament name before date.
     ("tourney_name", "Tournament",
      "Tournament name from the official ATP/WTA tour calendar."),
+    ("tourney_date", "Date",
+     "Date of the match's tournament round, in YYYY-MM-DD."),
     ("tour", "Tour",
      "ATP (men's) or WTA (women's). Determined by which Sackmann "
      "match file the row came from."),
