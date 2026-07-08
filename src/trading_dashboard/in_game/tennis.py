@@ -188,9 +188,7 @@ def predict(bot: Dict[str, Any], position: Dict[str, Any],
                      else (1.0 - pre_match_prob_a)
                           if pre_match_prob_a is not None else None)
 
-    # Market state. Current price from the watchlist row; price
-    # history from the dashboard's tennis_snapshotter daemon
-    # (writes per-match JSONL every 60s to data/tennis_history/).
+    # Market state. Current price from the watchlist row.
     market_yes_cents = row.get("yes_ask_cents_a" if side_label == "A"
                                 else "yes_ask_cents_b")
     try:
@@ -202,17 +200,13 @@ def predict(bot: Dict[str, Any], position: Dict[str, Any],
                             if market_yes_cents is not None else None)
 
     div = _features.divergence(pre_game_our, current_market_prob)
-    # Cross-sport velocity / volatility from the snapshotter's
-    # per-match history. Same window the NBA model uses.
-    try:
-        from . import tennis_snapshotter as _snap
-        history = _snap.yes_cents_history(
-            bot.get("key") or "tennis", match_id, side_label, hours=6,
-        )
-    except Exception:  # noqa: BLE001
-        history = []
-    velocity = _features.market_velocity(history, window_seconds=300)
-    volat = _features.volatility(history, window_seconds=600)
+    # tennis_snapshotter (per-match price history JSONL) was removed
+    # 2026-07-08 alongside the rest of the in-game layer; velocity /
+    # volatility for tennis-shape sports (tennis / table-tennis /
+    # darts) now degrade to zero. The rest of the confidence ladder
+    # (score state, sets completed) still fires.
+    velocity = 0.0
+    volat = 0.0
 
     state = _parse_score_state(score_str)
     sets_completed = state.get("sets_completed", 0)

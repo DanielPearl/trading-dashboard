@@ -145,8 +145,7 @@ it is sketched.
 | `news_signals.py` | ESPN /news scanner with injury-keyword matching |
 | `nba.py` | NBA in-game scorer (ESPN + CDN + market + news) |
 | `nba_cdn.py` | NBA.com CDN adapter (pace, FT rate, foul trouble, +/-) |
-| `tennis.py` | Tennis-shape scorer (bot's live_prob + market overlay) |
-| `tennis_snapshotter.py` | Background daemon: per-poll tennis odds → JSONL |
+| `tennis.py` | Tennis-shape scorer (bot's live_prob + market overlay) — kept because `darts.py` and the table-tennis bot delegate to `predict(sport=…)`; the tennis bot itself no longer uses the in-game layer (removed 2026-07-08 alongside the in-match adjustment) |
 | `darts.py` | Darts (thin wrapper on tennis.py) |
 | `logger.py` | Transition audit log (sparse) |
 | `feature_log.py` | Dense per-tick feature snapshot log (training data) |

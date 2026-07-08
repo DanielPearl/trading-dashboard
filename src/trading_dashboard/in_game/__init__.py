@@ -58,19 +58,20 @@ def predict(bot: Dict[str, Any], position: Dict[str, Any],
     the logger module. See ``in_game/logger.py``.
     """
     bot_key = (bot.get("key") or "").lower()
-    dt = (bot.get("dashboard_type") or "standard").lower()
     pred: Optional[LivePrediction] = None
     try:
         if bot_key == "nba":
             pred = _nba.predict(bot, position, market_view)
-        elif bot_key == "tennis" or (dt == "sport" and bot_key == "tennis"):
-            pred = _tennis.predict(bot, position, market_view,
-                                      sport="tennis")
         elif bot_key == "table-tennis":
             pred = _tennis.predict(bot, position, market_view,
                                       sport="table-tennis")
         elif bot_key == "darts":
             pred = _darts.predict(bot, position, market_view)
+        # ``tennis`` dispatch removed 2026-07-08 — the tennis bot's
+        # in-match adjustment layer was retired so the advisory-only
+        # in-game overlay would either fire on stale market-only
+        # signal or add noise. hedge_monitor's default profit-lock /
+        # stop-loss rules are what actually run for tennis now.
     except Exception:  # noqa: BLE001
         # In-game model errors must NEVER take down the hedge tick.
         # A failed live prediction returns None — caller falls back

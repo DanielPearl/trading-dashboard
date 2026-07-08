@@ -12242,12 +12242,10 @@ def serve(host: str, port: int, bots: List[dict], risk_caps: dict,
     # in data/regime_notifications.jsonl for the Home-tab panel.
     from . import regime_monitor
     regime_monitor.start_daemon(bots)
-    # Tennis odds snapshotter. Every 60s walks each tennis-shape
-    # bot's watchlist.json and appends per-match price snapshots so
-    # the in-game model has a velocity / volatility / divergence
-    # time-series to read — same shape NBA gets from market_views.
-    from .in_game import tennis_snapshotter
-    tennis_snapshotter.start_daemon(bots)
+    # (Tennis odds snapshotter removed 2026-07-08 alongside the whole
+    # in-game adjustment layer; the pre-match model is now the only
+    # forecast we run so there's no velocity / volatility / divergence
+    # consumer for the JSONL that daemon used to write.)
     # In-process tennis trader. Replaces the standalone
     # baseline-break-monitor.service that previously ran the 60s
     # poll loop. The thread imports tennis-forecast's pure functions
