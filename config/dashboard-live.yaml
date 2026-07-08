@@ -417,9 +417,26 @@ nba_trader:
   config_path: /root/nba/config/config.yaml
 
 wnba_trader:
+  # Flip to true once ready to run WNBA live in dry-run. The ``live:``
+  # block below must match dashboard.yaml's — same gates in sim and
+  # live, only ``dry_run`` and ``sim_state_path`` differ. Change to
+  # ``dry_run: false`` here (and ONLY here) once you've verified
+  # dry-run behavior on the live dashboard.
   enabled: false
   repo_path: /root/wnba
   config_path: /root/wnba/config/config.yaml
+  live:
+    dry_run: true
+    sim_state_path: /root/wnba/data/outputs-live/sim_state.json
+    max_open_positions: 4
+    max_orders_per_day: 6
+    contracts_per_order: 1
+    min_edge_pp: 0.08
+    max_entry_price_cents: 70
+    min_entry_price_cents: 15
+    price_deviation_cents: 3
+    require_pinnacle: true
+    profit_lock_yes_bid_cents: 95
 
 gas_trader:
   enabled: false

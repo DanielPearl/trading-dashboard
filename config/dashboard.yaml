@@ -487,6 +487,26 @@ wnba_trader:
   # needed.
   repo_path: /root/wnba
   config_path: /root/wnba/config/config.yaml
+  # ``live:`` block presence flips bots/wnba.py from sim-only to
+  # sim + WNBALiveExecutor. Same shape and safety model as tennis:
+  # dry_run: true means paper-only, hard caps in code clamp anything
+  # widened here. Keep IN SYNC with dashboard-live.yaml so both
+  # dashboards evaluate every gate identically.
+  live:
+    dry_run: true
+    sim_state_path: /root/wnba/data/outputs-live/sim_state.json
+    max_open_positions: 4
+    max_orders_per_day: 6
+    contracts_per_order: 1
+    min_edge_pp: 0.08
+    max_entry_price_cents: 70
+    min_entry_price_cents: 15
+    price_deviation_cents: 3
+    # Skip the buy if Pinnacle isn't listing this game (matches
+    # tennis's no_pinnacle_reference gate). Flip to false only for
+    # late-tip games Pinnacle drops off.
+    require_pinnacle: true
+    profit_lock_yes_bid_cents: 95
 
 gas_trader:
   enabled: true

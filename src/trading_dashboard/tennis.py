@@ -2965,9 +2965,17 @@ def render_training_data_panel(*, current_bot: str | None,
             f"class='empty'>No rows for the selected filter.</td></tr>"
         )
 
-    def _fmt_cell(sql: str, v: Any) -> str:
+    def _fmt_cell(sql: str, v: Any, row: dict | None = None) -> str:
         if v is None or v == "":
             return "—"
+        if sql == "tourney_name":
+            # Prefix the tour ("ATP" / "WTA") to the tournament name so
+            # "Wimbledon" reads as "ATP · Wimbledon" — a single-column
+            # answer to "which tour and event was this?" without making
+            # the user cross-reference the Tour column.
+            tour = ((row or {}).get("tour") or "").strip().upper()
+            name = html.escape(str(v))
+            return f"{tour} · {name}" if tour else name
         if sql in {"a_hand", "b_hand"}:
             return html.escape(str(v))
         if sql in {"hand_match", "same_country"}:
@@ -2994,7 +3002,7 @@ def render_training_data_panel(*, current_bot: str | None,
                 "a_entry", "b_hand", "b_country", "b_entry",
             }
             cls = " class='num'" if is_num else ""
-            out.append(f"<td{cls}>{_fmt_cell(sql, v)}</td>")
+            out.append(f"<td{cls}>{_fmt_cell(sql, v, r)}</td>")
         out.append("</tr>")
     out.append("</tbody></table></div>")
 

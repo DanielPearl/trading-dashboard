@@ -10422,7 +10422,7 @@ def _render_models_panel(out: List[str], bot: dict, model: dict | None,
     populations.
     """
     bot_key = (bot or {}).get("key", "")
-    is_sport_bot = bot_key in {"nba", "tennis", "table-tennis", "darts"}
+    is_sport_bot = bot_key in {"nba", "wnba", "tennis", "table-tennis", "darts"}
     # Every model page uses the same section-header layout so the
     # "Model" title and the body content sit at the same vertical
     # position regardless of bot. Sport bots fill the right-hand
@@ -10940,8 +10940,8 @@ def _render_watchlist(out: List[str], watchlist: List[dict],
     # Model vs market · Kalshi rules — the third comes from
     # ``_render_contract_rules`` after this function returns). Non-
     # sport bots keep the legacy single-section layout.
-    is_sport_bot = current_bot in {"nba", "tennis", "table-tennis", "darts",
-                                    "world-cup"}
+    is_sport_bot = current_bot in {"nba", "wnba", "tennis", "table-tennis",
+                                    "darts", "world-cup"}
     is_billboard_bot = current_bot == "billboard"
     if not is_sport_bot:
         out.append("<div class='section'><h2>"
@@ -11195,6 +11195,16 @@ def _render_watchlist(out: List[str], watchlist: List[dict],
                        if r.get("ticker") in held_by_ticker]
         _open_rows = [r for r in watchlist
                        if r.get("ticker") not in held_by_ticker]
+        # 2026-07-08: only surface Model-vs-market rows where Pinnacle
+        # is quoting the match. Rows without a Pinnacle price mean we
+        # have no sharp reference to compute Edge / EV against, so the
+        # decision cells fall back to the model's own view — which
+        # tends to encourage bad clicks on Challenger / ITF /
+        # between-tournament markets where nobody in the world has
+        # priced the line. Active-bets rows still show unconditionally
+        # since we already hold those positions.
+        _open_rows = [r for r in _open_rows
+                       if r.get("pinnacle_prob_yes") is not None]
         section_ctxs = [
             {
                 "kind": "active",
@@ -11208,10 +11218,13 @@ def _render_watchlist(out: List[str], watchlist: List[dict],
                 "rows": _open_rows,
                 "include_position_cols": False,
                 "tbody_id": "watchlist-tbody",
-                "empty_msg": "No open markets right now.",
+                "empty_msg": ("No open markets right now with a "
+                              "Pinnacle price (Challenger / ITF and "
+                              "between-tournament markets are hidden)."),
             },
         ]
     else:
+        # Non-sport bots don't have Pinnacle at all — no filter needed.
         section_ctxs = [{
             "kind": "single",
             "rows": watchlist,
@@ -12328,7 +12341,7 @@ class Handler(BaseHTTPRequestHandler):
                     # slate from the watchlist; flag those bots so the
                     # client returns every market with a future close.
                     all_open_events = bot.get("key") in {
-                        "nba", "tennis", "table-tennis", "darts",
+                        "nba", "wnba", "tennis", "table-tennis", "darts",
                         "world-cup",
                     }
                     try:

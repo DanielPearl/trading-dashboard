@@ -115,6 +115,57 @@ def _sync_sport_json(repo_path: str, db_path: str,
     )
 
 
+def _mirror_watchlist_live(watchlist_out: str, executor: Any) -> None:
+    """Copy the just-written sport-shape watchlist.json into the live
+    executor's output directory. Mirrors tennis.py's live mirror step
+    so the LIVE dashboard's "Tradeable matches" panel shows the same
+    rows the executor is considering.
+    """
+    import json as _json
+    from pathlib import Path as _Path
+    try:
+        wl_src = _Path(watchlist_out)
+        if not wl_src.exists():
+            return
+        with wl_src.open("r", encoding="utf-8") as f:
+            payload = _json.load(f)
+        live_dir = _Path(executor.state_path).parent
+        live_dir.mkdir(parents=True, exist_ok=True)
+        wl_live = live_dir / "watchlist.json"
+        with wl_live.open("w", encoding="utf-8") as f:
+            _json.dump(payload, f, separators=(",", ":"), default=str)
+    except Exception:  # noqa: BLE001
+        log.exception("wnba watchlist mirror to outputs-live failed")
+
+
+def _run_live_executor(watchlist_out: str, executor: Any) -> None:
+    """After a bot tick, load the freshly-written watchlist.json and
+    hand its rows to the live executor. Mirrors the tennis pattern of
+    running the executor synchronously right after each sport-json
+    sync so sim and live evaluate the same rows.
+    """
+    from .. import bot_state
+    import json as _json
+    try:
+        with open(watchlist_out, "r", encoding="utf-8") as f:
+            payload = _json.load(f)
+        rows = payload.get("rows") or []
+    except (OSError, ValueError):
+        log.exception("wnba watchlist read failed; skipping live tick")
+        return
+    # ``armed`` == the WNBA Home-tab toggle on the LIVE dashboard.
+    # bot_state.is_bot_enabled is the SIM toggle; live has its own
+    # store. Fall back to False if the live-store helper is absent.
+    try:
+        armed = bool(bot_state.is_bot_enabled(BOT_KEY, mode="live"))
+    except TypeError:  # older bot_state without ``mode`` kwarg
+        armed = False
+    try:
+        executor.tick(rows, armed=armed)
+    except Exception:  # noqa: BLE001
+        log.exception("wnba-live-executor tick failed")
+
+
 def start_daemon(cfg: dict) -> Any:
     """Spawn the WNBA background thread. Config::
 
@@ -126,6 +177,25 @@ def start_daemon(cfg: dict) -> Any:
           db_path: /root/wnba/data/sim.db
           watchlist_json_path: /root/wnba/data/outputs/watchlist.json
           sim_state_path: /root/wnba/data/outputs/sim_state.json
+
+    Live-trading config (adds a ``live:`` block). Presence of the block
+    flips this daemon from sim-only to sim + live-executor after each
+    tick::
+
+        wnba_trader:
+          ...
+          live:
+            dry_run: true
+            sim_state_path: /root/wnba/data/outputs-live/sim_state.json
+            max_open_positions: 4
+            max_orders_per_day: 6
+            contracts_per_order: 1
+            min_edge_pp: 0.08
+            max_entry_price_cents: 70
+            min_entry_price_cents: 15
+            price_deviation_cents: 3
+            profit_lock_yes_bid_cents: 95
+            require_pinnacle: true
     """
     from .. import bot_state
 
@@ -143,9 +213,11 @@ def start_daemon(cfg: dict) -> Any:
     metrics_out = cfg.get("metrics_path",
                           str(Path(repo_path) / "data" / "processed"
                               / "artifacts" / "metrics.json"))
+    live_cfg = cfg.get("live")  # None for sim-only
 
     def _run() -> None:
-        log.info("wnba-bot starting (repo=%s)", repo_path)
+        log.info("wnba-bot starting (repo=%s, mode=%s)", repo_path,
+                 "LIVE" if live_cfg else "SIM")
         _base.require_kalshi_creds()
         _base.inject_sys_path(repo_path, subdir="src")
 
@@ -162,6 +234,18 @@ def start_daemon(cfg: dict) -> Any:
         )
         bot = Bot(upstream_cfg)
 
+        executor = None
+        if live_cfg is not None:
+            from . import wnba_live_executor  # noqa: E402
+            state_path = live_cfg.get(
+                "sim_state_path",
+                str(Path(repo_path) / "data" / "outputs-live"
+                    / "sim_state.json"),
+            )
+            executor = wnba_live_executor.WNBALiveExecutor(
+                cfg=live_cfg, state_path=state_path,
+            )
+
         _orig_tick = bot.tick
 
         def _gated_and_synced_tick(*args, **kwargs):
@@ -174,11 +258,17 @@ def start_daemon(cfg: dict) -> Any:
                                  sim_state_out, metrics_out)
             except Exception:  # noqa: BLE001
                 log.exception("wnba sport-json sync failed (non-fatal)")
+            # After the sport-adapter has written the fresh watchlist,
+            # let the live executor consume it (dry-run by default).
+            if executor is not None:
+                _mirror_watchlist_live(watchlist_out, executor)
+                _run_live_executor(watchlist_out, executor)
             return result
 
         bot.tick = _gated_and_synced_tick  # type: ignore[attr-defined]
         log.info("wnba-bot upstream loaded; handing off to Bot.run() "
-                 "(sport-json sync after each tick)")
+                 "(sport-json sync%s after each tick)",
+                 " + live executor" if executor else "")
         try:
             _sync_sport_json(repo_path, db_path, watchlist_out, sim_state_out)
         except Exception:  # noqa: BLE001

@@ -171,6 +171,18 @@ def _row_pair_to_match(parsed_a: ParsedTicker, row_a: sqlite3.Row,
         v = row["raw_model_prob_yes"]
         return float(v) if v is not None else None
 
+    def _pinnacle_prob(row: Optional[sqlite3.Row]) -> Optional[float]:
+        """Pinnacle YES-side prob for this row's market, if the source
+        bot writes it. Returns None for bots whose sim.db predates the
+        ``pinnacle_yes_prob`` column."""
+        if row is None:
+            return None
+        try:
+            v = row["pinnacle_yes_prob"]
+        except (IndexError, KeyError):
+            return None
+        return float(v) if v is not None else None
+
     # Each side's "win probability" is its own market's YES prob.
     # If that side's market hasn't snapshotted yet, fall back to
     # (1 - other_side_yes_prob).
@@ -183,6 +195,19 @@ def _row_pair_to_match(parsed_a: ParsedTicker, row_a: sqlite3.Row,
 
     market_prob_a = _market_prob(row_for_a)
     market_prob_b = _market_prob(row_for_b)
+
+    # Pinnacle (sharp) devigged prob per side. Nullable — bots that don't
+    # fetch Pinnacle (or where THE_ODDS_API_KEY isn't set) simply leave
+    # the column blank in the sim.db and the watchlist column stays empty.
+    pinnacle_prob_a = _pinnacle_prob(row_for_a)
+    pinnacle_prob_b = _pinnacle_prob(row_for_b)
+    # If only one side's Pinnacle prob is present, infer the other from
+    # (1 - other) so the watchlist row still shows a complete Pinnacle
+    # column for the pair.
+    if pinnacle_prob_a is None and pinnacle_prob_b is not None:
+        pinnacle_prob_a = 1.0 - pinnacle_prob_b
+    if pinnacle_prob_b is None and pinnacle_prob_a is not None:
+        pinnacle_prob_b = 1.0 - pinnacle_prob_a
 
     edge_a = _edge_yes(row_for_a)
     edge_b = _edge_yes(row_for_b)
@@ -245,6 +270,10 @@ def _row_pair_to_match(parsed_a: ParsedTicker, row_a: sqlite3.Row,
         "live_prob_b": live_prob_b if live_prob_b is not None else 0.5,
         "market_prob_a": market_prob_a,
         "market_prob_b": market_prob_b,
+        # Pinnacle sharp reference (tennis-shape). Null when the source
+        # bot hasn't stamped it (Pinnacle not listed / no API key).
+        "pinnacle_prob_a": pinnacle_prob_a,
+        "pinnacle_prob_b": pinnacle_prob_b,
         # Edges (already net of slippage in the source)
         "edge_a": edge_a,
         "edge_b": edge_b,
@@ -275,6 +304,13 @@ def _row_pair_to_match(parsed_a: ParsedTicker, row_a: sqlite3.Row,
                               if row_for_b is not None
                               and row_for_b["yes_ask_cents"] is not None
                               else None),
+        # Per-side Kalshi tickers. World-cup + WNBA live executors read
+        # these to place a YES order on the chosen side without
+        # re-parsing the base_id.
+        "ticker_a": (row_for_a["ticker"]
+                      if row_for_a is not None else None),
+        "ticker_b": (row_for_b["ticker"]
+                      if row_for_b is not None else None),
         # Titles
         "title_a": f"Will {away} beat {home}?",
         "title_b": f"Will {home} beat {away}?",
