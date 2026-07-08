@@ -4165,10 +4165,8 @@ def _live_update_script(current_bot: str, period_key: str = "all") -> str:
         const kno  = (na !== null && na !== undefined) ? (na + "%")
                    : (ya !== null && ya !== undefined) ? ((100 - ya) + "%")
                    : "—";
-        const myYes = (r.model_prob_yes !== null && r.model_prob_yes !== undefined)
-          ? (Math.round(r.model_prob_yes * 100) + "%") : "—";
-        const myNo = (r.model_prob_yes !== null && r.model_prob_yes !== undefined)
-          ? (Math.round((1 - r.model_prob_yes) * 100) + "%") : "—";
+        // My % column removed from the visual set; model_prob_yes
+        // still lives on ``r`` for downstream consumers.
         // Edge (reference prob − Kalshi ask, no half-spread). Reference
         // prob prefers Pinnacle when the row ships it (same rule the
         // server-side render uses); falls back to the bot's model.
@@ -4183,14 +4181,12 @@ def _live_update_script(current_bot: str, period_key: str = "all") -> str:
         patchCell(tr.querySelector("[data-field='oi']"),
                   r.open_interest !== null && r.open_interest !== undefined
                     ? Number(r.open_interest).toLocaleString() : "—");
-        // "current" is the live-Kalshi column; the entry column beside
-        // it is locked at open time and doesn't move.
-        const currentCell = tr.querySelector("[data-field='current']");
-        patchSide(currentCell, 'yes', kyes);
-        patchSide(currentCell, 'no',  kno);
-        const myCell = tr.querySelector("[data-field='my']");
-        patchSide(myCell, 'yes', myYes);
-        patchSide(myCell, 'no',  myNo);
+        // "kalshi" is the live-Kalshi column; My % / Kalshi-entry %
+        // columns were dropped from the visual set (model_prob_yes
+        // stays on the payload for JSON consumers).
+        const kalshiCell = tr.querySelector("[data-field='kalshi']");
+        patchSide(kalshiCell, 'yes', kyes);
+        patchSide(kalshiCell, 'no',  kno);
         const edgeCell = tr.querySelector("[data-field='edge']");
         patchSide(edgeCell, 'yes', fmtPctEdge(edgeYes), edgeClass(edgeYes));
         patchSide(edgeCell, 'no',  fmtPctEdge(edgeNo),  edgeClass(edgeNo));
@@ -10993,22 +10989,20 @@ def _render_watchlist(out: List[str], watchlist: List[dict],
                "<table><thead><tr>"
                f"{head_cols}"
                "<th class='num' title='Open interest — total contracts currently held open across all traders on this strike.'>Total contracts</th>"
-               # My % sits to the left of the Kalshi columns. Every
-               # side-paired column (My %, Kalshi entry %, Current %,
-               # Pinnacle %, Edge, EV) renders its YES value stacked
-               # on top in green and its NO value on the bottom in
-               # red — the row-cell renderer (_stacked() below) emits
-               # the .cell-stack td that the CSS prints two rows tall.
-               "<th class='num' title='Bot model probability — YES on top (green), NO on bottom (red).'>My %</th>"
-               "<th class='num' title='Kalshi price at the moment we opened this position (locked at entry). Blank on rows we don&apos;t hold — nothing has been entered yet.'>Kalshi entry %</th>"
-               "<th class='num' title='Live Kalshi market price right now — moves as the book moves. YES on top (green), NO on bottom (red).'>Current %</th>"
+               # Kalshi % is the live market price (was called
+               # "Current %" — renamed per user spec). My % is dropped
+               # from the visual column set but the field
+               # ``model_prob_yes`` still lives on the row + snapshot
+               # payload for downstream code + the JSON export.
+               "<th class='num' title='Live Kalshi market price — YES on top (green), NO on bottom (red). Each side&apos;s implied probability that side wins.'>Kalshi %</th>"
                "<th class='num' title='Pinnacle sportsbook devigged probability (sharp global reference from The Odds API). Em-dash for matches Pinnacle does not list (Challenger/ITF/between-tournaments) or when the API key isn&apos;t set. YES on top, NO on bottom.'>Pinnacle %</th>"
                "<th class='num' title='Edge = reference probability (Pinnacle when available, else model) − Kalshi price, per side. YES on top (green), NO on bottom (red).'>Edge</th>"
                "<th class='num' title='Expected value per $1 contract, per side, net of half-spread and the Kalshi entry fee. YES on top (green), NO on bottom (red).'>EV</th>"
                "<th class='num' title='Time until the contract settles. Parsed from the Kalshi ticker&apos;s encoded date.'>Closes in</th>"
                "<th>Verdict</th>"
                "<th class='num' title='Number of contracts held on this row. Blank when no position is open.'>My contracts</th>"
-               "<th class='num' title='Total cash out at open (entry price × contracts + Kalshi entry fee). Blank when no position is held on this row.'>Total cost</th>"
+               "<th class='num' title='Kalshi entry cost — entry price × contracts, before fees. Blank when no position is held on this row.'>Kalshi entry cost</th>"
+               "<th class='num' title='Total cash out at open — Kalshi entry cost + Kalshi entry fee. Blank when no position is held on this row.'>Total cost</th>"
                "</tr></thead><tbody id='watchlist-tbody'>")
     for v in watchlist:
         ticker = v.get("ticker", "")
@@ -11347,32 +11341,13 @@ def _render_watchlist(out: List[str], watchlist: List[dict],
                 f"<div class='side-no red' data-side='no'>{no_val}</div>"
                 f"</td>"
             )
-        # Current % — always the live Kalshi ask, YES on top / NO on
-        # bottom. This is the same data the old "Kalshi %" column
-        # showed; it just moved right to make room for the locked
-        # entry-price column beside it.
-        current_cell = _stacked(kyes_str, kno_str, "current")
-        # Kalshi entry % — the price we locked in on this row's
-        # position, YES on top / NO on bottom. Blank when we don't
-        # hold anything on this ticker; there's no entry to show.
-        # Uses held_bet (resolved below in the verdict block, but
-        # ``held_by_ticker`` is safe to check here — the lookup is
-        # cheap and doesn't depend on the badge computation).
-        _entry_bet = held_by_ticker.get(ticker)
-        if _entry_bet is not None:
-            _ent_c = _entry_bet.get("entry_price_cents")
-            if _ent_c is not None:
-                _ent_c_int = int(_ent_c)
-                entry_yes_str = f"{_ent_c_int}%"
-                entry_no_str = f"{100 - _ent_c_int}%"
-                entry_cell = _stacked(entry_yes_str, entry_no_str,
-                                       "kalshi-entry")
-            else:
-                entry_cell = "<td class='num' data-field='kalshi-entry'></td>"
-        else:
-            entry_cell = "<td class='num' data-field='kalshi-entry'></td>"
-        my_cell     = _stacked(my_yes_str, my_no_str, "my",
-                                  extra_tt=(my_yes_tt or my_no_tt))
+        # Kalshi % — the live market ask, YES on top / NO on bottom.
+        # (Replaces the old "My % + Kalshi entry % + Current %" trio;
+        # only the live price stays visible in the column set. My %
+        # and Kalshi entry % moved out per user spec — model_prob_yes
+        # still populates on every row for JSON consumers + downstream
+        # code, just isn't rendered as a table column.)
+        kalshi_cell = _stacked(kyes_str, kno_str, "kalshi")
         # Pinnacle stacked cell — devigged sharp-book prob for the YES /
         # NO sides. None when the sport bot's watchlist row doesn't
         # carry it (Pinnacle not listing the match, or non-tennis bots
@@ -11400,12 +11375,12 @@ def _render_watchlist(out: List[str], watchlist: List[dict],
             f"{time_to_close_str(mtc)}</td>"
         )
 
-        # My contracts + Total cost — both only populated when we
-        # actually hold this ticker. ``held_bet`` was already resolved
-        # above for the verdict column; reuse it here so both cells
-        # reflect the exact position the HOLDING badge refers to.
-        # Blank tds when unheld so the columns read as "was this
-        # bought" at a glance.
+        # My contracts + Kalshi entry cost + Total cost — populated
+        # only on rows where we hold a position. ``held_bet`` was
+        # resolved above for the verdict column; reuse it here so
+        # every cell agrees with the HOLDING badge. Blank tds on
+        # unheld rows so the columns read as "was this bought" at a
+        # glance.
         if is_bought and held_bet is not None:
             _entry_c = held_bet.get("entry_price_cents")
             _ctr = held_bet.get("contracts") or 0
@@ -11419,6 +11394,13 @@ def _render_watchlist(out: List[str], watchlist: List[dict],
             if _entry_c is not None and _ctr:
                 _base = float(_entry_c) * float(_ctr) / 100.0
                 _fee = kalshi_fee_cents(int(_entry_c), int(_ctr)) / 100.0
+                entry_cost_cell = (
+                    f"<td class='num red' title='"
+                    f"{int(_entry_c)}¢ × {int(_ctr)} contracts = "
+                    f"${_base:.2f} entry cost (before fees).' "
+                    f"data-field='entry-cost'>"
+                    f"−${_base:.2f}</td>"
+                )
                 total_cost_cell = (
                     f"<td class='num red' title='"
                     f"{int(_entry_c)}¢ × {int(_ctr)} contracts + "
@@ -11427,23 +11409,24 @@ def _render_watchlist(out: List[str], watchlist: List[dict],
                     f"−${_base + _fee:.2f}</td>"
                 )
             else:
+                entry_cost_cell = "<td class='num red' data-field='entry-cost'></td>"
                 total_cost_cell = "<td class='num red' data-field='total-cost'></td>"
         else:
             my_contracts_cell = "<td class='num' data-field='my-contracts'></td>"
+            entry_cost_cell = "<td class='num red' data-field='entry-cost'></td>"
             total_cost_cell = "<td class='num red' data-field='total-cost'></td>"
 
         out.append(f"<tr{row_cls} data-ticker='{tt_esc}'{strike_attr}{yes_attr}>"
                    f"{middle_cells}"
                    f"<td class='num' data-field='oi'>{oi_str}</td>"
-                   f"{my_cell}"
-                   f"{entry_cell}"
-                   f"{current_cell}"
+                   f"{kalshi_cell}"
                    f"{pinnacle_cell}"
                    f"{edge_cell}"
                    f"{ev_cell}"
                    f"{closes_in_cell}"
                    f"<td data-field='verdict'>{badge}</td>"
                    f"{my_contracts_cell}"
+                   f"{entry_cost_cell}"
                    f"{total_cost_cell}</tr>")
     out.append("</tbody></table></div>")
     # Append the row-click JS hook so clicks on a watchlist row draw a
