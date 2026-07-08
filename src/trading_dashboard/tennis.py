@@ -222,6 +222,7 @@ def build_standard_watchlist_rows(
         # betting on B (Title cell + Verdict reflect this), inverting
         # the visual. Flip every side-paired field so YES always tracks
         # the favoured side.
+        pinn_a = r.get("pinnacle_prob_a")
         b_favoured = (p_a is not None and float(p_a) < 0.5)
         if b_favoured:
             top_ask = r.get("yes_ask_cents_b")
@@ -229,6 +230,8 @@ def build_standard_watchlist_rows(
             top_prob = (1.0 - float(p_a)) if p_a is not None else None
             top_raw = ((1.0 - float(r.get("pre_match_prob_a")))
                        if r.get("pre_match_prob_a") is not None else None)
+            top_pinn = ((1.0 - float(pinn_a))
+                         if pinn_a is not None else None)
             top_label = r.get("player_b")
             bot_label = r.get("player_a")
             top_title = r.get("title_b") or r.get("title") or ""
@@ -237,6 +240,7 @@ def build_standard_watchlist_rows(
             bot_ask = r.get("yes_ask_cents_b")
             top_prob = p_a
             top_raw = r.get("pre_match_prob_a")
+            top_pinn = pinn_a
             top_label = r.get("player_a")
             bot_label = r.get("player_b")
             top_title = r.get("title_a") or r.get("title") or ""
@@ -276,6 +280,10 @@ def build_standard_watchlist_rows(
             "open_interest": oi,
             "model_prob_yes": top_prob,
             "raw_model_prob_yes": top_raw,
+            # Pinnacle sportsbook devigged probability for the top side.
+            # None when the match isn't in Pinnacle's book (e.g. between
+            # tournaments, ITF events, or the API is down).
+            "pinnacle_prob_yes": top_pinn,
             "bot_verdict": verdict,
             "rejection_reason": rej_reason,
             "title": display_title,

@@ -10914,6 +10914,7 @@ def _render_watchlist(out: List[str], watchlist: List[dict],
                # the side.
                "<th class='num' title='Bot model probability — YES on top (green), NO on bottom (red).'>My %</th>"
                "<th class='num' title='Kalshi market price — YES on top (green), NO on bottom (red). Each side&apos;s implied probability that side wins.'>Kalshi %</th>"
+               "<th class='num' title='Pinnacle sportsbook devigged probability (sharp global reference from The Odds API). Em-dash for matches Pinnacle does not list (Challenger/ITF/between-tournaments) or when the API key isn&apos;t set. YES on top, NO on bottom.'>Pinnacle %</th>"
                "<th class='num' title='Edge = my probability − Kalshi price, per side. YES on top (green), NO on bottom (red).'>Edge</th>"
                "<th class='num' title='Expected value per $1 contract, per side, net of half-spread and the Kalshi entry fee. YES on top (green), NO on bottom (red).'>EV</th>"
                "<th>Verdict</th></tr></thead><tbody id='watchlist-tbody'>")
@@ -11239,6 +11240,18 @@ def _render_watchlist(out: List[str], watchlist: List[dict],
         kalshi_cell = _stacked(kyes_str, kno_str, "kalshi")
         my_cell     = _stacked(my_yes_str, my_no_str, "my",
                                   extra_tt=(my_yes_tt or my_no_tt))
+        # Pinnacle stacked cell — devigged sharp-book prob for the YES /
+        # NO sides. None when the sport bot's watchlist row doesn't
+        # carry it (Pinnacle not listing the match, or non-tennis bots
+        # that don't wire this in yet).
+        pinn_p = v.get("pinnacle_prob_yes")
+        if pinn_p is not None:
+            pinn_yes_str = f"{int(round(float(pinn_p)*100))}%"
+            pinn_no_str = f"{int(round((1-float(pinn_p))*100))}%"
+        else:
+            pinn_yes_str = "—"
+            pinn_no_str = "—"
+        pinnacle_cell = _stacked(pinn_yes_str, pinn_no_str, "pinnacle")
         edge_cell   = _stacked(edge_yes_str, edge_no_str, "edge")
         ev_cell     = _stacked(ev_yes_str, ev_no_str, "ev")
 
@@ -11248,6 +11261,7 @@ def _render_watchlist(out: List[str], watchlist: List[dict],
                    f"<td class='num' data-field='oi'>{oi_str}</td>"
                    f"{my_cell}"
                    f"{kalshi_cell}"
+                   f"{pinnacle_cell}"
                    f"{edge_cell}"
                    f"{ev_cell}"
                    f"<td data-field='verdict'>{badge}</td></tr>")
