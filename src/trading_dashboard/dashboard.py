@@ -8640,10 +8640,10 @@ def _render_models_run_table(
 ) -> str:
     """Unified 'Models run' table used on every bot's Models tab.
 
-    One row per model the trainer produced; columns match the home-page
-    model cards (Accuracy / F1 / Precision / Recall / ROC AUC /
-    Features / Train rows / Test rows / Last trained) plus Brier per
-    the user's spec.
+    One row per model the trainer produced; columns: Accuracy / F1 /
+    Precision / Recall / ROC AUC / Brier / Last trained. (Features and
+    train/test row counts were dropped per operator request —
+    ``feature_count`` stays in the signature so callers don't churn.)
 
     ``metrics`` is the trainer's metrics.json dict. Tennis-shape trainers
     populate ``per_model`` (dict of model_name → metric dict) plus an
@@ -8719,15 +8719,12 @@ def _render_models_run_table(
         "<th class='num'>Recall</th>"
         "<th class='num'>ROC AUC</th>"
         "<th class='num'>Brier</th>"
-        "<th class='num'>Features</th>"
-        "<th class='num'>Train rows</th>"
-        "<th class='num'>Test rows</th>"
         "<th class='num'>Last trained</th>"
         "</tr></thead><tbody>"
     )
     if not rows_source:
         parts.append(
-            "<tr><td colspan='11' class='gray' "
+            "<tr><td colspan='8' class='gray' "
             "style='text-align:center;padding:10px;'>"
             "No model metrics available — the trainer has not written "
             "metrics.json yet.</td></tr>"
@@ -8743,11 +8740,6 @@ def _render_models_run_table(
                 f"<td class='num'>{_pct(block.get('recall'))}</td>"
                 f"<td class='num'>{_pct(block.get('roc_auc'))}</td>"
                 f"<td class='num'>{_num(block.get('brier'))}</td>"
-                f"<td class='num'>"
-                f"{feature_count if feature_count is not None else '—'}"
-                f"</td>"
-                f"<td class='num'>{_int_str(rows_train)}</td>"
-                f"<td class='num'>{_int_str(rows_test)}</td>"
                 f"<td class='num'>{html.escape(str(last_trained))}</td>"
                 "</tr>"
             )
