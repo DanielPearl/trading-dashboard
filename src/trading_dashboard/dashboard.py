@@ -183,7 +183,7 @@ def resolve_bot_thresholds(
     fallback_validators: dict,
     fallback_risk: dict,
     fallback_hedge: dict,
-) -> Tuple[dict, dict, dict, dict, dict]:
+) -> Tuple[dict, dict, dict, dict, dict, dict]:
     """Build the per-bot edge/validators/risk/hedge dicts the renderer uses.
 
     Priority is the bot's live ``effective_config.json`` (written at
@@ -191,8 +191,11 @@ def resolve_bot_thresholds(
     fall back to the dashboard YAML so a partially-reported config
     still looks complete to the user.
 
-    Returns ``(edge, validators, risk, hedge, source_meta)`` where
-    ``source_meta`` carries provenance the rules modal renders:
+    Returns ``(edge, validators, risk, hedge, extra, source_meta)`` where
+    ``extra`` is the bot's own ``extra`` block (used by the modal to
+    render bot-specific rules that don't fit the shared schema — e.g.
+    the tennis bot's Pinnacle-as-reference framing) and ``source_meta``
+    carries provenance the rules modal renders:
 
         {"source": "live" | "fallback",
          "captured_at": "..." | None,
@@ -206,6 +209,7 @@ def resolve_bot_thresholds(
             dict(fallback_validators or {}),
             dict(fallback_risk or {}),
             dict(fallback_hedge or {}),
+            {},
             {"source": "fallback", "captured_at": None, "missing_keys": []},
         )
     missing: List[str] = []
@@ -227,8 +231,9 @@ def resolve_bot_thresholds(
     validators = _merge(live.get("validators"), fallback_validators, "validators")
     risk = _merge(live.get("risk"), fallback_risk, "risk")
     hedge = _merge(live.get("hedge"), fallback_hedge, "hedge")
+    extra = live.get("extra") if isinstance(live.get("extra"), dict) else {}
     return (
-        edge, validators, risk, hedge,
+        edge, validators, risk, hedge, extra,
         {
             "source": "live",
             "captured_at": live.get("captured_at"),
@@ -3307,6 +3312,7 @@ def render_page(
     prob_history: List[dict] | None = None,
     model_view: str = "pregame",
     threshold_source: dict | None = None,
+    extra_cfg: dict | None = None,
     mode: str = "sim",
     live_state_paths: list[str] | None = None,
     query_string: str = "",
@@ -3464,6 +3470,7 @@ def render_page(
                           validator_cfg=validator_cfg,
                           risk_caps=risk_caps,
                           hedge_cfg=hedge_cfg,
+                          extra_cfg=extra_cfg,
                           threshold_source=threshold_source,
                           available_bots=available_bots,
                           current_bot=current_bot,
@@ -10703,6 +10710,7 @@ def _render_watchlist(out: List[str], watchlist: List[dict],
                       validator_cfg: dict | None = None,
                       risk_caps: dict | None = None,
                       hedge_cfg: dict | None = None,
+                      extra_cfg: dict | None = None,
                       available_bots: List[dict] | None = None,
                       current_bot: str = "",
                       period_key: str = "all") -> None:
@@ -10716,6 +10724,7 @@ def _render_watchlist(out: List[str], watchlist: List[dict],
         "validators": validator_cfg or {},
         "risk": risk_caps or {},
         "hedge": hedge_cfg or {},
+        "extra": extra_cfg or {},
         "_source": threshold_source or {"source": "fallback",
                                           "captured_at": None,
                                           "missing_keys": []},
@@ -12174,7 +12183,8 @@ class Handler(BaseHTTPRequestHandler):
                 # modal surfaces "showing dashboard defaults" so the
                 # user knows the panel might not match reality.
                 (bot_edge_cfg, bot_validator_cfg, bot_risk_caps,
-                 bot_hedge_cfg, threshold_source) = resolve_bot_thresholds(
+                 bot_hedge_cfg, bot_extra_cfg,
+                 threshold_source) = resolve_bot_thresholds(
                     bot,
                     fallback_edge=self.edge_cfg,
                     fallback_validators=self.validator_cfg,
@@ -12203,6 +12213,7 @@ class Handler(BaseHTTPRequestHandler):
                     edge_cfg=bot_edge_cfg,
                     validator_cfg=bot_validator_cfg,
                     hedge_cfg=bot_hedge_cfg,
+                    extra_cfg=bot_extra_cfg,
                     threshold_source=threshold_source,
                     available_bots=self.bots,
                     current_bot=bot["key"],
