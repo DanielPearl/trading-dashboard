@@ -1805,37 +1805,62 @@ def _join_settlement_with_sim_state(s: dict, sim_state: dict,
 
 def _merge_with_live_sim_state(primary: dict) -> dict:
     """Return a sim_state whose closed_positions is the union of the
-    primary file's records and the live ``outputs-live/sim_state.json``
-    snapshot. Used to give the SIM dashboard's Kalshi-driven history
-    table access to the live-mode bot's stored per-bet model prob /
-    player names — without that, real Kalshi trades render with
-    'My prob' = '—' on the sim dashboard because the sim simulator
-    has no record of them.
+    primary file's records, the live ``outputs-live/sim_state.json``
+    snapshot, AND both ``.pre-audit-backup`` archives when they exist.
+
+    Used to give the Kalshi-driven history table access to per-bet
+    ``entry_model_prob`` + player names — without that, real Kalshi
+    trades render with 'My prob' = '—' because the join off the
+    settlements API has nothing to look up.
+
+    The 2026-07-08 audit reset closed_positions on both sim and live
+    sim_state.json to zero for the headline-ROI baseline; the
+    ``.pre-audit-backup`` files preserved the historical rows and
+    were left on disk exactly for enrichment cases like this one.
+    Backup rows never affect aggregation — the headline ROI comes
+    from Kalshi's settlements (source of truth) plus the current
+    (post-reset) sim_state's stats block. This union only affects
+    row-level enrichment: My prob, matchup string, player_a/player_b,
+    tournament.
 
     Lookup is by ``ticker`` first, then ``match_id`` — primary wins
     on collision so the simulation's own paper-trade history still
-    takes precedence in sim mode.
+    takes precedence in sim mode; subsequent files fill only the
+    tickers the primary hasn't already seen.
     """
     out = dict(primary or {})
     primary_closed = list(out.get("closed_positions") or [])
     seen_tickers = {c.get("ticker") for c in primary_closed if c.get("ticker")}
     seen_match_ids = {c.get("match_id") for c in primary_closed
                       if c.get("match_id")}
-    try:
-        live_path = Path("/root/tennis-forecast/data/outputs-live/sim_state.json")
-        if not live_path.exists():
-            return out
-        with live_path.open("r", encoding="utf-8") as f:
-            live = json.load(f) or {}
-    except (OSError, json.JSONDecodeError):
-        return out
     extra: list[dict] = []
-    for c in (live.get("closed_positions") or []):
-        if c.get("ticker") and c["ticker"] in seen_tickers:
+    for path_str in (
+        "/root/tennis-forecast/data/outputs-live/sim_state.json",
+        # Both audit-reset backups: they carry entry_model_prob +
+        # player_a/player_b for every real trade the bot ever placed.
+        "/root/tennis-forecast/data/outputs-live/sim_state.json.pre-audit-backup",
+        "/root/tennis-forecast/data/outputs/sim_state.json.pre-audit-backup",
+    ):
+        p = Path(path_str)
+        if not p.exists():
             continue
-        if c.get("match_id") and c["match_id"] in seen_match_ids:
+        try:
+            with p.open("r", encoding="utf-8") as f:
+                other = json.load(f) or {}
+        except (OSError, json.JSONDecodeError):
             continue
-        extra.append(c)
+        for c in (other.get("closed_positions") or []):
+            t = c.get("ticker")
+            mid = c.get("match_id")
+            if t and t in seen_tickers:
+                continue
+            if mid and mid in seen_match_ids:
+                continue
+            extra.append(c)
+            if t:
+                seen_tickers.add(t)
+            if mid:
+                seen_match_ids.add(mid)
     if extra:
         out["closed_positions"] = primary_closed + extra
     return out
