@@ -4368,6 +4368,7 @@ def _live_update_script(current_bot: str, period_key: str = "all") -> str:
     const rk  = (r && r.risk)       || {{}};
     const hg  = (r && r.hedge)      || {{}};
     const src = (r && r._source)    || {{}};
+    const xt  = (r && r.extra)      || {{}};
 
     function fmtNum(v, suffix) {{
       if (v === null || v === undefined || (typeof v === "number" && !isFinite(v))) {{
@@ -4450,17 +4451,56 @@ def _live_update_script(current_bot: str, period_key: str = "all") -> str:
            + "</div>";
     }}
 
-    html += "<div class='crit-section' style='font-size:13px;"
-         + "line-height:1.55;color:#c9d1d9;margin-bottom:14px;'>"
-         + "Before this bot opens a position it runs every contract "
-         + "through four gates: <b>(1) does the model have an edge "
-         + "worth taking</b>, <b>(2) is the market healthy enough to "
-         + "fill at a fair price</b>, <b>(3) does the trade fit inside "
-         + "today's risk budget</b>, and <b>(4) is the auto-hedge "
-         + "armed to close the position</b>. Every check below must "
-         + "pass on the chosen side (YES or NO); a single failure "
-         + "drops the bet."
-         + "</div>";
+    // Tennis bot doesn't use "the model" as its reference — it uses
+    // Pinnacle's devigged sharp-book probability. Swap the framing at
+    // the top of the modal accordingly + surface tennis-only gates
+    // (max_edge_skip, strong_edge_min) that the standard bullets
+    // below don't cover.
+    if (xt && xt.kind === "tennis") {{
+      html += "<div class='crit-section' style='font-size:13px;"
+           + "line-height:1.55;color:#c9d1d9;margin-bottom:14px;'>"
+           + (xt.notes || "")
+           + "</div>";
+      const tennisBullets = [];
+      if (xt.strong_edge_min !== undefined && xt.strong_edge_min !== null) {{
+        tennisBullets.push(["Strong-edge threshold",
+          "signal label flips from SMALL_EDGE to STRONG_EDGE once the Pinnacle-vs-Kalshi gap clears this. Bigger threshold = only fires on the sharpest disagreements.",
+          "≥ " + fmtPctF(xt.strong_edge_min)]);
+      }}
+      if (xt.max_edge_skip !== undefined && xt.max_edge_skip !== null) {{
+        tennisBullets.push(["Max edge skip",
+          "hard ceiling: gaps above this are treated as one book being stale/broken, not a real edge, and the trade is skipped.",
+          "> " + fmtPctF(xt.max_edge_skip) + " → skip"]);
+      }}
+      if (xt.taper_edge_above !== undefined && xt.taper_edge_above !== null) {{
+        tennisBullets.push(["Stake taper starts",
+          "between this and the skip ceiling, stake is scaled down linearly (Kelly-style variance protection on large-but-not-extreme edges).",
+          "> " + fmtPctF(xt.taper_edge_above)]);
+      }}
+      if (xt.taper_min_stake_frac !== undefined && xt.taper_min_stake_frac !== null) {{
+        tennisBullets.push(["Min taper stake fraction",
+          "floor for the taper — even at the skip-ceiling edge, stake never drops below this fraction of the base bet.",
+          fmtPctF(xt.taper_min_stake_frac)]);
+      }}
+      if (tennisBullets.length) {{
+        html += "<div class='crit-section'>"
+             + "<h4>Pinnacle-vs-Kalshi edge rules (tennis-specific)</h4>"
+             + bullets(tennisBullets)
+             + "</div>";
+      }}
+    }} else {{
+      html += "<div class='crit-section' style='font-size:13px;"
+           + "line-height:1.55;color:#c9d1d9;margin-bottom:14px;'>"
+           + "Before this bot opens a position it runs every contract "
+           + "through four gates: <b>(1) does the model have an edge "
+           + "worth taking</b>, <b>(2) is the market healthy enough to "
+           + "fill at a fair price</b>, <b>(3) does the trade fit inside "
+           + "today's risk budget</b>, and <b>(4) is the auto-hedge "
+           + "armed to close the position</b>. Every check below must "
+           + "pass on the chosen side (YES or NO); a single failure "
+           + "drops the bet."
+           + "</div>";
+    }}
 
     // Probability-bounds is stored as [low, high] in cents → render
     // the two extremes as a price band the bot will trade in.
