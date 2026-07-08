@@ -3146,6 +3146,33 @@ td.num.cell-stack .side-no  { color: #f85149 !important; }  /* red   */
     color: #8b949e; background: #0d1117; border: 1px solid #21262d;
     border-radius: 6px; line-height: 1.55; }
 
+/* Per-row Kalshi-rules info button — small circle-i sitting in the
+   Rules column. Same visual as the ev-info-btn but centered inside
+   its own td so the popover anchor is predictable. */
+.rules-info-btn {
+    display: inline-flex; align-items: center; justify-content: center;
+    width: 18px; height: 18px; padding: 0;
+    border-radius: 50%; border: 1px solid #30363d;
+    background: #0d1117; color: #8b949e;
+    font-family: ui-serif, Georgia, serif;
+    font-size: 11px; font-style: italic; font-weight: 700;
+    line-height: 1; cursor: pointer; }
+.rules-info-btn:hover { background: #1c222b; color: #58a6ff;
+    border-color: #1f6feb; }
+.rules-info-popover {
+    position: fixed; z-index: 90; max-width: 420px;
+    background: #0d1117; border: 1px solid #30363d; border-radius: 8px;
+    padding: 14px 16px; box-shadow: 0 8px 24px rgba(0,0,0,0.5);
+    color: #c9d1d9; font-size: 12.5px; line-height: 1.6;
+    font-family: inherit; letter-spacing: 0; text-transform: none;
+    text-align: left; font-weight: normal;
+    max-height: 60vh; overflow-y: auto; }
+.rules-info-popover[hidden] { display: none !important; }
+.rules-info-popover h5 { margin: 0 0 8px 0; font-size: 12.5px;
+    font-weight: 600; color: #f0f6fc; letter-spacing: 0.02em;
+    text-transform: uppercase; }
+.rules-info-popover .rules-body { white-space: pre-wrap; }
+
 /* Inline info button next to the EV column header — opens a small
    popover explaining how EV is derived. Same visual language as the
    criteria-rules-btn but smaller / thinner so it sits happily next to
@@ -3597,18 +3624,13 @@ def render_page(
                           available_bots=available_bots,
                           current_bot=current_bot,
                           period_key=period_key)
-        # Sport bots don't get a Kalshi-rules section — each match has
-        # its own resolution paragraph, which would produce a wall of
-        # duplicated boilerplate that isn't decision-useful. Non-sport
-        # bots (gas / CPI / claims / etc.) keep it because a strike
-        # ladder is one market whose rules apply across every row.
-        _sport_bots = {"nba", "tennis", "table-tennis", "darts",
-                        "world-cup"}
-        if current_bot not in _sport_bots:
-            _render_contract_rules(
-                out, watchlist, current_bot,
-                contract_close_ts=contract_close_ts,
-            )
+        # Standalone Kalshi-rules section retired 2026-07-08 — every
+        # watchlist row now carries its own Rules ``i`` button in the
+        # Rules column that opens a popover with that ticker's
+        # ``rules_primary``. Non-sport bots still get the section
+        # value because their strike ladder shares one rule across
+        # every row, but the popover-per-row idiom scales cleanly to
+        # the sport bots' one-rule-per-match reality.
     out.append("</div>")  # /watchlist panel
 
     # ── MODELS tab — per-bot model deep-dive ─────────────────────────
@@ -11259,6 +11281,7 @@ def _render_watchlist(out: List[str], watchlist: List[dict],
                    "</th>"
                    "<th class='num' title='Time until the contract settles. Parsed from the Kalshi ticker&apos;s encoded date.'>Closes in</th>"
                    "<th>Verdict</th>"
+                   "<th title='Kalshi resolution rule for this contract — click to read.'>Rules</th>"
                    f"{pos_head}"
                    f"</tr></thead><tbody id='{html.escape(_tbody_id)}'>")
         for v in _rows_to_emit:
@@ -11675,6 +11698,22 @@ def _render_watchlist(out: List[str], watchlist: List[dict],
                     "<td class='num red' data-field='total-cost'></td>"
                 )
 
+            # Rules cell — an info button carrying the row's Kalshi
+            # ``rules_primary`` on ``data-rules``. Blank cell when no
+            # rule text was published (some brand-new markets don't
+            # cache it yet); the popover JS ignores empty payloads.
+            _rules_txt = (v.get("rules_primary") or "").strip()
+            if _rules_txt:
+                rules_cell = (
+                    "<td data-field='rules'>"
+                    "<button type='button' class='rules-info-btn' "
+                    f"data-rules='{html.escape(_rules_txt)}' "
+                    "title='Kalshi resolution rule — click to read' "
+                    "aria-label='Kalshi resolution rule'>i</button>"
+                    "</td>"
+                )
+            else:
+                rules_cell = "<td data-field='rules'></td>"
             out.append(f"<tr{row_cls} data-ticker='{tt_esc}'{strike_attr}{yes_attr}>"
                        f"{middle_cells}"
                        f"<td class='num' data-field='oi'>{oi_str}</td>"
@@ -11684,6 +11723,7 @@ def _render_watchlist(out: List[str], watchlist: List[dict],
                        f"{ev_cell}"
                        f"{closes_in_cell}"
                        f"<td data-field='verdict'>{badge}</td>"
+                       f"{rules_cell}"
                        f"{position_cells}</tr>")
         out.append("</tbody></table></div>")
         # For sport bots, close the per-table `<div class='section'>`
@@ -11698,6 +11738,9 @@ def _render_watchlist(out: List[str], watchlist: List[dict],
     # Info-bubble popover next to the EV column header — small
     # click-toggle popup explaining the EV formula.
     out.append(_EV_INFO_POPOVER_HTML_JS)
+    # Per-row Rules popover — click the ``i`` button in the Rules
+    # column to see that ticker's Kalshi ``rules_primary`` text.
+    out.append(_RULES_INFO_POPOVER_HTML_JS)
     # Non-sport bots also need to close the single section wrapper
     # opened at the top of the function. Sport bots already closed
     # theirs at the end of each section-loop iteration.
@@ -11770,6 +11813,74 @@ _EV_INFO_POPOVER_HTML_JS = """
     }
   });
   // Reposition on scroll / resize so the popover tracks its anchor.
+  window.addEventListener('scroll', function () {
+    if (currentBtn && !pop.hidden) position(currentBtn);
+  }, true);
+  window.addEventListener('resize', function () {
+    if (currentBtn && !pop.hidden) position(currentBtn);
+  });
+})();
+</script>
+"""
+
+
+# Per-row Kalshi-rules popover. Each ``.rules-info-btn`` carries the
+# row's Kalshi ``rules_primary`` on ``data-rules``; click opens the
+# shared popover populated with that text, positioned next to the
+# clicked button.
+_RULES_INFO_POPOVER_HTML_JS = """
+<div class="rules-info-popover" id="rules-info-popover" hidden>
+  <h5>Kalshi resolution rule</h5>
+  <div class="rules-body" id="rules-info-body"></div>
+</div>
+<script>
+(function () {
+  const pop  = document.getElementById('rules-info-popover');
+  const body = document.getElementById('rules-info-body');
+  if (!pop || !body) return;
+  let currentBtn = null;
+  function position(btn) {
+    const rect = btn.getBoundingClientRect();
+    const popW = pop.offsetWidth || 420;
+    // Prefer to the LEFT of the button (Rules column is on the right
+    // side of the table, so anchoring left keeps the popover in view).
+    // Flip to the right if there isn't room.
+    const spaceLeft = rect.left;
+    const left = (spaceLeft >= popW + 12)
+      ? rect.left - popW - 8
+      : Math.min(window.innerWidth - popW - 8, rect.right + 8);
+    const top = Math.min(
+      Math.max(8, rect.top - 4),
+      window.innerHeight - pop.offsetHeight - 8
+    );
+    pop.style.left = Math.max(8, left) + 'px';
+    pop.style.top  = top + 'px';
+  }
+  document.addEventListener('click', function (ev) {
+    const btn = ev.target.closest('.rules-info-btn');
+    if (btn) {
+      ev.preventDefault();
+      ev.stopPropagation();
+      const text = btn.getAttribute('data-rules') || '';
+      if (!text) return;
+      if (currentBtn === btn && !pop.hidden) {
+        pop.hidden = true; currentBtn = null; return;
+      }
+      body.textContent = text;
+      pop.hidden = false;
+      position(btn);
+      currentBtn = btn;
+      return;
+    }
+    if (!pop.hidden && !ev.target.closest('.rules-info-popover')) {
+      pop.hidden = true; currentBtn = null;
+    }
+  });
+  document.addEventListener('keydown', function (ev) {
+    if (ev.key === 'Escape' && !pop.hidden) {
+      pop.hidden = true; currentBtn = null;
+    }
+  });
   window.addEventListener('scroll', function () {
     if (currentBtn && !pop.hidden) position(currentBtn);
   }, true);
