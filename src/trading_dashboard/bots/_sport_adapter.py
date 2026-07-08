@@ -254,6 +254,20 @@ def _row_pair_to_match(parsed_a: ParsedTicker, row_a: sqlite3.Row,
     spread_cents = src["spread_cents"] if src is not None else None
     event_title = (src["event_title"] if src is not None else None) or ""
 
+    # Kalshi ``rules_primary`` — the resolution paragraph. Powers the
+    # per-row Rules popover and the Event-label parser on the
+    # watchlist, same as the tennis-shape bots. Guarded because bots
+    # whose sim.db predates the column would raise on row access.
+    def _rules(row: Optional[sqlite3.Row]) -> str:
+        if row is None:
+            return ""
+        try:
+            return (row["rules_primary"] or "").strip()
+        except (IndexError, KeyError):
+            return ""
+
+    rules_primary = _rules(row_for_a) or _rules(row_for_b)
+
     return {
         "match_id": parsed_a["base_id"],
         "player_a": away,
@@ -316,6 +330,9 @@ def _row_pair_to_match(parsed_a: ParsedTicker, row_a: sqlite3.Row,
         "title_b": f"Will {home} beat {away}?",
         "title": event_title or f"{away} @ {home}",
         "event_title": event_title or f"{away} @ {home}",
+        # Kalshi resolution rules — rendered by the watchlist's Rules
+        # popover and parsed for the Event column label.
+        "rules_primary": rules_primary,
         # Buy gate
         "buy_eligible": buy_eligible,
         "buy_score": round(abs(buy_side_edge), 6),

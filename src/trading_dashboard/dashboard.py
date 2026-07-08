@@ -10970,6 +10970,45 @@ def _tennis_event_label(rules: str | None, title: str | None = None) -> str:
     return f"{tour} · {event}" if tour else event
 
 
+# Basketball ``rules_primary`` boilerplate: "If X wins the {A} vs {B}
+# women's professional basketball game originally scheduled for
+# Jul 8, 2026, then the market resolves to Yes." The league (WNBA vs
+# NBA) hides in the "women's/men's" qualifier; the game date is the
+# closest analogue of tennis's tournament, so the label reads
+# "WNBA · Jul 8, 2026".
+_BASKETBALL_EVENT_RE = re.compile(
+    r"(women'?s|men'?s)\s+professional\s+basketball\s+game"
+    r"(?:\s+originally)?\s+scheduled\s+for\s+"
+    r"([A-Z][a-z]{2,8} \d{1,2}, \d{4})",
+    re.IGNORECASE,
+)
+
+
+def _basketball_event_label(rules: str | None) -> str:
+    """Return 'WNBA · <game date>' / 'NBA · <game date>' parsed from
+    Kalshi basketball rules text; empty string when the rules don't
+    match the basketball template."""
+    if not rules:
+        return ""
+    m = _BASKETBALL_EVENT_RE.search(rules)
+    if not m:
+        return ""
+    league = "WNBA" if m.group(1).lower().startswith("women") else "NBA"
+    return f"{league} · {m.group(2)}"
+
+
+def _sport_event_label(rules: str | None, title: str | None,
+                        tournament: str | None) -> str:
+    """Event-cell label for a sport watchlist row. Tries the known
+    rules templates (tennis, then basketball); falls back to the
+    bot's own competition label (``tournament`` — e.g. "WNBA") so the
+    cell never goes blank just because Kalshi rewords its boilerplate.
+    """
+    return (_tennis_event_label(rules, title)
+            or _basketball_event_label(rules)
+            or (tournament or "").strip())
+
+
 def _render_watchlist(out: List[str], watchlist: List[dict],
                       model: dict | None,
                       underlying_history: List[dict] | None = None,
@@ -11363,10 +11402,12 @@ def _render_watchlist(out: List[str], watchlist: List[dict],
         _show_event_col = (is_sport_bot
                             and _ctx.get("kind") == "model-vs-market")
         event_head = (
-            "<th title='Tour and tournament parsed from the Kalshi "
-            "rules text (e.g. ATP · Wimbledon, WTA · Rome, "
-            "ITF · M15 Tokyo). Blank when the rules don’t "
-            "match the tennis template.'>Event</th>"
+            "<th title='Competition parsed from the Kalshi rules text "
+            "— tour · tournament for tennis (ATP · Wimbledon, "
+            "ITF · M15 Tokyo), league · game date for basketball "
+            "(WNBA · Jul 8, 2026). Falls back to the bot&apos;s "
+            "competition label when the rules don&apos;t match a "
+            "known template.'>Event</th>"
             if _show_event_col else ""
         )
         out.append("<div class='watchlist-scroll'>"
@@ -11822,11 +11863,12 @@ def _render_watchlist(out: List[str], watchlist: List[dict],
                 rules_cell = "<td data-field='rules'></td>"
             # Event cell — sits between Rules and the row's identifying
             # cells; only rendered on Model-vs-market. Parsed live from
-            # ``rules_primary``; blank when the rules text doesn't
-            # match the tennis event template.
+            # ``rules_primary`` (tennis + basketball templates), with
+            # the bot's competition label as the fallback.
             if _show_event_col:
-                _ev = _tennis_event_label(v.get("rules_primary"),
-                                           v.get("title"))
+                _ev = _sport_event_label(v.get("rules_primary"),
+                                          v.get("title"),
+                                          v.get("tournament"))
                 event_cell = (
                     f"<td data-field='event'>{html.escape(_ev)}</td>"
                     if _ev else "<td data-field='event'></td>"

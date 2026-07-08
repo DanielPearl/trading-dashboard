@@ -295,6 +295,10 @@ def build_standard_watchlist_rows(
             # tennis-forecast exporter writes it onto the raw
             # watchlist row; pass it through unchanged.
             "rules_primary": r.get("rules_primary"),
+            # Competition label ("WNBA", "NBA", tennis tournament...).
+            # The Event column falls back to this when the rules text
+            # doesn't match any known event template.
+            "tournament": r.get("tournament"),
         })
     return out
 
