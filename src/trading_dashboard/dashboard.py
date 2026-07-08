@@ -11119,11 +11119,11 @@ def _render_watchlist(out: List[str], watchlist: List[dict],
                 f"{rules_icon_html}"
                 "</div></div>"
                 "<div class='body'>"
-                "<div class='empty'>No fully-priced markets right now.</div>"
+                "<div class='empty'>No open markets right now.</div>"
                 "</div></div>"
             )
         else:
-            out.append("<div class='empty'>No fully-priced markets right now.</div>")
+            out.append("<div class='empty'>No open markets right now.</div>")
             out.append("</div></div>")
         return
 
@@ -11295,9 +11295,7 @@ def _render_watchlist(out: List[str], watchlist: List[dict],
                 "rows": _open_rows,
                 "include_position_cols": False,
                 "tbody_id": "watchlist-tbody",
-                "empty_msg": ("No open markets right now with a "
-                              "Pinnacle price (Challenger / ITF and "
-                              "between-tournament markets are hidden)."),
+                "empty_msg": "No open markets right now.",
             },
         ]
     else:
@@ -11307,7 +11305,7 @@ def _render_watchlist(out: List[str], watchlist: List[dict],
             "rows": watchlist,
             "include_position_cols": True,
             "tbody_id": "watchlist-tbody",
-            "empty_msg": "No fully-priced markets right now.",
+            "empty_msg": "No open markets right now.",
         }]
 
     for _ctx in section_ctxs:
