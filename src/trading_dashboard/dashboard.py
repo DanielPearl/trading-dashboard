@@ -10702,100 +10702,87 @@ def _render_watchlist(out: List[str], watchlist: List[dict],
         "i</button>"
     )
 
-    # ── This bot's active bet ────────────────────────────────────────
-    # Active bet h3 → rules button → bet table (or empty state). The
-    # rules button always renders so the rule-set context is one click
-    # away even when the bot has no open position right now.
-    # Inline style only adds flex layout for the h3 + button row; the
-    # default .subhead margin-top (16px) collapses with the row's
-    # margin-bottom (14px) above to give exactly Summary's rhythm.
-    # Active-bets section header. ``Active bet`` (singular) used to
-    # render only the most recent open position — but a bot can hold
-    # multiple positions concurrently (NBA picks one game per night
-    # but holds the YES and NO sides on different games' tickers).
-    # Now we render the full list in the same shared table the home
-    # summary uses, so the count here matches the per-bot row count
-    # in the cross-bot summary.
+    # ── Build the held-tickers map (needed by the verdict cell + row
+    # sort even when we don't render the Active bets section below).
     bets = list(bot_active_bets or [])
-    # Backwards compat: when only `latest_active` is plumbed in (older
-    # callers), fall back to a single-bet list. The new caller always
-    # passes ``bot_active_bets``.
     if not bets and latest_active:
         bets = [latest_active]
-    # Map of every held ticker to its position record. Used by the
-    # strike-ladder verdict cell so EVERY held strike gets the
-    # HOLDING badge — not just the most-recently-opened one (the
-    # previous single-`latest_active` lookup left other concurrently-
-    # held strikes still rendering "BUY YES", which is what prompted
-    # this fix).
     held_by_ticker = {b.get("ticker"): b for b in bets if b.get("ticker")}
     n_bets = len(bets)
-    label = ("Active bets" if n_bets > 1
-              else "Active bet")
-    count_suffix = (f" <span class='small gray'>({n_bets})</span>"
-                     if n_bets > 1 else "")
-    out.append(
-        "<h3 class='subhead' "
-        "style='display:flex;align-items:center;gap:8px;'>"
-        f"{label}{count_suffix} {rules_icon_html}</h3>"
-    )
-    if bets:
-        enriched_rows: List[dict] = []
-        for ab in bets:
-            enriched = dict(ab)
-            wl_match = next(
-                (w for w in (watchlist or [])
-                 if w.get("ticker") == ab.get("ticker")),
-                None,
-            )
-            if wl_match:
-                enriched.setdefault("floor_strike", wl_match.get("strike_low"))
-                enriched.setdefault("cap_strike", wl_match.get("strike_high"))
-                enriched.setdefault("minutes_to_close",
-                                      wl_match.get("minutes_to_close"))
-                if enriched.get("mark_yes_ask") is None:
-                    enriched["mark_yes_ask"] = wl_match.get("yes_ask_cents")
-                if enriched.get("mark_no_ask") is None:
-                    enriched["mark_no_ask"] = wl_match.get("no_ask_cents")
-            enriched["_display"] = display or {}
-            enriched_rows.append(enriched)
-        # Most-recently opened first (consistent with the home table).
-        enriched_rows.sort(key=lambda r: r.get("opened_at", ""), reverse=True)
-        # Pass the watchlist + event title + sport-bot flag through so
-        # the active-bets row mirrors the title and side text of the
-        # ticker table directly underneath. Wrap in a dedicated scroll
-        # container that mirrors the strike-ladder's styling (sticky
-        # header, soft border) but with a lighter section-grey
-        # background so the table contrasts the chart panel sitting
-        # right above it.
-        out.append("<div class='watchlist-active-scroll'>")
-        _render_active_bets_table(
-            out, enriched_rows, show_bot=False,
-            chart_link=True, hedge_cfg=hedge_cfg,
-            watchlist=watchlist,
-            event_title=event_title,
-            is_sport_bot=(current_bot in
-                          {"nba", "tennis", "table-tennis", "darts",
-                           "world-cup"}),
-            display=display)
-        out.append("</div>")
-    else:
-        out.append("<div class='empty'>No active bets right now.</div>")
 
-    # ── Hero header + chart (Kalshi-style) ────────────────────────────────
-    # Top-line metrics for the underlying the bot tracks: current value,
-    # % change vs the start of the chart window, total Kalshi volume
-    # across the watchlist, and time-to-close on the soonest market.
-    # Chart pulls candlesticks live from Kalshi when configured.
-    _render_watchlist_hero(out, watchlist, model,
-                           underlying_history or [],
-                           display or {}, latest_active,
-                           kalshi_history=kalshi_history,
-                           prob_history=prob_history or [],
-                           atm_market=atm_market,
-                           contract_open_ts=contract_open_ts,
-                           contract_close_ts=contract_close_ts,
-                           event_title=event_title)
+    # Sport bots render as one-row-per-game with in-line HOLDING badges
+    # + a Total-cost column on held rows, so a separate "Active bet"
+    # section above the table is redundant — it repeats what the row
+    # already tells the user. The hero chart also doesn't apply (each
+    # match has its own book, not a shared underlying), so it comes
+    # out too. Non-sport bots keep both because a strike ladder does
+    # need the summary + chart context.
+    is_sport_bot = current_bot in {"nba", "tennis", "table-tennis", "darts",
+                                   "world-cup"}
+    if is_sport_bot:
+        # Rules button still needs a home — render it on a compact
+        # standalone row where the Active-bets h3 used to be. Keeps
+        # the "how do I read the buy criteria" affordance one click
+        # away without pulling in the full section.
+        out.append(
+            "<div style='display:flex;align-items:center;gap:8px;"
+            "margin:12px 0;'>"
+            f"<span class='small gray'>Buy criteria</span>{rules_icon_html}"
+            "</div>"
+        )
+    else:
+        # Non-sport bots: full Active-bets section + hero chart, same as
+        # before.
+        label = ("Active bets" if n_bets > 1 else "Active bet")
+        count_suffix = (f" <span class='small gray'>({n_bets})</span>"
+                         if n_bets > 1 else "")
+        out.append(
+            "<h3 class='subhead' "
+            "style='display:flex;align-items:center;gap:8px;'>"
+            f"{label}{count_suffix} {rules_icon_html}</h3>"
+        )
+        if bets:
+            enriched_rows: List[dict] = []
+            for ab in bets:
+                enriched = dict(ab)
+                wl_match = next(
+                    (w for w in (watchlist or [])
+                     if w.get("ticker") == ab.get("ticker")),
+                    None,
+                )
+                if wl_match:
+                    enriched.setdefault("floor_strike", wl_match.get("strike_low"))
+                    enriched.setdefault("cap_strike", wl_match.get("strike_high"))
+                    enriched.setdefault("minutes_to_close",
+                                          wl_match.get("minutes_to_close"))
+                    if enriched.get("mark_yes_ask") is None:
+                        enriched["mark_yes_ask"] = wl_match.get("yes_ask_cents")
+                    if enriched.get("mark_no_ask") is None:
+                        enriched["mark_no_ask"] = wl_match.get("no_ask_cents")
+                enriched["_display"] = display or {}
+                enriched_rows.append(enriched)
+            enriched_rows.sort(key=lambda r: r.get("opened_at", ""), reverse=True)
+            out.append("<div class='watchlist-active-scroll'>")
+            _render_active_bets_table(
+                out, enriched_rows, show_bot=False,
+                chart_link=True, hedge_cfg=hedge_cfg,
+                watchlist=watchlist,
+                event_title=event_title,
+                is_sport_bot=False,
+                display=display)
+            out.append("</div>")
+        else:
+            out.append("<div class='empty'>No active bets right now.</div>")
+
+        _render_watchlist_hero(out, watchlist, model,
+                               underlying_history or [],
+                               display or {}, latest_active,
+                               kalshi_history=kalshi_history,
+                               prob_history=prob_history or [],
+                               atm_market=atm_market,
+                               contract_open_ts=contract_open_ts,
+                               contract_close_ts=contract_close_ts,
+                               event_title=event_title)
 
     if not watchlist:
         out.append("<div class='empty'>No fully-priced markets right now.</div>")
@@ -10856,15 +10843,14 @@ def _render_watchlist(out: List[str], watchlist: List[dict],
                  or (r.get("open_interest") or 0) > 0
                  or r.get("ticker") in held_by_ticker]
     # Sort: sport bots (one row per game / match) have no strike axis,
-    # so order by actionability — BUY-eligible verdicts first, then by
-    # |best EV| descending — mirroring the tennis-specific table the
-    # standard renderer is replacing. Non-sport bots keep the strike
-    # ascending sort that drives the natural ladder layout.
-    is_sport_bot = current_bot in {"nba", "tennis", "table-tennis", "darts",
-                                   "world-cup"}
+    # so order by is-held → actionability → |best EV| descending. Held
+    # rows always sort to the top so the user immediately sees what's
+    # open regardless of where today's EV places it; matches the
+    # billboard bot's pattern already in use below.
     is_billboard_bot = current_bot == "billboard"
     if is_sport_bot:
-        def _sport_sort_key(r: dict) -> Tuple[int, float]:
+        def _sport_sort_key(r: dict) -> Tuple[int, int, float]:
+            is_held = 0 if r.get("ticker") in held_by_ticker else 1
             v = r.get("bot_verdict") or "SKIP"
             actionable = 0 if v in ("BUY_YES", "BUY_NO") else 1
             ev = r.get("_best_ev")
@@ -10872,7 +10858,7 @@ def _render_watchlist(out: List[str], watchlist: List[dict],
                 ev_mag = -abs(float(ev)) if ev is not None else 0.0
             except (TypeError, ValueError):
                 ev_mag = 0.0
-            return (actionable, ev_mag)
+            return (is_held, actionable, ev_mag)
         watchlist = sorted(watchlist, key=_sport_sort_key)
     elif is_billboard_bot:
         # Each event has ~40 rows, almost all SKIPs. Surface only the
