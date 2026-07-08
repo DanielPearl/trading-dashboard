@@ -201,10 +201,12 @@ def build_standard_watchlist_rows(
             continue
         oi = r.get("open_interest")
         try:
-            if oi is None or float(oi) <= 0:
+            if ((oi is None or float(oi) <= 0)
+                    and not r.get("_skip_oi_filter")):
                 continue
         except (TypeError, ValueError):
-            continue
+            if not r.get("_skip_oi_filter"):
+                continue
         # Prefer the live (in-play adjusted) probability since that's what
         # the bot actually trades on; fall back to the pre-match prior.
         p_a = r.get("live_prob_a")
@@ -284,6 +286,7 @@ def build_standard_watchlist_rows(
             # None when the match isn't in Pinnacle's book (e.g. between
             # tournaments, ITF events, or the API is down).
             "pinnacle_prob_yes": top_pinn,
+            "_skip_oi_filter": bool(r.get("_skip_oi_filter")),
             "bot_verdict": verdict,
             "rejection_reason": rej_reason,
             "title": display_title,
