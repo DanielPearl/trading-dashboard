@@ -10994,8 +10994,8 @@ def _render_watchlist(out: List[str], watchlist: List[dict],
                # from the visual column set but the field
                # ``model_prob_yes`` still lives on the row + snapshot
                # payload for downstream code + the JSON export.
-               "<th class='num' title='Live Kalshi market price — YES on top (green), NO on bottom (red). Each side&apos;s implied probability that side wins.'>Kalshi %</th>"
                "<th class='num' title='Pinnacle sportsbook devigged probability (sharp global reference from The Odds API). Em-dash for matches Pinnacle does not list (Challenger/ITF/between-tournaments) or when the API key isn&apos;t set. YES on top, NO on bottom.'>Pinnacle %</th>"
+               "<th class='num' title='Live Kalshi market price — YES on top (green), NO on bottom (red). Each side&apos;s implied probability that side wins.'>Kalshi %</th>"
                "<th class='num' title='Edge = reference probability (Pinnacle when available, else model) − Kalshi price, per side. YES on top (green), NO on bottom (red).'>Edge</th>"
                "<th class='num' title='Expected value per $1 contract, per side, net of half-spread and the Kalshi entry fee. YES on top (green), NO on bottom (red).'>EV</th>"
                "<th class='num' title='Time until the contract settles. Parsed from the Kalshi ticker&apos;s encoded date.'>Closes in</th>"
@@ -11419,8 +11419,8 @@ def _render_watchlist(out: List[str], watchlist: List[dict],
         out.append(f"<tr{row_cls} data-ticker='{tt_esc}'{strike_attr}{yes_attr}>"
                    f"{middle_cells}"
                    f"<td class='num' data-field='oi'>{oi_str}</td>"
-                   f"{kalshi_cell}"
                    f"{pinnacle_cell}"
+                   f"{kalshi_cell}"
                    f"{edge_cell}"
                    f"{ev_cell}"
                    f"{closes_in_cell}"
