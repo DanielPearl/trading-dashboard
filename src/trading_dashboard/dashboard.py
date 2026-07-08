@@ -2852,14 +2852,14 @@ code { background: #161b22; padding: 1px 6px; border-radius: 3px; color: #c9d1d9
 .criteria-modal {
     position: fixed; top: 50%; left: 50%;
     transform: translate(-50%, -50%);
-    background: #0d1117; border: 1px solid #30363d; border-radius: 8px;
-    /* Fit-to-content sizing: width sized by what's inside, capped at
-       92vw so it never overflows. Min keeps the title/X spacing
-       readable on tight payloads. */
-    width: max-content; min-width: 320px; max-width: 92vw;
-    max-height: 80vh;
+    background: #0d1117; border: 1px solid #30363d; border-radius: 10px;
+    /* Sized to look like a proper panel — wide enough for two-column
+       label/value rows to breathe, capped so it never overruns the
+       viewport on narrow screens. */
+    width: 640px; max-width: 92vw;
+    max-height: 82vh;
     display: flex; flex-direction: column;
-    z-index: 101; box-shadow: 0 12px 48px rgba(0,0,0,0.6); }
+    z-index: 101; box-shadow: 0 16px 56px rgba(0,0,0,0.65); }
 /* Fee suffix on the entry-cost cell — same red as the base amount
    (it's also a cash outflow). Keep the cell on one line so the
    "−$0.26 + $0.02" pattern stays scannable horizontally. */
@@ -3043,7 +3043,7 @@ td.num.cell-stack .side-no  { color: #f85149 !important; }  /* red   */
     margin-left: 8px; }
 .criteria-modal-close:hover { color: #f0f6fc; }
 .criteria-modal-body {
-    padding: 14px 18px; overflow-y: auto; font-size: 13px;
+    padding: 18px 22px 22px 22px; overflow-y: auto; font-size: 13px;
     color: #c9d1d9; line-height: 1.55; }
 .criteria-modal-body dl { margin: 0; display: grid;
     grid-template-columns: max-content 1fr; gap: 6px 16px; }
@@ -3057,6 +3057,94 @@ td.num.cell-stack .side-no  { color: #f85149 !important; }  /* red   */
 .criteria-modal-body .crit-section h4 {
     font-size: 11px; text-transform: uppercase; letter-spacing: 0.06em;
     color: #8b949e; font-weight: 600; margin: 0 0 8px 0; }
+
+/* Redesigned rule card + rule row for the sport-bot criteria modal.
+   Each rule renders as a two-line row: label + value chip on line 1,
+   muted description on line 2. Cards group related rules under a
+   coloured header so the four sections (edge / market / risk / exit)
+   scan at a glance. */
+.criteria-modal-body .crit-card {
+    background: #11161d; border: 1px solid #21262d; border-radius: 8px;
+    padding: 14px 16px; margin: 0 0 12px 0; }
+.criteria-modal-body .crit-card:last-child { margin-bottom: 0; }
+.criteria-modal-body .crit-card-head {
+    display: flex; align-items: center; gap: 8px;
+    margin: 0 0 12px 0; padding: 0 0 10px 0;
+    border-bottom: 1px solid #21262d; }
+.criteria-modal-body .crit-card-icon {
+    width: 22px; height: 22px; border-radius: 5px;
+    display: inline-flex; align-items: center; justify-content: center;
+    font-size: 12px; font-weight: 700; letter-spacing: 0; }
+.criteria-modal-body .crit-card-icon.edge   { background: rgba(63,185,80,0.15);  color: #3fb950; }
+.criteria-modal-body .crit-card-icon.market { background: rgba(88,166,255,0.15); color: #58a6ff; }
+.criteria-modal-body .crit-card-icon.risk   { background: rgba(210,153,34,0.15); color: #e3b341; }
+.criteria-modal-body .crit-card-icon.exit   { background: rgba(163,113,247,0.18); color: #a371f7; }
+.criteria-modal-body .crit-card-title {
+    font-size: 13px; font-weight: 600; color: #f0f6fc;
+    letter-spacing: 0.01em; }
+.criteria-modal-body .crit-card-sub {
+    margin-left: auto; font-size: 11px; color: #8b949e; }
+.criteria-modal-body .crit-rule {
+    padding: 8px 0; border-top: 1px solid transparent; }
+.criteria-modal-body .crit-rule + .crit-rule {
+    border-top-color: #1a1f26; }
+.criteria-modal-body .crit-rule-head {
+    display: flex; align-items: baseline; gap: 10px;
+    justify-content: space-between; }
+.criteria-modal-body .crit-rule-label {
+    font-size: 12.5px; color: #f0f6fc; font-weight: 600; }
+.criteria-modal-body .crit-rule-desc {
+    margin: 3px 0 0 0; font-size: 11.5px; color: #8b949e; line-height: 1.5; }
+.criteria-modal-body .crit-chip {
+    display: inline-block; padding: 2px 8px; border-radius: 4px;
+    background: #21262d; border: 1px solid #30363d;
+    font-size: 12px; font-weight: 600; color: #f0f6fc;
+    font-variant-numeric: tabular-nums; white-space: nowrap; }
+.criteria-modal-body .crit-chip.pos  { background: rgba(63,185,80,0.14); border-color: rgba(63,185,80,0.35); color: #3fb950; }
+.criteria-modal-body .crit-chip.neg  { background: rgba(248,81,73,0.14); border-color: rgba(248,81,73,0.35); color: #f85149; }
+.criteria-modal-body .crit-chip.info { background: rgba(88,166,255,0.14); border-color: rgba(88,166,255,0.35); color: #58a6ff; }
+
+/* Tennis-specific hero at the top of the modal — three stat pills
+   showing the essence of the bot's approach so the user gets the
+   headline before they read any bullets. */
+.criteria-modal-body .crit-hero {
+    background: linear-gradient(135deg, rgba(63,185,80,0.10),
+        rgba(88,166,255,0.08));
+    border: 1px solid #21262d; border-radius: 8px;
+    padding: 14px 16px; margin: 0 0 14px 0; }
+.criteria-modal-body .crit-hero-lead {
+    font-size: 12px; color: #8b949e; margin: 0 0 10px 0;
+    letter-spacing: 0.02em; }
+.criteria-modal-body .crit-hero-lead b { color: #f0f6fc; }
+.criteria-modal-body .crit-hero-stats {
+    display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 10px; }
+.criteria-modal-body .crit-hero-stat {
+    background: #0d1117; border: 1px solid #21262d; border-radius: 6px;
+    padding: 8px 10px; }
+.criteria-modal-body .crit-hero-stat-label {
+    font-size: 10.5px; text-transform: uppercase; letter-spacing: 0.06em;
+    color: #8b949e; margin: 0 0 3px 0; }
+.criteria-modal-body .crit-hero-stat-value {
+    font-size: 15px; font-weight: 700; color: #f0f6fc;
+    font-variant-numeric: tabular-nums; }
+/* Compact source pill in the modal head (was a full-width banner). */
+.criteria-modal-body .crit-source-pill {
+    display: inline-flex; align-items: center; gap: 6px;
+    font-size: 11px; padding: 3px 8px; border-radius: 4px;
+    margin: 0 0 12px 0; }
+.criteria-modal-body .crit-source-pill.live {
+    color: #3fb950; background: rgba(63,185,80,0.10);
+    border: 1px solid rgba(63,185,80,0.30); }
+.criteria-modal-body .crit-source-pill.fallback {
+    color: #e3b341; background: rgba(227,179,65,0.10);
+    border: 1px solid rgba(227,179,65,0.30); }
+.criteria-modal-body .crit-source-pill .dot {
+    width: 6px; height: 6px; border-radius: 50%;
+    background: currentColor; }
+.criteria-modal-body .crit-foot {
+    margin-top: 12px; padding: 10px 12px; font-size: 11px;
+    color: #8b949e; background: #0d1117; border: 1px solid #21262d;
+    border-radius: 6px; line-height: 1.55; }
 /* Per-bot performance cards on the Performance tab. Cards align in a
    grid (auto-fit so they reflow at narrow widths) and are clickable —
    the whole card is an anchor to that bot's Watchlist tab. */
@@ -4406,212 +4494,256 @@ def _live_update_script(current_bot: str, period_key: str = "all") -> str:
            + "color:#f0f6fc;font-weight:600;'>" + s + "</span>";
     }}
 
-    function bullets(items) {{
-      let h = "<ul style='margin:0 0 0 18px;padding:0;line-height:1.55;"
-            + "font-size:13px;color:#c9d1d9;'>";
-      for (const it of items) {{
-        // it = [label, description, value-html-or-null]
-        const label = it[0];
-        const desc  = it[1];
-        const val   = it[2];
-        h += "<li style='margin:0 0 6px 0;'>"
-           + "<b>" + label + "</b>"
-           + (val ? " " + valSpan(val) : "")
-           + (desc ? " — <span class='gray'>" + desc + "</span>" : "")
-           + "</li>";
-      }}
-      h += "</ul>";
-      return h;
+    // ── New card-based layout ────────────────────────────────────
+    // Every rule is a (label, description, chip-value) triple. Cards
+    // group related rules under an icon + heading. Chip class hints
+    // colour ("pos" green, "neg" red, "info" blue, default neutral).
+    // Rules with a null value drop silently, so a bot that doesn't
+    // set a given field just doesn't show that row.
+    function ruleRow(label, desc, chip, chipCls) {{
+      const chipHtml = chip
+        ? "<span class='crit-chip " + (chipCls || "") + "'>" + chip + "</span>"
+        : "";
+      const descHtml = desc
+        ? "<p class='crit-rule-desc'>" + desc + "</p>"
+        : "";
+      return "<div class='crit-rule'>"
+           + "<div class='crit-rule-head'>"
+           + "<span class='crit-rule-label'>" + label + "</span>"
+           + chipHtml
+           + "</div>"
+           + descHtml
+           + "</div>";
+    }}
+    function ruleCard(iconLetter, iconCls, title, sub, rules) {{
+      // Filter out rules where chip is missing/"—"/undefined.
+      const kept = rules.filter(function (r) {{
+        return r && r[2] != null && r[2] !== "—" && r[2] !== "";
+      }});
+      if (!kept.length) return "";
+      let inner = kept.map(function (r) {{
+        return ruleRow(r[0], r[1], r[2], r[3]);
+      }}).join("");
+      const subHtml = sub
+        ? "<span class='crit-card-sub'>" + sub + "</span>"
+        : "";
+      return "<div class='crit-card'>"
+           + "<div class='crit-card-head'>"
+           + "<span class='crit-card-icon " + iconCls + "'>" + iconLetter + "</span>"
+           + "<span class='crit-card-title'>" + title + "</span>"
+           + subHtml
+           + "</div>"
+           + inner
+           + "</div>";
     }}
     let html = "";
 
-    // ── Source banner. Tells the user whether the values below come
-    //    from the bot's live config or the dashboard YAML defaults.
+    // Compact source pill — was a full-width banner before; now a
+    // small chip at the top so it doesn't dominate the modal.
     if (src.source === "live") {{
-      const ts = src.captured_at
-        ? " <span class='gray'>(reported " + src.captured_at + ")</span>"
-        : "";
-      html += "<div class='crit-section' style='font-size:11px;"
-           + "color:#3fb950;margin-bottom:10px;border:1px solid "
-           + "rgba(63,185,80,0.30);background:rgba(63,185,80,0.08);"
-           + "border-radius:4px;padding:6px 10px;'>"
-           + "● Live config — these are the gates the bot is currently "
-           + "applying" + ts
-           + (src.missing_keys && src.missing_keys.length
-              ? " · <span class='gray'>"
-                + src.missing_keys.length
-                + " field(s) fell back to dashboard defaults</span>"
-              : "")
+      const ts = src.captured_at ? " · reported " + src.captured_at : "";
+      html += "<div class='crit-source-pill live'>"
+           + "<span class='dot'></span>"
+           + "Live config" + ts
            + "</div>";
     }} else {{
-      html += "<div class='crit-section' style='font-size:11px;"
-           + "color:#e3b341;margin-bottom:10px;border:1px solid "
-           + "rgba(227,179,65,0.30);background:rgba(227,179,65,0.08);"
-           + "border-radius:4px;padding:6px 10px;'>"
-           + "● Dashboard defaults — this bot hasn't reported its live "
-           + "config, so values below may not match what the bot is "
-           + "actually applying."
+      html += "<div class='crit-source-pill fallback'>"
+           + "<span class='dot'></span>"
+           + "Dashboard defaults — bot hasn't reported its live config"
            + "</div>";
     }}
 
-    // Tennis bot doesn't use "the model" as its reference — it uses
-    // Pinnacle's devigged sharp-book probability. Swap the framing at
-    // the top of the modal accordingly + surface tennis-only gates
-    // (max_edge_skip, strong_edge_min) that the standard bullets
-    // below don't cover.
-    if (xt && xt.kind === "tennis") {{
-      html += "<div class='crit-section' style='font-size:13px;"
-           + "line-height:1.55;color:#c9d1d9;margin-bottom:14px;'>"
-           + (xt.notes || "")
-           + "</div>";
-      const tennisBullets = [];
-      if (xt.strong_edge_min !== undefined && xt.strong_edge_min !== null) {{
-        tennisBullets.push(["Strong-edge threshold",
-          "signal label flips from SMALL_EDGE to STRONG_EDGE once the Pinnacle-vs-Kalshi gap clears this. Bigger threshold = only fires on the sharpest disagreements.",
-          "≥ " + fmtPctF(xt.strong_edge_min)]);
-      }}
-      if (xt.max_edge_skip !== undefined && xt.max_edge_skip !== null) {{
-        tennisBullets.push(["Max edge skip",
-          "hard ceiling: gaps above this are treated as one book being stale/broken, not a real edge, and the trade is skipped.",
-          "> " + fmtPctF(xt.max_edge_skip) + " → skip"]);
-      }}
-      if (xt.taper_edge_above !== undefined && xt.taper_edge_above !== null) {{
-        tennisBullets.push(["Stake taper starts",
-          "between this and the skip ceiling, stake is scaled down linearly (Kelly-style variance protection on large-but-not-extreme edges).",
-          "> " + fmtPctF(xt.taper_edge_above)]);
-      }}
-      if (xt.taper_min_stake_frac !== undefined && xt.taper_min_stake_frac !== null) {{
-        tennisBullets.push(["Min taper stake fraction",
-          "floor for the taper — even at the skip-ceiling edge, stake never drops below this fraction of the base bet.",
-          fmtPctF(xt.taper_min_stake_frac)]);
-      }}
-      if (tennisBullets.length) {{
-        html += "<div class='crit-section'>"
-             + "<h4>Pinnacle-vs-Kalshi edge rules (tennis-specific)</h4>"
-             + bullets(tennisBullets)
-             + "</div>";
-      }}
-    }} else {{
-      html += "<div class='crit-section' style='font-size:13px;"
-           + "line-height:1.55;color:#c9d1d9;margin-bottom:14px;'>"
-           + "Before this bot opens a position it runs every contract "
-           + "through four gates: <b>(1) does the model have an edge "
-           + "worth taking</b>, <b>(2) is the market healthy enough to "
-           + "fill at a fair price</b>, <b>(3) does the trade fit inside "
-           + "today's risk budget</b>, and <b>(4) is the auto-hedge "
-           + "armed to close the position</b>. Every check below must "
-           + "pass on the chosen side (YES or NO); a single failure "
-           + "drops the bet."
-           + "</div>";
-    }}
-
-    // Probability-bounds is stored as [low, high] in cents → render
-    // the two extremes as a price band the bot will trade in.
+    const isTennis = xt && xt.kind === "tennis";
     const pb = va.prob_bounds_cents;
     const pbStr = (Array.isArray(pb) && pb.length === 2)
-      ? pb[0] + "¢–" + pb[1] + "¢" : "—";
+      ? pb[0] + "¢–" + pb[1] + "¢" : null;
 
-    html += "<div class='crit-section'>"
-         + "<h4>1 · Edge &amp; EV — does the model think the price is wrong?</h4>"
-         + bullets([
-           ["Min model confidence",
-            "skip-band around 50/50; the model's blended probability has to land outside this band before the bot considers either side.",
-            "skip if p ∈ [" + fmtPctF(ed.min_model_confidence) + ", "
-              + fmtPctF(1 - (ed.min_model_confidence || 0)) + "]"],
-           ["Min expected value per contract",
-            "expected $ return on a $1 contract after subtracting half the spread. Filters thin-margin trades where slippage eats the edge.",
-            "≥ $" + fmtNum(ed.min_ev_per_contract)],
-           ["Min edge over break-even",
-            "buffer above the price-implied break-even probability. The model has to win meaningfully more often than the price says it has to, not just barely more often.",
-            "≥ " + fmtPctF(ed.min_prob_edge_over_breakeven)],
-           ["Min raw model edge",
-            "raw (un-blended) model probability has to clear the ask by this much, so a market-dominated blend can't mask a thin underlying edge.",
-            "≥ " + fmtPctF(ed.min_raw_model_edge)],
-           ["Max entry price",
-            "hard cap on the per-contract price the bot will pay. Above this, the loss-vs-gain ratio is too punishing even on a positive-EV call.",
-            "≤ " + fmtCash(ed.max_entry_price_cents)],
-         ])
+    // Hero card at the top (tennis-specific for now — it summarises
+    // the whole bot at a glance: what's the reference, what's the
+    // edge floor, and where's the skip ceiling).
+    if (isTennis) {{
+      const edgeFloorPct = (ed.min_prob_edge_over_breakeven != null)
+        ? fmtPctF(ed.min_prob_edge_over_breakeven) : "—";
+      const skipCapPct = (xt.max_edge_skip != null)
+        ? fmtPctF(xt.max_edge_skip) : "—";
+      const refLabel = (xt.reference_book === "pinnacle_devigged")
+        ? "Pinnacle (devigged)" : (xt.reference_book || "—");
+      html += "<div class='crit-hero'>"
+           + "<p class='crit-hero-lead'>"
+           + "This bot buys when Kalshi disagrees with a sharp "
+           + "reference book. <b>Every column labelled &lsquo;Edge&rsquo; "
+           + "on the watchlist is <span style='color:#3fb950;'>"
+           + "reference &minus; Kalshi</span>.</b>"
+           + "</p>"
+           + "<div class='crit-hero-stats'>"
+           + "<div class='crit-hero-stat'>"
+           + "<div class='crit-hero-stat-label'>Reference</div>"
+           + "<div class='crit-hero-stat-value'>" + refLabel + "</div>"
+           + "</div>"
+           + "<div class='crit-hero-stat'>"
+           + "<div class='crit-hero-stat-label'>Edge floor</div>"
+           + "<div class='crit-hero-stat-value'>&ge; " + edgeFloorPct + "</div>"
+           + "</div>"
+           + "<div class='crit-hero-stat'>"
+           + "<div class='crit-hero-stat-label'>Skip ceiling</div>"
+           + "<div class='crit-hero-stat-value'>&gt; " + skipCapPct + "</div>"
+           + "</div>"
+           + "</div></div>";
+    }}
+
+    // ── Card 1: Edge & EV ─────────────────────────────────────────
+    const edgeRules = [];
+    if (isTennis) {{
+      // Tennis rewrites label + descriptions to talk about Pinnacle,
+      // not "the model". Same underlying threshold — different framing.
+      edgeRules.push(
+        ["Min edge (Pinnacle vs Kalshi)",
+         "The Pinnacle-vs-Kalshi gap on the buy side has to clear this floor. Below it we treat the disagreement as noise and skip.",
+         "≥ " + fmtPctF(ed.min_prob_edge_over_breakeven), "pos"],
+        ["Strong-edge threshold",
+         "The signal label flips SMALL_EDGE → STRONG_EDGE once the gap clears this. Purely a labelling cutoff — doesn't gate trades unless require_strong_edge is on.",
+         xt.strong_edge_min != null ? "≥ " + fmtPctF(xt.strong_edge_min) : null,
+         "info"],
+        ["Max edge skip",
+         "Hard ceiling on the gap. Above this we assume one book is stale or broken, not that we've found a huge real edge, and skip the trade entirely.",
+         xt.max_edge_skip != null ? "&gt; " + fmtPctF(xt.max_edge_skip) + " → skip" : null,
+         "neg"],
+        ["Min EV per contract",
+         "Expected $ return on a $1 contract after subtracting half-spread and Kalshi's entry fee. Filters trades where fees eat the edge.",
+         ed.min_ev_per_contract != null ? "≥ $" + fmtNum(ed.min_ev_per_contract) : null,
+         "pos"],
+        ["Max entry price",
+         "Hard cap on the per-contract price the bot will pay. Above this the loss-if-wrong ($) vs gain-if-right ($) ratio is too punishing even on positive EV.",
+         ed.max_entry_price_cents != null ? "≤ " + fmtCash(ed.max_entry_price_cents) : null,
+         "neg"],
+      );
+    }} else {{
+      // Non-tennis: original model-based framing.
+      edgeRules.push(
+        ["Min model confidence",
+         "Skip band around 50/50 — the model's blended probability has to land outside this before the bot considers either side.",
+         ed.min_model_confidence != null
+           ? "skip if p ∈ [" + fmtPctF(ed.min_model_confidence) + ", "
+             + fmtPctF(1 - (ed.min_model_confidence || 0)) + "]"
+           : null, "info"],
+        ["Min EV per contract",
+         "Expected $ return on a $1 contract after half-spread. Filters thin-margin trades where slippage eats the edge.",
+         ed.min_ev_per_contract != null ? "≥ $" + fmtNum(ed.min_ev_per_contract) : null,
+         "pos"],
+        ["Min edge over break-even",
+         "Buffer above the price-implied break-even probability — the model has to win meaningfully more often than the price says it has to.",
+         ed.min_prob_edge_over_breakeven != null ? "≥ " + fmtPctF(ed.min_prob_edge_over_breakeven) : null,
+         "pos"],
+        ["Min raw model edge",
+         "Raw (un-blended) model probability has to clear the ask by this much, so a market-dominated blend can't mask a thin underlying edge.",
+         ed.min_raw_model_edge != null ? "≥ " + fmtPctF(ed.min_raw_model_edge) : null,
+         "pos"],
+        ["Max entry price",
+         "Hard cap on the per-contract price the bot will pay.",
+         ed.max_entry_price_cents != null ? "≤ " + fmtCash(ed.max_entry_price_cents) : null,
+         "neg"],
+      );
+    }}
+    html += ruleCard("1", "edge", "When to buy",
+      isTennis ? "Pinnacle-vs-Kalshi edge + EV" : "Model edge + EV",
+      edgeRules);
+
+    // ── Card 2: Market health ─────────────────────────────────────
+    html += ruleCard("2", "market", "Market must look healthy",
+      "Liquidity + price sanity",
+      [
+        ["Max spread",
+         "Ceiling on YES ask − NO ask. Wide spreads mean the book isn't quoting a real price; the bot won't bet into them.",
+         va.max_spread_cents != null ? "≤ " + fmtNum(va.max_spread_cents, "¢") : null,
+         "info"],
+        ["Kalshi price band",
+         "Only buy sides currently priced inside this range. Anything cheaper than the low end is deep-underdog / stale-book territory; anything above the high end can't earn enough on a win to justify the risk.",
+         pbStr, "info"],
+        ["Min open interest",
+         "Real positions held by other traders on this contract. Confirms there are counterparties, not just the bot's own echo on a thin book.",
+         va.min_open_interest != null ? "≥ " + fmtNum(va.min_open_interest) : null,
+         "info"],
+        ["Min book depth",
+         "Total contracts resting across YES + NO within 3¢ of the touch. Avoids markets where our own order would move the price.",
+         va.min_book_depth_contracts != null
+           ? "≥ " + fmtNum(va.min_book_depth_contracts) + " contracts" : null,
+         "info"],
+        ["Min volume",
+         "Minimum contracts traded so far. Brand-new markets with zero volume have unreliable mid prices.",
+         va.min_volume != null ? "≥ " + fmtNum(va.min_volume) : null, "info"],
+        ["Time-to-close window",
+         "Trade only when the contract has enough time to play out but not so much that the edge erodes before settle.",
+         (va.min_minutes_to_close != null && va.max_minutes_to_close != null)
+           ? fmtMinH(va.min_minutes_to_close) + " – " + fmtMinH(va.max_minutes_to_close)
+           : null, "info"],
+      ]);
+
+    // ── Card 3: Risk / portfolio ──────────────────────────────────
+    html += ruleCard("3", "risk", "Portfolio + risk caps",
+      "How much, how often",
+      [
+        ["Fixed bet size",
+         "Every position the bot opens is the same $ size, not scaled by edge magnitude.",
+         rk.bet_size_cents != null ? fmtCash(rk.bet_size_cents) : null,
+         "info"],
+        ["Max concurrent positions",
+         "Ceiling on simultaneous open contracts. Prevents racking up correlated exposure across the ladder.",
+         rk.max_open_positions != null ? "≤ " + fmtNum(rk.max_open_positions) : null,
+         "info"],
+        ["Max total exposure",
+         "$ ceiling on the combined entry cost of all open positions.",
+         rk.max_total_exposure_cents != null ? "≤ " + fmtCash(rk.max_total_exposure_cents) : null,
+         "info"],
+        ["Max bets per day",
+         "Throttle on how many fresh positions the bot can open in 24h.",
+         rk.max_bets_per_day != null ? "≤ " + fmtNum(rk.max_bets_per_day) : null,
+         "info"],
+        ["Cooldown on same market",
+         "Minimum wait before re-entering a contract after closing it.",
+         rk.cooldown_seconds_same_market != null ? "≥ " + fmtSec(rk.cooldown_seconds_same_market) : null,
+         "info"],
+      ]);
+
+    // ── Card 4: Exit rules ────────────────────────────────────────
+    const exitRules = [];
+    if (isTennis) {{
+      // Tennis exits use a market-prob threshold (profit lock at 95¢+
+      // on the side you hold), not the macro-bot cent-lift threshold.
+      exitRules.push(
+        ["Profit lock (mark price)",
+         "Close any open position once its side has drifted to this Kalshi mark or higher. At 95+¢ the remaining upside is rounding error vs the variance of holding to settle.",
+         hg.profit_lock_market_prob != null ? "≥ " + fmtPctF(hg.profit_lock_market_prob) : null,
+         "pos"],
+      );
+    }} else {{
+      exitRules.push(
+        ["Auto-hedger",
+         "Kill switch for the exit monitor. Off = positions ride to settlement.",
+         hg.enabled != null ? (hg.enabled ? "on" : "off") : null, "info"],
+        ["Profit-lock",
+         "Close once the mark has gained this many cents above entry.",
+         hg.profit_lock_cents != null ? "+" + fmtNum(hg.profit_lock_cents, "¢") : null,
+         "pos"],
+        ["Stop-loss",
+         "Close once the mark has dropped this many cents below entry.",
+         hg.stop_loss_cents != null ? "−" + fmtNum(hg.stop_loss_cents, "¢") : null,
+         "neg"],
+        ["Hedge size fraction",
+         "Fraction of the position to close when a trigger fires. Full-exit vs partial scale-off.",
+         hg.hedge_size_fraction != null ? fmtPctF(hg.hedge_size_fraction) : null, "info"],
+      );
+    }}
+    html += ruleCard("4", "exit", "When we exit", "", exitRules);
+
+    // Footer — micro note about the per-bet Why? popup that shows the
+    // actual entry-time values for a specific position.
+    html += "<div class='crit-foot'>"
+         + "Every check above must pass on the chosen side before a "
+         + "buy fires. Click <b>Why?</b> on an open position to see "
+         + "the exact numbers that cleared each gate for that bet at "
+         + "entry-time."
          + "</div>";
 
-    html += "<div class='crit-section'>"
-         + "<h4>2 · Market health — is the book good enough to trade?</h4>"
-         + bullets([
-           ["Min book depth",
-            "total contracts resting across the YES + NO order book within 3¢ of the touch. Avoids markets where the bot's own order would move the price.",
-            "≥ " + fmtNum(va.min_book_depth_contracts) + " contracts"],
-           ["Max spread",
-            "ceiling on YES-ask minus NO-ask. Wide spreads mean Kalshi can't even tell us a real price — the bot won't bet into them.",
-            "≤ " + fmtNum(va.max_spread_cents, "¢")],
-           ["Time-to-close window",
-            "trade only when the contract has enough time left to play out but not so much that the edge has time to erode before settle.",
-            fmtMinH(va.min_minutes_to_close) + " – " + fmtMinH(va.max_minutes_to_close)],
-           ["Probability bounds",
-            "skip contracts already priced as near-certain or near-impossible. They pay too little to be worth the tail risk even when the edge is real.",
-            pbStr],
-           ["Min volume",
-            "minimum contracts traded so far. Brand-new markets with zero volume have unreliable mid prices.",
-            "≥ " + fmtNum(va.min_volume)],
-           ["Min open interest",
-            "real positions held by other traders. Confirms there are counterparties on this contract, not just the bot's own echo on a thin book.",
-            "≥ " + fmtNum(va.min_open_interest)],
-           ["Min depth at best ask",
-            "size resting at the exact ask the bot would lift. Ensures the bot can fill its bet size without walking up the book.",
-            "≥ " + fmtNum(va.min_depth_at_best_ask) + " contracts"],
-           ["Basis-risk strike window",
-            "skip trades whose underlying is too close to the contract's strike — those settle on noise instead of the model's view.",
-            "±" + fmtNum(va.basis_risk_strike_window_dollars)],
-           ["Basis-risk time window",
-            "the basis-risk filter only applies inside the final few hours before settlement; farther out the underlying has room to move.",
-            "< " + fmtNum(va.basis_risk_max_hours_to_close, "h") + " to close"],
-         ])
-         + "</div>";
-
-    html += "<div class='crit-section'>"
-         + "<h4>3 · Risk caps — does this trade fit in the budget?</h4>"
-         + bullets([
-           ["Fixed bet size",
-            "every position the bot opens is the same $ size, not scaled by edge magnitude.",
-            fmtCash(rk.bet_size_cents)],
-           ["Max concurrent open positions",
-            "ceiling on the number of simultaneous open contracts. Prevents racking up correlated exposure across the strike ladder.",
-            "≤ " + fmtNum(rk.max_open_positions)],
-           ["Max total exposure",
-            "$ ceiling on the combined entry cost of all open positions. New trades skip when adding them would breach this cap.",
-            "≤ " + fmtCash(rk.max_total_exposure_cents)],
-           ["Max bets per day",
-            "throttle on how many fresh positions the bot can open in 24h. Brakes against runaway loops if the model gets stuck endorsing the same contract.",
-            "≤ " + fmtNum(rk.max_bets_per_day)],
-           ["Cooldown on same market",
-            "minimum wait before re-entering a contract after closing a position on it. Stops flap-trades when the price moves through break-even repeatedly.",
-            "≥ " + fmtSec(rk.cooldown_seconds_same_market)],
-         ])
-         + "</div>";
-
-    html += "<div class='crit-section'>"
-         + "<h4>4 · Auto-hedge / exit rules — when does the bot leave?</h4>"
-         + bullets([
-           ["Auto-hedger on/off",
-            "kill switch for the exit monitor. When off, positions ride to settlement and the bot accepts the binary outcome.",
-            fmtNum(hg.enabled)],
-           ["Profit-lock",
-            "close the position once the mark has gained enough cents above entry. Locks in realised profit instead of giving it back if the edge fades.",
-            "+" + fmtNum(hg.profit_lock_cents, "¢")],
-           ["Stop-loss",
-            "close the position once the mark has dropped enough cents below entry. Caps the per-trade downside if the model turns out wrong.",
-            "−" + fmtNum(hg.stop_loss_cents, "¢")],
-           ["Hedge size fraction",
-            "fraction of the original position to close when a trigger fires. Full-exit on the whole bet, or scale half off and let the rest run.",
-            fmtPctF(hg.hedge_size_fraction)],
-         ])
-         + "</div>";
-
-    html += "<div class='crit-section' style='font-size:11px;color:#8b949e;'>"
-         + "Every contract the bot considers must clear sections 1, 2, "
-         + "and 3 before a bet is placed; once open, section 4 decides "
-         + "when the bot exits. Click <b>Why?</b> on any open position "
-         + "to see the actual values that cleared each gate at "
-         + "entry-time for that specific bet."
-         + "</div>";
     return html;
   }}
   function showRules(btn) {{
