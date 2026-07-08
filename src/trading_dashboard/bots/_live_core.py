@@ -191,6 +191,30 @@ class KalshiSession:
             log.exception("get_balance failed (gate skipped)")
         return None
 
+    def position_count(self, ticker: str) -> Optional[int]:
+        """Contracts we actually hold on ``ticker`` per Kalshi's
+        portfolio (positive = long YES-side). None on API failure —
+        callers should defer rather than assume. Guards sells against
+        inventory another process already disposed of."""
+        client = self.client()
+        if client is None:
+            return None
+        try:
+            resp = client._request("GET", "/portfolio/positions",
+                                   params={"ticker": ticker, "limit": 10})
+        except Exception:  # noqa: BLE001
+            log.exception("position_count failed for %s", ticker)
+            return None
+        for p in ((resp or {}).get("market_positions")
+                  or (resp or {}).get("positions") or []):
+            if p.get("ticker") == ticker:
+                v = p.get("position_fp") or p.get("position") or 0
+                try:
+                    return int(float(v))
+                except (TypeError, ValueError):
+                    return None
+        return 0
+
     def market_result(self, ticker: str,
                       snapshot: dict | None = None) -> Optional[str]:
         """'yes' / 'no' once the market has finalized, else None. Uses

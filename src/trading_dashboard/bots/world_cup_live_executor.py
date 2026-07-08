@@ -303,8 +303,29 @@ class WorldCupLiveExecutor:
                             f"{int(datetime.now(timezone.utc).timestamp())}")
                 status = "dry_run_simulated"
             else:
+                # Inventory check BEFORE selling: another process (or a
+                # manual trade) may have already disposed of the
+                # contracts — selling without inventory opens a naked
+                # short (this happened 2026-07-07 after the tennis
+                # executor sold a world-cup position it had adopted).
+                held = self._session.position_count(ticker)
+                if held is None:
+                    still_open.append(pos)  # can't verify — defer
+                    continue
+                if held <= 0:
+                    closed = core.build_closed_record(
+                        pos, settle_prob=bid_cents / 100.0,
+                        reason="closed_externally",
+                        result="EXTERNAL_CLOSE")
+                    closed_now.append(closed)
+                    log.warning(
+                        "wc-live %s already flat at Kalshi — recording "
+                        "external close at %d¢ (approx)", ticker,
+                        bid_cents)
+                    continue
                 order_id, status = self._session.submit_ioc(
-                    ticker=ticker, action="sell", count=contracts,
+                    ticker=ticker, action="sell",
+                    count=min(contracts, held),
                     yes_price_cents=bid_cents, kind="pl")
                 if not order_id or (status or "").lower() != "executed":
                     # Not filled — keep holding; idempotent coid makes

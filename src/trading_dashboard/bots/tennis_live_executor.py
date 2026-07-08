@@ -1279,6 +1279,14 @@ class TennisLiveExecutor:
         }
         bogus_closed_indexes: list[int] = []
         for ticker, kp in kalshi_open.items():
+            # STAY IN LANE: the Kalshi account is shared across bots,
+            # so only adopt orphans from tennis's own series. Without
+            # this, the catch-up "recovered" a world-cup position and
+            # tennis's gain-lock sold it (2026-07-07, KXWCADVANCE-
+            # 26JUL06USABEL-BEL), then flap-looped sells against the
+            # other bot's book.
+            if not str(ticker).startswith(("KXATPMATCH", "KXWTAMATCH")):
+                continue
             if ticker in local_tickers:
                 continue
             if ticker in auto_closed_tickers:
