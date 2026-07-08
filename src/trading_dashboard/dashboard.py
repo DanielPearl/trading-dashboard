@@ -3145,6 +3145,40 @@ td.num.cell-stack .side-no  { color: #f85149 !important; }  /* red   */
     margin-top: 12px; padding: 10px 12px; font-size: 11px;
     color: #8b949e; background: #0d1117; border: 1px solid #21262d;
     border-radius: 6px; line-height: 1.55; }
+
+/* Inline info button next to the EV column header — opens a small
+   popover explaining how EV is derived. Same visual language as the
+   criteria-rules-btn but smaller / thinner so it sits happily next to
+   a th label. */
+.ev-info-btn {
+    display: inline-flex; align-items: center; justify-content: center;
+    width: 14px; height: 14px; padding: 0; margin: 0 0 0 5px;
+    border-radius: 50%; border: 1px solid #30363d;
+    background: #0d1117; color: #8b949e;
+    font-family: ui-serif, Georgia, serif;
+    font-size: 10px; font-style: italic; font-weight: 700;
+    line-height: 1; cursor: pointer; vertical-align: 1px; }
+.ev-info-btn:hover { background: #1c222b; color: #58a6ff;
+    border-color: #1f6feb; }
+.ev-info-popover {
+    position: fixed; z-index: 90; max-width: 320px;
+    background: #0d1117; border: 1px solid #30363d; border-radius: 8px;
+    padding: 12px 14px; box-shadow: 0 8px 24px rgba(0,0,0,0.5);
+    color: #c9d1d9; font-size: 12px; line-height: 1.55;
+    font-family: inherit; letter-spacing: 0; text-transform: none;
+    text-align: left; font-weight: normal; }
+.ev-info-popover[hidden] { display: none !important; }
+.ev-info-popover h5 { margin: 0 0 8px 0; font-size: 12.5px;
+    font-weight: 600; color: #f0f6fc; letter-spacing: 0; }
+.ev-info-popover code { background: #161b22; padding: 1px 5px;
+    border-radius: 3px; color: #c9d1d9; font-size: 11.5px; }
+.ev-info-popover .ev-info-formula {
+    margin: 8px 0; padding: 8px 10px; background: #161b22;
+    border: 1px solid #21262d; border-radius: 5px;
+    font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+    font-size: 11.5px; line-height: 1.5; color: #f0f6fc;
+    white-space: pre-wrap; }
+.ev-info-popover .gray { color: #8b949e; }
 /* Per-bot performance cards on the Performance tab. Cards align in a
    grid (auto-fit so they reflow at narrow widths) and are clickable —
    the whole card is an anchor to that bot's Watchlist tab. */
@@ -11210,7 +11244,11 @@ def _render_watchlist(out: List[str], watchlist: List[dict],
                    "<th class='num' title='Pinnacle sportsbook devigged probability (sharp global reference from The Odds API). Em-dash for matches Pinnacle does not list (Challenger/ITF/between-tournaments) or when the API key isn&apos;t set. YES on top, NO on bottom.'>Pinnacle %</th>"
                    "<th class='num' title='Live Kalshi market price — YES on top (green), NO on bottom (red). Each side&apos;s implied probability that side wins.'>Kalshi %</th>"
                    "<th class='num' title='Edge = reference probability (Pinnacle when available, else model) − Kalshi price, per side. YES on top (green), NO on bottom (red).'>Edge</th>"
-                   "<th class='num' title='Expected value per $1 contract, per side, net of half-spread and the Kalshi entry fee. YES on top (green), NO on bottom (red).'>EV</th>"
+                   "<th class='num'>EV"
+                   "<button type='button' class='ev-info-btn' "
+                   "title='How is EV calculated?' "
+                   "aria-label='How is EV calculated?'>i</button>"
+                   "</th>"
                    "<th class='num' title='Time until the contract settles. Parsed from the Kalshi ticker&apos;s encoded date.'>Closes in</th>"
                    "<th>Verdict</th>"
                    f"{pos_head}"
@@ -11649,11 +11687,90 @@ def _render_watchlist(out: List[str], watchlist: List[dict],
     # on sport bots, `watchlist-tbody-active`) via its query
     # selector list.
     out.append(_WATCHLIST_ROW_CLICK_JS)
+    # Info-bubble popover next to the EV column header — small
+    # click-toggle popup explaining the EV formula.
+    out.append(_EV_INFO_POPOVER_HTML_JS)
     # Non-sport bots also need to close the single section wrapper
     # opened at the top of the function. Sport bots already closed
     # theirs at the end of each section-loop iteration.
     if not is_sport_bot:
         out.append("</div></div>")
+
+
+# Info-bubble popover next to the EV column header. Rendered once per
+# watchlist section — the popover element itself is shared via a
+# single instance appended to the document body; each ``.ev-info-btn``
+# in the DOM toggles it and repositions to the button's coordinates.
+_EV_INFO_POPOVER_HTML_JS = """
+<div class="ev-info-popover" id="ev-info-popover" hidden>
+  <h5>How EV is calculated</h5>
+  <p>Per-<code>$1</code> contract, on the side the bot would buy:</p>
+  <div class="ev-info-formula">EV = (P<sub>ref</sub> − P<sub>Kalshi</sub>) − ½ · spread − fee</div>
+  <p><span class="gray"><b>P<sub>ref</sub></b> is the reference probability — Pinnacle's
+  devigged sharp-book prob when available (tennis), else the bot's
+  own model.<br>
+  <b>P<sub>Kalshi</sub></b> is the ask price in dollars.<br>
+  <b>Spread</b> is the YES-ask minus NO-ask on Kalshi (half taken as
+  slippage on the fill).<br>
+  <b>Fee</b> is Kalshi's per-contract entry fee: <code>ceil(0.07 · p · (1−p))</code>.</span></p>
+  <p class="gray">A positive EV means the sharp reference thinks
+  Kalshi is under-pricing this side, and the bot expects to make money
+  on average after slippage and fees.</p>
+</div>
+<script>
+(function () {
+  const pop = document.getElementById('ev-info-popover');
+  if (!pop) return;
+  let currentBtn = null;
+  function position(btn) {
+    const rect = btn.getBoundingClientRect();
+    // Prefer to the RIGHT of the button; flip to the LEFT if it would
+    // clip the viewport. Vertically anchor to the button's top.
+    const popW = pop.offsetWidth || 320;
+    const spaceRight = window.innerWidth - rect.right;
+    const left = (spaceRight >= popW + 12)
+      ? rect.right + 8
+      : Math.max(8, rect.left - popW - 8);
+    const top = Math.min(
+      Math.max(8, rect.top - 4),
+      window.innerHeight - pop.offsetHeight - 8
+    );
+    pop.style.left = left + 'px';
+    pop.style.top  = top  + 'px';
+  }
+  document.addEventListener('click', function (ev) {
+    const btn = ev.target.closest('.ev-info-btn');
+    if (btn) {
+      ev.preventDefault();
+      ev.stopPropagation();
+      if (currentBtn === btn && !pop.hidden) {
+        pop.hidden = true; currentBtn = null; return;
+      }
+      pop.hidden = false;
+      position(btn);
+      currentBtn = btn;
+      return;
+    }
+    // Any click OUTSIDE the popover dismisses it.
+    if (!pop.hidden && !ev.target.closest('.ev-info-popover')) {
+      pop.hidden = true; currentBtn = null;
+    }
+  });
+  document.addEventListener('keydown', function (ev) {
+    if (ev.key === 'Escape' && !pop.hidden) {
+      pop.hidden = true; currentBtn = null;
+    }
+  });
+  // Reposition on scroll / resize so the popover tracks its anchor.
+  window.addEventListener('scroll', function () {
+    if (currentBtn && !pop.hidden) position(currentBtn);
+  }, true);
+  window.addEventListener('resize', function () {
+    if (currentBtn && !pop.hidden) position(currentBtn);
+  });
+})();
+</script>
+"""
 
 
 # Vanilla-JS hook for the Kalshi watchlist tables. Each watchlist row

@@ -290,6 +290,11 @@ def build_standard_watchlist_rows(
             "minutes_to_close": None,
             "_yes_label": top_label,
             "_no_label": bot_label,
+            # Kalshi ``rules_primary`` — the resolution paragraph the
+            # trading dashboard's "Kalshi rules" section renders. The
+            # tennis-forecast exporter writes it onto the raw
+            # watchlist row; pass it through unchanged.
+            "rules_primary": r.get("rules_primary"),
         })
     return out
 
