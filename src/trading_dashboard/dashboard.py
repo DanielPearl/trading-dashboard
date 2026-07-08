@@ -2439,6 +2439,13 @@ th, td { padding: 8px 10px; text-align: left; border-bottom: 1px solid #21262d; 
 tr:last-child td { border-bottom: none; }
 th { background: #161b22; color: #8b949e; font-weight: 600; font-size: 11px; text-transform: uppercase; letter-spacing: 0.05em; }
 td.num { text-align: right; font-variant-numeric: tabular-nums; }
+/* Right-align numeric column headers so they sit directly over their
+   values. Without this override th inherits the global "text-align:
+   left" and the label floats off the left edge of a right-aligned
+   number column. Descendant flex/grid layouts inside a th (the split
+   YES|NO stacks) get their own explicit alignment further down and
+   are unaffected. */
+th.num { text-align: right; }
 .badge { display: inline-block; padding: 2px 8px; border-radius: 10px; font-size: 11px; font-weight: 600; }
 .badge-yes { background: rgba(86, 211, 100, 0.2); color: #56d364; }
 .badge-no { background: rgba(248, 81, 73, 0.2); color: #f85149; }
