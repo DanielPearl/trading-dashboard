@@ -10917,7 +10917,10 @@ def _render_watchlist(out: List[str], watchlist: List[dict],
                "<th class='num' title='Pinnacle sportsbook devigged probability (sharp global reference from The Odds API). Em-dash for matches Pinnacle does not list (Challenger/ITF/between-tournaments) or when the API key isn&apos;t set. YES on top, NO on bottom.'>Pinnacle %</th>"
                "<th class='num' title='Edge = my probability − Kalshi price, per side. YES on top (green), NO on bottom (red).'>Edge</th>"
                "<th class='num' title='Expected value per $1 contract, per side, net of half-spread and the Kalshi entry fee. YES on top (green), NO on bottom (red).'>EV</th>"
-               "<th>Verdict</th></tr></thead><tbody id='watchlist-tbody'>")
+               "<th class='num' title='Time until the contract settles. Parsed from the Kalshi ticker&apos;s encoded date.'>Closes in</th>"
+               "<th>Verdict</th>"
+               "<th class='num' title='Total cash out at open (entry price × contracts + Kalshi entry fee). Blank when no position is held on this row.'>Total cost</th>"
+               "</tr></thead><tbody id='watchlist-tbody'>")
     for v in watchlist:
         ticker = v.get("ticker", "")
         qstr = question_str(v.get("direction", ""), v.get("strike_low"),
@@ -11255,6 +11258,41 @@ def _render_watchlist(out: List[str], watchlist: List[dict],
         edge_cell   = _stacked(edge_yes_str, edge_no_str, "edge")
         ev_cell     = _stacked(ev_yes_str, ev_no_str, "ev")
 
+        # Closes-in cell. Prefer the row's own ``minutes_to_close`` when
+        # the bot supplies it (Kalshi bots do); fall back to parsing the
+        # settlement date out of the ticker so sport bots (tennis) that
+        # don't compute a live countdown still get a real value.
+        mtc = v.get("minutes_to_close")
+        if mtc is None:
+            mtc = minutes_to_close_from_ticker(ticker)
+        closes_in_cell = (
+            f"<td class='num' data-field='closes-in'>"
+            f"{time_to_close_str(mtc)}</td>"
+        )
+
+        # Total-cost cell — only populated when we actually hold this
+        # ticker. ``held_bet`` was already resolved above for the verdict
+        # column; reuse it here so the cost pulls the exact position the
+        # HOLDING badge refers to. Blank td when unheld so the column
+        # reads as "was this bought" at a glance.
+        if is_bought and held_bet is not None:
+            _entry_c = held_bet.get("entry_price_cents")
+            _ctr = held_bet.get("contracts") or 0
+            if _entry_c is not None and _ctr:
+                _base = float(_entry_c) * float(_ctr) / 100.0
+                _fee = kalshi_fee_cents(int(_entry_c), int(_ctr)) / 100.0
+                total_cost_cell = (
+                    f"<td class='num red' title='"
+                    f"{int(_entry_c)}¢ × {int(_ctr)} contracts + "
+                    f"${_fee:.2f} entry fee = ${_base + _fee:.2f} total "
+                    f"cash out at open.' data-field='total-cost'>"
+                    f"−${_base + _fee:.2f}</td>"
+                )
+            else:
+                total_cost_cell = "<td class='num' data-field='total-cost'></td>"
+        else:
+            total_cost_cell = "<td class='num' data-field='total-cost'></td>"
+
         out.append(f"<tr{row_cls} data-ticker='{tt_esc}'{strike_attr}{yes_attr}>"
                    f"<td class='mono'>{ticker_cell}</td>"
                    f"{middle_cells}"
@@ -11264,7 +11302,9 @@ def _render_watchlist(out: List[str], watchlist: List[dict],
                    f"{pinnacle_cell}"
                    f"{edge_cell}"
                    f"{ev_cell}"
-                   f"<td data-field='verdict'>{badge}</td></tr>")
+                   f"{closes_in_cell}"
+                   f"<td data-field='verdict'>{badge}</td>"
+                   f"{total_cost_cell}</tr>")
     out.append("</tbody></table></div>")
     # Append the row-click JS hook so clicks on a watchlist row draw a
     # horizontal threshold line on the hero chart at the row's value.
