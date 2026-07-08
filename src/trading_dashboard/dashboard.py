@@ -4178,11 +4178,19 @@ def _live_update_script(current_bot: str, period_key: str = "all") -> str:
 
     // ── Watchlist rows ─────────────────────────────────────────────
     const minEv = snap.min_ev || 0.03;
-    const tbody = document.getElementById("watchlist-tbody");
-    if (tbody && snap.watchlist) {{
+    // Sport bots split their watchlist into two tables (Active bets +
+    // Model vs market); non-sport bots use a single ``watchlist-tbody``.
+    // Query both ids and merge — rows without a match are skipped
+    // silently either way.
+    const tbodies = ["watchlist-tbody", "watchlist-tbody-active"]
+      .map(function (id) {{ return document.getElementById(id); }})
+      .filter(Boolean);
+    if (tbodies.length && snap.watchlist) {{
       const rowsByTicker = {{}};
-      tbody.querySelectorAll("tr[data-ticker]").forEach(function (tr) {{
-        rowsByTicker[tr.getAttribute("data-ticker")] = tr;
+      tbodies.forEach(function (tb) {{
+        tb.querySelectorAll("tr[data-ticker]").forEach(function (tr) {{
+          rowsByTicker[tr.getAttribute("data-ticker")] = tr;
+        }});
       }});
       // Keep the "row-bought" highlight in sync with the active-bets
       // list — if a position opens or closes mid-poll, the held strike
@@ -4198,7 +4206,7 @@ def _live_update_script(current_bot: str, period_key: str = "all") -> str:
                                   : "yes";
         }}
       }});
-      tbody.querySelectorAll("tr[data-ticker]").forEach(function (tr) {{
+      tbodies.forEach(function (tbody) {{ tbody.querySelectorAll("tr[data-ticker]").forEach(function (tr) {{
         const t = tr.getAttribute("data-ticker");
         const side = boughtBySide[t];
         tr.classList.remove("row-bought", "bought-yes", "bought-no");
@@ -4212,7 +4220,7 @@ def _live_update_script(current_bot: str, period_key: str = "all") -> str:
           // a full page reload.
           tr.classList.add("row-suspect");
         }}
-      }});
+      }}); }});
       // Patch a single side-span inside one of the combined cells
       // (Kalshi / My / Edge / EV). Each cell has two spans flanking
       // a "/" separator; we update them in place so the polled
@@ -10864,43 +10872,27 @@ def _render_watchlist(out: List[str], watchlist: List[dict],
         "i</button>"
     )
 
-    # Section header layout — sport bots pin the Buy-criteria rules
-    # button to the top-right of the header row (across from the h2
-    # title). Non-sport bots leave the h2 alone; their rules button
-    # still sits inline with the Active-bets h3 further below.
-    _is_sport = current_bot in {"nba", "tennis", "table-tennis", "darts",
-                                 "world-cup"}
-    if _is_sport:
-        out.append("<div class='section'>")
-        out.append(
-            "<div style='display:flex;align-items:center;"
-            "justify-content:space-between;gap:12px;padding:14px 18px 0 18px;'>"
-            "<h2 style='margin:0;'>Watchlist — model vs market</h2>"
-            "<div style='display:flex;align-items:center;gap:8px;'>"
-            "<span class='small gray'>Buy criteria</span>"
-            f"{rules_icon_html}"
-            "</div></div><div class='body'>"
-        )
-    else:
+    # Sport bots render as three top-level sections (Active bets ·
+    # Model vs market · Kalshi rules — the third comes from
+    # ``_render_contract_rules`` after this function returns). Non-
+    # sport bots keep the legacy single-section layout.
+    is_sport_bot = current_bot in {"nba", "tennis", "table-tennis", "darts",
+                                    "world-cup"}
+    is_billboard_bot = current_bot == "billboard"
+    if not is_sport_bot:
         out.append("<div class='section'><h2>"
                    "Watchlist — model vs market</h2>"
                    "<div class='body'>")
-    # Bot dropdown moved above the tab bar (per user request) so it
-    # applies uniformly across tabs.
-
-    # Current-prediction card row (Current price, Predicted next week,
-    # etc.) sits between the bot dropdown and the Active bet so the
-    # model's view comes right after the bot selector. Dash every
-    # value when there's no live contract — either the event has
-    # closed (close_ts in the past) or no Kalshi markets were
-    # returned at all (between events). The model snapshot is for
-    # an event that no longer exists in either case.
-    contract_is_closed = (
-        contract_close_ts is None
-        or contract_close_ts <= datetime.now(timezone.utc).timestamp()
-    )
-    _render_current_prediction(out, model, display=display,
-                                 contract_is_closed=contract_is_closed)
+        # Current-prediction card row (Current price, Predicted next
+        # week, etc.) — model-based hero. Skipped for sport bots
+        # because each match has its own book, so there's no unified
+        # "current forecast" to show.
+        contract_is_closed = (
+            contract_close_ts is None
+            or contract_close_ts <= datetime.now(timezone.utc).timestamp()
+        )
+        _render_current_prediction(out, model, display=display,
+                                     contract_is_closed=contract_is_closed)
 
     # ── Build the held-tickers map (needed by the verdict cell + row
     # sort even when we don't render the Active bets section below).
@@ -10910,23 +10902,11 @@ def _render_watchlist(out: List[str], watchlist: List[dict],
     held_by_ticker = {b.get("ticker"): b for b in bets if b.get("ticker")}
     n_bets = len(bets)
 
-    # Sport bots render as one-row-per-game with in-line HOLDING badges
-    # + a Total-cost column on held rows, so a separate "Active bet"
-    # section above the table is redundant — it repeats what the row
-    # already tells the user. The hero chart also doesn't apply (each
-    # match has its own book, not a shared underlying), so it comes
-    # out too. Non-sport bots keep both because a strike ladder does
-    # need the summary + chart context.
-    is_sport_bot = current_bot in {"nba", "tennis", "table-tennis", "darts",
-                                   "world-cup"}
-    if is_sport_bot:
-        # Sport bots: nothing else to render here — the section header
-        # already carries the Buy-criteria button in its top-right
-        # corner, and the table below is what the user acts on.
-        pass
-    else:
-        # Non-sport bots: full Active-bets section + hero chart, same as
-        # before.
+    # Non-sport bots: full Active-bets section + hero chart, same as
+    # before. Sport bots skip this block; their Active bets and
+    # Model-vs-market tables are emitted as separate top-level
+    # sections at the bottom of this function.
+    if not is_sport_bot:
         label = ("Active bets" if n_bets > 1 else "Active bet")
         count_suffix = (f" <span class='small gray'>({n_bets})</span>"
                          if n_bets > 1 else "")
@@ -10979,8 +10959,31 @@ def _render_watchlist(out: List[str], watchlist: List[dict],
                                event_title=event_title)
 
     if not watchlist:
-        out.append("<div class='empty'>No fully-priced markets right now.</div>")
-        out.append("</div></div>")
+        if is_sport_bot:
+            # No section wrapper is open yet for sport bots — emit both
+            # sections with empty states so the page still looks like
+            # the three-section layout.
+            out.append("<div class='section'><h2>Active bets</h2>"
+                       "<div class='body'>"
+                       "<div class='empty'>No active bets right now.</div>"
+                       "</div></div>")
+            out.append("<div class='section'>")
+            out.append(
+                "<div style='display:flex;align-items:center;"
+                "justify-content:space-between;gap:12px;"
+                "padding:14px 18px 0 18px;'>"
+                "<h2 style='margin:0;'>Model vs market</h2>"
+                "<div style='display:flex;align-items:center;gap:8px;'>"
+                "<span class='small gray'>Buy criteria</span>"
+                f"{rules_icon_html}"
+                "</div></div>"
+                "<div class='body'>"
+                "<div class='empty'>No fully-priced markets right now.</div>"
+                "</div></div>"
+            )
+        else:
+            out.append("<div class='empty'>No fully-priced markets right now.</div>")
+            out.append("</div></div>")
         return
 
     # ── Pre-pass: enrich each row with EV/BE numbers, then sort by best
@@ -11040,8 +11043,8 @@ def _render_watchlist(out: List[str], watchlist: List[dict],
     # so order by is-held → actionability → |best EV| descending. Held
     # rows always sort to the top so the user immediately sees what's
     # open regardless of where today's EV places it; matches the
-    # billboard bot's pattern already in use below.
-    is_billboard_bot = current_bot == "billboard"
+    # billboard bot's pattern already in use below. (is_billboard_bot
+    # is computed at the top of the function.)
     if is_sport_bot:
         def _sport_sort_key(r: dict) -> Tuple[int, int, float]:
             is_held = 0 if r.get("ticker") in held_by_ticker else 1
@@ -11117,454 +11120,540 @@ def _render_watchlist(out: List[str], watchlist: List[dict],
             "YES question shown on the market page.'>Title</th>"
             "<th>Question</th>"
         )
-    out.append("<div class='watchlist-scroll'>"
-               "<table><thead><tr>"
-               f"{head_cols}"
-               "<th class='num' title='Open interest — total contracts currently held open across all traders on this strike.'>Total contracts</th>"
-               # Kalshi % is the live market price (was called
-               # "Current %" — renamed per user spec). My % is dropped
-               # from the visual column set but the field
-               # ``model_prob_yes`` still lives on the row + snapshot
-               # payload for downstream code + the JSON export.
-               "<th class='num' title='Pinnacle sportsbook devigged probability (sharp global reference from The Odds API). Em-dash for matches Pinnacle does not list (Challenger/ITF/between-tournaments) or when the API key isn&apos;t set. YES on top, NO on bottom.'>Pinnacle %</th>"
-               "<th class='num' title='Live Kalshi market price — YES on top (green), NO on bottom (red). Each side&apos;s implied probability that side wins.'>Kalshi %</th>"
-               "<th class='num' title='Edge = reference probability (Pinnacle when available, else model) − Kalshi price, per side. YES on top (green), NO on bottom (red).'>Edge</th>"
-               "<th class='num' title='Expected value per $1 contract, per side, net of half-spread and the Kalshi entry fee. YES on top (green), NO on bottom (red).'>EV</th>"
-               "<th class='num' title='Time until the contract settles. Parsed from the Kalshi ticker&apos;s encoded date.'>Closes in</th>"
-               "<th>Verdict</th>"
-               "<th class='num' title='Number of contracts held on this row. Blank when no position is open.'>My contracts</th>"
-               "<th class='num' title='Kalshi entry cost — entry price × contracts, before fees. Blank when no position is held on this row.'>Kalshi entry cost</th>"
-               "<th class='num' title='Total cash out at open — Kalshi entry cost + Kalshi entry fee. Blank when no position is held on this row.'>Total cost</th>"
-               "</tr></thead><tbody id='watchlist-tbody'>")
-    for v in watchlist:
-        ticker = v.get("ticker", "")
-        qstr = question_str(v.get("direction", ""), v.get("strike_low"),
-                             v.get("strike_high"), display=display)
-        ya_c = v.get("yes_ask_cents"); na_c = v.get("no_ask_cents")
-        spread_cents = v.get("spread_cents")
-        # Volume still drives the "thin volume" row-suspect flag below
-        # but the column itself is gone — the hero shows the watchlist
-        # total instead.
-        volume = v.get("volume")
-        oi = v.get("open_interest")
-        oi_str = f"{int(oi):,}" if oi is not None else "—"
-        # Derive missing side from the other when only one ask is
-        # quoted — render as a plain number (no "~" prefix) so the
-        # cell parses as a real percentage. The derivation is exact
-        # for binary contracts (YES + NO must sum to 100¢), so the
-        # tilde was just adding noise.
-        if ya_c is not None:
-            kyes_str = f"{ya_c}%"
-        elif na_c is not None:
-            kyes_str = f"{100 - na_c}%"
-        else:
-            kyes_str = "—"
-        if na_c is not None:
-            kno_str = f"{na_c}%"
-        elif ya_c is not None:
-            kno_str = f"{100 - ya_c}%"
-        else:
-            kno_str = "—"
-        p = v.get("model_prob_yes")
-        raw_p = v.get("raw_model_prob_yes")
-        my_yes_str = f"{int(round(float(p)*100))}%" if p is not None else "—"
-        my_no_str = f"{int(round((1-float(p))*100))}%" if p is not None else "—"
-        # Tooltip exposes the un-blended raw model probability so a 1pt
-        # blended display doesn't hide a 30pt raw disagreement (or
-        # vice versa). Lets the user audit "is the bot's actual view
-        # justified, or is the blend doing all the work?"
-        my_yes_tt = ""
-        my_no_tt = ""
-        if raw_p is not None and p is not None:
-            raw_yes_pct = int(round(float(raw_p) * 100))
-            raw_no_pct = int(round((1 - float(raw_p)) * 100))
-            blended_yes_pct = int(round(float(p) * 100))
-            blended_no_pct = int(round((1 - float(p)) * 100))
-            my_yes_tt = (f" title='Raw model: {raw_yes_pct}% · "
-                         f"Blended (vs Kalshi, skill-weighted): {blended_yes_pct}%'")
-            my_no_tt = (f" title='Raw model: {raw_no_pct}% · "
-                        f"Blended: {blended_no_pct}%'")
+    # Split rows for sport bots: held rows go into the Active-bets
+    # section, everything else into Model-vs-market. Non-sport bots
+    # keep a single ordered list. Each section context carries its
+    # own tbody id (for live-updates), position-columns flag, and
+    # optional section header. The emission loop after the row
+    # renderer walks this list once per section.
+    if is_sport_bot:
+        _held_rows = [r for r in watchlist
+                       if r.get("ticker") in held_by_ticker]
+        _open_rows = [r for r in watchlist
+                       if r.get("ticker") not in held_by_ticker]
+        section_ctxs = [
+            {
+                "kind": "active",
+                "rows": _held_rows,
+                "include_position_cols": True,
+                "tbody_id": "watchlist-tbody-active",
+                "empty_msg": "No active bets right now.",
+            },
+            {
+                "kind": "model-vs-market",
+                "rows": _open_rows,
+                "include_position_cols": False,
+                "tbody_id": "watchlist-tbody",
+                "empty_msg": "No open markets right now.",
+            },
+        ]
+    else:
+        section_ctxs = [{
+            "kind": "single",
+            "rows": watchlist,
+            "include_position_cols": True,
+            "tbody_id": "watchlist-tbody",
+            "empty_msg": "No fully-priced markets right now.",
+        }]
 
-        # Validation flags — surfaced via row dimming + tooltip only.
-        # The Gap column was removed; EV YES + EV NO already convey the
-        # same edge information with spread cost baked in.
-        flags = []
-        if ya_c is None or na_c is None:
-            flags.append("one-sided book")
-        if spread_cents is not None and spread_cents > 8:
-            flags.append("wide spread")
-        if p is not None and 0.40 <= p <= 0.60:
-            flags.append("low confidence")
-        if volume is not None and volume < 50:
-            flags.append("thin volume")
+    for _ctx in section_ctxs:
+        _rows_to_emit = _ctx["rows"]
+        include_position_cols = _ctx["include_position_cols"]
+        _tbody_id = _ctx["tbody_id"]
 
-        # My YES / My NO render in default white. Row-level dimming
-        # via row-suspect handles "this strike isn't a buy" — once
-        # the row is actionable (white), BOTH probabilities render
-        # at full opacity so the user can read the model's view of
-        # each side cleanly.
-        ev_yes_v = v.get("_ev_yes")
-        ev_no_v = v.get("_ev_no")
-        bot_verdict_pre = v.get("bot_verdict", "SKIP")
-        my_yes_cls = ""
-        my_no_cls = ""
-
-        # ── Verdict — two states only ──────────────────────────────────
-        # Rules:
-        #   HOLDING YES / HOLDING NO — bot has an open position on this
-        #     strike. Wins over the model's current view so the row
-        #     reflects what was actually done, not a contradictory
-        #     fresh recommendation. Critical for consistency with the
-        #     "Active bet" table above — without this, a row we bought
-        #     YES on can show a different state once the market moves.
-        #   SKIP — every other row. The model's recommendation (BUY
-        #     YES / BUY NO / hold off / blocked-by-gate) shows up in
-        #     the Edge / EV / tooltip columns; the Verdict column
-        #     itself just reports "have we taken this position or
-        #     not". The prior BUY YES / BUY NO / WATCH verdicts were
-        #     retired per user request to keep the column to two
-        #     stable states.
-        held_bet = held_by_ticker.get(ticker)
-        is_bought = held_bet is not None
-        bought_side = ((held_bet.get("side") or "").upper()
-                       if held_bet else "")
-        bot_verdict = v.get("bot_verdict", "SKIP")
-        reason = v.get("rejection_reason") or ""
-        best_ev_v = v.get("_best_ev")
-        best_side_v = v.get("_best_side")
-        tt = f" title='{html.escape(reason)}'" if reason else ""
-        if is_bought and bought_side in ("YES", "NO"):
-            # HOLDING badge keeps its YES/NO colouring (the badge pill
-            # tints itself — not the surrounding row, which now reads
-            # in plain white). Tooltip surfaces entry price + the
-            # model's current take so the user can audit "is the
-            # model still on board with this position?"
-            held_cls = "badge-yes" if bought_side == "YES" else "badge-no"
-            entry_c = held_bet.get("entry_price_cents")
-            entry_part = f" @ {entry_c}c" if entry_c is not None else ""
-            model_part = ""
-            if best_ev_v is not None and best_side_v in ("YES", "NO"):
-                _ev_sign = "+" if best_ev_v > 0 else "−"
-                model_part = (f" · model now: {best_side_v} "
-                              f"(EV {_ev_sign}${abs(best_ev_v):.2f})")
-            held_tt = (f"You are holding {bought_side}{entry_part}"
-                       f"{model_part}")
-            badge = (f"<span class='badge {held_cls}' "
-                     f"title='{html.escape(held_tt)}'>"
-                     f"HOLDING {bought_side}</span>")
-        else:
-            # Tooltip carries the model's recommendation when there
-            # is one, so the user can still see "model would buy YES,
-            # EV $0.05" on hover even though the cell says SKIP.
-            skip_tt = reason
-            if best_ev_v is not None and best_side_v in ("YES", "NO"):
-                _ev_sign = "+" if best_ev_v > 0 else "−"
-                rec = (f"model favours {best_side_v} "
-                       f"(EV {_ev_sign}${abs(best_ev_v):.2f})")
-                skip_tt = (f"{rec} · {reason}" if reason else rec)
-            tt_attr = (f" title='{html.escape(skip_tt)}'"
-                       if skip_tt else "")
-            badge = f"<span class='badge badge-skip'{tt_attr}>SKIP</span>"
-        # A row is a "good buy opportunity" when the bot would actually
-        # take a position on it: BUY_YES/BUY_NO verdict + positive EV
-        # + no validator flags. Rows that don't clear all three get
-        # greyed out so the user sees only actionable rows in colour.
-        is_buyable = (
-            bot_verdict_pre in ("BUY_YES", "BUY_NO")
-            and best_ev_v is not None and best_ev_v > 0
-            and not flags
-        )
-        classes: List[str] = []
-        title_attr = ""
-        if is_bought:
-            classes.append("row-bought")
-            classes.append("bought-yes" if bought_side == "YES"
-                           else "bought-no" if bought_side == "NO"
-                           else "")
-            entry_c = held_bet.get("entry_price_cents")
-            contracts = held_bet.get("contracts")
-            tip_parts = ["You are holding this strike"]
-            if bought_side:
-                tip_parts.append(f"on {bought_side}")
-            if contracts is not None:
-                tip_parts.append(f"({contracts} contracts")
-                if entry_c is not None:
-                    tip_parts.append(f"@ {entry_c}c)")
-                else:
-                    tip_parts[-1] = tip_parts[-1] + ")"
-            elif entry_c is not None:
-                tip_parts.append(f"(entry {entry_c}c)")
-            title_attr = (" title='"
-                          + html.escape(" ".join(tip_parts)) + "'")
-        else:
-            # Per user request: only HOLDING rows get full-bright
-            # white text. Every other row — buyable or not — renders
-            # dimmed via .row-suspect so the holdings stand out at
-            # a glance against the rest of the watchlist.
-            classes.append("row-suspect")
-            if flags:
-                reason = "Validator flags: " + ", ".join(flags)
-            elif best_ev_v is None or best_ev_v <= 0:
-                reason = "No positive edge"
-            elif not is_buyable:
-                reason = "Bot verdict not actionable"
-            elif best_side_v in ("YES", "NO"):
-                _ev_sign = "+" if (best_ev_v or 0) > 0 else "−"
-                reason = (f"Model favours {best_side_v} "
-                            f"(EV {_ev_sign}${abs(best_ev_v or 0):.2f}) — "
-                            f"no position held")
-            else:
-                reason = "No position held"
-            title_attr = (" title='" + html.escape(reason) + "'")
-        row_cls = (f" class='{' '.join(classes)}'" if classes else "") + title_attr
-
-        # Pre-format EV cells. Zero or missing values render as a plain
-        # "0" instead of the signed "+$0.00" or "—" dash — both convey
-        # the same thing ("no actionable edge") and "0" reads cleaner
-        # across a dense table.
-        def _ev_cell(ev: float | None) -> tuple[str, str]:
-            if ev is None:
-                return "0", "gray"
-            if round(float(ev), 2) == 0:
-                return "0", "gray"
-            cls_, _ = _ev_status(ev)
-            sign = "+" if ev > 0 else "−"
-            return f"{sign}${abs(ev):.2f}", cls_
-        ev_yes_str, ev_yes_cls = _ev_cell(ev_yes_v)
-        ev_no_str, ev_no_cls = _ev_cell(ev_no_v)
-
-        # Edge cells — reference probability for the side minus Kalshi's
-        # ask price for the same side. Positive = the reference sharp
-        # book disagrees with Kalshi in that side's favour. Half-spread
-        # is NOT subtracted here (that's what the EV column is for);
-        # Edge is the raw reference-vs-market gap so the user can read
-        # the bot's underlying view independent of liquidity cost.
-        #
-        # Preference order for the reference prob:
-        #   1. Pinnacle devigged (sharp global book) — when the sport
-        #      bot ships it. This is the same reference the buy gate
-        #      uses, so Edge finally lines up with the verdict column.
-        #   2. Bot's own model — the legacy behaviour, kept as the
-        #      fallback so bots that don't wire in Pinnacle (NBA / WNBA
-        #      / World Cup / non-tennis strike bots) still get a
-        #      meaningful Edge from their own model.
-        edge_ref = v.get("pinnacle_prob_yes")
-        if edge_ref is None:
-            edge_ref = p
-        def _edge(p: float | None, ask_c: int | None) -> float | None:
-            if p is None or ask_c is None:
-                return None
-            return float(p) - (int(ask_c) / 100.0)
-        edge_yes_v = _edge(edge_ref, ya_c)
-        edge_no_v = _edge((1.0 - float(edge_ref)) if edge_ref is not None else None,
-                           na_c)
-        def _edge_cell(e: float | None) -> tuple[str, str]:
-            if e is None:
-                return "0", "gray"
-            pp = e * 100.0
-            if round(pp) == 0:
-                return "0", "gray"
-            cls_ = ("green" if e >= 0.05 else
-                    "yellow" if e > 0 else
-                    "red" if e <= -0.02 else "gray")
-            return f"{pp:+.0f}%", cls_
-        edge_yes_str, edge_yes_cls = _edge_cell(edge_yes_v)
-        edge_no_str, edge_no_cls = _edge_cell(edge_no_v)
-
-        # data-ticker on the row + data-field on each live cell so the
-        # snapshot poller can patch them in place without re-rendering.
-        # mtc cell isn't tagged because it doesn't refresh on a 30s
-        # cadence (advances naturally with wall clock time).
-        tt_esc = html.escape(ticker)
-        # Kalshi uses lowercased series tickers in its market URLs. The
-        # full market ticker has the form "<SERIES>-<EVENT>-<STRIKE>", so
-        # the series is everything before the first hyphen. Linking to
-        # the series page lands on the same market group the row is
-        # describing; Kalshi resolves it to the active event.
-        series_lower = (ticker.split("-", 1)[0] if ticker else "").lower()
-        ticker_url = (f"https://kalshi.com/markets/{series_lower}"
-                      if series_lower else "")
-        ticker_cell = (
-            f"<a href='{html.escape(ticker_url)}' target='_blank' "
-            f"rel='noopener noreferrer' class='ticker-link'>{tt_esc}</a>"
-            if ticker_url else tt_esc
-        )
-        # The "BOUGHT YES/NO" inline pill was retired — the row's
-        # side-colored left bar + colored ticker text already convey
-        # the bet at a glance.
-        # Pass the row's strike value through ``data-strike`` so the
-        # JS row-click hook can draw a horizontal threshold line on the
-        # chart at this market's strike level (non-sport bots) or at the
-        # ticker's YES ask price (sport bots, where strike isn't a
-        # meaningful concept).
-        sl = v.get("strike_low")
-        sh = v.get("strike_high")
-        try:
-            strike_attr = f" data-strike='{float(sl):.6f}'" if sl is not None else ""
-        except (TypeError, ValueError):
-            strike_attr = ""
-        try:
-            yes_attr = f" data-yes-prob='{int(ya_c) / 100.0:.4f}'" if ya_c is not None else ""
-        except (TypeError, ValueError):
-            yes_attr = ""
-        # Sport bots: Title + Side. Non-sport: Title + Question.
-        # ``watchlist_title_use_event`` overrides the per-market title
-        # with the event-level one (used by the unemployment bot, where
-        # every row of the table is the same Initial-Claims week and
-        # the Kalshi event title — "Initial jobless claims for the
-        # week ending May 9, 2026" — is what the user wants in the
-        # Title column instead of the per-strike "200K" repetition).
-        if (display or {}).get("watchlist_title_use_event") and event_title:
-            title_text = event_title
-        else:
-            title_text = v.get("title") or ""
-        # Title cell is now the click-through to Kalshi's market page —
-        # the Ticker column that used to carry the link has been
-        # removed. Same series-prefix URL logic as ``ticker_cell_html``,
-        # just wrapping the human-readable title instead of the raw
-        # ticker string.
-        title_link = ticker_link_html(ticker, title_text)
+        # Sport bots wrap each table in its own `<div class='section'>`
+        # with its own h2 title. Non-sport bots share the single
+        # section opened at the top of the function.
         if is_sport_bot:
-            # Tennis-shape rows pre-fill _yes_label / _no_label with the
-            # player names (the ticker doesn't carry a parseable tricode
-            # the way KXNBAGAME does). Prefer those when set; fall back
-            # to the NBA tricode parser for KXNBAGAME tickers.
-            yes_team = v.get("_yes_label") or _side_tricode_from_ticker(
-                ticker, "YES")
-            opp_team = v.get("_no_label") or _side_tricode_from_ticker(
-                ticker, "NO")
-            if yes_team:
-                side_cell = (
-                    f"<td><strong>{html.escape(str(yes_team))}</strong>"
-                    f"<br><span class='small gray'>vs "
-                    f"{html.escape(str(opp_team))}</span></td>"
+            if _ctx["kind"] == "active":
+                out.append("<div class='section'><h2>Active bets</h2>"
+                           "<div class='body'>")
+                if not _rows_to_emit:
+                    out.append(
+                        f"<div class='empty'>{_ctx['empty_msg']}</div>"
+                    )
+                    out.append("</div></div>")
+                    continue
+            else:  # model-vs-market
+                out.append("<div class='section'>")
+                out.append(
+                    "<div style='display:flex;align-items:center;"
+                    "justify-content:space-between;gap:12px;"
+                    "padding:14px 18px 0 18px;'>"
+                    "<h2 style='margin:0;'>Model vs market</h2>"
+                    "<div style='display:flex;align-items:center;gap:8px;'>"
+                    "<span class='small gray'>Buy criteria</span>"
+                    f"{rules_icon_html}"
+                    "</div></div><div class='body'>"
+                )
+                if not _rows_to_emit:
+                    out.append(
+                        f"<div class='empty'>{_ctx['empty_msg']}</div>"
+                    )
+                    out.append("</div></div>")
+                    continue
+
+        # Position columns (My contracts / Kalshi entry cost / Total
+        # cost) are dropped from Model-vs-market on sport bots; every
+        # other table keeps them.
+        pos_head = ""
+        if include_position_cols:
+            pos_head = (
+                "<th class='num' title='Number of contracts held on this row. Blank when no position is open.'>My contracts</th>"
+                "<th class='num' title='Kalshi entry cost — entry price × contracts, before fees. Blank when no position is held on this row.'>Kalshi entry cost</th>"
+                "<th class='num' title='Total cash out at open — Kalshi entry cost + Kalshi entry fee. Blank when no position is held on this row.'>Total cost</th>"
+            )
+        out.append("<div class='watchlist-scroll'>"
+                   "<table><thead><tr>"
+                   f"{head_cols}"
+                   "<th class='num' title='Open interest — total contracts currently held open across all traders on this strike.'>Total contracts</th>"
+                   "<th class='num' title='Pinnacle sportsbook devigged probability (sharp global reference from The Odds API). Em-dash for matches Pinnacle does not list (Challenger/ITF/between-tournaments) or when the API key isn&apos;t set. YES on top, NO on bottom.'>Pinnacle %</th>"
+                   "<th class='num' title='Live Kalshi market price — YES on top (green), NO on bottom (red). Each side&apos;s implied probability that side wins.'>Kalshi %</th>"
+                   "<th class='num' title='Edge = reference probability (Pinnacle when available, else model) − Kalshi price, per side. YES on top (green), NO on bottom (red).'>Edge</th>"
+                   "<th class='num' title='Expected value per $1 contract, per side, net of half-spread and the Kalshi entry fee. YES on top (green), NO on bottom (red).'>EV</th>"
+                   "<th class='num' title='Time until the contract settles. Parsed from the Kalshi ticker&apos;s encoded date.'>Closes in</th>"
+                   "<th>Verdict</th>"
+                   f"{pos_head}"
+                   f"</tr></thead><tbody id='{html.escape(_tbody_id)}'>")
+        for v in _rows_to_emit:
+            ticker = v.get("ticker", "")
+            qstr = question_str(v.get("direction", ""), v.get("strike_low"),
+                                 v.get("strike_high"), display=display)
+            ya_c = v.get("yes_ask_cents"); na_c = v.get("no_ask_cents")
+            spread_cents = v.get("spread_cents")
+            # Volume still drives the "thin volume" row-suspect flag below
+            # but the column itself is gone — the hero shows the watchlist
+            # total instead.
+            volume = v.get("volume")
+            oi = v.get("open_interest")
+            oi_str = f"{int(oi):,}" if oi is not None else "—"
+            # Derive missing side from the other when only one ask is
+            # quoted — render as a plain number (no "~" prefix) so the
+            # cell parses as a real percentage. The derivation is exact
+            # for binary contracts (YES + NO must sum to 100¢), so the
+            # tilde was just adding noise.
+            if ya_c is not None:
+                kyes_str = f"{ya_c}%"
+            elif na_c is not None:
+                kyes_str = f"{100 - na_c}%"
+            else:
+                kyes_str = "—"
+            if na_c is not None:
+                kno_str = f"{na_c}%"
+            elif ya_c is not None:
+                kno_str = f"{100 - ya_c}%"
+            else:
+                kno_str = "—"
+            p = v.get("model_prob_yes")
+            raw_p = v.get("raw_model_prob_yes")
+            my_yes_str = f"{int(round(float(p)*100))}%" if p is not None else "—"
+            my_no_str = f"{int(round((1-float(p))*100))}%" if p is not None else "—"
+            # Tooltip exposes the un-blended raw model probability so a 1pt
+            # blended display doesn't hide a 30pt raw disagreement (or
+            # vice versa). Lets the user audit "is the bot's actual view
+            # justified, or is the blend doing all the work?"
+            my_yes_tt = ""
+            my_no_tt = ""
+            if raw_p is not None and p is not None:
+                raw_yes_pct = int(round(float(raw_p) * 100))
+                raw_no_pct = int(round((1 - float(raw_p)) * 100))
+                blended_yes_pct = int(round(float(p) * 100))
+                blended_no_pct = int(round((1 - float(p)) * 100))
+                my_yes_tt = (f" title='Raw model: {raw_yes_pct}% · "
+                             f"Blended (vs Kalshi, skill-weighted): {blended_yes_pct}%'")
+                my_no_tt = (f" title='Raw model: {raw_no_pct}% · "
+                            f"Blended: {blended_no_pct}%'")
+
+            # Validation flags — surfaced via row dimming + tooltip only.
+            # The Gap column was removed; EV YES + EV NO already convey the
+            # same edge information with spread cost baked in.
+            flags = []
+            if ya_c is None or na_c is None:
+                flags.append("one-sided book")
+            if spread_cents is not None and spread_cents > 8:
+                flags.append("wide spread")
+            if p is not None and 0.40 <= p <= 0.60:
+                flags.append("low confidence")
+            if volume is not None and volume < 50:
+                flags.append("thin volume")
+
+            # My YES / My NO render in default white. Row-level dimming
+            # via row-suspect handles "this strike isn't a buy" — once
+            # the row is actionable (white), BOTH probabilities render
+            # at full opacity so the user can read the model's view of
+            # each side cleanly.
+            ev_yes_v = v.get("_ev_yes")
+            ev_no_v = v.get("_ev_no")
+            bot_verdict_pre = v.get("bot_verdict", "SKIP")
+            my_yes_cls = ""
+            my_no_cls = ""
+
+            # ── Verdict — two states only ──────────────────────────────────
+            # Rules:
+            #   HOLDING YES / HOLDING NO — bot has an open position on this
+            #     strike. Wins over the model's current view so the row
+            #     reflects what was actually done, not a contradictory
+            #     fresh recommendation. Critical for consistency with the
+            #     "Active bet" table above — without this, a row we bought
+            #     YES on can show a different state once the market moves.
+            #   SKIP — every other row. The model's recommendation (BUY
+            #     YES / BUY NO / hold off / blocked-by-gate) shows up in
+            #     the Edge / EV / tooltip columns; the Verdict column
+            #     itself just reports "have we taken this position or
+            #     not". The prior BUY YES / BUY NO / WATCH verdicts were
+            #     retired per user request to keep the column to two
+            #     stable states.
+            held_bet = held_by_ticker.get(ticker)
+            is_bought = held_bet is not None
+            bought_side = ((held_bet.get("side") or "").upper()
+                           if held_bet else "")
+            bot_verdict = v.get("bot_verdict", "SKIP")
+            reason = v.get("rejection_reason") or ""
+            best_ev_v = v.get("_best_ev")
+            best_side_v = v.get("_best_side")
+            tt = f" title='{html.escape(reason)}'" if reason else ""
+            if is_bought and bought_side in ("YES", "NO"):
+                # HOLDING badge keeps its YES/NO colouring (the badge pill
+                # tints itself — not the surrounding row, which now reads
+                # in plain white). Tooltip surfaces entry price + the
+                # model's current take so the user can audit "is the
+                # model still on board with this position?"
+                held_cls = "badge-yes" if bought_side == "YES" else "badge-no"
+                entry_c = held_bet.get("entry_price_cents")
+                entry_part = f" @ {entry_c}c" if entry_c is not None else ""
+                model_part = ""
+                if best_ev_v is not None and best_side_v in ("YES", "NO"):
+                    _ev_sign = "+" if best_ev_v > 0 else "−"
+                    model_part = (f" · model now: {best_side_v} "
+                                  f"(EV {_ev_sign}${abs(best_ev_v):.2f})")
+                held_tt = (f"You are holding {bought_side}{entry_part}"
+                           f"{model_part}")
+                badge = (f"<span class='badge {held_cls}' "
+                         f"title='{html.escape(held_tt)}'>"
+                         f"HOLDING {bought_side}</span>")
+            else:
+                # Tooltip carries the model's recommendation when there
+                # is one, so the user can still see "model would buy YES,
+                # EV $0.05" on hover even though the cell says SKIP.
+                skip_tt = reason
+                if best_ev_v is not None and best_side_v in ("YES", "NO"):
+                    _ev_sign = "+" if best_ev_v > 0 else "−"
+                    rec = (f"model favours {best_side_v} "
+                           f"(EV {_ev_sign}${abs(best_ev_v):.2f})")
+                    skip_tt = (f"{rec} · {reason}" if reason else rec)
+                tt_attr = (f" title='{html.escape(skip_tt)}'"
+                           if skip_tt else "")
+                badge = f"<span class='badge badge-skip'{tt_attr}>SKIP</span>"
+            # A row is a "good buy opportunity" when the bot would actually
+            # take a position on it: BUY_YES/BUY_NO verdict + positive EV
+            # + no validator flags. Rows that don't clear all three get
+            # greyed out so the user sees only actionable rows in colour.
+            is_buyable = (
+                bot_verdict_pre in ("BUY_YES", "BUY_NO")
+                and best_ev_v is not None and best_ev_v > 0
+                and not flags
+            )
+            classes: List[str] = []
+            title_attr = ""
+            if is_bought:
+                classes.append("row-bought")
+                classes.append("bought-yes" if bought_side == "YES"
+                               else "bought-no" if bought_side == "NO"
+                               else "")
+                entry_c = held_bet.get("entry_price_cents")
+                contracts = held_bet.get("contracts")
+                tip_parts = ["You are holding this strike"]
+                if bought_side:
+                    tip_parts.append(f"on {bought_side}")
+                if contracts is not None:
+                    tip_parts.append(f"({contracts} contracts")
+                    if entry_c is not None:
+                        tip_parts.append(f"@ {entry_c}c)")
+                    else:
+                        tip_parts[-1] = tip_parts[-1] + ")"
+                elif entry_c is not None:
+                    tip_parts.append(f"(entry {entry_c}c)")
+                title_attr = (" title='"
+                              + html.escape(" ".join(tip_parts)) + "'")
+            else:
+                # Per user request: only HOLDING rows get full-bright
+                # white text. Every other row — buyable or not — renders
+                # dimmed via .row-suspect so the holdings stand out at
+                # a glance against the rest of the watchlist.
+                classes.append("row-suspect")
+                if flags:
+                    reason = "Validator flags: " + ", ".join(flags)
+                elif best_ev_v is None or best_ev_v <= 0:
+                    reason = "No positive edge"
+                elif not is_buyable:
+                    reason = "Bot verdict not actionable"
+                elif best_side_v in ("YES", "NO"):
+                    _ev_sign = "+" if (best_ev_v or 0) > 0 else "−"
+                    reason = (f"Model favours {best_side_v} "
+                                f"(EV {_ev_sign}${abs(best_ev_v or 0):.2f}) — "
+                                f"no position held")
+                else:
+                    reason = "No position held"
+                title_attr = (" title='" + html.escape(reason) + "'")
+            row_cls = (f" class='{' '.join(classes)}'" if classes else "") + title_attr
+
+            # Pre-format EV cells. Zero or missing values render as a plain
+            # "0" instead of the signed "+$0.00" or "—" dash — both convey
+            # the same thing ("no actionable edge") and "0" reads cleaner
+            # across a dense table.
+            def _ev_cell(ev: float | None) -> tuple[str, str]:
+                if ev is None:
+                    return "0", "gray"
+                if round(float(ev), 2) == 0:
+                    return "0", "gray"
+                cls_, _ = _ev_status(ev)
+                sign = "+" if ev > 0 else "−"
+                return f"{sign}${abs(ev):.2f}", cls_
+            ev_yes_str, ev_yes_cls = _ev_cell(ev_yes_v)
+            ev_no_str, ev_no_cls = _ev_cell(ev_no_v)
+
+            # Edge cells — reference probability for the side minus Kalshi's
+            # ask price for the same side. Positive = the reference sharp
+            # book disagrees with Kalshi in that side's favour. Half-spread
+            # is NOT subtracted here (that's what the EV column is for);
+            # Edge is the raw reference-vs-market gap so the user can read
+            # the bot's underlying view independent of liquidity cost.
+            #
+            # Preference order for the reference prob:
+            #   1. Pinnacle devigged (sharp global book) — when the sport
+            #      bot ships it. This is the same reference the buy gate
+            #      uses, so Edge finally lines up with the verdict column.
+            #   2. Bot's own model — the legacy behaviour, kept as the
+            #      fallback so bots that don't wire in Pinnacle (NBA / WNBA
+            #      / World Cup / non-tennis strike bots) still get a
+            #      meaningful Edge from their own model.
+            edge_ref = v.get("pinnacle_prob_yes")
+            if edge_ref is None:
+                edge_ref = p
+            def _edge(p: float | None, ask_c: int | None) -> float | None:
+                if p is None or ask_c is None:
+                    return None
+                return float(p) - (int(ask_c) / 100.0)
+            edge_yes_v = _edge(edge_ref, ya_c)
+            edge_no_v = _edge((1.0 - float(edge_ref)) if edge_ref is not None else None,
+                               na_c)
+            def _edge_cell(e: float | None) -> tuple[str, str]:
+                if e is None:
+                    return "0", "gray"
+                pp = e * 100.0
+                if round(pp) == 0:
+                    return "0", "gray"
+                cls_ = ("green" if e >= 0.05 else
+                        "yellow" if e > 0 else
+                        "red" if e <= -0.02 else "gray")
+                return f"{pp:+.0f}%", cls_
+            edge_yes_str, edge_yes_cls = _edge_cell(edge_yes_v)
+            edge_no_str, edge_no_cls = _edge_cell(edge_no_v)
+
+            # data-ticker on the row + data-field on each live cell so the
+            # snapshot poller can patch them in place without re-rendering.
+            # mtc cell isn't tagged because it doesn't refresh on a 30s
+            # cadence (advances naturally with wall clock time).
+            tt_esc = html.escape(ticker)
+            # Kalshi uses lowercased series tickers in its market URLs. The
+            # full market ticker has the form "<SERIES>-<EVENT>-<STRIKE>", so
+            # the series is everything before the first hyphen. Linking to
+            # the series page lands on the same market group the row is
+            # describing; Kalshi resolves it to the active event.
+            series_lower = (ticker.split("-", 1)[0] if ticker else "").lower()
+            ticker_url = (f"https://kalshi.com/markets/{series_lower}"
+                          if series_lower else "")
+            ticker_cell = (
+                f"<a href='{html.escape(ticker_url)}' target='_blank' "
+                f"rel='noopener noreferrer' class='ticker-link'>{tt_esc}</a>"
+                if ticker_url else tt_esc
+            )
+            # The "BOUGHT YES/NO" inline pill was retired — the row's
+            # side-colored left bar + colored ticker text already convey
+            # the bet at a glance.
+            # Pass the row's strike value through ``data-strike`` so the
+            # JS row-click hook can draw a horizontal threshold line on the
+            # chart at this market's strike level (non-sport bots) or at the
+            # ticker's YES ask price (sport bots, where strike isn't a
+            # meaningful concept).
+            sl = v.get("strike_low")
+            sh = v.get("strike_high")
+            try:
+                strike_attr = f" data-strike='{float(sl):.6f}'" if sl is not None else ""
+            except (TypeError, ValueError):
+                strike_attr = ""
+            try:
+                yes_attr = f" data-yes-prob='{int(ya_c) / 100.0:.4f}'" if ya_c is not None else ""
+            except (TypeError, ValueError):
+                yes_attr = ""
+            # Sport bots: Title + Side. Non-sport: Title + Question.
+            # ``watchlist_title_use_event`` overrides the per-market title
+            # with the event-level one (used by the unemployment bot, where
+            # every row of the table is the same Initial-Claims week and
+            # the Kalshi event title — "Initial jobless claims for the
+            # week ending May 9, 2026" — is what the user wants in the
+            # Title column instead of the per-strike "200K" repetition).
+            if (display or {}).get("watchlist_title_use_event") and event_title:
+                title_text = event_title
+            else:
+                title_text = v.get("title") or ""
+            # Title cell is now the click-through to Kalshi's market page —
+            # the Ticker column that used to carry the link has been
+            # removed. Same series-prefix URL logic as ``ticker_cell_html``,
+            # just wrapping the human-readable title instead of the raw
+            # ticker string.
+            title_link = ticker_link_html(ticker, title_text)
+            if is_sport_bot:
+                # Tennis-shape rows pre-fill _yes_label / _no_label with the
+                # player names (the ticker doesn't carry a parseable tricode
+                # the way KXNBAGAME does). Prefer those when set; fall back
+                # to the NBA tricode parser for KXNBAGAME tickers.
+                yes_team = v.get("_yes_label") or _side_tricode_from_ticker(
+                    ticker, "YES")
+                opp_team = v.get("_no_label") or _side_tricode_from_ticker(
+                    ticker, "NO")
+                if yes_team:
+                    side_cell = (
+                        f"<td><strong>{html.escape(str(yes_team))}</strong>"
+                        f"<br><span class='small gray'>vs "
+                        f"{html.escape(str(opp_team))}</span></td>"
+                    )
+                else:
+                    side_cell = f"<td>{html.escape(qstr)}</td>"
+                middle_cells = (
+                    f"<td>{title_link}</td>"
+                    f"{side_cell}"
+                )
+            elif is_billboard_bot:
+                artist_text = v.get("_artist") or ""
+                song_text = v.get("_song") or v.get("direction") or ""
+                middle_cells = (
+                    f"<td>{title_link}</td>"
+                    f"<td>{html.escape(str(song_text))}</td>"
+                    f"<td>{html.escape(str(artist_text))}</td>"
                 )
             else:
-                side_cell = f"<td>{html.escape(qstr)}</td>"
-            middle_cells = (
-                f"<td>{title_link}</td>"
-                f"{side_cell}"
-            )
-        elif is_billboard_bot:
-            artist_text = v.get("_artist") or ""
-            song_text = v.get("_song") or v.get("direction") or ""
-            middle_cells = (
-                f"<td>{title_link}</td>"
-                f"<td>{html.escape(str(song_text))}</td>"
-                f"<td>{html.escape(str(artist_text))}</td>"
-            )
-        else:
-            middle_cells = (
-                f"<td>{title_link}</td>"
-                f"<td>{html.escape(qstr)}</td>"
-            )
-        # User-requested layout: YES on top in green, NO on bottom in
-        # red — across every side-paired column (My %, Kalshi %, Edge,
-        # EV). Replaces the previous horizontal "yes | no" rendering.
-        # The side is conveyed by vertical position + colour; we drop
-        # the per-value green/yellow/red EV-magnitude tinting since
-        # the side colour now dominates the cell.
-        def _stacked(yes_val: str, no_val: str,
-                       field: str, extra_tt: str = "") -> str:
-            return (
-                f"<td class='num cell-stack' "
-                f"data-field='{field}'{extra_tt}>"
-                f"<div class='side-yes green' data-side='yes'>{yes_val}</div>"
-                f"<div class='side-no red' data-side='no'>{no_val}</div>"
-                f"</td>"
-            )
-        # Kalshi % — the live market ask, YES on top / NO on bottom.
-        # (Replaces the old "My % + Kalshi entry % + Current %" trio;
-        # only the live price stays visible in the column set. My %
-        # and Kalshi entry % moved out per user spec — model_prob_yes
-        # still populates on every row for JSON consumers + downstream
-        # code, just isn't rendered as a table column.)
-        kalshi_cell = _stacked(kyes_str, kno_str, "kalshi")
-        # Pinnacle stacked cell — devigged sharp-book prob for the YES /
-        # NO sides. None when the sport bot's watchlist row doesn't
-        # carry it (Pinnacle not listing the match, or non-tennis bots
-        # that don't wire this in yet).
-        pinn_p = v.get("pinnacle_prob_yes")
-        if pinn_p is not None:
-            pinn_yes_str = f"{int(round(float(pinn_p)*100))}%"
-            pinn_no_str = f"{int(round((1-float(pinn_p))*100))}%"
-        else:
-            pinn_yes_str = "—"
-            pinn_no_str = "—"
-        pinnacle_cell = _stacked(pinn_yes_str, pinn_no_str, "pinnacle")
-        edge_cell   = _stacked(edge_yes_str, edge_no_str, "edge")
-        ev_cell     = _stacked(ev_yes_str, ev_no_str, "ev")
+                middle_cells = (
+                    f"<td>{title_link}</td>"
+                    f"<td>{html.escape(qstr)}</td>"
+                )
+            # User-requested layout: YES on top in green, NO on bottom in
+            # red — across every side-paired column (My %, Kalshi %, Edge,
+            # EV). Replaces the previous horizontal "yes | no" rendering.
+            # The side is conveyed by vertical position + colour; we drop
+            # the per-value green/yellow/red EV-magnitude tinting since
+            # the side colour now dominates the cell.
+            def _stacked(yes_val: str, no_val: str,
+                           field: str, extra_tt: str = "") -> str:
+                return (
+                    f"<td class='num cell-stack' "
+                    f"data-field='{field}'{extra_tt}>"
+                    f"<div class='side-yes green' data-side='yes'>{yes_val}</div>"
+                    f"<div class='side-no red' data-side='no'>{no_val}</div>"
+                    f"</td>"
+                )
+            # Kalshi % — the live market ask, YES on top / NO on bottom.
+            # (Replaces the old "My % + Kalshi entry % + Current %" trio;
+            # only the live price stays visible in the column set. My %
+            # and Kalshi entry % moved out per user spec — model_prob_yes
+            # still populates on every row for JSON consumers + downstream
+            # code, just isn't rendered as a table column.)
+            kalshi_cell = _stacked(kyes_str, kno_str, "kalshi")
+            # Pinnacle stacked cell — devigged sharp-book prob for the YES /
+            # NO sides. None when the sport bot's watchlist row doesn't
+            # carry it (Pinnacle not listing the match, or non-tennis bots
+            # that don't wire this in yet).
+            pinn_p = v.get("pinnacle_prob_yes")
+            if pinn_p is not None:
+                pinn_yes_str = f"{int(round(float(pinn_p)*100))}%"
+                pinn_no_str = f"{int(round((1-float(pinn_p))*100))}%"
+            else:
+                pinn_yes_str = "—"
+                pinn_no_str = "—"
+            pinnacle_cell = _stacked(pinn_yes_str, pinn_no_str, "pinnacle")
+            edge_cell   = _stacked(edge_yes_str, edge_no_str, "edge")
+            ev_cell     = _stacked(ev_yes_str, ev_no_str, "ev")
 
-        # Closes-in cell. Prefer the row's own ``minutes_to_close`` when
-        # the bot supplies it (Kalshi bots do); fall back to parsing the
-        # settlement date out of the ticker so sport bots (tennis) that
-        # don't compute a live countdown still get a real value.
-        mtc = v.get("minutes_to_close")
-        if mtc is None:
-            mtc = minutes_to_close_from_ticker(ticker)
-        closes_in_cell = (
-            f"<td class='num' data-field='closes-in'>"
-            f"{time_to_close_str(mtc)}</td>"
-        )
+            # Closes-in cell. Prefer the row's own ``minutes_to_close`` when
+            # the bot supplies it (Kalshi bots do); fall back to parsing the
+            # settlement date out of the ticker so sport bots (tennis) that
+            # don't compute a live countdown still get a real value.
+            mtc = v.get("minutes_to_close")
+            if mtc is None:
+                mtc = minutes_to_close_from_ticker(ticker)
+            closes_in_cell = (
+                f"<td class='num' data-field='closes-in'>"
+                f"{time_to_close_str(mtc)}</td>"
+            )
 
-        # My contracts + Kalshi entry cost + Total cost — populated
-        # only on rows where we hold a position. ``held_bet`` was
-        # resolved above for the verdict column; reuse it here so
-        # every cell agrees with the HOLDING badge. Blank tds on
-        # unheld rows so the columns read as "was this bought" at a
-        # glance.
-        if is_bought and held_bet is not None:
-            _entry_c = held_bet.get("entry_price_cents")
-            _ctr = held_bet.get("contracts") or 0
-            if _ctr:
-                my_contracts_cell = (
+            # My contracts + Kalshi entry cost + Total cost — populated
+            # only on rows where we hold a position, and only when the
+            # current section includes position columns (the sport-bot
+            # Model-vs-market table drops them; every other table keeps
+            # them). Blank tds on unheld rows so the columns read as
+            # "was this bought" at a glance.
+            if not include_position_cols:
+                position_cells = ""
+            elif is_bought and held_bet is not None:
+                _entry_c = held_bet.get("entry_price_cents")
+                _ctr = held_bet.get("contracts") or 0
+                _my_contracts_cell = (
                     f"<td class='num' data-field='my-contracts'>"
                     f"{int(_ctr)}</td>"
-                )
+                ) if _ctr else "<td class='num' data-field='my-contracts'></td>"
+                if _entry_c is not None and _ctr:
+                    _base = float(_entry_c) * float(_ctr) / 100.0
+                    _fee = kalshi_fee_cents(int(_entry_c), int(_ctr)) / 100.0
+                    _entry_cost_cell = (
+                        f"<td class='num red' title='"
+                        f"{int(_entry_c)}¢ × {int(_ctr)} contracts = "
+                        f"${_base:.2f} entry cost (before fees).' "
+                        f"data-field='entry-cost'>"
+                        f"−${_base:.2f}</td>"
+                    )
+                    _total_cost_cell = (
+                        f"<td class='num red' title='"
+                        f"{int(_entry_c)}¢ × {int(_ctr)} contracts + "
+                        f"${_fee:.2f} entry fee = ${_base + _fee:.2f} total "
+                        f"cash out at open.' data-field='total-cost'>"
+                        f"−${_base + _fee:.2f}</td>"
+                    )
+                else:
+                    _entry_cost_cell = "<td class='num red' data-field='entry-cost'></td>"
+                    _total_cost_cell = "<td class='num red' data-field='total-cost'></td>"
+                position_cells = _my_contracts_cell + _entry_cost_cell + _total_cost_cell
             else:
-                my_contracts_cell = "<td class='num' data-field='my-contracts'></td>"
-            if _entry_c is not None and _ctr:
-                _base = float(_entry_c) * float(_ctr) / 100.0
-                _fee = kalshi_fee_cents(int(_entry_c), int(_ctr)) / 100.0
-                entry_cost_cell = (
-                    f"<td class='num red' title='"
-                    f"{int(_entry_c)}¢ × {int(_ctr)} contracts = "
-                    f"${_base:.2f} entry cost (before fees).' "
-                    f"data-field='entry-cost'>"
-                    f"−${_base:.2f}</td>"
+                position_cells = (
+                    "<td class='num' data-field='my-contracts'></td>"
+                    "<td class='num red' data-field='entry-cost'></td>"
+                    "<td class='num red' data-field='total-cost'></td>"
                 )
-                total_cost_cell = (
-                    f"<td class='num red' title='"
-                    f"{int(_entry_c)}¢ × {int(_ctr)} contracts + "
-                    f"${_fee:.2f} entry fee = ${_base + _fee:.2f} total "
-                    f"cash out at open.' data-field='total-cost'>"
-                    f"−${_base + _fee:.2f}</td>"
-                )
-            else:
-                entry_cost_cell = "<td class='num red' data-field='entry-cost'></td>"
-                total_cost_cell = "<td class='num red' data-field='total-cost'></td>"
-        else:
-            my_contracts_cell = "<td class='num' data-field='my-contracts'></td>"
-            entry_cost_cell = "<td class='num red' data-field='entry-cost'></td>"
-            total_cost_cell = "<td class='num red' data-field='total-cost'></td>"
 
-        out.append(f"<tr{row_cls} data-ticker='{tt_esc}'{strike_attr}{yes_attr}>"
-                   f"{middle_cells}"
-                   f"<td class='num' data-field='oi'>{oi_str}</td>"
-                   f"{pinnacle_cell}"
-                   f"{kalshi_cell}"
-                   f"{edge_cell}"
-                   f"{ev_cell}"
-                   f"{closes_in_cell}"
-                   f"<td data-field='verdict'>{badge}</td>"
-                   f"{my_contracts_cell}"
-                   f"{entry_cost_cell}"
-                   f"{total_cost_cell}</tr>")
-    out.append("</tbody></table></div>")
-    # Append the row-click JS hook so clicks on a watchlist row draw a
-    # horizontal threshold line on the hero chart at the row's value.
+            out.append(f"<tr{row_cls} data-ticker='{tt_esc}'{strike_attr}{yes_attr}>"
+                       f"{middle_cells}"
+                       f"<td class='num' data-field='oi'>{oi_str}</td>"
+                       f"{pinnacle_cell}"
+                       f"{kalshi_cell}"
+                       f"{edge_cell}"
+                       f"{ev_cell}"
+                       f"{closes_in_cell}"
+                       f"<td data-field='verdict'>{badge}</td>"
+                       f"{position_cells}</tr>")
+        out.append("</tbody></table></div>")
+        # For sport bots, close the per-table `<div class='section'>`
+        # wrapper opened at the top of this loop iteration.
+        if is_sport_bot:
+            out.append("</div></div>")
+    # Append the row-click JS hook once — after every table is
+    # emitted. The hook globs both tbodies (`watchlist-tbody` and,
+    # on sport bots, `watchlist-tbody-active`) via its query
+    # selector list.
     out.append(_WATCHLIST_ROW_CLICK_JS)
-    out.append("</div></div>")
+    # Non-sport bots also need to close the single section wrapper
+    # opened at the top of the function. Sport bots already closed
+    # theirs at the end of each section-loop iteration.
+    if not is_sport_bot:
+        out.append("</div></div>")
 
 
 # Vanilla-JS hook for the Kalshi watchlist tables. Each watchlist row
@@ -11593,7 +11682,7 @@ _WATCHLIST_ROW_CLICK_JS = """
   // overlay line, with rows in both tables clearing each other's
   // selection (so the user always sees one active selection).
   const tbodies = Array.from(document.querySelectorAll(
-    \"tbody[data-chart-link], tbody#watchlist-tbody\"
+    \"tbody[data-chart-link], tbody#watchlist-tbody, tbody#watchlist-tbody-active\"
   ));
   if (!tbodies.length) return;
 
@@ -11718,8 +11807,7 @@ def _render_contract_rules(out: List[str], watchlist: List[dict],
     the contract has settled there's no upcoming bot tick that will
     fill the gap, so promising one would be misleading.
     """
-    out.append("<div class='section'><h2>6 · Kalshi rules — "
-               "how the market resolves</h2>"
+    out.append("<div class='section'><h2>Kalshi rules</h2>"
                "<div class='body rules'>")
 
     # Find a representative rules_primary string.
