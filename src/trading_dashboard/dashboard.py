@@ -3597,10 +3597,18 @@ def render_page(
                           available_bots=available_bots,
                           current_bot=current_bot,
                           period_key=period_key)
-        _render_contract_rules(
-            out, watchlist, current_bot,
-            contract_close_ts=contract_close_ts,
-        )
+        # Sport bots don't get a Kalshi-rules section — each match has
+        # its own resolution paragraph, which would produce a wall of
+        # duplicated boilerplate that isn't decision-useful. Non-sport
+        # bots (gas / CPI / claims / etc.) keep it because a strike
+        # ladder is one market whose rules apply across every row.
+        _sport_bots = {"nba", "tennis", "table-tennis", "darts",
+                        "world-cup"}
+        if current_bot not in _sport_bots:
+            _render_contract_rules(
+                out, watchlist, current_bot,
+                contract_close_ts=contract_close_ts,
+            )
     out.append("</div>")  # /watchlist panel
 
     # ── MODELS tab — per-bot model deep-dive ─────────────────────────
