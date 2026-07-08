@@ -887,6 +887,7 @@ def _render_watchlist_table(payload: dict,
            "<th title='Who the bot is betting will win.'>Side</th>"
            "<th class='num' title='Open interest — number of YES contracts currently held open on this side.'>Contracts</th>"
            "<th class='num' title='Kalshi market price for YES | NO sides — implied probability each side wins.'>Kalshi % <span class='small gray'>(yes | no)</span></th>"
+           "<th class='num' title='Pinnacle sportsbook devigged probability (sharp global reference). Blank for matches Pinnacle does not list.'>Pinnacle % <span class='small gray'>(yes | no)</span></th>"
            "<th class='num' title='Bot model probability for YES | NO.'>My % <span class='small gray'>(yes | no)</span></th>"
            "<th class='num' title='Edge = my probability − Kalshi price, per side. Positive means the bot disagrees with Kalshi in that direction.'>Edge <span class='small gray'>(yes | no)</span></th>"
            "<th class='num' title='Expected value per $1 contract for YES | NO, net of slippage.'>EV <span class='small gray'>(yes | no)</span></th>"
@@ -977,6 +978,22 @@ def _render_watchlist_table(payload: dict,
             f"<span class='cell-sep'> | </span>"
             f"<span>{kno_str}</span></td>"
         )
+        # Pinnacle % column — devigged fair prob from Pinnacle's line
+        # (populated when The Odds API returned a book for this match,
+        # blank em-dash otherwise).
+        pinn_a = r.get("pinnacle_prob_a")
+        if pinn_a is not None:
+            pinn_yes_str = f"{float(pinn_a) * 100:.0f}%"
+            pinn_no_str = f"{(1.0 - float(pinn_a)) * 100:.0f}%"
+        else:
+            pinn_yes_str = "—"
+            pinn_no_str = "—"
+        pinnacle_cell = (
+            f"<td class='num'>"
+            f"<span>{pinn_yes_str}</span>"
+            f"<span class='cell-sep'> | </span>"
+            f"<span>{pinn_no_str}</span></td>"
+        )
         my_cell = (
             f"<td class='num'>"
             f"<span>{my_yes_str}</span>"
@@ -1031,6 +1048,7 @@ def _render_watchlist_table(payload: dict,
             f"<td>{side_html}</td>"
             f"<td class='num'>{oi_str}</td>"
             f"{kalshi_cell}"
+            f"{pinnacle_cell}"
             f"{my_cell}"
             f"{edge_cell}"
             f"{ev_cell}"
