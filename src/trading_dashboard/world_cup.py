@@ -173,8 +173,13 @@ def render_models_panel(bot: dict) -> str:
             "accuracy": m.get("accuracy"),
             "log_loss": m.get("log_loss"),
             "brier": m.get("brier"),
-            # F1 / precision / recall aren't computed for the 3-way
-            # match-outcome trainer — leaving them absent renders as "—".
+            # Macro-averaged across the three outcomes (team1/draw/
+            # team2); ROC AUC is the binary "team1 wins" probability —
+            # the same numbers the home-page card shows.
+            "f1": m.get("f1"),
+            "precision": m.get("precision"),
+            "recall": m.get("recall"),
+            "roc_auc": m.get("roc_auc_team1"),
         }
     metrics_shim: Dict[str, Any] = {
         "per_model": per_model,
