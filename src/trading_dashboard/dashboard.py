@@ -11282,6 +11282,10 @@ def _render_watchlist(out: List[str], watchlist: List[dict],
             )
         out.append("<div class='watchlist-scroll'>"
                    "<table><thead><tr>"
+                   # Rules is the leftmost column — click the ``i`` to
+                   # read the Kalshi resolution rule before doing
+                   # anything else with the row.
+                   "<th title='Kalshi resolution rule for this contract — click to read.'>Rules</th>"
                    f"{head_cols}"
                    "<th class='num' title='Open interest — total contracts currently held open across all traders on this strike.'>Total contracts</th>"
                    "<th class='num' title='Pinnacle sportsbook devigged probability (sharp global reference from The Odds API). Em-dash for matches Pinnacle does not list (Challenger/ITF/between-tournaments) or when the API key isn&apos;t set. YES on top, NO on bottom.'>Pinnacle %</th>"
@@ -11294,11 +11298,7 @@ def _render_watchlist(out: List[str], watchlist: List[dict],
                    "</th>"
                    "<th class='num' title='Time until the contract settles. Parsed from the Kalshi ticker&apos;s encoded date.'>Closes in</th>"
                    "<th>Verdict</th>"
-                   # Rules moved after the position columns so it sits
-                   # all the way to the right regardless of whether the
-                   # position triplet renders on this bot.
                    f"{pos_head}"
-                   "<th title='Kalshi resolution rule for this contract — click to read.'>Rules</th>"
                    f"</tr></thead><tbody id='{html.escape(_tbody_id)}'>")
         for v in _rows_to_emit:
             ticker = v.get("ticker", "")
@@ -11731,6 +11731,9 @@ def _render_watchlist(out: List[str], watchlist: List[dict],
             else:
                 rules_cell = "<td data-field='rules'></td>"
             out.append(f"<tr{row_cls} data-ticker='{tt_esc}'{strike_attr}{yes_attr}>"
+                       # Rules cell is the leftmost cell in every row —
+                       # header ordering above matches.
+                       f"{rules_cell}"
                        f"{middle_cells}"
                        f"<td class='num' data-field='oi'>{oi_str}</td>"
                        f"{pinnacle_cell}"
@@ -11739,11 +11742,7 @@ def _render_watchlist(out: List[str], watchlist: List[dict],
                        f"{ev_cell}"
                        f"{closes_in_cell}"
                        f"<td data-field='verdict'>{badge}</td>"
-                       # Rules cell sits after the position columns so it
-                       # always renders as the rightmost cell. Header
-                       # order in the ``<thead>`` above matches this.
-                       f"{position_cells}"
-                       f"{rules_cell}</tr>")
+                       f"{position_cells}</tr>")
         out.append("</tbody></table></div>")
         # For sport bots, close the per-table `<div class='section'>`
         # wrapper opened at the top of this loop iteration.
@@ -11861,13 +11860,13 @@ _RULES_INFO_POPOVER_HTML_JS = """
   function position(btn) {
     const rect = btn.getBoundingClientRect();
     const popW = pop.offsetWidth || 420;
-    // Prefer to the LEFT of the button (Rules column is on the right
-    // side of the table, so anchoring left keeps the popover in view).
-    // Flip to the right if there isn't room.
-    const spaceLeft = rect.left;
-    const left = (spaceLeft >= popW + 12)
-      ? rect.left - popW - 8
-      : Math.min(window.innerWidth - popW - 8, rect.right + 8);
+    // Prefer to the RIGHT of the button (Rules column is now the
+    // leftmost column, so anchoring to the right keeps the popover in
+    // view). Flip to the left if there isn't room.
+    const spaceRight = window.innerWidth - rect.right;
+    const left = (spaceRight >= popW + 12)
+      ? rect.right + 8
+      : Math.max(8, rect.left - popW - 8);
     const top = Math.min(
       Math.max(8, rect.top - 4),
       window.innerHeight - pop.offsetHeight - 8
