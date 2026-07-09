@@ -11341,21 +11341,23 @@ def _render_watchlist(out: List[str], watchlist: List[dict],
                        if r.get("ticker") in held_by_ticker]
         _open_rows = [r for r in watchlist
                        if r.get("ticker") not in held_by_ticker]
-        # 2026-07-08: tennis-family bots only surface Model-vs-market
-        # rows where Pinnacle is quoting the match. Rows without a
-        # Pinnacle price mean we have no sharp reference to compute
-        # Edge / EV against, so the decision cells fall back to the
-        # model's own view — which tends to encourage bad clicks on
-        # Challenger / ITF / between-tournament markets where nobody
-        # in the world has priced the line. Active-bets rows still
-        # show unconditionally since we already hold those positions.
+        # 2026-07-08 (updated 2026-07-09 for the benchmark cascade):
+        # tennis-family bots only surface Model-vs-market rows where a
+        # benchmark line is quoting the match. "Benchmark" means the
+        # first sharp book to publish — Pinnacle preferred, Betfair
+        # Exchange (UK / EU) as a fallback for events Pinnacle doesn't
+        # list (Challengers / ITF / lower-league TT / lower-tier
+        # darts). Without any sharp reference the decision cells fall
+        # back to the model's own view — which tends to encourage bad
+        # clicks on markets where nobody in the world has priced the
+        # line. Active-bets rows still show unconditionally since we
+        # already hold those positions.
         #
-        # League bots (WNBA / NBA / world-cup) are exempt: every
-        # listed game is top tier, and Pinnacle routinely posts the
-        # line hours after Kalshi opens the market (and pulls it at
-        # tip-off), so filtering would hide real, tradeable games.
-        # Their Pinnacle cell just dashes until the line appears
-        # (2026-07-09, per user: show every WNBA game).
+        # League bots (WNBA / NBA / world-cup) are exempt: every listed
+        # game is top tier and the benchmark cascade routinely posts a
+        # line hours after Kalshi opens the market, so filtering would
+        # hide real, tradeable games. Their Benchmark cell just dashes
+        # until the line appears.
         if current_bot in {"tennis", "table-tennis", "darts"}:
             _open_rows = [r for r in _open_rows
                            if r.get("pinnacle_prob_yes") is not None]
@@ -11468,9 +11470,9 @@ def _render_watchlist(out: List[str], watchlist: List[dict],
                    f"{event_head}"
                    f"{head_cols}"
                    "<th class='num' title='Open interest — total contracts currently held open across all traders on this strike.'>Total contracts</th>"
-                   "<th class='num' title='Pinnacle sportsbook devigged probability (sharp global reference from The Odds API). Em-dash for matches Pinnacle does not list (Challenger/ITF/between-tournaments) or when the API key isn&apos;t set. YES on top, NO on bottom.'>Pinnacle %</th>"
+                   "<th class='num' title='Sharp devigged probability from the best available benchmark book — Pinnacle first, else Betfair Exchange (UK / EU). Em-dash for matches no sharp book is quoting or when the Odds API key isn&apos;t set. YES on top, NO on bottom.'>Benchmark %</th>"
                    "<th class='num' title='Live Kalshi market price — YES on top (green), NO on bottom (red). Each side&apos;s implied probability that side wins.'>Kalshi %</th>"
-                   "<th class='num' title='Edge = reference probability (Pinnacle when available, else model) − Kalshi price, per side. YES on top (green), NO on bottom (red).'>Edge</th>"
+                   "<th class='num' title='Edge = benchmark probability (Pinnacle / Betfair) − Kalshi price, per side. YES on top (green), NO on bottom (red).'>Edge</th>"
                    "<th class='num'>EV"
                    "<button type='button' class='ev-info-btn' "
                    "title='How is EV calculated?' "
