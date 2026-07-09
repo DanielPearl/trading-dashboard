@@ -10973,28 +10973,55 @@ def _tennis_event_label(rules: str | None, title: str | None = None) -> str:
 # Basketball ``rules_primary`` boilerplate: "If X wins the {A} vs {B}
 # women's professional basketball game originally scheduled for
 # Jul 8, 2026, then the market resolves to Yes." The league (WNBA vs
-# NBA) hides in the "women's/men's" qualifier; the game date is the
-# closest analogue of tennis's tournament, so the label reads
-# "WNBA · Jul 8, 2026".
+# NBA) hides in the "women's/men's" qualifier. The game date is NOT
+# part of the label — it gets its own Date column.
 _BASKETBALL_EVENT_RE = re.compile(
-    r"(women'?s|men'?s)\s+professional\s+basketball\s+game"
-    r"(?:\s+originally)?\s+scheduled\s+for\s+"
-    r"([A-Z][a-z]{2,8} \d{1,2}, \d{4})",
+    r"(women'?s|men'?s)\s+professional\s+basketball\s+game",
     re.IGNORECASE,
 )
 
 
 def _basketball_event_label(rules: str | None) -> str:
-    """Return 'WNBA · <game date>' / 'NBA · <game date>' parsed from
-    Kalshi basketball rules text; empty string when the rules don't
-    match the basketball template."""
+    """Return 'WNBA' / 'NBA' parsed from Kalshi basketball rules text;
+    empty string when the rules don't match the basketball template."""
     if not rules:
         return ""
     m = _BASKETBALL_EVENT_RE.search(rules)
     if not m:
         return ""
-    league = "WNBA" if m.group(1).lower().startswith("women") else "NBA"
-    return f"{league} · {m.group(2)}"
+    return "WNBA" if m.group(1).lower().startswith("women") else "NBA"
+
+
+# Kalshi tickers embed the market's date as ``YYMMMDD`` right after the
+# series segment (KXWNBAGAME-26JUL09LVPDX, KXATPMATCH-26JUL08ARNCOB,
+# KXEIAGAS-26JUL14-T3.05). The Date column parses it from there —
+# month token must be a real month so strike suffixes can't
+# false-positive.
+_TICKER_DATE_RE = re.compile(
+    r"-(\d{2})(JAN|FEB|MAR|APR|MAY|JUN|JUL|AUG|SEP|OCT|NOV|DEC)(\d{2})",
+)
+# Fallback: an explicit "Jul 9, 2026"-style date inside the rules text
+# (some series omit the day from the ticker, e.g. monthly CPI).
+_RULES_DATE_RE = re.compile(
+    r"\b(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*\.?"
+    r"\s+(\d{1,2}),\s*(\d{4})",
+)
+
+
+def _market_date_label(ticker: str | None, rules: str | None = None) -> str:
+    """Human date ("Jul 9, 2026") for the watchlist Date column.
+    Prefers the ticker's encoded YYMMMDD; falls back to the first
+    explicit date in the rules text; empty string when neither
+    carries one."""
+    m = _TICKER_DATE_RE.search((ticker or "").upper())
+    if m:
+        yy, mon, dd = m.groups()
+        return f"{mon.capitalize()} {int(dd)}, 20{yy}"
+    if rules:
+        m = _RULES_DATE_RE.search(rules)
+        if m:
+            return f"{m.group(1)} {int(m.group(2))}, {m.group(3)}"
+    return ""
 
 
 def _sport_event_label(rules: str | None, title: str | None,
@@ -11418,11 +11445,21 @@ def _render_watchlist(out: List[str], watchlist: List[dict],
         event_head = (
             "<th title='Competition parsed from the Kalshi rules text "
             "— tour · tournament for tennis (ATP · Wimbledon, "
-            "ITF · M15 Tokyo), league · game date for basketball "
-            "(WNBA · Jul 8, 2026). Falls back to the bot&apos;s "
-            "competition label when the rules don&apos;t match a "
-            "known template.'>Event</th>"
+            "ITF · M15 Tokyo), league for basketball (WNBA / NBA). "
+            "Falls back to the bot&apos;s competition label when the "
+            "rules don&apos;t match a known template.'>Event</th>"
             if _show_event_col else ""
+        )
+        # Date column — every bot's Model-vs-market table (the single
+        # combined table on non-sport bots counts), immediately right
+        # of Rules per user spec. Parsed from the ticker's encoded
+        # YYMMMDD (rules-text date as fallback).
+        _show_date_col = _ctx.get("kind") in ("model-vs-market", "single")
+        date_head = (
+            "<th title='Market date parsed from the Kalshi ticker "
+            "(game day / settlement day). Blank when the ticker "
+            "doesn&apos;t encode one.'>Date</th>"
+            if _show_date_col else ""
         )
         out.append("<div class='watchlist-scroll'>"
                    "<table><thead><tr>"
@@ -11430,6 +11467,7 @@ def _render_watchlist(out: List[str], watchlist: List[dict],
                    # read the Kalshi resolution rule before doing
                    # anything else with the row.
                    "<th title='Kalshi resolution rule for this contract — click to read.'>Rules</th>"
+                   f"{date_head}"
                    f"{event_head}"
                    f"{head_cols}"
                    "<th class='num' title='Open interest — total contracts currently held open across all traders on this strike.'>Total contracts</th>"
@@ -11875,7 +11913,18 @@ def _render_watchlist(out: List[str], watchlist: List[dict],
                 )
             else:
                 rules_cell = "<td data-field='rules'></td>"
-            # Event cell — sits between Rules and the row's identifying
+            # Date cell — right of Rules on every Model-vs-market /
+            # single table. Parsed from the ticker's encoded date
+            # (rules text as fallback).
+            if _show_date_col:
+                _dt = _market_date_label(ticker, v.get("rules_primary"))
+                date_cell = (
+                    f"<td data-field='date'>{html.escape(_dt)}</td>"
+                    if _dt else "<td data-field='date'></td>"
+                )
+            else:
+                date_cell = ""
+            # Event cell — sits between Date and the row's identifying
             # cells; only rendered on Model-vs-market. Parsed live from
             # ``rules_primary`` (tennis + basketball templates), with
             # the bot's competition label as the fallback.
@@ -11893,6 +11942,7 @@ def _render_watchlist(out: List[str], watchlist: List[dict],
                        # Rules cell is the leftmost cell in every row —
                        # header ordering above matches.
                        f"{rules_cell}"
+                       f"{date_cell}"
                        f"{event_cell}"
                        f"{middle_cells}"
                        f"<td class='num' data-field='oi'>{oi_str}</td>"
