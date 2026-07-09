@@ -11575,7 +11575,7 @@ def _render_watchlist(out: List[str], watchlist: List[dict],
                    f"{event_head}"
                    f"{head_cols}"
                    "<th class='num' title='Open interest — total contracts currently held open across all traders on this strike.'>Total contracts</th>"
-                   "<th class='num' title='Sharp devigged probability from the best available benchmark book — Pinnacle first, else Betfair Exchange (UK / EU). Em-dash for matches no sharp book is quoting or when the Odds API key isn&apos;t set. YES on top, NO on bottom.'>Benchmark %</th>"
+                   "<th class='num' title='Model probability — sharp devigged reference from the best available benchmark book (Pinnacle first, else Betfair Exchange UK / EU). Em-dash for matches no sharp book is quoting or when the Odds API key isn&apos;t set. YES on top, NO on bottom.'>Model %</th>"
                    "<th class='num' title='Live Kalshi market price — YES on top (green), NO on bottom (red). Each side&apos;s implied probability that side wins.'>Kalshi %</th>"
                    "<th class='num' title='Edge = benchmark probability (Pinnacle / Betfair) − Kalshi price, per side. YES on top (green), NO on bottom (red).'>Edge</th>"
                    "<th class='num'>EV"

@@ -907,7 +907,7 @@ def _render_watchlist_table(payload: dict,
            "<th title='Who the bot is betting will win.'>Side</th>"
            "<th class='num' title='Open interest — number of YES contracts currently held open on this side.'>Contracts</th>"
            "<th class='num' title='Kalshi market price for YES | NO sides — implied probability each side wins.'>Kalshi % <span class='small gray'>(yes | no)</span></th>"
-           "<th class='num' title='Sharp devigged probability from the best available benchmark book — Pinnacle first, else Betfair Exchange. Blank when no sharp book is quoting.'>Benchmark % <span class='small gray'>(yes | no)</span></th>"
+           "<th class='num' title='Model probability — sharp devigged reference from the best available benchmark book (Pinnacle first, else Betfair Exchange). Blank when no sharp book is quoting.'>Model % <span class='small gray'>(yes | no)</span></th>"
            "<th class='num' title='Bot model probability for YES | NO.'>My % <span class='small gray'>(yes | no)</span></th>"
            "<th class='num' title='Edge = my probability − Kalshi price, per side. Positive means the bot disagrees with Kalshi in that direction.'>Edge <span class='small gray'>(yes | no)</span></th>"
            "<th class='num' title='Expected value per $1 contract for YES | NO, net of slippage.'>EV <span class='small gray'>(yes | no)</span></th>"
