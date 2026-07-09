@@ -11449,7 +11449,14 @@ def _render_watchlist(out: List[str], watchlist: List[dict],
         # its rows now carry the devigged Pinnacle line (guest feed +
         # Odds-API cascade) as their probability source, so the same
         # "no sharp reference → no decision cell" rule applies.
-        if current_bot in {"tennis", "table-tennis", "darts",
+        # table-tennis is EXEMPT (removed 2026-07-09 per user request:
+        # "connect all the table tennis tickers … show them in model
+        # vs market"): Pinnacle currently quotes no TT at all, so the
+        # filter would blank the table permanently. TT rows without a
+        # line are safe to show — the benchmark pass forces them to
+        # WATCH / not-buy-eligible, and the Model % column carries the
+        # upstream Elo view for information only.
+        if current_bot in {"tennis", "darts",
                             "wnba", "world-cup", "mlb", "nba"}:
             _open_rows = [r for r in _open_rows
                            if r.get("pinnacle_prob_yes") is not None]

@@ -90,8 +90,13 @@ def _one_tick(upstream: dict[str, Callable[..., Any]],
     upstream["write_live_state"](records)
 
     rows = upstream["build_watchlist_records"]()
+    # keep_model_probs: TT rows without a Pinnacle line keep the
+    # upstream Elo probs for DISPLAY (Model-vs-market would be blank
+    # otherwise — Pinnacle quotes no TT at all right now) but stay
+    # WATCH / not-buy-eligible; only benchmarked rows can trade.
     matched = _benchmark_rows.apply_benchmark(
-        rows, records, _benchmark_lookup(), win_verb="winning")
+        rows, records, _benchmark_lookup(), win_verb="winning",
+        keep_model_probs=True)
 
     enabled = bot_state.is_bot_enabled(BOT_KEY)
     rows_for_trading = rows if enabled else []

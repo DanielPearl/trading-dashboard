@@ -84,12 +84,22 @@ def apply_benchmark(rows: List[Dict[str, Any]],
                     records: List[Dict[str, Any]],
                     lookup: Dict[frozenset, Dict[str, float]],
                     cfg: Dict[str, Any] | None = None,
-                    win_verb: str = "winning") -> int:
+                    win_verb: str = "winning",
+                    keep_model_probs: bool = False) -> int:
     """Rewrite ``rows`` in place; returns how many rows got a benchmark.
 
     ``records`` (the collapse_to_matches output) supplies per-side
     market tickers for rows whose exporter doesn't pass them through —
     the live executor needs ticker_a/ticker_b to place orders.
+
+    ``keep_model_probs``: when True, rows WITHOUT a benchmark keep the
+    upstream exporter's own model probabilities in the pre_match /
+    live prob fields (display only — the row is still forced to WATCH
+    / not-buy-eligible, and edge / EV stay blank so nothing about it
+    looks tradeable). Used by table-tennis, whose Model-vs-market
+    table would otherwise be permanently blank while Pinnacle isn't
+    quoting TT at all. Rows WITH a benchmark are overwritten either
+    way — the sharp line is the model wherever it exists.
     """
     cfg = {**DEFAULTS, **(cfg or {})}
     now = datetime.now(timezone.utc).isoformat(timespec="seconds")
@@ -121,10 +131,11 @@ def apply_benchmark(rows: List[Dict[str, Any]],
 
         row["pinnacle_prob_a"] = p_a
         row["pinnacle_prob_b"] = p_b
-        row["pre_match_prob_a"] = p_a
-        row["pre_match_prob_b"] = p_b
-        row["live_prob_a"] = p_a
-        row["live_prob_b"] = p_b
+        if p_a is not None or not keep_model_probs:
+            row["pre_match_prob_a"] = p_a
+            row["pre_match_prob_b"] = p_b
+            row["live_prob_a"] = p_a
+            row["live_prob_b"] = p_b
         row["confidence_score"] = (max(p_a, p_b)
                                    if p_a is not None else None)
 
@@ -147,8 +158,13 @@ def apply_benchmark(rows: List[Dict[str, Any]],
         gates: Dict[str, bool] = {}
         if p_a is None:
             label = "WATCH"
-            reason = ("no Pinnacle line for this match yet" if is_h2h
-                      else "no two-way moneyline to benchmark")
+            if not is_h2h:
+                reason = "no two-way moneyline to benchmark"
+            elif keep_model_probs:
+                reason = ("no Pinnacle line — model view only, "
+                          "not tradeable")
+            else:
+                reason = "no Pinnacle line for this match yet"
             eligible = False
         else:
             matched += 1
