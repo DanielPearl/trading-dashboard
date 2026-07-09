@@ -11341,24 +11341,28 @@ def _render_watchlist(out: List[str], watchlist: List[dict],
                        if r.get("ticker") in held_by_ticker]
         _open_rows = [r for r in watchlist
                        if r.get("ticker") not in held_by_ticker]
-        # 2026-07-08 (updated 2026-07-09 for the benchmark cascade):
-        # tennis-family bots only surface Model-vs-market rows where a
-        # benchmark line is quoting the match. "Benchmark" means the
-        # first sharp book to publish — Pinnacle preferred, Betfair
-        # Exchange (UK / EU) as a fallback for events Pinnacle doesn't
-        # list (Challengers / ITF / lower-league TT / lower-tier
-        # darts). Without any sharp reference the decision cells fall
-        # back to the model's own view — which tends to encourage bad
-        # clicks on markets where nobody in the world has priced the
-        # line. Active-bets rows still show unconditionally since we
-        # already hold those positions.
+        # 2026-07-08 (updated 2026-07-09): Model-vs-market rows only
+        # show up when a benchmark line is quoting the match.
+        # "Benchmark" means the first sharp book to publish — Pinnacle
+        # preferred, Betfair Exchange (UK / EU) as a fallback for
+        # events Pinnacle doesn't list (Challengers / ITF / lower-
+        # league TT / lower-tier darts / early-open WNBA / WC ties
+        # before Pinnacle posts). Without any sharp reference the
+        # decision cells fall back to the model's own view — which
+        # tends to encourage bad clicks on markets nobody in the world
+        # has priced. Active-bets rows still show unconditionally
+        # since we already hold those positions.
         #
-        # League bots (WNBA / NBA / world-cup) are exempt: every listed
-        # game is top tier and the benchmark cascade routinely posts a
-        # line hours after Kalshi opens the market, so filtering would
-        # hide real, tradeable games. Their Benchmark cell just dashes
-        # until the line appears.
-        if current_bot in {"tennis", "table-tennis", "darts"}:
+        # With Betfair Exchange added to the cascade, the WNBA / WC
+        # rationale for exemption ("Pinnacle posts hours after Kalshi
+        # opens") no longer holds — Betfair typically has a line from
+        # opening on those two — so the filter now covers them too.
+        # NBA is left exempt for now: The Odds API's NBA feed isn't
+        # wired into the executor path yet, so ``pinnacle_prob_yes``
+        # is None on every NBA row and enabling the filter would
+        # blank the whole table.
+        if current_bot in {"tennis", "table-tennis", "darts",
+                            "wnba", "world-cup"}:
             _open_rows = [r for r in _open_rows
                            if r.get("pinnacle_prob_yes") is not None]
         section_ctxs = [
