@@ -168,7 +168,12 @@ def _run_live_executor(watchlist_out: str, executor: Any) -> None:
     except TypeError:  # older bot_state without ``mode`` kwarg
         armed = False
     try:
-        executor.tick(rows, armed=armed)
+        # The unified SportLiveExecutor signature takes both watchlist
+        # rows and per-event records. WNBA's flat-row watchlist doesn't
+        # ship record-level snapshots (per-market status / result), so
+        # we pass an empty list — the executor falls back to direct
+        # Kalshi lookups per open position.
+        executor.tick(rows, [], armed=armed)
     except Exception:  # noqa: BLE001
         log.exception("wnba-live-executor tick failed")
 

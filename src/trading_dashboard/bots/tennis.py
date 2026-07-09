@@ -124,9 +124,13 @@ def _one_tick(upstream: dict[str, Callable[..., Any]],
     rows_for_sim = rows if enabled else []
 
     if live_executor is not None:
-        # Live mode — call the executor instead of the paper sim.
-        # Inside, dry_run still gates whether REAL orders fire.
-        state = live_executor.tick(rows_for_sim, records)
+        # Live mode. ``armed`` = the Home-tab toggle for THIS bot
+        # (explicitly ON in bot_states_live.json) — same three-key
+        # arming model as MLB / darts / TT / WNBA / world-cup. Config's
+        # dry_run: false also arms independent of the toggle.
+        entry = bot_state.get_all_states().get(BOT_KEY) or {}
+        armed = entry.get("enabled") is True
+        state = live_executor.tick(rows_for_sim, records, armed=armed)
         mode_label = (
             " [LIVE — DRY-RUN]" if getattr(live_executor, "dry_run", True)
             else " [LIVE — REAL ORDERS]"

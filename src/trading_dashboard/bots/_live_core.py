@@ -215,6 +215,32 @@ class KalshiSession:
                     return None
         return 0
 
+    def list_positions(self, limit: int = 200) -> Optional[list[dict]]:
+        """Full-portfolio scan — every non-zero position on the account.
+        Returns None on API failure so callers can defer. Used by the
+        orphan-adoption path to reconstruct sim_state entries after a
+        crash or manual click."""
+        client = self.client()
+        if client is None:
+            return None
+        try:
+            resp = client._request("GET", "/portfolio/positions",
+                                   params={"limit": limit})
+        except Exception:  # noqa: BLE001
+            log.exception("list_positions failed")
+            return None
+        raw = ((resp or {}).get("market_positions")
+               or (resp or {}).get("positions") or [])
+        out: list[dict] = []
+        for p in raw:
+            try:
+                v = float(p.get("position_fp") or p.get("position") or 0)
+            except (TypeError, ValueError):
+                v = 0.0
+            if abs(v) > 0:
+                out.append(p)
+        return out
+
     def market_result(self, ticker: str,
                       snapshot: dict | None = None) -> Optional[str]:
         """'yes' / 'no' once the market has finalized, else None. Uses
@@ -231,10 +257,34 @@ class KalshiSession:
         return None
 
 
+def _derive_exit_reason(reason: str) -> str:
+    """Map the free-form close reason to the enum the analytics + Home-tab
+    breakdowns group by. Copied from the old tennis executor so live
+    closes stamp the same tag paper closes always used — no divergent
+    row shape across bots.
+    """
+    r = (reason or "").lower()
+    if r.startswith("profit_lock") or r.startswith("hedge_pl"):
+        return "profit_lock"
+    if r.startswith("auto_close"):
+        return "auto_close"
+    if r.startswith("stop_loss") or r.startswith("hedge_sl"):
+        return "stop_loss"
+    if r.startswith("void") or r.startswith("cancel"):
+        return "voided"
+    if r.startswith("settled") or r == "settlement":
+        return "settled_match"
+    if r.startswith("closed_externally") or r.startswith("external"):
+        return "external_close"
+    return r or "unknown"
+
+
 def build_closed_record(pos: dict, *, settle_prob: float, reason: str,
                         result: str, **extra: Any) -> dict:
     """Uniform close record: realized P&L from settle price vs entry,
-    winner_side derived from the held side."""
+    winner_side derived from the held side. Stamps both the free-form
+    ``close_reason`` and the ``exit_reason`` enum so analytics can
+    group live + paper closes by the same categories."""
     entry = float(pos.get("entry_market_prob") or 0.0)
     contracts = int(pos.get("contracts") or 1)
     realized = (settle_prob - entry) * contracts
@@ -247,6 +297,7 @@ def build_closed_record(pos: dict, *, settle_prob: float, reason: str,
         "realized_pnl": round(realized, 4),
         "won": won,
         "close_reason": reason,
+        "exit_reason": _derive_exit_reason(reason),
         "result": result,
         "winner_side": side if won else (
             "PLAYER_B" if side == "PLAYER_A" else "PLAYER_A"),

@@ -40,6 +40,11 @@ HARD_CAPS = {
     "min_entry_price_cents": 15,
     "price_deviation_cents": 3,
     "min_profit_lock_bid": 90,
+    # Tennis / darts extras — enforced whenever the subclass exposes them.
+    "min_profit_lock_gain": 5,
+    "min_stop_loss_cents": 15,
+    "max_stop_loss_cents": 40,
+    "max_hours_to_close": 72.0,
 }
 
 DEFAULTS = {
@@ -52,6 +57,10 @@ DEFAULTS = {
     "price_deviation_cents": 3,
     "prematch_buffer_minutes": 10,
     "profit_lock_yes_bid_cents": 95,
+    # Extras — 0 / None disables the branch (default behaviour).
+    "profit_lock_gain_cents": 0,
+    "stop_loss_cents": 0,
+    "max_hours_to_close_for_open": None,
 }
 
 
@@ -87,11 +96,23 @@ class SportLiveExecutor:
                  surface: str,
                  win_verb: str = "winning",
                  hard: dict | None = None,
-                 defaults: dict | None = None) -> None:
+                 defaults: dict | None = None,
+                 orphan_ticker_prefixes: tuple[str, ...] | None = None) -> None:
+        """``orphan_ticker_prefixes`` is the safety net for the tennis-style
+        catch-up-from-Kalshi flow — when the executor boots into a fresh
+        state file but Kalshi already lists open positions the operator
+        opened out-of-band (or from a prior process), those positions get
+        re-adopted into ``open_positions`` so profit-lock / stop-loss /
+        settlement all track them. The prefix filter keeps a shared-
+        account catch-up from bleeding OTHER bots' positions into this
+        one (see the comment in tennis's old executor around line 1282).
+        Passing ``None`` disables the whole orphan-adoption path.
+        """
         self.bot_key = bot_key
         self.tournament = tournament
         self.surface = surface
         self.win_verb = win_verb
+        self.orphan_ticker_prefixes = tuple(orphan_ticker_prefixes or ())
         self._log = logging.getLogger(f"dashboard.{bot_key}-live-executor")
         h = {**HARD_CAPS, **(hard or {})}
         d = {**DEFAULTS, **(defaults or {})}
@@ -124,19 +145,53 @@ class SportLiveExecutor:
                              d["profit_lock_yes_bid_cents"]) or 0)
         self.profit_lock_yes_bid = (max(raw_pl, h["min_profit_lock_bid"])
                                     if raw_pl > 0 else 0)
+        # Extras (tennis + darts). 0 disables. The gain / stop-loss
+        # thresholds are clamped INTO the safe band so a config typo
+        # can't fire the exit on 1-2¢ chatter or ride a loser to 0¢.
+        raw_gn = int(cfg.get("profit_lock_gain_cents",
+                              d["profit_lock_gain_cents"]) or 0)
+        self.profit_lock_gain = (max(raw_gn, h["min_profit_lock_gain"])
+                                  if raw_gn > 0 else 0)
+        raw_sl = int(cfg.get("stop_loss_cents",
+                              d["stop_loss_cents"]) or 0)
+        if raw_sl <= 0:
+            self.stop_loss = 0
+        else:
+            self.stop_loss = max(h["min_stop_loss_cents"],
+                                   min(h["max_stop_loss_cents"], raw_sl))
+        raw_hrs = cfg.get("max_hours_to_close_for_open",
+                          d["max_hours_to_close_for_open"])
+        if raw_hrs is None:
+            self.max_hours_to_close = None
+        else:
+            self.max_hours_to_close = min(float(raw_hrs),
+                                            h["max_hours_to_close"])
         self.state_path = Path(state_path)
         self._config_dry_run = self.dry_run
         self._daily = core.DailyOrderCounter()
         self._session = core.KalshiSession(bot_key)
+        # In-memory state — hydrated from disk on first tick, written
+        # atomically at the end of every tick. Avoids re-reading the
+        # JSON file on every render / poll.
+        self._state_cache: dict | None = None
+        # Rate-limit the SETTLE DEFERRED warning per ticker so a slow
+        # Kalshi result-populate doesn't spam the journal.
+        self._defer_log_at: dict[str, float] = {}
 
         self._log.info(
             "%s-live-executor configured (dry_run=%s, max_open=%d, "
             "orders/day=%d, contracts=%d, min_edge=%.2f, "
-            "price=[%d¢,%d¢], profit_lock=%d¢, state=%s)",
+            "price=[%d¢,%d¢], profit_lock=%d¢, gain=%s, stop_loss=%s, "
+            "hours_to_close=%s, orphan_prefixes=%s, state=%s)",
             bot_key, self.dry_run, self.max_open, self.max_orders_per_day,
             self.contracts_per_order, self.min_edge,
             self.min_entry_price_cents, self.max_entry_price_cents,
-            self.profit_lock_yes_bid, self.state_path)
+            self.profit_lock_yes_bid,
+            f"+{self.profit_lock_gain}¢" if self.profit_lock_gain else "off",
+            f"-{self.stop_loss}¢" if self.stop_loss else "off",
+            f"{self.max_hours_to_close}h" if self.max_hours_to_close else "off",
+            self.orphan_ticker_prefixes or "off",
+            self.state_path)
         if not self.dry_run:
             self._log.warning(
                 "%s-live-executor is in LIVE mode — real Kalshi orders "
@@ -171,10 +226,24 @@ class SportLiveExecutor:
                 self._log.warning("%s-live voided %d leftover dry-run "
                                   "position(s) — real entries unblocked",
                                   self.bot_key, voided)
+            # Orphan adoption: reconstruct sim_state positions Kalshi
+            # already knows about (operator opened out-of-band, or a
+            # prior process crashed after placing the order). Runs only
+            # in real-money mode — dry-run positions never touched
+            # Kalshi so there's nothing to recover.
+            if self.orphan_ticker_prefixes:
+                self._adopt_orphans(state)
         mkt_by_ticker = snapshot_by_ticker(records)
 
         self._reconcile(state, mkt_by_ticker)
+        # Exit triggers, cheapest-to-evaluate first. Any exit that fires
+        # removes the position from open_positions so the next trigger
+        # can't double-close.
         self._maybe_profit_lock(state, mkt_by_ticker)
+        if self.profit_lock_gain > 0:
+            self._maybe_profit_lock_gain(state, mkt_by_ticker)
+        if self.stop_loss > 0:
+            self._maybe_stop_loss(state, mkt_by_ticker)
         self._mark_to_market(state, watchlist_rows)
 
         candidates = sorted(
@@ -187,6 +256,7 @@ class SportLiveExecutor:
         state["stats"] = core.compute_stats(state)
         state["last_tick_at"] = core.now_iso()
         core.atomic_write_json(self.state_path, state)
+        self._state_cache = state
         return state
 
     # ── order placement ─────────────────────────────────────────────
@@ -248,6 +318,27 @@ class SportLiveExecutor:
                     return
             except ValueError:
                 pass
+        # Hours-to-close gate — tennis wants to skip overnight bets on
+        # tomorrow's match where a full day of injury / withdrawal news
+        # has room to move the line. Off by default (None) so bots that
+        # want every listed match (MLB / world-cup / WNBA) keep taking
+        # them.
+        if self.max_hours_to_close is not None:
+            expiry = row.get("expected_expiration_time")
+            if expiry:
+                try:
+                    exp_ts = datetime.fromisoformat(
+                        str(expiry).replace("Z", "+00:00"))
+                    hrs = (exp_ts - datetime.now(timezone.utc)
+                           ).total_seconds() / 3600.0
+                    if hrs > self.max_hours_to_close:
+                        self._log.info(
+                            "%s-live skip %s: %.1fh to close (> %.1fh cap)",
+                            self.bot_key, ticker, hrs,
+                            self.max_hours_to_close)
+                        return
+                except ValueError:
+                    pass
         current_ask = self._session.yes_ask_cents(ticker,
                                                   fallback=ask_cents)
         if current_ask is None:
@@ -428,20 +519,199 @@ class SportLiveExecutor:
             if model_p is not None:
                 pos["current_model_prob"] = float(model_p)
 
+    def _sell_at_bid(self, state: dict, mkt_by_ticker: dict, *,
+                     trigger: str,
+                     bid_matches: callable) -> None:
+        """Shared exit-trigger loop for the two bid-driven exits
+        (``profit_lock_gain`` and ``stop_loss``). ``bid_matches`` is a
+        callable ``(pos, bid_cents) -> (bool, close_reason_suffix)`` that
+        returns True when this trigger should fire on the position.
+        """
+        still_open, closed_now = [], []
+        for pos in state.get("open_positions", []):
+            ticker = pos.get("ticker") or ""
+            mkt = mkt_by_ticker.get(ticker) or {}
+            bid = mkt.get("yes_bid")
+            bid_cents = (int(round(float(bid) * 100))
+                         if bid is not None else
+                         self._session.yes_bid_cents(ticker))
+            if bid_cents is None:
+                still_open.append(pos)
+                continue
+            fire, suffix = bid_matches(pos, bid_cents)
+            if not fire:
+                still_open.append(pos)
+                continue
+            contracts = int(pos.get("contracts") or 1)
+            if self.dry_run:
+                order_id = (f"DRY-RUN-{trigger.upper()}-"
+                            f"{int(datetime.now(timezone.utc).timestamp())}")
+                status = "dry_run_simulated"
+            else:
+                held = self._session.position_count(ticker)
+                if held is None:
+                    still_open.append(pos)
+                    continue
+                if held <= 0:
+                    closed_now.append(core.build_closed_record(
+                        pos, settle_prob=bid_cents / 100.0,
+                        reason="closed_externally",
+                        result="EXTERNAL_CLOSE"))
+                    self._log.warning(
+                        "%s-live %s already flat at Kalshi — recording "
+                        "external close at %d¢", self.bot_key,
+                        ticker, bid_cents)
+                    continue
+                order_id, status = self._session.submit_ioc(
+                    ticker=ticker, action="sell",
+                    count=min(contracts, held),
+                    yes_price_cents=bid_cents, kind=trigger[:2])
+                if not order_id or (status or "").lower() != "executed":
+                    still_open.append(pos)
+                    continue
+            reason = f"{trigger}_{suffix}" if suffix else trigger
+            result = ("PROFIT_LOCK_GAIN" if trigger == "profit_lock_gain"
+                      else "STOP_LOSS" if trigger == "stop_loss"
+                      else "PROFIT_LOCK")
+            closed = core.build_closed_record(
+                pos, settle_prob=bid_cents / 100.0, reason=reason,
+                result=result, exit_order_id=order_id,
+                exit_order_status=status)
+            closed_now.append(closed)
+            self._log.info("%s-live %s %s — sold @ %d¢, realized %+.3f",
+                           self.bot_key, trigger.upper(), ticker,
+                           bid_cents, closed["realized_pnl"])
+        if closed_now:
+            state["open_positions"] = still_open
+            state.setdefault("closed_positions", []).extend(closed_now)
+            for c in closed_now:
+                state.setdefault("last_settled_at_by_match_id", {})[
+                    c.get("match_id", "")] = c["closed_at"]
+
+    def _maybe_profit_lock_gain(self, state: dict,
+                                  mkt_by_ticker: dict) -> None:
+        """Sell when bid − entry >= ``profit_lock_gain`` — captures
+        favourable mid-match line moves before they reverse."""
+        def _fire(pos: dict, bid_cents: int) -> tuple[bool, str]:
+            entry_cents = int(round(
+                float(pos.get("entry_market_prob") or 0.0) * 100))
+            gain = bid_cents - entry_cents
+            return gain >= self.profit_lock_gain, f"gain{gain}c"
+        self._sell_at_bid(state, mkt_by_ticker,
+                          trigger="profit_lock_gain",
+                          bid_matches=_fire)
+
+    def _maybe_stop_loss(self, state: dict,
+                          mkt_by_ticker: dict) -> None:
+        """Sell when entry − bid >= ``stop_loss`` — cuts the tail of
+        positions that would ride to expiry at 0."""
+        def _fire(pos: dict, bid_cents: int) -> tuple[bool, str]:
+            entry_cents = int(round(
+                float(pos.get("entry_market_prob") or 0.0) * 100))
+            drop = entry_cents - bid_cents
+            return drop >= self.stop_loss, f"drop{drop}c"
+        self._sell_at_bid(state, mkt_by_ticker,
+                          trigger="stop_loss",
+                          bid_matches=_fire)
+
+    # ── orphan adoption ─────────────────────────────────────────────
+
+    def _adopt_orphans(self, state: dict) -> None:
+        """Re-adopt Kalshi positions the executor doesn't know about.
+
+        Two source patterns motivate this:
+          1. First real tick on a fresh state file, with a position
+             already open from a prior process / manual click.
+          2. The executor voided a position as dry-run leftover but the
+             actual Kalshi order had filled real contracts.
+
+        The prefix filter is a hard safety: a shared Kalshi account can
+        list positions from every bot in the fleet, and adopting the
+        wrong one silently profit-locks another bot's win.
+        """
+        try:
+            positions = self._session.list_positions(limit=200) or []
+        except Exception:  # noqa: BLE001
+            self._log.exception(
+                "%s-live orphan discovery failed; deferring", self.bot_key)
+            return
+        known = {p.get("ticker") for p in state.get("open_positions", [])
+                 if p.get("ticker")}
+        recently_settled = set(state.get("last_settled_at_by_match_id", {}))
+        for kp in positions:
+            ticker = kp.get("ticker") or ""
+            if not ticker or ticker in known:
+                continue
+            try:
+                held = float(kp.get("position_fp") or kp.get("position") or 0)
+            except (TypeError, ValueError):
+                continue
+            if abs(held) <= 0:
+                continue
+            if not any(ticker.startswith(p)
+                       for p in self.orphan_ticker_prefixes):
+                continue
+            # Derive the base match_id (event ticker minus any -A / -B
+            # suffix Kalshi uses on side markets).
+            match_id = ticker
+            for suffix in ("-A", "-B", "-YES", "-NO"):
+                if match_id.endswith(suffix):
+                    match_id = match_id[: -len(suffix)]
+                    break
+            if match_id in recently_settled:
+                continue
+            entry_price = (float(kp.get("avg_price_cents") or 0.0) / 100.0
+                           if kp.get("avg_price_cents") is not None
+                           else float(kp.get("entry_market_prob") or 0.5))
+            pos = {
+                "position_id": f"orphan-{ticker}",
+                "order_id": f"recovered-{ticker}",
+                "order_status": "recovered",
+                "ticker": ticker,
+                "match_id": match_id,
+                "market_side": "YES",
+                "event_ticker": kp.get("event_ticker") or match_id,
+                "tournament": self.tournament,
+                "surface": self.surface,
+                "player_a": "",
+                "player_b": "",
+                "side": "PLAYER_A",
+                "side_player": "?",
+                "entry_market_prob": entry_price,
+                "entry_model_prob": entry_price,
+                "current_market_prob": entry_price,
+                "current_model_prob": entry_price,
+                "stake": entry_price * abs(held),
+                "contracts": int(abs(held)),
+                "slippage": 0.0,
+                "unrealized_pnl": 0.0,
+                "label_at_open": "RECOVERED",
+                "reason_at_open": "orphan adoption from Kalshi",
+                "opened_at": core.now_iso(),
+            }
+            state.setdefault("open_positions", []).append(pos)
+            self._log.info(
+                "%s-live RECOVERED %s as orphan stub from Kalshi "
+                "(%d contracts @ %.2f)", self.bot_key, ticker,
+                int(abs(held)), entry_price)
+
     # ── state ───────────────────────────────────────────────────────
 
     def _load_state(self) -> dict:
+        if self._state_cache is not None:
+            return self._state_cache
         if self.state_path.exists():
             try:
                 import json
                 with self.state_path.open("r", encoding="utf-8") as f:
                     s = json.load(f)
                     if s and s.get("open_positions") is not None:
+                        self._state_cache = s
                         return s
             except (OSError, ValueError):
                 self._log.exception("%s-live state load failed; fresh "
                                     "start", self.bot_key)
-        return {
+        fresh = {
             "started_at": core.now_iso(),
             "last_tick_at": None,
             "open_positions": [],
@@ -449,3 +719,5 @@ class SportLiveExecutor:
             "stats": {},
             "last_settled_at_by_match_id": {},
         }
+        self._state_cache = fresh
+        return fresh
