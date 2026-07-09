@@ -11138,6 +11138,53 @@ def _render_watchlist(out: List[str], watchlist: List[dict],
     held_by_ticker = {b.get("ticker"): b for b in bets if b.get("ticker")}
     n_bets = len(bets)
 
+    # ── Kalshi-truth held tickers ─────────────────────────────────────
+    # Row highlighting on the Model-vs-market panel (the HOLDING badge,
+    # the .row-bought colouring) uses this map instead of the paper-
+    # positions map above, so the highlight only fires when Kalshi's
+    # portfolio actually lists an open position on that ticker. Paper
+    # positions on sim used to slip through as HOLDING which was
+    # misleading — nothing was bought on real Kalshi. On failure /
+    # missing creds, ``get_open_positions`` returns None and we treat
+    # it as "no highlight" so a transient API error doesn't paint every
+    # row as held.
+    kalshi_held_by_ticker: Dict[str, Dict[str, Any]] = {}
+    try:
+        from .kalshi_client import get_open_positions as _get_open_positions
+        _kalshi_pos, _err = _get_open_positions()
+        if _kalshi_pos is not None:
+            for _p in _kalshi_pos:
+                _tk = _p.get("ticker")
+                if not _tk:
+                    continue
+                try:
+                    _pos_fp = float(_p.get("position_fp")
+                                     or _p.get("position") or 0)
+                except (TypeError, ValueError):
+                    _pos_fp = 0.0
+                # Kalshi reports YES-side count as +, NO-side as −.
+                _side = "YES" if _pos_fp > 0 else "NO" if _pos_fp < 0 else ""
+                _avg = _p.get("average_price_cents")
+                if _avg is None:
+                    _avg = _p.get("avg_price_cents")
+                # Marry the Kalshi position with any paper-side bet
+                # record so tooltips still surface reason strings if
+                # they exist locally, without letting sim-only bets
+                # leak into the highlight.
+                _paper = held_by_ticker.get(_tk) or {}
+                kalshi_held_by_ticker[_tk] = {
+                    "ticker": _tk,
+                    "side": _side,
+                    "contracts": int(abs(_pos_fp)) or None,
+                    "entry_price_cents": (int(_avg)
+                                          if _avg is not None else
+                                          _paper.get("entry_price_cents")),
+                    "opened_at": _paper.get("opened_at"),
+                }
+    except Exception:  # noqa: BLE001
+        log.exception("kalshi held-tickers lookup failed; "
+                       "Model-vs-market highlight will be empty")
+
     # Non-sport bots: full Active-bets section + hero chart, same as
     # before. Sport bots skip this block; their Active bets and
     # Model-vs-market tables are emitted as separate top-level
@@ -11682,7 +11729,14 @@ def _render_watchlist(out: List[str], watchlist: List[dict],
             #     not". The prior BUY YES / BUY NO / WATCH verdicts were
             #     retired per user request to keep the column to two
             #     stable states.
-            held_bet = held_by_ticker.get(ticker)
+            # Row highlighting on Model-vs-market keys off REAL Kalshi
+            # portfolio state — not the paper sim_state. A row only
+            # gets the HOLDING badge + .row-bought styling if the
+            # ticker is currently held on the account. Paper positions
+            # on the sim dashboard still surface in the Active-bets
+            # section above; they just don't paint the model-vs-market
+            # row as though it were a real trade.
+            held_bet = kalshi_held_by_ticker.get(ticker)
             is_bought = held_bet is not None
             bought_side = ((held_bet.get("side") or "").upper()
                            if held_bet else "")
