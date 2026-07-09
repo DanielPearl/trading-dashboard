@@ -11330,6 +11330,62 @@ def _render_watchlist(out: List[str], watchlist: List[dict],
             "YES question shown on the market page.'>Title</th>"
             "<th>Question</th>"
         )
+    # Settled-row filter — applied on every bot, both sport and non-
+    # sport, both Active-bets and Model-vs-market panes. A contract
+    # counts as "settled" (and therefore is not visible on the
+    # watchlist) when any of the following signals fire:
+    #
+    #   1. ``completed=True`` from the exporter — the authoritative
+    #      flag Kalshi flips once ``status`` moves to
+    #      ``closed`` / ``settled`` / ``finalized``.
+    #   2. ``expected_expiration_time`` is more than 15 minutes in the
+    #      past. Kalshi is slow to flip ``status`` on tennis matches
+    #      that have already ended in real life (Juhas vs Klok 2026-
+    #      07-09 was 90-min-past-expiration but ``completed`` still
+    #      False), and a 15-minute buffer avoids false positives on
+    #      matches expiring imminently but still tradeable.
+    #   3. Either side's ask is at an extreme (≤ 1¢ or ≥ 99¢). Kalshi
+    #      pins the winning contract at 99¢ / losing at 1¢ once the
+    #      match resolves, well before the market status catches up.
+    #   4. Every ask field we can see is None — both sides withdrawn.
+    #
+    # We look for asks under both name shapes because
+    # ``build_standard_watchlist_rows`` collapses per-side ask fields
+    # (``yes_ask_cents_a`` / ``_b``) into a single top/bottom pair
+    # (``yes_ask_cents`` / ``no_ask_cents``) on tennis-shape bots.
+    now_ts = datetime.now(timezone.utc).timestamp()
+
+    def _is_settled(r: dict) -> bool:
+        if r.get("completed"):
+            return True
+        exp = r.get("expected_expiration_time")
+        if exp:
+            try:
+                if isinstance(exp, (int, float)):
+                    exp_ts = float(exp)
+                else:
+                    # ISO 8601 with a trailing "Z" — normalise to +00:00
+                    exp_ts = datetime.fromisoformat(
+                        str(exp).replace("Z", "+00:00")
+                    ).timestamp()
+                if exp_ts <= now_ts - 15 * 60:
+                    return True
+            except (TypeError, ValueError):
+                pass
+        ask_fields = (
+            "yes_ask_cents", "no_ask_cents",
+            "yes_ask_cents_a", "yes_ask_cents_b",
+        )
+        asks = tuple(r.get(f) for f in ask_fields)
+        # Any side clamped to an extreme → contract has priced-in the
+        # decisive side. Only fire when the extreme is on YES / NO ask
+        # cents, not on internal "confidence" fields; asks are ints
+        # in [0, 100].
+        for a in asks:
+            if isinstance(a, (int, float)) and (a <= 1 or a >= 99):
+                return True
+        return all(a is None for a in asks)
+
     # Split rows for sport bots: held rows go into the Active-bets
     # section, everything else into Model-vs-market. Non-sport bots
     # keep a single ordered list. Each section context carries its
@@ -11365,34 +11421,11 @@ def _render_watchlist(out: List[str], watchlist: List[dict],
                             "wnba", "world-cup", "mlb"}:
             _open_rows = [r for r in _open_rows
                            if r.get("pinnacle_prob_yes") is not None]
-        # Drop settled contracts from Model-vs-market on every sport
-        # bot — nothing left to trade once the Kalshi market resolves.
-        # ``completed`` is the exporter-emitted flag (tennis-forecast
-        # emits it from ``kalshi_markets.is_closed``; sport_adapter
-        # emits the equivalent for the NBA-shape bots). The fallback
-        # catches rows whose exporter predates the flag by treating
-        # both-sides-missing-asks as "no side is tradeable" — a proxy
-        # for settlement Kalshi always eventually enforces.
-        if current_bot in {"tennis", "table-tennis", "darts",
-                            "wnba", "world-cup", "mlb"}:
-            def _is_settled(r: dict) -> bool:
-                if r.get("completed"):
-                    return True
-                # ``build_standard_watchlist_rows`` collapses the two
-                # per-side ask fields (``yes_ask_cents_a`` /
-                # ``yes_ask_cents_b``) into a single ``yes_ask_cents``
-                # + ``no_ask_cents`` pair oriented around whichever
-                # side is on top of the row, so we accept either name
-                # shape. Only when EVERY side we can see is missing
-                # do we conclude the book has cleared.
-                asks = (
-                    r.get("yes_ask_cents"),
-                    r.get("no_ask_cents"),
-                    r.get("yes_ask_cents_a"),
-                    r.get("yes_ask_cents_b"),
-                )
-                return all(a is None for a in asks)
-            _open_rows = [r for r in _open_rows if not _is_settled(r)]
+        # Settled-row filter on both panes — a resolved match
+        # shouldn't sit in Active bets either (the position is
+        # already locked in, the buy/sell watch state is stale).
+        _held_rows = [r for r in _held_rows if not _is_settled(r)]
+        _open_rows = [r for r in _open_rows if not _is_settled(r)]
         section_ctxs = [
             {
                 "kind": "active",
@@ -11410,10 +11443,14 @@ def _render_watchlist(out: List[str], watchlist: List[dict],
             },
         ]
     else:
-        # Non-sport bots don't have Pinnacle at all — no filter needed.
+        # Non-sport bots: settled contracts (past expiration, extreme
+        # ask, etc.) are equally uninformative in the strike-ladder
+        # watchlist — the settlement price has already been decided,
+        # the row can't be traded, and leaving it in place shifts the
+        # user's eye away from the actionable strikes.
         section_ctxs = [{
             "kind": "single",
-            "rows": watchlist,
+            "rows": [r for r in watchlist if not _is_settled(r)],
             "include_position_cols": True,
             "tbody_id": "watchlist-tbody",
             "empty_msg": "No open markets right now.",
