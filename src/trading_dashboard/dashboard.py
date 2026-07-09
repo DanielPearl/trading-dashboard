@@ -11215,10 +11215,16 @@ def _render_watchlist(out: List[str], watchlist: List[dict],
     # the correct surface to show on the dashboard) opt out. Held
     # tickers are never filtered out: the user always needs visibility
     # into positions they actually own, regardless of current liquidity.
+    # Sport bots additionally keep zero-OI rows that carry a live quote:
+    # a freshly-listed game nobody has traded yet (OI 0) is still
+    # tradeable — you'd just be the first fill — and hiding it made
+    # next-day games vanish from Model vs market until someone else
+    # traded (2026-07-09, WNBA DAL@TOR).
     watchlist = [r for r in watchlist
                  if r.get("_skip_oi_filter")
                  or (r.get("open_interest") or 0) > 0
-                 or r.get("ticker") in held_by_ticker]
+                 or r.get("ticker") in held_by_ticker
+                 or (is_sport_bot and r.get("yes_ask_cents") is not None)]
     # Sort: sport bots (one row per game / match) have no strike axis,
     # so order by is-held → actionability → |best EV| descending. Held
     # rows always sort to the top so the user immediately sees what's
