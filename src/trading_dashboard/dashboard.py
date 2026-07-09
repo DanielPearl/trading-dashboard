@@ -11167,12 +11167,8 @@ def _render_watchlist(out: List[str], watchlist: List[dict],
                 _avg = _p.get("average_price_cents")
                 if _avg is None:
                     _avg = _p.get("avg_price_cents")
-                # Marry the Kalshi position with any paper-side bet
-                # record so tooltips still surface reason strings if
-                # they exist locally, without letting sim-only bets
-                # leak into the highlight.
                 _paper = held_by_ticker.get(_tk) or {}
-                kalshi_held_by_ticker[_tk] = {
+                _record = {
                     "ticker": _tk,
                     "side": _side,
                     "contracts": int(abs(_pos_fp)) or None,
@@ -11181,6 +11177,18 @@ def _render_watchlist(out: List[str], watchlist: List[dict],
                                           _paper.get("entry_price_cents")),
                     "opened_at": _paper.get("opened_at"),
                 }
+                # Register under the FULL Kalshi ticker AND the base
+                # match_id (ticker minus its final ``-<SIDE>`` segment)
+                # because sport-bot watchlist rows carry the base
+                # match_id as ``data-ticker`` — the side is expressed
+                # via ticker_a / ticker_b on the row, not appended to
+                # the identifier. Without the base-form key the
+                # highlight would never fire on any real sport-bot
+                # position.
+                kalshi_held_by_ticker[_tk] = _record
+                if "-" in _tk:
+                    _base = _tk.rsplit("-", 1)[0]
+                    kalshi_held_by_ticker.setdefault(_base, _record)
     except Exception:  # noqa: BLE001
         log.exception("kalshi held-tickers lookup failed; "
                        "Model-vs-market highlight will be empty")
