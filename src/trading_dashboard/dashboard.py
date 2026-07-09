@@ -1112,13 +1112,39 @@ def _compute_active_bets_totals(active_bets: List[dict],
     }
 
 
-def _build_global_active_bets(bots: List[dict]) -> List[dict]:
+def _live_kalshi_held_tickers() -> Optional[set]:
+    """Set of tickers currently held on Kalshi's portfolio, or ``None``
+    when the fetch fails / no creds. Used by the LIVE dashboard to keep
+    the home-page Active bets table honest against actual portfolio
+    state — the bot sim_state files can drift when the executor's
+    reconciliation lags, and the last thing the user wants is the
+    Home tab claiming positions they don't own.
+    """
+    from .kalshi_client import get_open_positions
+    pos, _err = get_open_positions()
+    if pos is None:
+        return None
+    return {p.get("ticker") for p in pos if p.get("ticker")}
+
+
+def _build_global_active_bets(bots: List[dict],
+                                mode: str | None = None) -> List[dict]:
     """Cross-bot list of active-bet dicts in the shape the active-bets
     table renderer (and ``_compute_active_bets_totals``) expects.
     Tagged with ``_bot_key`` so the distinct-bots count works. Skips
     bots whose data source isn't available, matching the page-render
     bot iteration.
+
+    ``mode="live"`` cross-references sport / billboard bots' rows
+    against Kalshi's live /portfolio/positions so the Home tab's
+    Active bets card shows the real held-portfolio count, not
+    whatever the bot's local sim_state has drifted to. Same graceful
+    degradation as the per-bot Active bets: when the Kalshi fetch
+    fails we leave the rows in place rather than blanking them.
     """
+    held: Optional[set] = None
+    if mode == "live":
+        held = _live_kalshi_held_tickers()
     out: List[dict] = []
     for b in bots:
         if not b.get("available"):
@@ -1139,6 +1165,8 @@ def _build_global_active_bets(bots: List[dict]) -> List[dict]:
             continue
         else:
             rows = fetch_active_bets_with_marks(b["db_path"])
+        if held is not None:
+            rows = [r for r in rows if r.get("ticker") in held]
         for ab in rows:
             ab["_bot_key"] = b["key"]
             ab["_bot_name"] = b["name"]
@@ -1474,7 +1502,8 @@ def fetch_decisions(decisions_path: str, limit: int = 60) -> List[dict]:
 
 def build_snapshot(db_path: str, bots: List[dict],
                     edge_cfg: dict,
-                    period_days: int | None = None) -> dict:
+                    period_days: int | None = None,
+                    *, mode: str | None = None) -> dict:
     """Compact JSON snapshot for live page updates.
 
     The browser polls this every few seconds and patches DOM cells in
@@ -1495,7 +1524,8 @@ def build_snapshot(db_path: str, bots: List[dict],
     # directly from the global active-bets list — guarantees the cards
     # equal the table column totals cell-for-cell, even when a bot's
     # ``summary_for_rollup`` shape drifts.
-    summary.update(_compute_active_bets_totals(_build_global_active_bets(bots)))
+    summary.update(_compute_active_bets_totals(
+        _build_global_active_bets(bots, mode=mode)))
     watchlist = fetch_watchlist(db_path)
     active_bets = fetch_active_bets_with_marks(db_path)
 
@@ -1579,6 +1609,7 @@ def _tennis_like_snapshot(
     watchlist_rows: List[dict], active_bets: List[dict],
     bots: List[dict], *, edge_cfg: dict,
     period_days: int | None,
+    mode: str | None = None,
 ) -> dict:
     """Shape a snapshot for tennis-shape (JSON-source) bots.
 
@@ -1590,7 +1621,8 @@ def _tennis_like_snapshot(
     """
     summary = fetch_global_summary(bots, period_days=period_days)
     # Same override as the standard snapshot — see ``build_snapshot``.
-    summary.update(_compute_active_bets_totals(_build_global_active_bets(bots)))
+    summary.update(_compute_active_bets_totals(
+        _build_global_active_bets(bots, mode=mode)))
     rows = []
     for v in watchlist_rows:
         ya = v.get("yes_ask_cents")
@@ -12727,6 +12759,22 @@ class Handler(BaseHTTPRequestHandler):
                 # which is identical regardless of which bot is selected).
                 global_summary = fetch_global_summary(self.bots,
                                                        period_days=period_days)
+                # On LIVE, cross-reference every bot's sim_state active
+                # bets against Kalshi's real portfolio so the Home tab
+                # Active bets card + table don't drift when the bot
+                # executor's reconciliation lags. ``None`` = skip filter
+                # (sim dashboard, or Kalshi fetch failed / no creds).
+                _live_held_tickers = (_live_kalshi_held_tickers()
+                                       if self.mode == "live" else None)
+
+                def _keep_on_kalshi(ab: dict) -> bool:
+                    """Filter passthrough — sim dashboard always keeps
+                    rows; live dashboard keeps only rows whose ticker is
+                    in the live-held set."""
+                    if _live_held_tickers is None:
+                        return True
+                    return ab.get("ticker") in _live_held_tickers
+
                 global_active_bets: List[dict] = []
                 global_history: List[dict] = []
                 # Per-bot models for the Performance tab — one card-row
@@ -12780,12 +12828,16 @@ class Handler(BaseHTTPRequestHandler):
                             "strike_lo": None, "strike_hi": None,
                         })
                         # Pull open paper bets into the cross-bot
-                        # active-bets table.
+                        # active-bets table. On LIVE, drop any row
+                        # whose ticker isn't in the actual Kalshi
+                        # portfolio (see ``_keep_on_kalshi``).
                         if b.get("dashboard_type") == "sport":
                             for ab in _tennis.active_bets_for_rollup(
                                 b.get("sim_state_path"),
                                 watchlist_path=b.get("watchlist_json_path"),
                             ):
+                                if not _keep_on_kalshi(ab):
+                                    continue
                                 ab["_bot_name"] = b["name"]
                                 ab["_bot_key"] = b["key"]
                                 ab["_dashboard_type"] = b.get("dashboard_type") or "standard"
@@ -12807,6 +12859,8 @@ class Handler(BaseHTTPRequestHandler):
                             # Billboard writes a real sim.db — same
                             # readers as the standard bots below.
                             for ab in fetch_active_bets_with_marks(b["db_path"]):
+                                if not _keep_on_kalshi(ab):
+                                    continue
                                 ab["_bot_name"] = b["name"]
                                 ab["_bot_key"] = b["key"]
                                 ab["_dashboard_type"] = "billboard"
@@ -12836,6 +12890,8 @@ class Handler(BaseHTTPRequestHandler):
                     if b.get("dashboard_type") and b["dashboard_type"] != "standard":
                         continue
                     for ab in fetch_active_bets_with_marks(b["db_path"]):
+                        if not _keep_on_kalshi(ab):
+                            continue
                         ab["_bot_name"] = b["name"]
                         ab["_bot_key"] = b["key"]
                         ab["_dashboard_type"] = b.get("dashboard_type") or "standard"
@@ -13040,6 +13096,7 @@ class Handler(BaseHTTPRequestHandler):
                         snap_rows, snap_actives, self.bots,
                         edge_cfg=self.edge_cfg,
                         period_days=snap_period_days,
+                        mode=self.mode,
                     )
                 elif bot.get("dashboard_type") == "survivor":
                     # Survivor page also uses page reloads; the live
@@ -13061,6 +13118,7 @@ class Handler(BaseHTTPRequestHandler):
                         [], [], self.bots,
                         edge_cfg=self.edge_cfg,
                         period_days=snap_period_days,
+                        mode=self.mode,
                     )
                     payload_dict["bot"] = bot["key"]
                     payload_dict["type"] = "billboard"
@@ -13068,7 +13126,8 @@ class Handler(BaseHTTPRequestHandler):
                     db_path = bot["db_path"]
                     payload_dict = build_snapshot(db_path, self.bots,
                                                    self.edge_cfg,
-                                                   period_days=snap_period_days)
+                                                   period_days=snap_period_days,
+                                                   mode=self.mode)
             except Exception:  # noqa: BLE001
                 log.exception("snapshot endpoint failed")
                 self.send_response(500)
