@@ -11378,14 +11378,20 @@ def _render_watchlist(out: List[str], watchlist: List[dict],
             def _is_settled(r: dict) -> bool:
                 if r.get("completed"):
                     return True
-                ask_a = r.get("yes_ask_cents_a")
-                ask_b = r.get("yes_ask_cents_b")
-                # Both sides missing an ask → no book, market has
-                # cleared. Kalshi maintains asks even on lopsided
-                # near-settled markets (e.g. 1¢ / 99¢), so this
-                # catches only rows where both sides have been
-                # withdrawn.
-                return ask_a is None and ask_b is None
+                # ``build_standard_watchlist_rows`` collapses the two
+                # per-side ask fields (``yes_ask_cents_a`` /
+                # ``yes_ask_cents_b``) into a single ``yes_ask_cents``
+                # + ``no_ask_cents`` pair oriented around whichever
+                # side is on top of the row, so we accept either name
+                # shape. Only when EVERY side we can see is missing
+                # do we conclude the book has cleared.
+                asks = (
+                    r.get("yes_ask_cents"),
+                    r.get("no_ask_cents"),
+                    r.get("yes_ask_cents_a"),
+                    r.get("yes_ask_cents_b"),
+                )
+                return all(a is None for a in asks)
             _open_rows = [r for r in _open_rows if not _is_settled(r)]
         section_ctxs = [
             {
