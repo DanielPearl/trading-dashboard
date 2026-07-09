@@ -11365,6 +11365,28 @@ def _render_watchlist(out: List[str], watchlist: List[dict],
                             "wnba", "world-cup", "mlb"}:
             _open_rows = [r for r in _open_rows
                            if r.get("pinnacle_prob_yes") is not None]
+        # Drop settled contracts from Model-vs-market on every sport
+        # bot — nothing left to trade once the Kalshi market resolves.
+        # ``completed`` is the exporter-emitted flag (tennis-forecast
+        # emits it from ``kalshi_markets.is_closed``; sport_adapter
+        # emits the equivalent for the NBA-shape bots). The fallback
+        # catches rows whose exporter predates the flag by treating
+        # both-sides-missing-asks as "no side is tradeable" — a proxy
+        # for settlement Kalshi always eventually enforces.
+        if current_bot in {"tennis", "table-tennis", "darts",
+                            "wnba", "world-cup", "mlb"}:
+            def _is_settled(r: dict) -> bool:
+                if r.get("completed"):
+                    return True
+                ask_a = r.get("yes_ask_cents_a")
+                ask_b = r.get("yes_ask_cents_b")
+                # Both sides missing an ask → no book, market has
+                # cleared. Kalshi maintains asks even on lopsided
+                # near-settled markets (e.g. 1¢ / 99¢), so this
+                # catches only rows where both sides have been
+                # withdrawn.
+                return ask_a is None and ask_b is None
+            _open_rows = [r for r in _open_rows if not _is_settled(r)]
         section_ctxs = [
             {
                 "kind": "active",
