@@ -226,12 +226,13 @@ class SportLiveExecutor:
             return
         if edge < self.min_edge:
             return
-        if float(model_p) <= 0.50:
-            self._log.info("%s-live skip %s: benchmark prob %.3f ≤ 0.50 "
-                           "— refuse to buy a side the sharp line "
-                           "expects to lose", self.bot_key, ticker,
-                           float(model_p))
-            return
+        # No favorites-only gate here (the model-driven executors keep
+        # theirs): the probability IS the sharp line, so buying an
+        # underdog below its fair value — e.g. a 45% team at 40¢ — is
+        # the whole strategy, and the sim's paper trader takes those.
+        # Removed 2026-07-09 after it blocked COL@SF while the sim
+        # bought it; sim and live must evaluate the same gates. The
+        # entry-price floor (≥15¢) still keeps longshot tails out.
         kickoff = row.get("kickoff")
         if kickoff:
             try:
