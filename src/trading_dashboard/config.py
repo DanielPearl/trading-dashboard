@@ -114,6 +114,13 @@ class BotEntry:
     # this to fetch live candlesticks straight from Kalshi for the
     # watchlist hero chart, independent of whether the bot itself is up.
     series_ticker: str | None = None
+    # Every Kalshi series family this bot claims, for attributing real
+    # portfolio positions to a bot on the LIVE dashboard's Active bets
+    # (a bot can trade several series — NBA has KXNBAGAME +
+    # KXNBASUMMERGAME). Entries ending in ``*`` are prefixes
+    # ("KXDARTS*"); plain entries match the ticker's first dash-segment
+    # exactly. Empty → falls back to [series_ticker].
+    series_prefixes: List[str] = field(default_factory=list)
     # Human-readable name of the upstream data source surfaced on each
     # bot's model card and detail page (e.g. "FRED ICSA", "Billboard
     # Hot 100 weekly chart"). Falls through from config; render code

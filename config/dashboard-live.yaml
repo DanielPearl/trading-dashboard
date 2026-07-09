@@ -77,6 +77,9 @@ bots:
     # rendered as a historical card; the benchmark bot trains nothing.
     metrics_path: /root/nba/data/processed/artifacts/metrics.json
     series_ticker: KXNBAGAME
+    # Both NBA game families — attributes real Kalshi positions to this
+    # bot's Active bets on the live page (manual buys included).
+    series_prefixes: [KXNBAGAME, KXNBASUMMERGAME]
     data_source: "Pinnacle moneylines (guest feed + The Odds API devig)"
     seasons:
       - name: "NBA 2025-26 Season"
@@ -105,6 +108,7 @@ bots:
     # tab + model cards render even though the live loop is disabled.
     metrics_path: /root/wnba/data/processed/artifacts/metrics.json
     series_ticker: KXWNBAGAME
+    series_prefixes: [KXWNBAGAME]
     data_source: "ESPN box scores (no API key)"
     seasons:
       - name: "WNBA 2026 Season"
@@ -146,6 +150,7 @@ bots:
     name: Tennis Forecast
     dashboard_type: sport
     series_ticker: BASELINEBREAK
+    series_prefixes: [KXATPMATCH, KXWTAMATCH]
     data_source: "Jeff Sackmann tennis_atp + tennis_wta (GitHub)"
     db_path: /root/tennis-forecast/data/outputs-live/watchlist.json
     decisions_path: /root/tennis-forecast/data/outputs-live/watchlist.json
@@ -192,6 +197,7 @@ bots:
     name: Table Tennis Forecast
     dashboard_type: sport
     series_ticker: TABLETENNIS
+    series_prefixes: [KXTABLETENNIS, KXITTFMENMATCH, KXITTFWOMENMATCH, KXTTELITEGAME]
     data_source: "Pinnacle moneylines (guest feed devig)"
     db_path: /root/table-tennis-forecast/data/outputs-live/watchlist.json
     decisions_path: /root/table-tennis-forecast/data/outputs-live/watchlist.json
@@ -226,6 +232,8 @@ bots:
     name: Darts Forecast
     dashboard_type: sport
     series_ticker: KXDARTS
+    # Family prefix — covers KXDARTSMATCH / KXPDCDARTS / future PDC series.
+    series_prefixes: ["KXDARTS*", KXPDCDARTS]
     data_source: "Pinnacle moneylines (guest feed devig)"
     db_path: /root/darts-forecast/data/outputs-live/watchlist.json
     decisions_path: /root/darts-forecast/data/outputs-live/watchlist.json
@@ -260,6 +268,7 @@ bots:
     watchlist_json_path: /root/world-cup/data/outputs-live/watchlist.json
     sim_state_path: /root/world-cup/data/outputs-live/sim_state.json
     series_ticker: KXWCADVANCE
+    series_prefixes: [KXWCADVANCE, KXWCGAME]
     data_source: "martj42/international_results (open data, no API key)"
     model_report_path: /root/world-cup/data/processed/artifacts/model_report.json
     training_data_path: /root/world-cup/data/training_data.csv
@@ -277,6 +286,7 @@ bots:
     # the live executor saw, isolated from the sim site's paper state.
     dashboard_type: sport
     series_ticker: KXMLBGAME
+    series_prefixes: [KXMLBGAME]
     data_source: "Pinnacle moneylines (The Odds API devig, Betfair fallback)"
     db_path: /root/baseball/data/outputs-live/watchlist.json
     decisions_path: /root/baseball/data/outputs-live/watchlist.json

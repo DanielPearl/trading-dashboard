@@ -12592,10 +12592,41 @@ class Handler(BaseHTTPRequestHandler):
                             held_tickers = {p.get("ticker")
                                              for p in kalshi_pos
                                              if p.get("ticker")}
+
+                            def _held(ab_ticker: str) -> bool:
+                                # sim_state rows carry either the real
+                                # market ticker or the parent EVENT
+                                # ticker (tennis-era rollup) — a held
+                                # market ticker always startswith its
+                                # event ticker + "-".
+                                if ab_ticker in held_tickers:
+                                    return True
+                                return any(h.startswith(ab_ticker + "-")
+                                           for h in held_tickers)
+
                             bot_active_bets = [
                                 ab for ab in bot_active_bets
-                                if ab.get("ticker") in held_tickers
+                                if _held(str(ab.get("ticker") or ""))
                             ]
+                            # UNION with real Kalshi positions in this
+                            # bot's series that the executor didn't
+                            # open (manual buys, external orders) —
+                            # per user 2026-07-09: "Active bets should
+                            # show the bets that were bought", e.g. a
+                            # hand-bought KXNBASUMMERGAME position must
+                            # appear on the NBA page. Rendered through
+                            # the same tennis-column row shape.
+                            prefixes = (bot.get("series_prefixes")
+                                        or ([bot.get("series_ticker")]
+                                            if bot.get("series_ticker")
+                                            else []))
+                            covered = {str(ab.get("ticker") or "")
+                                       for ab in bot_active_bets}
+                            bot_active_bets += (
+                                _tennis.kalshi_positions_to_active_bets(
+                                    kalshi_pos, payload_wl, prefixes,
+                                    exclude_tickers=covered,
+                                ))
                     for ab in bot_active_bets:
                         ab.setdefault("_display", bot.get("display") or {})
                     # Sport bots have no per-bot "latest open position"
@@ -13489,6 +13520,7 @@ def main(argv: list[str] | None = None) -> int:
             "training_data_path": b.training_data_path,
             "training_db_path": b.training_db_path,
             "series_ticker": b.series_ticker,
+            "series_prefixes": list(b.series_prefixes or []),
             "seasons": [
                 {"name": s.name, "start": s.start, "end": s.end}
                 for s in (b.seasons or [])

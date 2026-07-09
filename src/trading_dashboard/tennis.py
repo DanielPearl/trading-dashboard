@@ -412,6 +412,146 @@ def active_bets_for_rollup(sim_state_path: str | None,
     return out
 
 
+def _ticker_matches_series(ticker: str, series_prefixes) -> bool:
+    """True when a Kalshi market ticker belongs to one of the bot's
+    series. Entries ending in ``*`` are family prefixes (``KXDARTS*``
+    matches KXDARTSMATCH / KXPDCDARTS...); everything else must equal
+    the ticker's first dash-segment exactly, so ``KXNBAGAME`` can't
+    accidentally claim the unrelated KXNBAGAMES series."""
+    seg = (ticker or "").split("-", 1)[0]
+    for p in series_prefixes or []:
+        p = (p or "").strip()
+        if not p:
+            continue
+        if p.endswith("*"):
+            if seg.startswith(p[:-1]):
+                return True
+        elif seg == p:
+            return True
+    return False
+
+
+def kalshi_positions_to_active_bets(kalshi_positions: List[Dict[str, Any]],
+                                    watchlist_payload: Dict[str, Any] | None,
+                                    series_prefixes,
+                                    exclude_tickers=(),
+                                    ) -> List[Dict[str, Any]]:
+    """Project REAL Kalshi portfolio positions in a bot's series into
+    the same active-bets row shape ``active_bets_for_rollup`` emits,
+    so manually-placed (or externally-placed) orders show up on the
+    bot's Active bets table with the standard tennis columns.
+
+    Only positions whose ticker matches ``series_prefixes`` and isn't
+    already covered by ``exclude_tickers`` (the executor's own rows —
+    either the exact market ticker or its parent event ticker) are
+    returned. Rows are enriched from the bot's watchlist payload when
+    the market is on today's board (matchup title, model prob, current
+    mark); positions on markets that already left the watchlist render
+    from the portfolio data alone.
+    """
+    rows = list((watchlist_payload or {}).get("rows") or [])
+    by_ticker: Dict[str, tuple] = {}
+    for r in rows:
+        if r.get("ticker_a"):
+            by_ticker[r["ticker_a"]] = (r, "a")
+        if r.get("ticker_b"):
+            by_ticker[r["ticker_b"]] = (r, "b")
+
+    excluded = {t for t in (exclude_tickers or ()) if t}
+    out: List[Dict[str, Any]] = []
+    for p in kalshi_positions or []:
+        ticker = str(p.get("ticker") or "")
+        if not ticker or not _ticker_matches_series(ticker, series_prefixes):
+            continue
+        event_ticker = ticker.rsplit("-", 1)[0]
+        if ticker in excluded or event_ticker in excluded:
+            continue
+        try:
+            fp = float(p.get("position_fp") or 0)
+        except (TypeError, ValueError):
+            continue
+        if not fp:
+            continue
+        contracts = max(1, int(round(abs(fp))))
+        traded = None
+        for k in ("total_traded_dollars", "market_exposure_dollars"):
+            try:
+                v = float(p.get(k))
+                if v > 0:
+                    traded = v
+                    break
+            except (TypeError, ValueError):
+                continue
+        entry = (traded / contracts) if traded else None
+        if entry is None:
+            continue  # can't price the row honestly — skip
+        entry_cents = int(round(entry * 100))
+
+        row_entry = by_ticker.get(ticker)
+        match_label = event_ticker
+        side_player = ticker.rsplit("-", 1)[-1]
+        title = ""
+        tournament = surface = ""
+        mark = entry
+        model_p = entry
+        mtc = None
+        if row_entry:
+            row, side_key = row_entry
+            match_label = (f"{row.get('player_a', '')} vs "
+                           f"{row.get('player_b', '')}").strip()
+            side_player = (row.get("player_a") if side_key == "a"
+                           else row.get("player_b")) or side_player
+            title = row.get("event_title") or row.get("title") or ""
+            tournament = row.get("tournament") or ""
+            surface = row.get("surface") or ""
+            m = (row.get("market_prob_a") if side_key == "a"
+                 else row.get("market_prob_b"))
+            if m is not None:
+                mark = float(m)
+            lp = (row.get("live_prob_a") if side_key == "a"
+                  else row.get("live_prob_b"))
+            if lp is not None:
+                model_p = float(lp)
+            exp = (row.get("expected_expiration_time")
+                   or row.get("kickoff"))
+            if exp:
+                try:
+                    ts = datetime.fromisoformat(
+                        str(exp).replace("Z", "+00:00"))
+                    mtc = max(0.0, (ts - datetime.now(timezone.utc)
+                                    ).total_seconds() / 60.0)
+                except (TypeError, ValueError):
+                    mtc = None
+
+        out.append({
+            "ticker": ticker,
+            "_match": match_label,
+            "_side_player": side_player,
+            "_title": title,
+            "title": title,
+            "_tournament": tournament,
+            "_surface": surface,
+            "side": "YES" if fp > 0 else "NO",
+            "contracts": contracts,
+            "entry_price_cents": entry_cents,
+            "mark_mid": mark * 100,
+            "opened_at": p.get("last_updated_ts", ""),
+            "minutes_to_close": mtc,
+            "label_at_open": "KALSHI",
+            "reason_at_open": ("held on Kalshi (manual or external "
+                               "order — not opened by this bot's "
+                               "executor)"),
+            "model_yes_prob_at_entry": model_p,
+            "kalshi_yes_prob_at_entry": entry,
+            "expected_ev_at_entry": (
+                model_p - entry
+                - (_kalshi_fee_cents(entry_cents, contracts)
+                   / 100.0 / contracts)
+            ),
+        })
+    return out
+
+
 def closed_positions_for_rollup(sim_state_path: str | None,
                                   limit: int = 100) -> List[Dict[str, Any]]:
     """Project tennis ``closed_positions`` into the shape the standard
