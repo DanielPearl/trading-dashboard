@@ -38,7 +38,12 @@ _WNBA_TEAM_CODES = {
     "ATL", "CHI", "CONN", "DAL", "GS", "IND", "LV", "LA",
     "MIN", "NY", "PHX", "POR", "SEA", "TOR", "WSH",
 }
-_ESPN_TO_KALSHI = {"CON": "CONN", "WAS": "WSH", "LVA": "LV", "GSV": "GS"}
+# Alias → canonical map. Mostly ESPN spellings, plus Kalshi's own PDX
+# ticker code for the Portland Fire (canonical set uses ESPN's POR —
+# without the alias every LV@PDX-style ticker fails to parse and the
+# game never reaches the watchlist).
+_ESPN_TO_KALSHI = {"CON": "CONN", "WAS": "WSH", "LVA": "LV", "GSV": "GS",
+                    "PDX": "POR"}
 
 
 def _norm(code: str) -> str:
@@ -53,12 +58,14 @@ _TICKER_RE = re.compile(
 
 
 def _split_body(body: str, team: str) -> Optional[tuple]:
-    """Split ``{AWAY}{HOME}`` into (away, home) using the -TEAM hint."""
+    """Split ``{AWAY}{HOME}`` into (away, home) using the -TEAM hint.
+    Both halves are normalized so alias codes (Kalshi's PDX for POR)
+    can't leave the two sides of one game with mismatched pairs."""
     body, team = body.upper(), _norm(team)
     if body.startswith(team) and body[len(team):]:
-        return team, body[len(team):]
+        return team, _norm(body[len(team):])
     if body.endswith(team) and body[:len(body) - len(team)]:
-        return body[:len(body) - len(team)], team
+        return _norm(body[:len(body) - len(team)]), team
     # Fall back to known-team-set search.
     for i in range(2, len(body) - 1):
         a, h = _norm(body[:i]), _norm(body[i:])

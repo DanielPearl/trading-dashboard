@@ -38,7 +38,7 @@ import os
 import sqlite3
 import tempfile
 from collections import defaultdict
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Callable, Optional
 
@@ -344,12 +344,38 @@ def _row_pair_to_match(parsed_a: ParsedTicker, row_a: sqlite3.Row,
     }
 
 
+# Snapshots older than this are treated as closed markets. The source
+# bots re-snapshot every open Kalshi market on every tick (3 min
+# active / 1 h idle overnight), so a ticker whose latest market_views
+# row is many hours old has dropped off Kalshi's open list — settled
+# or expired. Without this cut the watchlist accumulated every game
+# ever snapshotted (a month of finished WNBA games by 2026-07-09).
+_SNAPSHOT_FRESHNESS_HOURS = 6.0
+
+
+def _snapshot_is_fresh(captured_at: Any, now: datetime) -> bool:
+    """True when ``captured_at`` (ISO string) is within the freshness
+    window. Malformed / missing timestamps count as stale — a row we
+    can't date is a row we can't vouch for."""
+    if not captured_at:
+        return False
+    try:
+        ts = datetime.fromisoformat(str(captured_at).replace("Z", "+00:00"))
+    except (TypeError, ValueError):
+        return False
+    if ts.tzinfo is None:
+        ts = ts.replace(tzinfo=timezone.utc)
+    return (now - ts) <= timedelta(hours=_SNAPSHOT_FRESHNESS_HOURS)
+
+
 def _build_watchlist(con: sqlite3.Connection,
                       ticker_parser: TickerParser,
                       tournament_label: str,
                       surface_label: str) -> list[dict]:
     """Collapse latest market_views snapshots into match-level rows."""
-    rows = _latest_snapshots(con)
+    now = datetime.now(timezone.utc)
+    rows = [r for r in _latest_snapshots(con)
+            if _snapshot_is_fresh(r["captured_at"], now)]
     # Group by (base_id, away, home) so each match collects its two
     # sides. If only one side has snapshotted yet, the match still
     # gets a row with the other side inferred.

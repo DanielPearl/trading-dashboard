@@ -11311,16 +11311,24 @@ def _render_watchlist(out: List[str], watchlist: List[dict],
                        if r.get("ticker") in held_by_ticker]
         _open_rows = [r for r in watchlist
                        if r.get("ticker") not in held_by_ticker]
-        # 2026-07-08: only surface Model-vs-market rows where Pinnacle
-        # is quoting the match. Rows without a Pinnacle price mean we
-        # have no sharp reference to compute Edge / EV against, so the
-        # decision cells fall back to the model's own view — which
-        # tends to encourage bad clicks on Challenger / ITF /
-        # between-tournament markets where nobody in the world has
-        # priced the line. Active-bets rows still show unconditionally
-        # since we already hold those positions.
-        _open_rows = [r for r in _open_rows
-                       if r.get("pinnacle_prob_yes") is not None]
+        # 2026-07-08: tennis-family bots only surface Model-vs-market
+        # rows where Pinnacle is quoting the match. Rows without a
+        # Pinnacle price mean we have no sharp reference to compute
+        # Edge / EV against, so the decision cells fall back to the
+        # model's own view — which tends to encourage bad clicks on
+        # Challenger / ITF / between-tournament markets where nobody
+        # in the world has priced the line. Active-bets rows still
+        # show unconditionally since we already hold those positions.
+        #
+        # League bots (WNBA / NBA / world-cup) are exempt: every
+        # listed game is top tier, and Pinnacle routinely posts the
+        # line hours after Kalshi opens the market (and pulls it at
+        # tip-off), so filtering would hide real, tradeable games.
+        # Their Pinnacle cell just dashes until the line appears
+        # (2026-07-09, per user: show every WNBA game).
+        if current_bot in {"tennis", "table-tennis", "darts"}:
+            _open_rows = [r for r in _open_rows
+                           if r.get("pinnacle_prob_yes") is not None]
         section_ctxs = [
             {
                 "kind": "active",
