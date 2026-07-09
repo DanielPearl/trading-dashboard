@@ -305,6 +305,85 @@ def get_balance_cents(force_refresh: bool = False
 
 
 # ---------------------------------------------------------------------------
+# Open Kalshi positions — drives the "Active bets" section on live
+# dashboards so held-position rows reflect actual Kalshi portfolio state
+# instead of the bot's local sim_state (which can drift when the
+# executor's reconciliation is slow or partial). Same cache pattern as
+# the balance helper above — 30-second TTL so a fresh fill / close
+# shows up on the next refresh without hammering the endpoint on every
+# panel poll during a page load.
+# ---------------------------------------------------------------------------
+
+_POSITIONS_CACHE: dict[str, Any] = {"ts": 0.0, "positions": None,
+                                       "error": None}
+_POSITIONS_TTL_SECONDS = 30.0
+_positions_lock = threading.Lock()
+
+
+def get_open_positions(force_refresh: bool = False
+                        ) -> tuple[Optional[List[Dict[str, Any]]],
+                                    Optional[str]]:
+    """Return (open_positions, error_or_none).
+
+    ``open_positions`` is a list of ``/portfolio/positions`` entries
+    filtered to non-zero ``position_fp``. Each entry keeps the raw
+    Kalshi shape (``ticker``, ``position_fp``, ``market_exposure``,
+    ``realized_pnl``, etc.). On no-creds / API failure returns
+    ``(None, "reason")``.
+
+    Cached for 30 seconds — long enough to absorb a tab full of panel
+    polls, short enough that a fresh fill / close shows up on the next
+    refresh.
+    """
+    import time as _time
+    now = _time.monotonic()
+    with _positions_lock:
+        cached = _POSITIONS_CACHE.get("positions")
+        ts = _POSITIONS_CACHE.get("ts") or 0.0
+        if (not force_refresh
+                and cached is not None
+                and now - ts < _POSITIONS_TTL_SECONDS):
+            return list(cached), None
+
+    client = get_client()
+    if not client.available:
+        with _positions_lock:
+            _POSITIONS_CACHE["error"] = (
+                "Kalshi API key not configured — Active bets falls back "
+                "to bot sim_state."
+            )
+        return None, _POSITIONS_CACHE["error"]
+
+    try:
+        resp = client._sdk._request(
+            "GET", "/portfolio/positions",
+            params={"limit": 500},
+        )
+    except Exception as exc:  # noqa: BLE001
+        err = f"/portfolio/positions call failed ({exc})."
+        with _positions_lock:
+            _POSITIONS_CACHE["error"] = err
+        return None, err
+
+    raw = ((resp or {}).get("market_positions")
+           or (resp or {}).get("positions") or [])
+    open_only: List[Dict[str, Any]] = []
+    for p in raw:
+        try:
+            v = float(p.get("position_fp") or p.get("position") or 0)
+        except (TypeError, ValueError):
+            v = 0.0
+        if abs(v) > 0.0 and p.get("ticker"):
+            open_only.append(p)
+
+    with _positions_lock:
+        _POSITIONS_CACHE["ts"] = now
+        _POSITIONS_CACHE["positions"] = open_only
+        _POSITIONS_CACHE["error"] = None
+    return list(open_only), None
+
+
+# ---------------------------------------------------------------------------
 # Live "implied spot" for above-$X bot series — drives the Home grid's
 # stale-forecast badge.
 # ---------------------------------------------------------------------------

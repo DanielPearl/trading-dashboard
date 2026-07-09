@@ -69,27 +69,26 @@ bots:
     # NBA is a head-to-head sport bot ("Will Team A win?") — same
     # match-row shape as tennis / table-tennis / darts, so it
     # renders under the unified ``dashboard_type: sport`` page.
-    # NBA's underlying loop still writes to sim.db (positions,
-    # market_views, model_snapshots — the standard-bot schema);
-    # bots/_sport_adapter.py reads that sim.db after each
-    # Bot.tick() and emits sport-shape watchlist.json +
-    # sim_state.json at the JSON paths below.
+    # 2026-07 rearchitecture: the probability source is the devigged
+    # Pinnacle moneyline (kalshi_sdk.pinnacle — guest feed + Odds-API
+    # cascade), MLB-style. The in-process daemon (nba_trader below)
+    # drives the repo's data/dashboard/trading modules directly and
+    # writes the JSON paths below; the legacy Elo Bot + sim.db +
+    # _sport_adapter path is retired from trading.
     dashboard_type: sport
+    # sim.db is the legacy Elo bot's ledger — kept as db_path so the
+    # availability check passes on first boot before the new loop's
+    # first watchlist write (same idea as world-cup's training CSV).
     db_path: /root/nba/data/sim.db
     decisions_path: /root/nba/data/decisions.jsonl
     watchlist_json_path: /root/nba/data/outputs/watchlist.json
     sim_state_path: /root/nba/data/outputs/sim_state.json
-    # NBA writes its training stats to sim.db's model_snapshots table
-    # (legacy macro-bot schema), not to metrics.json the way the
-    # other sport bots do. bots/_sport_adapter.py reads the latest
-    # snapshot and synthesises a metrics.json at this path after
-    # each Bot.tick(), so the sport Models tab renders NBA's
-    # accuracy / brier / log-loss / ROC AUC card alongside the
-    # others. Shared with the live dashboard (training artifacts
-    # are mode-agnostic).
+    # Last metrics.json the retired Elo pipeline synthesised — the
+    # Models tab renders it as a historical card. The benchmark bot
+    # trains nothing, so this file no longer updates.
     metrics_path: /root/nba/data/processed/artifacts/metrics.json
     series_ticker: KXNBAGAME
-    data_source: "ESPN box scores + NBA stats API"
+    data_source: "Pinnacle moneylines (guest feed + The Odds API devig)"
     # Single league-level window — regular-season tip-off through
     # NBA Finals end. Update at the start of each season.
     seasons:
@@ -97,10 +96,7 @@ bots:
         start: "2025-10-21T23:00:00Z"
         end:   "2026-06-22T03:00:00Z"
     display:
-      # Underlying anchor for this bot is each home team's pre-game ELO
-      # rating — a unitless rating typically in the 1300-1700 range.
-      # The home-page card shows it with one decimal.
-      underlying_label: Home team ELO (pre-game)
+      underlying_label: Home team win prob (Pinnacle)
       underlying_unit: ""
       underlying_decimals: 0
       unit_position: none
@@ -258,7 +254,11 @@ bots:
     # series_ticker meta label distinguishes the cards on the home grid.
     dashboard_type: sport
     series_ticker: TABLETENNIS
-    data_source: "ahartness/table-tennis-bet-analyzer (GitHub, TT Elite Series 2022-2025)"
+    # 2026-07: probability source is the devigged Pinnacle TT line
+    # (guest feed — The Odds API has no table-tennis coverage). Rows
+    # without a Pinnacle line are WATCH-only; while Pinnacle isn't
+    # quoting TT at all the bot is dormant by design.
+    data_source: "Pinnacle moneylines (guest feed devig)"
     db_path: /root/table-tennis-forecast/data/outputs/watchlist.json
     decisions_path: /root/table-tennis-forecast/data/outputs/watchlist.json
     watchlist_json_path: /root/table-tennis-forecast/data/outputs/watchlist.json
@@ -315,7 +315,10 @@ bots:
     # (Premier League, Worlds, PDC tour) under that umbrella.
     dashboard_type: sport
     series_ticker: KXDARTS
-    data_source: "wonderkiduk/darts_data (GitHub, PDC WC 2022)"
+    # 2026-07: probability source is the devigged Pinnacle darts line
+    # (guest feed — The Odds API has no darts coverage). Between PDC
+    # events Pinnacle quotes nothing and the bot is dormant by design.
+    data_source: "Pinnacle moneylines (guest feed devig)"
     db_path: /root/darts-forecast/data/outputs/watchlist.json
     decisions_path: /root/darts-forecast/data/outputs/watchlist.json
     watchlist_json_path: /root/darts-forecast/data/outputs/watchlist.json
@@ -496,11 +499,12 @@ cpi_trader:
 
 nba_trader:
   enabled: true
-  # Path to the nba-forecast repo. Bot module injects
-  # ``<repo_path>/src`` onto sys.path and imports
-  # ``nba_bot.main.Bot``. Per memory the droplet repo is /root/nba.
+  # Path to the nba-forecast repo (droplet: /root/nba). Shape B since
+  # 2026-07 — bots/nba.py loads the repo's data/dashboard/trading
+  # modules (alias nba_src) and drives the benchmark tick loop;
+  # config_path is gone with the legacy Elo Bot.
   repo_path: /root/nba
-  config_path: /root/nba/config/config.yaml
+  interval_seconds: 120
 
 wnba_trader:
   enabled: true

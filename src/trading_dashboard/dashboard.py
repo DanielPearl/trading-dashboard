@@ -11413,12 +11413,12 @@ def _render_watchlist(out: List[str], watchlist: List[dict],
         # rationale for exemption ("Pinnacle posts hours after Kalshi
         # opens") no longer holds — Betfair typically has a line from
         # opening on those two — so the filter now covers them too.
-        # NBA is left exempt for now: The Odds API's NBA feed isn't
-        # wired into the executor path yet, so ``pinnacle_prob_yes``
-        # is None on every NBA row and enabling the filter would
-        # blank the whole table.
+        # NBA joined 2026-07-09 with the benchmark rearchitecture:
+        # its rows now carry the devigged Pinnacle line (guest feed +
+        # Odds-API cascade) as their probability source, so the same
+        # "no sharp reference → no decision cell" rule applies.
         if current_bot in {"tennis", "table-tennis", "darts",
-                            "wnba", "world-cup", "mlb"}:
+                            "wnba", "world-cup", "mlb", "nba"}:
             _open_rows = [r for r in _open_rows
                            if r.get("pinnacle_prob_yes") is not None]
         # Settled-row filter on both panes — a resolved match
@@ -11503,13 +11503,15 @@ def _render_watchlist(out: List[str], watchlist: List[dict],
                 "<th class='num' title='Kalshi entry cost — entry price × contracts, before fees. Blank when no position is held on this row.'>Kalshi entry cost</th>"
                 "<th class='num' title='Total cash out at open — Kalshi entry cost + Kalshi entry fee. Blank when no position is held on this row.'>Total cost</th>"
             )
-        # Event column — only shown on the sport-bot Model-vs-market
-        # section per the user's request. Derived at render time from
-        # each row's Kalshi ``rules_primary`` text (see
-        # ``_tennis_event_label``), so it's live without a bot
-        # redeploy and stays in sync with whatever Kalshi is quoting.
+        # Event column — shown on both Active bets and Model-vs-market
+        # for sport bots (user asked for Event visibility on Active
+        # bets too so held positions carry the same competition context
+        # as the watch pane). Derived at render time from each row's
+        # Kalshi ``rules_primary`` text (see ``_tennis_event_label``),
+        # so it's live without a bot redeploy.
         _show_event_col = (is_sport_bot
-                            and _ctx.get("kind") == "model-vs-market")
+                            and _ctx.get("kind") in
+                                ("model-vs-market", "active"))
         event_head = (
             "<th title='Competition parsed from the Kalshi rules text "
             "— tour · tournament for tennis (ATP · Wimbledon, "
@@ -11518,11 +11520,13 @@ def _render_watchlist(out: List[str], watchlist: List[dict],
             "rules don&apos;t match a known template.'>Event</th>"
             if _show_event_col else ""
         )
-        # Date column — every bot's Model-vs-market table (the single
-        # combined table on non-sport bots counts), immediately right
-        # of Rules per user spec. Parsed from the ticker's encoded
-        # YYMMMDD (rules-text date as fallback).
-        _show_date_col = _ctx.get("kind") in ("model-vs-market", "single")
+        # Date column — every table (Model-vs-market, the single
+        # combined non-sport-bot table, and Active bets), immediately
+        # right of Rules per user spec. Parsed from the ticker's
+        # encoded YYMMMDD (rules-text date as fallback).
+        _show_date_col = _ctx.get("kind") in (
+            "model-vs-market", "single", "active",
+        )
         date_head = (
             "<th title='Market date parsed from the Kalshi ticker "
             "(game day / settlement day). Blank when the ticker "
@@ -12526,6 +12530,33 @@ class Handler(BaseHTTPRequestHandler):
                         bot.get("sim_state_path"),
                         watchlist_path=bot.get("watchlist_json_path"),
                     )
+                    # On the LIVE dashboard, "Active bets" must reflect
+                    # what's actually in the Kalshi portfolio — the
+                    # bot's local sim_state can drift when the executor's
+                    # reconciliation lags (a position closed on Kalshi
+                    # but sim_state still shows it open, or vice versa,
+                    # is the exact failure the user hit on 2026-07-09
+                    # with Vaccari vs Baybars). Cross-reference the sim
+                    # rows against Kalshi's live /portfolio/positions:
+                    # drop any row whose ticker isn't currently held on
+                    # Kalshi. If the Kalshi fetch fails (no creds /
+                    # transient error), leave the sim rows alone rather
+                    # than blanking the section — same graceful-
+                    # degradation stance as the balance helper. The SIM
+                    # dashboard continues to render every sim_state open
+                    # position since that IS the paper-trading
+                    # portfolio.
+                    if self.mode == "live":
+                        from .kalshi_client import get_open_positions
+                        kalshi_pos, _kalshi_err = get_open_positions()
+                        if kalshi_pos is not None:
+                            held_tickers = {p.get("ticker")
+                                             for p in kalshi_pos
+                                             if p.get("ticker")}
+                            bot_active_bets = [
+                                ab for ab in bot_active_bets
+                                if ab.get("ticker") in held_tickers
+                            ]
                     for ab in bot_active_bets:
                         ab.setdefault("_display", bot.get("display") or {})
                     # Sport bots have no per-bot "latest open position"
