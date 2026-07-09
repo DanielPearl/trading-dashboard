@@ -10992,16 +10992,9 @@ def _basketball_event_label(rules: str | None) -> str:
     return "WNBA" if m.group(1).lower().startswith("women") else "NBA"
 
 
-# Kalshi tickers embed the market's date as ``YYMMMDD`` right after the
-# series segment (KXWNBAGAME-26JUL09LVPDX, KXATPMATCH-26JUL08ARNCOB,
-# KXEIAGAS-26JUL14-T3.05). The Date column parses it from there —
-# month token must be a real month so strike suffixes can't
-# false-positive.
-_TICKER_DATE_RE = re.compile(
-    r"-(\d{2})(JAN|FEB|MAR|APR|MAY|JUN|JUL|AUG|SEP|OCT|NOV|DEC)(\d{2})",
-)
-# Fallback: an explicit "Jul 9, 2026"-style date inside the rules text
-# (some series omit the day from the ticker, e.g. monthly CPI).
+# Fallback for the Date column: an explicit "Jul 9, 2026"-style date
+# inside the rules text (some series omit the day from the ticker,
+# e.g. monthly CPI).
 _RULES_DATE_RE = re.compile(
     r"\b(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*\.?"
     r"\s+(\d{1,2}),\s*(\d{4})",
@@ -11010,13 +11003,17 @@ _RULES_DATE_RE = re.compile(
 
 def _market_date_label(ticker: str | None, rules: str | None = None) -> str:
     """Human date ("Jul 9, 2026") for the watchlist Date column.
-    Prefers the ticker's encoded YYMMMDD; falls back to the first
-    explicit date in the rules text; empty string when neither
-    carries one."""
-    m = _TICKER_DATE_RE.search((ticker or "").upper())
+    Prefers the ticker's encoded YYMMMDD (parsed with the module's
+    ``_TICKER_DATE_RE`` — the same regex the "Closes in" column uses);
+    falls back to the first explicit date in the rules text; empty
+    string when neither carries one. Month token must be a real month
+    (via ``_MONTH_MAP``) so strike suffixes can't false-positive."""
+    m = _TICKER_DATE_RE.search(ticker or "")
     if m:
-        yy, mon, dd = m.groups()
-        return f"{mon.capitalize()} {int(dd)}, 20{yy}"
+        mon_token = m.group("mon").upper()
+        if mon_token in _MONTH_MAP:
+            return (f"{mon_token.capitalize()} {int(m.group('dd'))}, "
+                    f"20{m.group('yy')}")
     if rules:
         m = _RULES_DATE_RE.search(rules)
         if m:
