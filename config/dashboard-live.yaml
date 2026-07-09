@@ -82,6 +82,9 @@ bots:
       - name: "NBA 2025-26 Season"
         start: "2025-10-21T23:00:00Z"
         end:   "2026-06-22T03:00:00Z"
+      - name: "NBA Summer League 2026"
+        start: "2026-07-08T00:00:00Z"
+        end:   "2026-07-23T06:00:00Z"
     display:
       underlying_label: Home team ELO (pre-game)
       underlying_unit: ""

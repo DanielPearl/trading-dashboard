@@ -89,12 +89,17 @@ bots:
     metrics_path: /root/nba/data/processed/artifacts/metrics.json
     series_ticker: KXNBAGAME
     data_source: "Pinnacle moneylines (guest feed + The Odds API devig)"
-    # Single league-level window — regular-season tip-off through
-    # NBA Finals end. Update at the start of each season.
+    # One window per Kalshi NBA series the bot polls: KXNBAGAME
+    # (regular season + playoffs) and KXNBASUMMERGAME (Las Vegas
+    # Summer League, July — Pinnacle quotes it, so the bot trades it
+    # like any other slate). Update at the start of each season.
     seasons:
       - name: "NBA 2025-26 Season"
         start: "2025-10-21T23:00:00Z"
         end:   "2026-06-22T03:00:00Z"
+      - name: "NBA Summer League 2026"
+        start: "2026-07-08T00:00:00Z"
+        end:   "2026-07-23T06:00:00Z"
     display:
       underlying_label: Home team win prob (Pinnacle)
       underlying_unit: ""
