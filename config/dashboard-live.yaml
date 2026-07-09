@@ -263,6 +263,24 @@ bots:
       - name: "FIFA World Cup 2026"
         start: "2026-06-11T00:00:00Z"
         end:   "2026-07-19T23:59:00Z"
+  - key: mlb
+    name: MLB Forecast
+    # MLB game-winner bot. The mlb_trader daemon below runs in THIS
+    # process with a ``live:`` block, so bots/mlb.py drives the
+    # MLBLiveExecutor (dry-run until armed) and mirrors the watchlist
+    # it evaluated into outputs-live/ — these paths show exactly what
+    # the live executor saw, isolated from the sim site's paper state.
+    dashboard_type: sport
+    series_ticker: KXMLBGAME
+    data_source: "Pinnacle moneylines (The Odds API devig, Betfair fallback)"
+    db_path: /root/baseball/data/outputs-live/watchlist.json
+    decisions_path: /root/baseball/data/outputs-live/watchlist.json
+    watchlist_json_path: /root/baseball/data/outputs-live/watchlist.json
+    sim_state_path: /root/baseball/data/outputs-live/sim_state.json
+    seasons:
+      - name: "MLB 2026 Season"
+        start: "2026-03-25T00:00:00Z"
+        end:   "2026-11-08T05:00:00Z"
 
 # Display thresholds — same defaults as sim. Each bot's effective_config
 # would override these once it's actually running, same as the sim side.
@@ -482,6 +500,32 @@ world_cup_trader:
     prematch_buffer_minutes: 15
     profit_lock_yes_bid_cents: 95
 
+
+# MLB real-money executor — runs in THIS (live) process, so the live
+# page's mlb toggle (bot_states_live.json) gates real orders and the
+# sim process stays paper-only. dry_run: true means it evaluates +
+# records every order it WOULD place but never touches Kalshi's order
+# endpoint; arming happens either by flipping the mlb Home-tab toggle
+# ON on the live dashboard, or by setting dry_run: false here and
+# restarting trading-dashboard-live.service. 1 contract per order,
+# hard-capped in code. Every entry requires a live Pinnacle/Betfair
+# benchmark line (rows without one are never buy-eligible).
+mlb_trader:
+  enabled: true
+  repo_path: /root/baseball
+  interval_seconds: 120
+  live:
+    dry_run: true
+    sim_state_path: /root/baseball/data/outputs-live/sim_state.json
+    max_open_positions: 6
+    max_orders_per_day: 10
+    contracts_per_order: 1
+    min_edge_pp: 0.05
+    max_entry_price_cents: 80
+    min_entry_price_cents: 15
+    price_deviation_cents: 3
+    prematch_buffer_minutes: 10
+    profit_lock_yes_bid_cents: 95
 
 natgas_trader:
   enabled: false

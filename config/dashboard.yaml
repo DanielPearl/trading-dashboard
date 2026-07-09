@@ -360,6 +360,30 @@ bots:
       - name: "FIFA World Cup 2026"
         start: "2026-06-11T00:00:00Z"
         end:   "2026-07-19T23:59:00Z"
+  - key: mlb
+    name: MLB Forecast
+    # MLB game-winner bot (two binary team markets per KXMLBGAME
+    # event → one tennis-shape X-vs-Y row per game). The probability
+    # source IS the sharp-book benchmark — devigged Pinnacle
+    # moneylines (Betfair Exchange fallback) via kalshi_sdk.pinnacle —
+    # so there is no metrics.json / coefficients.json (nothing is
+    # trained). Edge = benchmark prob − Kalshi ask; the in-process
+    # daemon (mlb_trader below) paper-trades eligible rows.
+    dashboard_type: sport
+    series_ticker: KXMLBGAME
+    data_source: "Pinnacle moneylines (The Odds API devig, Betfair fallback)"
+    # Tennis idiom: no sim.db — db_path points at the watchlist JSON
+    # so the generic "available" check tracks the bot's first tick.
+    db_path: /root/baseball/data/outputs/watchlist.json
+    decisions_path: /root/baseball/data/outputs/watchlist.json
+    watchlist_json_path: /root/baseball/data/outputs/watchlist.json
+    sim_state_path: /root/baseball/data/outputs/sim_state.json
+    # MLB 2026: opening day late March through the World Series.
+    # Update at the start of each season.
+    seasons:
+      - name: "MLB 2026 Season"
+        start: "2026-03-25T00:00:00Z"
+        end:   "2026-11-08T05:00:00Z"
 
 # ---------------------------------------------------------------------------
 # Display thresholds. Mirror the gas-bot's gates so the buy-criteria panel
@@ -556,6 +580,16 @@ world_cup_trader:
   interval_seconds: 300
   # Paper simulator only — the real-money executor lives in the LIVE
   # dashboard process (see dashboard-live.yaml).
+
+# MLB trader — paper simulator in this (sim) process; the real-money
+# executor runs in the LIVE dashboard process (see dashboard-live.yaml).
+# 120s ticks: a full slate is ~15 games but the benchmark helper
+# caches The Odds API responses for 5 minutes, so faster polling only
+# re-reads Kalshi prices.
+mlb_trader:
+  enabled: true
+  repo_path: /root/baseball
+  interval_seconds: 120
 
 
 natgas_trader:

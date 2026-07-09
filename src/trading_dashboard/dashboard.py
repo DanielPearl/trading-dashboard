@@ -11081,7 +11081,7 @@ def _render_watchlist(out: List[str], watchlist: List[dict],
     # ``_render_contract_rules`` after this function returns). Non-
     # sport bots keep the legacy single-section layout.
     is_sport_bot = current_bot in {"nba", "wnba", "tennis", "table-tennis",
-                                    "darts", "world-cup"}
+                                    "darts", "world-cup", "mlb"}
     is_billboard_bot = current_bot == "billboard"
     if not is_sport_bot:
         out.append("<div class='section'><h2>"
@@ -11362,7 +11362,7 @@ def _render_watchlist(out: List[str], watchlist: List[dict],
         # is None on every NBA row and enabling the filter would
         # blank the whole table.
         if current_bot in {"tennis", "table-tennis", "darts",
-                            "wnba", "world-cup"}:
+                            "wnba", "world-cup", "mlb"}:
             _open_rows = [r for r in _open_rows
                            if r.get("pinnacle_prob_yes") is not None]
         section_ctxs = [
@@ -12554,7 +12554,7 @@ class Handler(BaseHTTPRequestHandler):
                     # client returns every market with a future close.
                     all_open_events = bot.get("key") in {
                         "nba", "wnba", "tennis", "table-tennis", "darts",
-                        "world-cup",
+                        "world-cup", "mlb",
                     }
                     try:
                         (kalshi_history, atm_market, kalshi_markets,
@@ -13087,6 +13087,7 @@ def serve(host: str, port: int, bots: List[dict], risk_caps: dict,
           natgas_trader_cfg: dict | None = None,
           billboard_trader_cfg: dict | None = None,
           world_cup_trader_cfg: dict | None = None,
+          mlb_trader_cfg: dict | None = None,
           mode: str = "sim",
           live_state_paths: List[str] | None = None) -> None:
     Handler.bots = bots
@@ -13162,6 +13163,13 @@ def serve(host: str, port: int, bots: List[dict], risk_caps: dict,
     if world_cup_trader_cfg:
         from .bots import world_cup as world_cup_bot
         world_cup_bot.start_daemon(world_cup_trader_cfg)
+    # MLB trader — Shape B like world-cup. Paper sim in the SIM
+    # process; MLBLiveExecutor in the LIVE process (its config carries
+    # the ``live:`` block). Probability source is the devigged
+    # Pinnacle/Betfair benchmark, so there's no model artifact.
+    if mlb_trader_cfg:
+        from .bots import mlb as mlb_bot
+        mlb_bot.start_daemon(mlb_trader_cfg)
     # Natural-gas trader. The only Tier-3 bot — cron-scheduled
     # (3x/day UTC), so the in-process daemon is a scheduler that
     # sleeps between firings rather than a tight poll loop.
@@ -13352,6 +13360,7 @@ def main(argv: list[str] | None = None) -> int:
     natgas_trader_cfg = cfg.raw.get("natgas_trader") or {}
     billboard_trader_cfg = cfg.raw.get("billboard_trader") or {}
     world_cup_trader_cfg = cfg.raw.get("world_cup_trader") or {}
+    mlb_trader_cfg = cfg.raw.get("mlb_trader") or {}
 
     host = args.host or cfg.host
     port = args.port or cfg.port
@@ -13369,7 +13378,8 @@ def main(argv: list[str] | None = None) -> int:
             tennis_trader_cfg, unemployment_trader_cfg, cpi_trader_cfg,
             nba_trader_cfg, wnba_trader_cfg, gas_trader_cfg,
             survivor_trader_cfg, table_tennis_trader_cfg, darts_trader_cfg,
-            natgas_trader_cfg, billboard_trader_cfg,
+            natgas_trader_cfg, billboard_trader_cfg, world_cup_trader_cfg,
+            mlb_trader_cfg,
         ):
             live_block = (trader_cfg or {}).get("live") or {}
             path = live_block.get("sim_state_path")
@@ -13389,6 +13399,7 @@ def main(argv: list[str] | None = None) -> int:
           natgas_trader_cfg=natgas_trader_cfg,
           billboard_trader_cfg=billboard_trader_cfg,
           world_cup_trader_cfg=world_cup_trader_cfg,
+          mlb_trader_cfg=mlb_trader_cfg,
           mode=cfg.mode,
           live_state_paths=live_state_paths)
     return 0
