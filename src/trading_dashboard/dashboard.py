@@ -11717,6 +11717,19 @@ def _render_watchlist(out: List[str], watchlist: List[dict],
                 _avg = _p.get("average_price_cents")
                 if _avg is None:
                     _avg = _p.get("avg_price_cents")
+                if _avg is None:
+                    # /portfolio/positions carries dollar totals, not an
+                    # avg-price field — derive it so the Active-bets
+                    # entry %, entry cost and total cost cells populate
+                    # for real positions.
+                    try:
+                        _traded = float(_p.get("total_traded_dollars")
+                                         or _p.get("market_exposure_dollars")
+                                         or 0)
+                        if _traded > 0 and _pos_fp:
+                            _avg = round(_traded / abs(_pos_fp) * 100)
+                    except (TypeError, ValueError):
+                        _avg = None
                 _paper = held_by_ticker.get(_tk) or {}
                 _record = {
                     "ticker": _tk,
