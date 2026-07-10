@@ -6012,7 +6012,8 @@ def _render_summary(out: List[str], rollup: dict, active_bets: List[dict],
     out.append("<div class='summary-active-scroll'>")
     _render_active_bets_table(out, active_bets,
                                 empty_msg="No active bets right now.",
-                                hedge_cfg=hedge_cfg)
+                                hedge_cfg=hedge_cfg,
+                                sport_style=True)
     out.append("</div>")
 
     out.append("</div></div>")
@@ -6348,7 +6349,8 @@ def _render_active_bets_table(out: List[str], bets: List[dict],
                               watchlist: List[dict] | None = None,
                               event_title: str | None = None,
                               is_sport_bot: bool = False,
-                              display: dict | None = None) -> None:
+                              display: dict | None = None,
+                              sport_style: bool = False) -> None:
     """Shared renderer used by both Section 1 (cross-bot summary) and
     the per-bot view inside the Watchlist tab. Columns:
         Opened | [Bot] | Ticker | Question | Contracts | Side
@@ -6409,7 +6411,34 @@ def _render_active_bets_table(out: List[str], bets: List[dict],
     # No separate ``Question`` column — Title already names the
     # contract, and on sport rows it would just restate the matchup.
     tbody_attrs = " id='wl-active-tbody' data-chart-link='1'" if chart_link else ""
-    out.append("<table><thead><tr>"
+    if sport_style:
+        # Cross-bot summary in the same structure as the per-bot sport
+        # watchlist Active bets table (user 2026-07-10: "the active
+        # bets on the homepage should be structured like the active
+        # bets on the individual watchlist pages like the tennis
+        # watchlist page"). Rules / Total-contracts columns are
+        # omitted — position records carry neither the rules text nor
+        # market-wide volume.
+        out.append(
+            "<table><thead><tr>"
+            "<th title='Market date parsed from the Kalshi ticker.'>Date</th>"
+            f"{bot_th}"
+            "<th title='Competition (MLB, NBA Summer League, PDC, ...)'>Event</th>"
+            "<th>Title</th>"
+            "<th>Side</th>"
+            "<th class='num' title='Model probability for our side (benchmark bots: the devigged Pinnacle line at entry).'>Model %</th>"
+            "<th class='num' title='Implied probability of our side right now, from the market mid.'>Kalshi %</th>"
+            "<th class='num' title='Model % − Kalshi % — the edge remaining on the position.'>Edge</th>"
+            "<th class='num' title='Net-of-fee expected value the bot saw at entry.'>EV</th>"
+            "<th class='num' title='Time until the contract resolves'>Closes in</th>"
+            "<th>Verdict</th>"
+            "<th class='num' title='Number of contracts in this position.'>My contracts</th>"
+            "<th class='num' title='Entry price × contracts — cash out at open, before fees.'>Kalshi entry cost</th>"
+            "<th class='num' title='Kalshi entry cost + Kalshi entry fee.'>Total cost</th>"
+            "<th></th>"
+            f"</tr></thead><tbody{tbody_attrs}>")
+    else:
+        out.append("<table><thead><tr>"
                f"<th>Opened</th>{bot_th}<th>Ticker</th>"
                "<th>Title</th>"
                "<th>Side</th>"
@@ -6715,6 +6744,77 @@ def _render_active_bets_table(out: List[str], bets: List[dict],
         if ig_pill:
             side_cell = side_cell.replace("</td>", f" {ig_pill}</td>", 1)
 
+        if sport_style:
+            date_label = _market_date_label(b.get("ticker"),
+                                            b.get("rules_primary"))
+            event_label = _sport_event_label(
+                b.get("rules_primary"), title_text,
+                b.get("_tournament"))
+            # Side cell mirrors the sport pages: the team/player we
+            # hold on top, opponent beneath.
+            sp = b.get("_side_player") or ""
+            if sp:
+                match_txt = b.get("_match") or ""
+                opp = ""
+                if match_txt and sp in match_txt:
+                    opp = match_txt.replace(sp, "").replace(
+                        " vs ", " ").strip()
+                side_cell_s = (
+                    f"<td class='active-side-team'>"
+                    f"<strong>{html.escape(sp)}</strong>"
+                    + (f"<br><span class='small gray'>vs "
+                       f"{html.escape(opp)}</span>" if opp else "")
+                    + "</td>")
+            else:
+                side_cell_s = side_cell
+            if (model_p is not None and current_prob_pct is not None):
+                edge_now = model_p * 100.0 - float(current_prob_pct)
+                e_cls = "green" if edge_now > 0 else (
+                    "red" if edge_now < 0 else "gray")
+                e_sign = "+" if edge_now > 0 else ""
+                edge_cell = (f"<td class='num {e_cls}'>"
+                             f"{e_sign}{edge_now:.0f}%</td>")
+            else:
+                edge_cell = "<td class='num gray'>—</td>"
+            ev_v = b.get("expected_ev_at_entry")
+            if ev_v is None:
+                ev_cell = "<td class='num gray'>—</td>"
+            else:
+                ev_f = float(ev_v)
+                v_cls = "green" if ev_f > 0 else (
+                    "red" if ev_f < 0 else "gray")
+                v_sign = "+" if ev_f > 0 else ("−" if ev_f < 0 else "")
+                ev_cell = (f"<td class='num {v_cls}'>"
+                           f"{v_sign}${abs(ev_f):.2f}</td>")
+            verdict_cell = (
+                f"<td><span class='badge "
+                f"{'badge-yes' if side == 'YES' else 'badge-no'}'>"
+                f"HOLDING {side}</span></td>")
+            total_cost = entry_cost_base + entry_fee_dollars
+            out.append(
+                f"<tr{tr_attrs}>"
+                f"<td>{html.escape(date_label or '—')}</td>"
+                f"{bot_td}"
+                f"<td>{html.escape(event_label or '—')}</td>"
+                f"<td>{html.escape(title_text)}</td>"
+                f"{side_cell_s}"
+                f"{model_prob_cell}"
+                f"{current_prob_cell}"
+                f"{edge_cell}"
+                f"{ev_cell}"
+                f"<td class='num'>{time_to_close_str(mtc)}</td>"
+                f"{verdict_cell}"
+                f"<td class='num'>{contracts}</td>"
+                f"<td class='num red'>−${entry_cost_base:.2f}</td>"
+                f"<td class='num red' title='Entry cost + "
+                f"${entry_fee_dollars:.2f} Kalshi entry fee'>"
+                f"−${total_cost:.2f}</td>"
+                f"<td><button type='button' class='criteria-btn' "
+                f"title='Why was this bet chosen?' "
+                f"data-criteria='{criteria_json}'>i</button></td>"
+                f"</tr>"
+            )
+            continue
         out.append(
             f"<tr{tr_attrs}><td>{html.escape(opened)}</td>"
             f"{bot_td}"
