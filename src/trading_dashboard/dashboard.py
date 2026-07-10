@@ -632,7 +632,17 @@ def build_kalshi_cross_bot_history(bots: List[dict]) -> List[dict]:
     """Real Kalshi portfolio → the standard ``global_history`` row
     shape, unified across every bot with settled positions on the
     account. Bot attribution derives from the ticker prefix using each
-    bot's ``series_prefixes`` / ``series_ticker`` config."""
+    bot's ``series_prefixes`` / ``series_ticker`` config.
+
+    P&L math mirrors the tennis history adapter — see
+    ``_join_settlement_with_sim_state`` in tennis.py — using Kalshi's
+    per-side ``yes_count_fp`` / ``no_count_fp`` counts,
+    ``yes_total_cost_dollars`` / ``no_total_cost_dollars`` costs,
+    ``fee_cost`` and ``market_result``. Handles the "offset-closed"
+    case where the bot opened YES then closed via a NO-side trade —
+    Kalshi books both legs to settlement and the naive
+    ``revenue - avg_price × count`` formula would double-count.
+    """
     settlements, fills = _fetch_all_kalshi_history()
     prefix_idx = _bot_ticker_prefix_index(bots)
     fills_by_ticker = _summarize_fills_by_ticker(fills)
@@ -641,33 +651,62 @@ def build_kalshi_cross_bot_history(bots: List[dict]) -> List[dict]:
         ticker = s.get("ticker") or s.get("market_ticker") or ""
         if not ticker:
             continue
-        bot = _ticker_to_bot(ticker, prefix_idx)
+        yes_n = float(s.get("yes_count_fp") or 0)
+        no_n = float(s.get("no_count_fp") or 0)
         f = fills_by_ticker.get(ticker) or {}
+        fill_contracts = float(f.get("contracts") or 0)
+        fill_side = (f.get("side") or "yes").lower()
+        if yes_n > 0 or no_n > 0:
+            side_held = "yes" if yes_n > 0 else "no"
+            contracts = int(yes_n if side_held == "yes" else no_n)
+        elif fill_contracts > 0:
+            side_held = fill_side
+            contracts = int(fill_contracts)
+        else:
+            # Phantom settlement — Kalshi surfaces the row but we never
+            # held or filled. Skip so the ledger + attribution stays
+            # honest.
+            continue
+
+        yes_cost = float(s.get("yes_total_cost_dollars") or 0)
+        no_cost = float(s.get("no_total_cost_dollars") or 0)
+        fee = float(s.get("fee_cost") or 0)
+        market_result = (s.get("market_result") or "").lower()
+        offset_closed = (yes_n > 0 and no_n > 0)
+        if offset_closed:
+            total_cost = yes_cost + no_cost
+            payout = (yes_n if market_result == "yes" else 0.0) \
+                     + (no_n if market_result == "no" else 0.0)
+            pnl_dollars = payout - total_cost - fee
+        else:
+            cost = yes_cost if side_held == "yes" else no_cost
+            payout = float(contracts) if market_result == side_held else 0.0
+            pnl_dollars = payout - cost - fee
+        realized_cents = int(round(pnl_dollars * 100))
+
+        # Entry price = weighted-avg fill price on the side we opened
+        # (yes-equivalent). Fall back to derived from cost/contracts
+        # when fills weren't recorded for this settlement.
         open_avg = f.get("open_avg_dollars")
+        if open_avg is None and contracts > 0:
+            derived = (yes_cost if side_held == "yes" else no_cost) / contracts
+            open_avg = derived if derived > 0 else None
         entry_cents = (int(round(open_avg * 100))
                         if open_avg is not None else None)
-        revenue_cents = int(s.get("revenue") or 0)
-        try:
-            cost_cents = int(round(
-                (f.get("open_avg_dollars") or 0)
-                * (f.get("contracts") or 0) * 100))
-        except (TypeError, ValueError):
-            cost_cents = 0
-        realized_cents = revenue_cents - cost_cents
-        result_side = (s.get("market_result") or "").lower()
-        held_side = (f.get("side") or "yes").lower()
-        won = (result_side == held_side)
-        exit_cents = 100 if won else 0
+        # Exit price on the yes-axis: 100¢ if we won, 0¢ if we lost.
+        exit_cents = 100 if market_result == side_held else 0
+
         opened_at = f.get("first_open_time") or ""
         settled_at = (s.get("settled_time")
                       or s.get("settle_time")
                       or s.get("created_time") or "")
+        bot = _ticker_to_bot(ticker, prefix_idx)
         out.append({
             "ticker": ticker,
-            "side": held_side.upper(),
+            "side": side_held.upper(),
             "entry_price_cents": entry_cents,
             "exit_price_cents": exit_cents,
-            "contracts": f.get("contracts") or 1,
+            "contracts": contracts,
             "realized_pnl_cents": realized_cents,
             "opened_at": opened_at,
             "exited_at": settled_at,

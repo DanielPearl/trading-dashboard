@@ -190,6 +190,10 @@ bots:
     # generic "available" check has somewhere to look.
     dashboard_type: sport
     series_ticker: BASELINEBREAK
+    # Attribute every real Kalshi tennis contract back to this bot in
+    # the cross-bot History ledger. Bot trades ATP tour, WTA tour, and
+    # ITF Futures / Challengers.
+    series_prefixes: [KXATPMATCH, KXWTAMATCH, KXITFMATCH]
     data_source: "Jeff Sackmann tennis_atp + tennis_wta (GitHub)"
     db_path: /root/tennis-forecast/data/outputs/watchlist.json
     decisions_path: /root/tennis-forecast/data/outputs/watchlist.json

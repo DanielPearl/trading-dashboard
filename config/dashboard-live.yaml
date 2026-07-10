@@ -150,7 +150,7 @@ bots:
     name: Tennis Forecast
     dashboard_type: sport
     series_ticker: BASELINEBREAK
-    series_prefixes: [KXATPMATCH, KXWTAMATCH]
+    series_prefixes: [KXATPMATCH, KXWTAMATCH, KXITFMATCH]
     data_source: "Jeff Sackmann tennis_atp + tennis_wta (GitHub)"
     db_path: /root/tennis-forecast/data/outputs-live/watchlist.json
     decisions_path: /root/tennis-forecast/data/outputs-live/watchlist.json
