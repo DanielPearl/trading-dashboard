@@ -714,6 +714,7 @@ def build_kalshi_cross_bot_history(bots: List[dict]) -> List[dict]:
     settlements, fills = _fetch_all_kalshi_history()
     prefix_idx = _bot_ticker_prefix_index(bots)
     fills_by_ticker = _summarize_fills_by_ticker(fills)
+    enrich_idx = _load_sim_state_enrichment(bots)
     out: List[dict] = []
     for s in settlements:
         ticker = s.get("ticker") or s.get("market_ticker") or ""
@@ -752,16 +753,30 @@ def build_kalshi_cross_bot_history(bots: List[dict]) -> List[dict]:
             pnl_dollars = payout - cost - fee
         realized_cents = int(round(pnl_dollars * 100))
 
-        # Entry price = weighted-avg fill price on the side we opened
-        # (yes-equivalent). Fall back to derived from cost/contracts
-        # when fills weren't recorded for this settlement.
+        # Weighted-avg fill price on the yes-axis (fills always
+        # normalize to yes_price_dollars — see
+        # ``_summarize_fills_by_ticker``). Fall back to a derived value
+        # from settlement's per-side cost when fills aren't available.
+        # The derived fallback normalizes to yes-axis too so downstream
+        # EV math stays consistent regardless of which side we bought.
         open_avg = f.get("open_avg_dollars")
         if open_avg is None and contracts > 0:
-            derived = (yes_cost if side_held == "yes" else no_cost) / contracts
-            open_avg = derived if derived > 0 else None
-        entry_cents = (int(round(open_avg * 100))
-                        if open_avg is not None else None)
-        # Exit price on the yes-axis: 100¢ if we won, 0¢ if we lost.
+            if side_held == "yes":
+                derived = yes_cost / contracts
+            else:
+                # no_cost/contracts is NO-axis price paid; flip.
+                derived = 1.0 - (no_cost / contracts)
+            open_avg = derived if 0 < derived < 1 else None
+        # Display entry price = price paid on the side we bought
+        # (tennis idiom — NO bet at 40¢ displays "40c", not "60c"),
+        # so History rows line up with what the user saw at open.
+        if open_avg is None:
+            entry_cents = None
+        elif side_held == "yes":
+            entry_cents = int(round(open_avg * 100))
+        else:
+            entry_cents = int(round((1 - open_avg) * 100))
+        # Exit price on the side we bought: 100¢ if we won, 0¢ if we lost.
         exit_cents = 100 if market_result == side_held else 0
 
         opened_at = f.get("first_open_time") or ""
@@ -769,6 +784,37 @@ def build_kalshi_cross_bot_history(bots: List[dict]) -> List[dict]:
                       or s.get("settle_time")
                       or s.get("created_time") or "")
         bot = _ticker_to_bot(ticker, prefix_idx)
+
+        # Sim-state enrichment (Title / Model p / Entry EV). Look the
+        # settlement up by side-specific ticker first, then event
+        # ticker — the sport bots store either shape depending on when
+        # the row was written. Missing entries fall through with None,
+        # matching the tennis-only history renderer's em-dash idiom.
+        enrich = (enrich_idx.get(ticker)
+                  or enrich_idx.get(s.get("event_ticker") or "")
+                  or {})
+        entry_mp = enrich.get("entry_model_prob")
+        try:
+            entry_mp_f = (float(entry_mp)
+                          if entry_mp is not None else None)
+        except (TypeError, ValueError):
+            entry_mp_f = None
+        # Store on the yes-axis so ``_render_bet_history_block`` can
+        # side-flip for NO bets (its rule: YES ⇒ p; NO ⇒ 1 − p).
+        model_yes = entry_mp_f
+        # Entry EV per contract on the side we bought, in decimal $:
+        #   YES bet: mp − yes_price
+        #   NO bet:  (1 − mp) − (1 − yes_price) = yes_price − mp
+        # ``open_avg`` is the yes-axis fill price. Falls to None when
+        # either the model prob or the fill wasn't recorded.
+        if entry_mp_f is not None and open_avg is not None:
+            if side_held == "yes":
+                entry_ev = entry_mp_f - float(open_avg)
+            else:
+                entry_ev = float(open_avg) - entry_mp_f
+        else:
+            entry_ev = None
+
         out.append({
             "ticker": ticker,
             "side": side_held.upper(),
@@ -778,7 +824,11 @@ def build_kalshi_cross_bot_history(bots: List[dict]) -> List[dict]:
             "realized_pnl_cents": realized_cents,
             "opened_at": opened_at,
             "exited_at": settled_at,
-            "expected_ev_at_entry": None,
+            "expected_ev_at_entry": entry_ev,
+            "model_yes_prob_at_entry": model_yes,
+            "_title": enrich.get("_title") or "",
+            "_match": enrich.get("_match") or "",
+            "_side_player": enrich.get("_side_player") or "",
             "_bot_key": bot.get("key") if bot else "unknown",
             "_bot_name": bot.get("name") if bot else "Unknown bot",
             "_dashboard_type": (bot.get("dashboard_type")
