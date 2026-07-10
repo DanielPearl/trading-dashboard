@@ -7174,36 +7174,51 @@ def _render_history_attribution(out: List[str],
         if bucket_bets:
             price_rows.append(_row(label, bucket_bets))
 
-    # ── Slice: by predicted EV bucket (decimal $/contract) ──────────
-    ev_buckets = [
-        ("< 0¢",   -10.0,  0.0),
-        ("0–2¢",    0.0,   0.02),
-        ("2–4¢",    0.02,  0.04),
-        ("4–7¢",    0.04,  0.07),
-        ("7–10¢",   0.07,  0.10),
-        ("10¢+",    0.10,  10.0),
-        ("untagged", None, None),  # bets without recorded EV
+    # ── Slice: by entry edge (model − market, percentage points) ─────
+    # Replaced the predicted-EV buckets (user 2026-07-10): the edge is
+    # the number the buy decision actually keys on — for the benchmark
+    # bots it's "Pinnacle fair prob − price paid" — so bucketing on it
+    # answers "do bigger edges actually realize more P&L?" directly.
+    # Side-adjusted: a NO bet's edge is (1 − model_yes) − price paid.
+    def _entry_edge_pp(h: dict) -> float | None:
+        model_yes = h.get("model_yes_prob_at_entry")
+        price = h.get("entry_price_cents")
+        if model_yes is None or price is None:
+            return None
+        try:
+            m = float(model_yes)
+            p = float(price) / 100.0
+        except (TypeError, ValueError):
+            return None
+        side = (h.get("side") or "YES").upper()
+        model_side = m if side == "YES" else (1.0 - m)
+        return (model_side - p) * 100.0
+
+    edge_buckets = [
+        ("< 0pp",   -100.0, 0.0),
+        ("0–3pp",    0.0,   3.0),
+        ("3–5pp",    3.0,   5.0),
+        ("5–7pp",    5.0,   7.0),
+        ("7–10pp",   7.0,   10.0),
+        ("10pp+",    10.0,  100.0),
+        ("untagged", None,  None),  # bets without a recorded model prob
     ]
-    ev_rows: List[dict] = []
-    for label, lo, hi in ev_buckets:
+    edge_rows: List[dict] = []
+    for label, lo, hi in edge_buckets:
         bucket_bets: List[dict] = []
         for h in history:
-            ev = h.get("expected_ev_at_entry")
+            edge_pp = _entry_edge_pp(h)
             if lo is None:
-                if ev is None:
+                if edge_pp is None:
                     bucket_bets.append(h)
                 continue
-            if ev is None:
+            if edge_pp is None:
                 continue
-            try:
-                ev_f = float(ev)
-            except (TypeError, ValueError):
-                continue
-            if ev_f < lo or ev_f >= hi:
+            if edge_pp < lo or edge_pp >= hi:
                 continue
             bucket_bets.append(h)
         if bucket_bets:
-            ev_rows.append(_row(label, bucket_bets))
+            edge_rows.append(_row(label, bucket_bets))
 
     out.append(
         "<h3 class='subhead' style='margin-top:14px;'>"
@@ -7219,8 +7234,9 @@ def _render_history_attribution(out: List[str],
     _emit_table("By entry price",
                  "what price bucket the contract was bought at",
                  price_rows)
-    _emit_table("By predicted EV", "entry-EV bucket vs realized P&L",
-                 ev_rows)
+    _emit_table("By entry edge",
+                 "model − market at entry (pp) vs realized P&L",
+                 edge_rows)
     out.append("</div>")
 
 
