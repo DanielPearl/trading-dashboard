@@ -12113,11 +12113,21 @@ def _render_watchlist(out: List[str], watchlist: List[dict],
                     out.append("</div></div>")
                     continue
 
-        # Position columns (My contracts / Kalshi entry cost / Total
-        # cost) are dropped from Model-vs-market on sport bots; every
-        # other table keeps them.
+        # Position columns. On the sport-bot Active bets table (user
+        # 2026-07-10) we drop Kalshi entry cost and rename Total cost
+        # → Kalshi total cost; the surviving cluster is My contracts +
+        # Kalshi total cost + Closes in, ordered to the right of Total
+        # contracts. Model-vs-market on sport bots keeps ``pos_head``
+        # empty (include_position_cols=False); Non-sport single tables
+        # keep the legacy 3-col layout so nothing regresses.
+        is_active = _ctx.get("kind") == "active"
         pos_head = ""
-        if include_position_cols:
+        if include_position_cols and is_active:
+            pos_head = (
+                "<th class='num' title='Number of contracts held on this row. Blank when no position is open.'>My contracts</th>"
+                "<th class='num' title='Kalshi total cost — entry price × contracts + Kalshi entry fee. Blank when no position is held on this row.'>Kalshi total cost</th>"
+            )
+        elif include_position_cols:
             pos_head = (
                 "<th class='num' title='Number of contracts held on this row. Blank when no position is open.'>My contracts</th>"
                 "<th class='num' title='Kalshi entry cost — entry price × contracts, before fees. Blank when no position is held on this row.'>Kalshi entry cost</th>"
@@ -12153,27 +12163,47 @@ def _render_watchlist(out: List[str], watchlist: List[dict],
             "doesn&apos;t encode one.'>Date</th>"
             if _show_date_col else ""
         )
+        # Header layout diverges on the Active bets table (user
+        # 2026-07-10):
+        #   Rules | Date | Event | Title | Side
+        #     | Model % | Kalshi entry % | Kalshi %
+        #     | Verdict
+        #     | Total contracts | My contracts | Kalshi total cost
+        #     | Closes in
+        # Model-vs-market + non-sport single keep the legacy layout
+        # (Edge / EV / no entry-% column / Closes in before Verdict).
+        if is_active:
+            header_middle = (
+                "<th class='num' title='Model probability — sharp devigged reference from the best available benchmark book (Pinnacle first, else Betfair Exchange UK / EU). Em-dash for matches no sharp book is quoting or when the Odds API key isn&apos;t set. YES on top, NO on bottom.'>Model %</th>"
+                "<th class='num' title='Kalshi entry % — the implied probability for each side at the price we paid, expressed on the yes-axis. YES on top, NO on bottom.'>Kalshi entry %</th>"
+                "<th class='num' title='Live Kalshi market price — updates continuously. YES on top (green), NO on bottom (red).'>Kalshi %</th>"
+                "<th>Verdict</th>"
+                "<th class='num' title='Open interest — total contracts currently held open across all traders on this strike.'>Total contracts</th>"
+                f"{pos_head}"
+                "<th class='num' title='Time until the contract settles. Parsed from the Kalshi ticker&apos;s encoded date.'>Closes in</th>"
+            )
+        else:
+            header_middle = (
+                "<th class='num' title='Open interest — total contracts currently held open across all traders on this strike.'>Total contracts</th>"
+                "<th class='num' title='Model probability — sharp devigged reference from the best available benchmark book (Pinnacle first, else Betfair Exchange UK / EU). Em-dash for matches no sharp book is quoting or when the Odds API key isn&apos;t set. YES on top, NO on bottom.'>Model %</th>"
+                "<th class='num' title='Live Kalshi market price — YES on top (green), NO on bottom (red). Each side&apos;s implied probability that side wins.'>Kalshi %</th>"
+                "<th class='num' title='Edge = benchmark probability (Pinnacle / Betfair) − Kalshi price, per side. YES on top (green), NO on bottom (red).'>Edge</th>"
+                "<th class='num'>EV"
+                "<button type='button' class='ev-info-btn' "
+                "title='How is EV calculated?' "
+                "aria-label='How is EV calculated?'>i</button>"
+                "</th>"
+                "<th class='num' title='Time until the contract settles. Parsed from the Kalshi ticker&apos;s encoded date.'>Closes in</th>"
+                "<th>Verdict</th>"
+                f"{pos_head}"
+            )
         out.append("<div class='watchlist-scroll'>"
                    "<table><thead><tr>"
-                   # Rules is the leftmost column — click the ``i`` to
-                   # read the Kalshi resolution rule before doing
-                   # anything else with the row.
                    "<th title='Kalshi resolution rule for this contract — click to read.'>Rules</th>"
                    f"{date_head}"
                    f"{event_head}"
                    f"{head_cols}"
-                   "<th class='num' title='Open interest — total contracts currently held open across all traders on this strike.'>Total contracts</th>"
-                   "<th class='num' title='Model probability — sharp devigged reference from the best available benchmark book (Pinnacle first, else Betfair Exchange UK / EU). Em-dash for matches no sharp book is quoting or when the Odds API key isn&apos;t set. YES on top, NO on bottom.'>Model %</th>"
-                   "<th class='num' title='Live Kalshi market price — YES on top (green), NO on bottom (red). Each side&apos;s implied probability that side wins.'>Kalshi %</th>"
-                   "<th class='num' title='Edge = benchmark probability (Pinnacle / Betfair) − Kalshi price, per side. YES on top (green), NO on bottom (red).'>Edge</th>"
-                   "<th class='num'>EV"
-                   "<button type='button' class='ev-info-btn' "
-                   "title='How is EV calculated?' "
-                   "aria-label='How is EV calculated?'>i</button>"
-                   "</th>"
-                   "<th class='num' title='Time until the contract settles. Parsed from the Kalshi ticker&apos;s encoded date.'>Closes in</th>"
-                   "<th>Verdict</th>"
-                   f"{pos_head}"
+                   f"{header_middle}"
                    f"</tr></thead><tbody id='{html.escape(_tbody_id)}'>")
         for v in _rows_to_emit:
             ticker = v.get("ticker", "")
@@ -12553,12 +12583,11 @@ def _render_watchlist(out: List[str], watchlist: List[dict],
                 f"{time_to_close_str(mtc)}</td>"
             )
 
-            # My contracts + Kalshi entry cost + Total cost — populated
-            # only on rows where we hold a position, and only when the
-            # current section includes position columns (the sport-bot
-            # Model-vs-market table drops them; every other table keeps
-            # them). Blank tds on unheld rows so the columns read as
-            # "was this bought" at a glance.
+            # Position cells. Active bets on sport bots: 2 cells (My
+            # contracts + Kalshi total cost — Kalshi entry cost dropped
+            # per user 2026-07-10). Every other include_position_cols
+            # table keeps the legacy 3-cell layout (My contracts +
+            # Kalshi entry cost + Total cost).
             if not include_position_cols:
                 position_cells = ""
             elif is_bought and held_bet is not None:
@@ -12588,13 +12617,46 @@ def _render_watchlist(out: List[str], watchlist: List[dict],
                 else:
                     _entry_cost_cell = "<td class='num red' data-field='entry-cost'></td>"
                     _total_cost_cell = "<td class='num red' data-field='total-cost'></td>"
-                position_cells = _my_contracts_cell + _entry_cost_cell + _total_cost_cell
+                if is_active:
+                    position_cells = _my_contracts_cell + _total_cost_cell
+                else:
+                    position_cells = _my_contracts_cell + _entry_cost_cell + _total_cost_cell
             else:
-                position_cells = (
-                    "<td class='num' data-field='my-contracts'></td>"
-                    "<td class='num red' data-field='entry-cost'></td>"
-                    "<td class='num red' data-field='total-cost'></td>"
-                )
+                if is_active:
+                    position_cells = (
+                        "<td class='num' data-field='my-contracts'></td>"
+                        "<td class='num red' data-field='total-cost'></td>"
+                    )
+                else:
+                    position_cells = (
+                        "<td class='num' data-field='my-contracts'></td>"
+                        "<td class='num red' data-field='entry-cost'></td>"
+                        "<td class='num red' data-field='total-cost'></td>"
+                    )
+
+            # Kalshi entry % (Active bets only) — stacked YES / NO
+            # implied prob at our entry price, on the yes-axis. Static
+            # once opened, so no data-field poller patch is needed
+            # (still tagged for consistency with other stacked cells).
+            if is_active:
+                if held_bet is not None:
+                    _ep_c = held_bet.get("entry_price_cents")
+                    _bs = (held_bet.get("side") or "").upper()
+                    if _ep_c is not None and _bs in ("YES", "NO"):
+                        yes_ep_pct = (int(_ep_c) if _bs == "YES"
+                                       else 100 - int(_ep_c))
+                        no_ep_pct = 100 - yes_ep_pct
+                        entry_pct_cell = _stacked(
+                            f"{yes_ep_pct}%",
+                            f"{no_ep_pct}%",
+                            "entry-pct",
+                        )
+                    else:
+                        entry_pct_cell = _stacked("—", "—", "entry-pct")
+                else:
+                    entry_pct_cell = _stacked("—", "—", "entry-pct")
+            else:
+                entry_pct_cell = ""
 
             # Rules cell — an info button carrying the row's Kalshi
             # ``rules_primary`` on ``data-rules``. Blank cell when no
@@ -12637,21 +12699,40 @@ def _render_watchlist(out: List[str], watchlist: List[dict],
                 )
             else:
                 event_cell = ""
+            # Row layout mirrors the header branch above:
+            #   Active bets: Rules | Date | Event | title/side
+            #                | Model % | Kalshi entry % | Kalshi %
+            #                | Verdict | Total contracts
+            #                | (My contracts | Kalshi total cost)
+            #                | Closes in
+            #   Model-vs-market / non-sport single: keep legacy order
+            #   (Total contracts | Model % | Kalshi % | Edge | EV
+            #    | Closes in | Verdict | position cells).
+            if is_active:
+                row_body = (
+                    f"{rules_cell}{date_cell}{event_cell}{middle_cells}"
+                    f"{pinnacle_cell}"
+                    f"{entry_pct_cell}"
+                    f"{kalshi_cell}"
+                    f"<td data-field='verdict'>{badge}</td>"
+                    f"<td class='num' data-field='oi'>{oi_str}</td>"
+                    f"{position_cells}"
+                    f"{closes_in_cell}"
+                )
+            else:
+                row_body = (
+                    f"{rules_cell}{date_cell}{event_cell}{middle_cells}"
+                    f"<td class='num' data-field='oi'>{oi_str}</td>"
+                    f"{pinnacle_cell}"
+                    f"{kalshi_cell}"
+                    f"{edge_cell}"
+                    f"{ev_cell}"
+                    f"{closes_in_cell}"
+                    f"<td data-field='verdict'>{badge}</td>"
+                    f"{position_cells}"
+                )
             out.append(f"<tr{row_cls} data-ticker='{tt_esc}'{strike_attr}{yes_attr}>"
-                       # Rules cell is the leftmost cell in every row —
-                       # header ordering above matches.
-                       f"{rules_cell}"
-                       f"{date_cell}"
-                       f"{event_cell}"
-                       f"{middle_cells}"
-                       f"<td class='num' data-field='oi'>{oi_str}</td>"
-                       f"{pinnacle_cell}"
-                       f"{kalshi_cell}"
-                       f"{edge_cell}"
-                       f"{ev_cell}"
-                       f"{closes_in_cell}"
-                       f"<td data-field='verdict'>{badge}</td>"
-                       f"{position_cells}</tr>")
+                       f"{row_body}</tr>")
         out.append("</tbody></table></div>")
         # For sport bots, close the per-table `<div class='section'>`
         # wrapper opened at the top of this loop iteration.
