@@ -552,8 +552,25 @@ def kalshi_positions_to_active_bets(kalshi_positions: List[Dict[str, Any]],
     return out
 
 
+def _is_real_fill(c: Dict[str, Any]) -> bool:
+    """True when a closed sim_state record traces back to a REAL
+    Kalshi order. Real fills carry the exchange's UUID order_id (or
+    the orphan-adoption 'recovered-…' marker); dry-run records carry
+    'DRY-RUN-…' ids / 'dry_run_simulated' status; paper-simulator
+    closes have no order_id at all."""
+    status = str(c.get("order_status") or "").lower()
+    if status == "dry_run_simulated":
+        return False
+    oid = str(c.get("order_id") or "")
+    if oid.startswith("DRY-RUN"):
+        return False
+    return bool(oid)
+
+
 def closed_positions_for_rollup(sim_state_path: str | None,
-                                  limit: int = 100) -> List[Dict[str, Any]]:
+                                  limit: int = 100,
+                                  real_only: bool = False,
+                                  ) -> List[Dict[str, Any]]:
     """Project tennis ``closed_positions`` into the shape the standard
     ``_render_bet_history_block`` expects.
 

@@ -13123,7 +13123,29 @@ class Handler(BaseHTTPRequestHandler):
                     # See the per-bot cap comment in the sport-family
                     # branch above — same reasoning for the standard
                     # sim.db bots.
-                    for h in fetch_bet_history(b["db_path"], limit=10_000):
+                    #
+                    # LIVE dashboard fallback: macro bots (gas /
+                    # unemployment / cpi / natural-gas / whale-watcher)
+                    # point at ``data/live.db`` which is empty because
+                    # those bots have never traded live. Their sim.db
+                    # sibling holds the paper-close history the user
+                    # actually wants to see under "By bot". When the
+                    # live db returns nothing, try ``sim.db`` under the
+                    # same data dir so the bot still surfaces on the
+                    # LIVE dashboard's cross-bot ledger.
+                    _closed_rows = fetch_bet_history(
+                        b["db_path"], limit=10_000)
+                    if not _closed_rows and self.mode == "live":
+                        try:
+                            _sim_db = str(Path(b["db_path"]).parent
+                                           / "sim.db")
+                            _closed_rows = fetch_bet_history(
+                                _sim_db, limit=10_000)
+                        except Exception:  # noqa: BLE001
+                            log.exception(
+                                "sim.db fallback for %s failed", b["key"])
+                            _closed_rows = []
+                    for h in _closed_rows:
                         h["_bot_name"] = b["name"]
                         h["_bot_key"] = b["key"]
                         h["_dashboard_type"] = b.get("dashboard_type") or "standard"
