@@ -13078,56 +13078,29 @@ class Handler(BaseHTTPRequestHandler):
                         # still trims by the user-selected window
                         # (30d / 90d / all-time); this cap is just the
                         # "don't OOM on a runaway ledger" safety.
+                        # LIVE history is REAL FILLS ONLY (user
+                        # 2026-07-10: "the history page should only
+                        # show real bets that were made"). That
+                        # supersedes the same-day paper-side fallbacks
+                        # that backfilled By-bot from paper ledgers
+                        # when a bot had no live closes — a bot that
+                        # never traded real money now simply shows
+                        # empty on the LIVE ledger, and the sport
+                        # rollup drops dry-run evaluations too.
                         if b.get("dashboard_type") == "billboard":
                             closed_iter = fetch_bet_history(
                                 b["db_path"], limit=10_000)
-                            # LIVE-side fallback: the billboard live
-                            # sim.db lives at
-                            # ``.../outputs-live/sim.db`` and is empty
-                            # because the executor hasn't traded live.
-                            # The paper sim.db sits one dir over at
-                            # ``.../outputs/sim.db`` — swap the
-                            # ``outputs-live`` segment out to reach it.
-                            if not closed_iter and self.mode == "live":
-                                try:
-                                    _live_p = Path(b["db_path"])
-                                    _paper_db = str(
-                                        Path(str(_live_p).replace(
-                                            "outputs-live", "outputs")))
-                                    _fallback = fetch_bet_history(
-                                        _paper_db, limit=10_000)
-                                    if _fallback:
-                                        closed_iter = _fallback
-                                except Exception:  # noqa: BLE001
-                                    log.exception(
-                                        "billboard sim.db fallback failed")
+                        elif b.get("dashboard_type") == "sport":
+                            closed_iter = list(
+                                adapter.closed_positions_for_rollup(
+                                    b.get("sim_state_path"), limit=10_000,
+                                    real_only=(self.mode == "live"),
+                                ))
                         else:
                             closed_iter = list(
                                 adapter.closed_positions_for_rollup(
                                     b.get("sim_state_path"), limit=10_000,
                                 ))
-                            # LIVE-side fallback for sport / survivor
-                            # bots. Darts on 2026-07-10 has 0 closes at
-                            # outputs-live/sim_state.json but 6 at the
-                            # paper outputs/sim_state.json sibling —
-                            # without this fallback darts drops off
-                            # the LIVE dashboard's By-bot entirely.
-                            if not closed_iter and self.mode == "live":
-                                try:
-                                    _live_ss = Path(b.get("sim_state_path")
-                                                     or "")
-                                    _paper_ss = str(_live_ss.parent.parent
-                                                     / "outputs"
-                                                     / "sim_state.json")
-                                    _fallback = list(
-                                        adapter.closed_positions_for_rollup(
-                                            _paper_ss, limit=10_000,
-                                        ))
-                                    if _fallback:
-                                        closed_iter = _fallback
-                                except Exception:  # noqa: BLE001
-                                    log.exception(
-                                        "sport sim_state fallback failed")
                         for h in closed_iter:
                             h["_bot_name"] = b["name"]
                             h["_bot_key"] = b["key"]
@@ -13263,6 +13236,7 @@ class Handler(BaseHTTPRequestHandler):
                     from . import tennis as _tennis
                     bot_closed_positions = _tennis.closed_positions_for_rollup(
                         bot.get("sim_state_path"), limit=100,
+                        real_only=(self.mode == "live"),
                     )
                 else:
                     bot_closed_positions = fetch_bet_history(db_path, limit=100)
