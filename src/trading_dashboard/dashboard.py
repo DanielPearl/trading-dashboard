@@ -507,6 +507,181 @@ def fetch_active_bets_with_marks(db_path: str) -> List[dict]:
         "WHERE p.status = 'open' ORDER BY p.opened_at DESC")
 
 
+# ── Kalshi portfolio → cross-bot history ────────────────────────────
+# The History tab now sources every closed bet from Kalshi's real
+# /portfolio/settlements + /portfolio/fills endpoints (source of
+# truth), not from local sim_state / sim.db files. That way the tab
+# shows exactly what actually happened on the account — a paper trade
+# recorded in a bot's sim_state that never became a Kalshi order
+# doesn't appear (matches the user's 2026-07-11 request: "only show a
+# bot when at least one contract has been bought"), and the ledger is
+# unified across every bot instead of tennis-only.
+
+_KALSHI_HISTORY_CACHE: Dict[str, Any] = {"at": 0.0, "settlements": [],
+                                            "fills": []}
+_KALSHI_HISTORY_TTL_S = 60.0
+
+
+def _fetch_all_kalshi_history() -> Tuple[List[dict], List[dict]]:
+    """Return ``(settlements, fills)`` across every Kalshi ticker.
+    60s cached — settlements never change post-fact and fills only
+    append, so a longer TTL would also be safe. Returns cached data
+    on any API failure so a transient error doesn't blank the tab."""
+    import time
+    now = time.time()
+    if (now - _KALSHI_HISTORY_CACHE["at"] < _KALSHI_HISTORY_TTL_S):
+        return (_KALSHI_HISTORY_CACHE["settlements"],
+                _KALSHI_HISTORY_CACHE["fills"])
+    try:
+        from . import tennis as _tennis  # reuse the tennis-client helper
+        client = _tennis._get_kalshi_client()
+    except Exception:  # noqa: BLE001
+        log.exception("kalshi client init failed")
+        return (_KALSHI_HISTORY_CACHE["settlements"],
+                _KALSHI_HISTORY_CACHE["fills"])
+    if client is None:
+        return ([], [])
+    try:
+        settlements = client.iter_settlements() or []
+        fills = client.iter_fills() or []
+    except Exception:  # noqa: BLE001
+        log.exception("kalshi settlements/fills fetch failed; serving stale")
+        return (_KALSHI_HISTORY_CACHE["settlements"],
+                _KALSHI_HISTORY_CACHE["fills"])
+    _KALSHI_HISTORY_CACHE.update(
+        {"at": now, "settlements": settlements, "fills": fills})
+    return settlements, fills
+
+
+def _bot_ticker_prefix_index(bots: List[dict]
+                              ) -> List[Tuple[str, dict]]:
+    """Build ``[(prefix, bot_dict)]`` sorted longest-prefix-first so a
+    KXNBASUMMERGAME ticker matches the NBA bot instead of any bot
+    whose config only carries ``KXNBAGAME``."""
+    idx: List[Tuple[str, dict]] = []
+    for b in bots:
+        prefixes = list(b.get("series_prefixes") or [])
+        if not prefixes and b.get("series_ticker"):
+            prefixes = [str(b["series_ticker"])]
+        for p in prefixes:
+            p = str(p).strip().rstrip("*")
+            if p:
+                idx.append((p, b))
+    idx.sort(key=lambda x: len(x[0]), reverse=True)
+    return idx
+
+
+def _ticker_to_bot(ticker: str,
+                    prefix_index: List[Tuple[str, dict]]
+                    ) -> Optional[dict]:
+    """Return the bot config whose ticker prefix matches ``ticker``,
+    or None if no bot claims this ticker."""
+    t = (ticker or "").upper()
+    for prefix, bot in prefix_index:
+        if t.startswith(prefix.upper()):
+            return bot
+    return None
+
+
+def _summarize_fills_by_ticker(fills: List[dict]) -> Dict[str, dict]:
+    """Group fills by ticker, tracking open (buy) vs close (sell)
+    legs. Yes-price is used uniformly so entry and exit sit on the
+    same axis regardless of which side was actually traded."""
+    by: Dict[str, dict] = {}
+    for f in fills:
+        t = f.get("ticker") or f.get("market_ticker") or ""
+        if not t:
+            continue
+        n = float(f.get("count_fp") or 0)
+        if n <= 0:
+            continue
+        action = (f.get("action") or "").lower()
+        side = (f.get("side") or "yes").lower()
+        yes_p = float(f.get("yes_price_dollars") or 0)
+        if yes_p > 1.0:
+            yes_p = yes_p / 100.0
+        d = by.setdefault(t, {"open_n": 0.0, "open_yn": 0.0,
+                                 "close_n": 0.0, "close_yn": 0.0,
+                                 "side": side, "first_open_time": ""})
+        if action == "sell":
+            d["close_n"] += n
+            d["close_yn"] += yes_p * n
+        else:
+            d["open_n"] += n
+            d["open_yn"] += yes_p * n
+            ct = f.get("created_time") or ""
+            if ct and (not d["first_open_time"]
+                       or ct < d["first_open_time"]):
+                d["first_open_time"] = ct
+    out: Dict[str, dict] = {}
+    for t, d in by.items():
+        open_avg = (d["open_yn"] / d["open_n"]) if d["open_n"] else None
+        close_avg = ((d["close_yn"] / d["close_n"])
+                      if d["close_n"] else None)
+        out[t] = {
+            "open_avg_dollars": open_avg,
+            "close_avg_dollars": close_avg,
+            "contracts": int(round(d["open_n"])),
+            "side": d["side"],
+            "first_open_time": d["first_open_time"],
+        }
+    return out
+
+
+def build_kalshi_cross_bot_history(bots: List[dict]) -> List[dict]:
+    """Real Kalshi portfolio → the standard ``global_history`` row
+    shape, unified across every bot with settled positions on the
+    account. Bot attribution derives from the ticker prefix using each
+    bot's ``series_prefixes`` / ``series_ticker`` config."""
+    settlements, fills = _fetch_all_kalshi_history()
+    prefix_idx = _bot_ticker_prefix_index(bots)
+    fills_by_ticker = _summarize_fills_by_ticker(fills)
+    out: List[dict] = []
+    for s in settlements:
+        ticker = s.get("ticker") or s.get("market_ticker") or ""
+        if not ticker:
+            continue
+        bot = _ticker_to_bot(ticker, prefix_idx)
+        f = fills_by_ticker.get(ticker) or {}
+        open_avg = f.get("open_avg_dollars")
+        entry_cents = (int(round(open_avg * 100))
+                        if open_avg is not None else None)
+        revenue_cents = int(s.get("revenue") or 0)
+        try:
+            cost_cents = int(round(
+                (f.get("open_avg_dollars") or 0)
+                * (f.get("contracts") or 0) * 100))
+        except (TypeError, ValueError):
+            cost_cents = 0
+        realized_cents = revenue_cents - cost_cents
+        result_side = (s.get("market_result") or "").lower()
+        held_side = (f.get("side") or "yes").lower()
+        won = (result_side == held_side)
+        exit_cents = 100 if won else 0
+        opened_at = f.get("first_open_time") or ""
+        settled_at = (s.get("settled_time")
+                      or s.get("settle_time")
+                      or s.get("created_time") or "")
+        out.append({
+            "ticker": ticker,
+            "side": held_side.upper(),
+            "entry_price_cents": entry_cents,
+            "exit_price_cents": exit_cents,
+            "contracts": f.get("contracts") or 1,
+            "realized_pnl_cents": realized_cents,
+            "opened_at": opened_at,
+            "exited_at": settled_at,
+            "expected_ev_at_entry": None,
+            "_bot_key": bot.get("key") if bot else "unknown",
+            "_bot_name": bot.get("name") if bot else "Unknown bot",
+            "_dashboard_type": (bot.get("dashboard_type")
+                                 if bot else "standard") or "standard",
+            "_display": (bot.get("display") if bot else {}) or {},
+        })
+    out.sort(key=lambda r: r.get("exited_at") or "", reverse=True)
+    return out
+
+
 def fetch_bet_history(db_path: str, limit: int = 100) -> List[dict]:
     """Closed positions only — for the Bet History section.
 
@@ -13140,27 +13315,13 @@ class Handler(BaseHTTPRequestHandler):
                     # branch above — same reasoning for the standard
                     # sim.db bots.
                     #
-                    # LIVE dashboard fallback: macro bots (gas /
-                    # unemployment / cpi / natural-gas / whale-watcher)
-                    # point at ``data/live.db`` which is empty because
-                    # those bots have never traded live. Their sim.db
-                    # sibling holds the paper-close history the user
-                    # actually wants to see under "By bot". When the
-                    # live db returns nothing, try ``sim.db`` under the
-                    # same data dir so the bot still surfaces on the
-                    # LIVE dashboard's cross-bot ledger.
+                    # No paper-side fallback here: LIVE history is real
+                    # fills only (user 2026-07-10), so macro bots that
+                    # have never traded live show empty on the LIVE
+                    # ledger — their paper history stays on the sim
+                    # dashboard, which reads sim.db directly.
                     _closed_rows = fetch_bet_history(
                         b["db_path"], limit=10_000)
-                    if not _closed_rows and self.mode == "live":
-                        try:
-                            _sim_db = str(Path(b["db_path"]).parent
-                                           / "sim.db")
-                            _closed_rows = fetch_bet_history(
-                                _sim_db, limit=10_000)
-                        except Exception:  # noqa: BLE001
-                            log.exception(
-                                "sim.db fallback for %s failed", b["key"])
-                            _closed_rows = []
                     for h in _closed_rows:
                         h["_bot_name"] = b["name"]
                         h["_bot_key"] = b["key"]
