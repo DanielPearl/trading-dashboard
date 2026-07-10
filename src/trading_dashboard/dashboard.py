@@ -7198,17 +7198,21 @@ def _render_history_attribution(out: List[str],
     # P&L pattern lives — deep-underdog (15-25¢) buys are the tail the
     # miscalibration reviews keep flagging, so isolating that bucket
     # from the moderate-favourite (50-65¢) bucket is the useful cut.
-    # 7 buckets: two open-ended tails plus five 10¢ buckets covering
-    # the 25-75¢ range where nearly every trade lives. Untagged catch
-    # rows without a recorded entry price and stays empty-hidden.
+    # 7 buckets aligned to the bot's 30-70¢ operating range (global
+    # gates block buys below ~30¢ or above ~70¢). Two open-ended tails
+    # flag any trade that slipped outside the band — a nonzero count
+    # there is worth investigating on its own — and five equal 8¢
+    # slices carve the 30-70¢ zone finely enough to see where the P&L
+    # pattern lives. Untagged catches rows without a recorded entry
+    # price and stays empty-hidden.
     price_buckets = [
-        ("< 25¢",     None, 25),
-        ("25–35¢",    25,   35),
-        ("35–45¢",    35,   45),
-        ("45–55¢",    45,   55),
-        ("55–65¢",    55,   65),
-        ("65–75¢",    65,   75),
-        ("> 75¢",     75,   None),
+        ("< 30¢",     None, 30),
+        ("30–38¢",    30,   38),
+        ("38–46¢",    38,   46),
+        ("46–54¢",    46,   54),
+        ("54–62¢",    54,   62),
+        ("62–70¢",    62,   70),
+        ("> 70¢",     70,   None),
         ("untagged",  None, None),
     ]
     price_rows: List[dict] = []
