@@ -583,6 +583,74 @@ def _ticker_to_bot(ticker: str,
     return None
 
 
+def _load_sim_state_enrichment(bots: List[dict]) -> Dict[str, dict]:
+    """Index every bot's ``sim_state.json`` ``closed_positions`` +
+    ``positions`` arrays by Kalshi ticker so ``build_kalshi_cross_bot
+    _history`` can hydrate the History-tab columns the ledger alone
+    doesn't carry — Title, Model p, Entry EV — the same way the
+    tennis-only history did.
+
+    Sport bots (tennis / WNBA / NBA / darts / TT / MLB / world-cup)
+    write records in a shared schema (originally the tennis
+    executor's): each entry has ``ticker`` OR ``match_id``, plus
+    ``event_title`` / ``title``, ``entry_model_prob`` /
+    ``entry_market_prob``, ``player_a`` / ``player_b`` /
+    ``side_player``. Standard bots (gas / claims / cpi / natgas)
+    persist trades in sim.db rather than sim_state.json — those
+    rows land without enrichment (Title falls back to the ticker,
+    Model p / Entry EV display "—").
+
+    Returns ``{ticker → enrichment_dict}``. Keys are indexed with
+    BOTH the side-specific ticker (``KXATPMATCH-…-DAL``) and the
+    event ticker / ``match_id`` (``KXATPMATCH-…``) so a settlement
+    row can join on either.
+    """
+    idx: Dict[str, dict] = {}
+    for b in bots:
+        sim_path = b.get("sim_state_path")
+        if not sim_path:
+            continue
+        try:
+            with open(sim_path, "r", encoding="utf-8") as f:
+                st = json.load(f) or {}
+        except (OSError, json.JSONDecodeError):
+            continue
+        for c in (st.get("closed_positions") or []) + (st.get("positions") or []):
+            ticker = c.get("ticker") or c.get("match_id") or ""
+            if not ticker:
+                continue
+            pa = c.get("player_a") or ""
+            pb = c.get("player_b") or ""
+            matchup = (f"{pa} vs {pb}" if pa and pb else "")
+            side_player = c.get("side_player") or ""
+            title = (c.get("event_title") or c.get("title") or ""
+                     or (matchup and side_player
+                         and f"{matchup} — bet on {side_player}")
+                     or matchup or "")
+            entry_mp = c.get("entry_model_prob")
+            entry_kp = (c.get("entry_market_prob")
+                        or c.get("entry_kalshi_prob"))
+            payload = {
+                "_title": title,
+                "_match": matchup,
+                "_side_player": side_player,
+                "entry_model_prob": entry_mp,
+                "entry_market_prob": entry_kp,
+            }
+            # Primary key: side-specific ticker. Also register the
+            # match_id / event_ticker so settlements arriving on the
+            # base ticker can still resolve.
+            for key in {ticker, c.get("match_id") or "",
+                        c.get("event_ticker") or ""}:
+                if not key:
+                    continue
+                # First writer wins — closed_positions are iterated
+                # before open positions, so a closed row's data takes
+                # precedence over a still-open one on the same ticker.
+                idx.setdefault(key, payload)
+    return idx
+
+
 def _summarize_fills_by_ticker(fills: List[dict]) -> Dict[str, dict]:
     """Group fills by ticker, tracking open (buy) vs close (sell)
     legs. Yes-price is used uniformly so entry and exit sit on the
@@ -13166,10 +13234,17 @@ class Handler(BaseHTTPRequestHandler):
                 def _keep_on_kalshi(ab: dict) -> bool:
                     """Filter passthrough — sim dashboard always keeps
                     rows; live dashboard keeps only rows whose ticker is
-                    in the live-held set."""
+                    in the live-held set. Sport rows may carry the
+                    parent EVENT ticker while the portfolio lists the
+                    per-side MARKET ticker (event + "-XXX"), so accept
+                    a prefix match too."""
                     if _live_held_tickers is None:
                         return True
-                    return ab.get("ticker") in _live_held_tickers
+                    t = str(ab.get("ticker") or "")
+                    if t in _live_held_tickers:
+                        return True
+                    return any(h.startswith(t + "-")
+                               for h in _live_held_tickers)
 
                 global_active_bets: List[dict] = []
                 global_history: List[dict] = []
@@ -13251,6 +13326,36 @@ class Handler(BaseHTTPRequestHandler):
                                 except Exception:  # noqa: BLE001
                                     log.exception("in_game.predict in enrich failed")
                                 global_active_bets.append(ab)
+                            # Real Kalshi positions in this bot's series
+                            # that the executor didn't open (manual /
+                            # external orders) — same union as the
+                            # per-bot watchlist page, so the home-page
+                            # Active bets shows every current contract.
+                            if self.mode == "live":
+                                from .kalshi_client import get_open_positions
+                                _kpos, _kerr = get_open_positions()
+                                _prefixes = (b.get("series_prefixes")
+                                             or ([b.get("series_ticker")]
+                                                 if b.get("series_ticker")
+                                                 else []))
+                                if _kpos and _prefixes:
+                                    _covered = {
+                                        str(ab.get("ticker") or "")
+                                        for ab in global_active_bets
+                                        if ab.get("_bot_key") == b["key"]
+                                    }
+                                    _wl_payload = _tennis.load_watchlist(
+                                        b.get("watchlist_json_path"))
+                                    for ab in (
+                                        _tennis.kalshi_positions_to_active_bets(
+                                            _kpos, _wl_payload, _prefixes,
+                                            exclude_tickers=_covered,
+                                        )):
+                                        ab["_bot_name"] = b["name"]
+                                        ab["_bot_key"] = b["key"]
+                                        ab["_dashboard_type"] = "sport"
+                                        ab["_display"] = b.get("display") or {}
+                                        global_active_bets.append(ab)
                         elif b.get("dashboard_type") == "billboard":
                             # Billboard writes a real sim.db — same
                             # readers as the standard bots below.
