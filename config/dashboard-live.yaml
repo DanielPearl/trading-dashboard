@@ -456,8 +456,8 @@ nba_trader:
   live:
     dry_run: true
     sim_state_path: /root/nba/data/outputs-live/sim_state.json
-    max_open_positions: 6
-    max_orders_per_day: 10
+    max_open_positions: 10   # raised 6 → 10 (hard cap) for $1-stake testing
+    max_orders_per_day: 15   # raised 10 → 15 (hard cap)
     contracts_per_order: 1
     min_edge_pp: 0.05
     max_entry_price_cents: 80
@@ -508,8 +508,8 @@ table_tennis_trader:
   live:
     dry_run: true
     sim_state_path: /root/table-tennis-forecast/data/outputs-live/sim_state.json
-    max_open_positions: 6
-    max_orders_per_day: 10
+    max_open_positions: 10   # raised 6 → 10 (hard cap) for $1-stake testing
+    max_orders_per_day: 15   # raised 10 → 15 (hard cap)
     contracts_per_order: 1
     min_edge_pp: 0.05
     max_entry_price_cents: 80
@@ -527,8 +527,8 @@ darts_trader:
   live:
     dry_run: true
     sim_state_path: /root/darts-forecast/data/outputs-live/sim_state.json
-    max_open_positions: 6
-    max_orders_per_day: 10
+    max_open_positions: 10   # raised 6 → 10 (hard cap) for $1-stake testing
+    max_orders_per_day: 15   # raised 10 → 15 (hard cap)
     contracts_per_order: 1
     min_edge_pp: 0.05
     max_entry_price_cents: 80
@@ -577,8 +577,8 @@ mlb_trader:
   live:
     dry_run: true
     sim_state_path: /root/baseball/data/outputs-live/sim_state.json
-    max_open_positions: 6
-    max_orders_per_day: 10
+    max_open_positions: 10   # raised 6 → 10 (hard cap) for $1-stake testing
+    max_orders_per_day: 15   # raised 10 → 15 (hard cap)
     contracts_per_order: 1
     min_edge_pp: 0.05
     max_entry_price_cents: 80
