@@ -369,7 +369,7 @@ bots:
         start: "2026-06-11T00:00:00Z"
         end:   "2026-07-19T23:59:00Z"
   - key: mlb
-    name: MLB Forecast
+    name: Baseball Forecast
     # MLB game-winner bot (two binary team markets per KXMLBGAME
     # event → one tennis-shape X-vs-Y row per game). The probability
     # source IS the sharp-book benchmark — devigged Pinnacle

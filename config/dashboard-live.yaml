@@ -278,7 +278,7 @@ bots:
         start: "2026-06-11T00:00:00Z"
         end:   "2026-07-19T23:59:00Z"
   - key: mlb
-    name: MLB Forecast
+    name: Baseball Forecast
     # MLB game-winner bot. The mlb_trader daemon below runs in THIS
     # process with a ``live:`` block, so bots/mlb.py drives the
     # MLBLiveExecutor (dry-run until armed) and mirrors the watchlist
