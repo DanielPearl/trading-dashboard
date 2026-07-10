@@ -13081,18 +13081,21 @@ class Handler(BaseHTTPRequestHandler):
                         if b.get("dashboard_type") == "billboard":
                             closed_iter = fetch_bet_history(
                                 b["db_path"], limit=10_000)
-                            # LIVE-side fallback (see the macro-bot
-                            # branch below for full rationale): the
-                            # billboard live sim.db is empty because
-                            # the executor hasn't traded live, so try
-                            # a paper-side sim.db sibling to keep
-                            # By-bot honest.
+                            # LIVE-side fallback: the billboard live
+                            # sim.db lives at
+                            # ``.../outputs-live/sim.db`` and is empty
+                            # because the executor hasn't traded live.
+                            # The paper sim.db sits one dir over at
+                            # ``.../outputs/sim.db`` — swap the
+                            # ``outputs-live`` segment out to reach it.
                             if not closed_iter and self.mode == "live":
                                 try:
-                                    _sim_db = str(Path(b["db_path"]).parent
-                                                    / "sim.db")
+                                    _live_p = Path(b["db_path"])
+                                    _paper_db = str(
+                                        Path(str(_live_p).replace(
+                                            "outputs-live", "outputs")))
                                     _fallback = fetch_bet_history(
-                                        _sim_db, limit=10_000)
+                                        _paper_db, limit=10_000)
                                     if _fallback:
                                         closed_iter = _fallback
                                 except Exception:  # noqa: BLE001
