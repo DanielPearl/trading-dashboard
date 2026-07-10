@@ -12974,11 +12974,20 @@ class Handler(BaseHTTPRequestHandler):
                         # schema); the legacy
                         # ``_billboard.closed_positions_for_rollup``
                         # stub always returned [].
+                        # 2026-07-09: per-bot cap raised from 50 to
+                        # 10_000 so bots with hundreds of settled
+                        # paper closes (tennis at 174, WNBA at 99, NBA
+                        # at 28, etc.) fully contribute to the cross-
+                        # bot History tab. The period filter below
+                        # still trims by the user-selected window
+                        # (30d / 90d / all-time); this cap is just the
+                        # "don't OOM on a runaway ledger" safety.
                         if b.get("dashboard_type") == "billboard":
-                            closed_iter = fetch_bet_history(b["db_path"], limit=50)
+                            closed_iter = fetch_bet_history(
+                                b["db_path"], limit=10_000)
                         else:
                             closed_iter = adapter.closed_positions_for_rollup(
-                                b.get("sim_state_path"), limit=50,
+                                b.get("sim_state_path"), limit=10_000,
                             )
                         for h in closed_iter:
                             h["_bot_name"] = b["name"]
@@ -13015,7 +13024,10 @@ class Handler(BaseHTTPRequestHandler):
                         except Exception:  # noqa: BLE001
                             log.exception("in_game.predict in enrich failed")
                         global_active_bets.append(ab)
-                    for h in fetch_bet_history(b["db_path"], limit=50):
+                    # See the per-bot cap comment in the sport-family
+                    # branch above — same reasoning for the standard
+                    # sim.db bots.
+                    for h in fetch_bet_history(b["db_path"], limit=10_000):
                         h["_bot_name"] = b["name"]
                         h["_bot_key"] = b["key"]
                         h["_dashboard_type"] = b.get("dashboard_type") or "standard"
