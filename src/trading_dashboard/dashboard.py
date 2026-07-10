@@ -3927,9 +3927,10 @@ def render_page(
     kalshi_history: List[dict] = build_kalshi_cross_bot_history(
         available_bots)
     # Period filter — same rule as ``global_history``. None keeps all.
-    if period_days is not None:
+    _pd_days = _period_days(period_key)
+    if _pd_days is not None:
         cutoff_ts = (datetime.now(timezone.utc).timestamp()
-                      - period_days * 86400)
+                      - _pd_days * 86400)
 
         def _within_period(h: dict) -> bool:
             ex = h.get("exited_at") or ""
