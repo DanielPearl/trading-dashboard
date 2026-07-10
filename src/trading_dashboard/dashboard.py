@@ -7195,13 +7195,14 @@ def _render_history_attribution(out: List[str],
         return (model_side - p) * 100.0
 
     edge_buckets = [
-        ("< 0pp",   -100.0, 0.0),
-        ("0–3pp",    0.0,   3.0),
-        ("3–5pp",    3.0,   5.0),
-        ("5–7pp",    5.0,   7.0),
-        ("7–10pp",   7.0,   10.0),
-        ("10pp+",    10.0,  100.0),
-        ("untagged", None,  None),  # bets without a recorded model prob
+        ("< 0pp",    -100.0, 0.0),
+        ("0–3pp",     0.0,   3.0),
+        ("3–5pp",     3.0,   5.0),
+        ("5–7pp",     5.0,   7.0),
+        ("7–10pp",    7.0,   10.0),
+        ("10–15pp",   10.0,  15.0),
+        ("15pp+",     15.0,  100.0),
+        ("untagged",  None,  None),  # bets without a recorded model prob
     ]
     edge_rows: List[dict] = []
     for label, lo, hi in edge_buckets:
