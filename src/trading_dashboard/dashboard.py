@@ -7234,7 +7234,7 @@ def _render_history_attribution(out: List[str],
     _emit_table("By entry price",
                  "what price bucket the contract was bought at",
                  price_rows)
-    _emit_table("By entry edge",
+    _emit_table("By edge",
                  "model − market at entry (pp) vs realized P&L",
                  edge_rows)
     out.append("</div>")
