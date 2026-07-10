@@ -13081,10 +13081,50 @@ class Handler(BaseHTTPRequestHandler):
                         if b.get("dashboard_type") == "billboard":
                             closed_iter = fetch_bet_history(
                                 b["db_path"], limit=10_000)
+                            # LIVE-side fallback (see the macro-bot
+                            # branch below for full rationale): the
+                            # billboard live sim.db is empty because
+                            # the executor hasn't traded live, so try
+                            # a paper-side sim.db sibling to keep
+                            # By-bot honest.
+                            if not closed_iter and self.mode == "live":
+                                try:
+                                    _sim_db = str(Path(b["db_path"]).parent
+                                                    / "sim.db")
+                                    _fallback = fetch_bet_history(
+                                        _sim_db, limit=10_000)
+                                    if _fallback:
+                                        closed_iter = _fallback
+                                except Exception:  # noqa: BLE001
+                                    log.exception(
+                                        "billboard sim.db fallback failed")
                         else:
-                            closed_iter = adapter.closed_positions_for_rollup(
-                                b.get("sim_state_path"), limit=10_000,
-                            )
+                            closed_iter = list(
+                                adapter.closed_positions_for_rollup(
+                                    b.get("sim_state_path"), limit=10_000,
+                                ))
+                            # LIVE-side fallback for sport / survivor
+                            # bots. Darts on 2026-07-10 has 0 closes at
+                            # outputs-live/sim_state.json but 6 at the
+                            # paper outputs/sim_state.json sibling —
+                            # without this fallback darts drops off
+                            # the LIVE dashboard's By-bot entirely.
+                            if not closed_iter and self.mode == "live":
+                                try:
+                                    _live_ss = Path(b.get("sim_state_path")
+                                                     or "")
+                                    _paper_ss = str(_live_ss.parent.parent
+                                                     / "outputs"
+                                                     / "sim_state.json")
+                                    _fallback = list(
+                                        adapter.closed_positions_for_rollup(
+                                            _paper_ss, limit=10_000,
+                                        ))
+                                    if _fallback:
+                                        closed_iter = _fallback
+                                except Exception:  # noqa: BLE001
+                                    log.exception(
+                                        "sport sim_state fallback failed")
                         for h in closed_iter:
                             h["_bot_name"] = b["name"]
                             h["_bot_key"] = b["key"]

@@ -592,6 +592,12 @@ def closed_positions_for_rollup(sim_state_path: str | None,
     """
     s = load_sim_state(sim_state_path)
     closed = list(s.get("closed_positions") or [])
+    # LIVE dashboard's History must only show bets that actually
+    # traded on Kalshi (user 2026-07-10) — the live executors' state
+    # files accumulate dry-run evaluations alongside real fills, and
+    # mixing them makes the real-money ledger unreadable.
+    if real_only:
+        closed = [c for c in closed if _is_real_fill(c)]
     # Most recently closed first; honour the caller's limit so the
     # cross-bot history loop doesn't pull thousands of rows from a
     # long-running paper-trade ledger.
