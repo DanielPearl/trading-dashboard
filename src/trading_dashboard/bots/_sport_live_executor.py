@@ -34,7 +34,11 @@ from . import _live_core as core
 HARD_CAPS = {
     "contracts_per_order": 1,
     "max_open_positions": 10,
-    "max_orders_per_day": 15,
+    # NOT a policy limit — the trading constraint is concurrency
+    # (max_open_positions, "N at a time"), per user 2026-07-10. The
+    # daily counter exists only as a runaway backstop (a bug rapidly
+    # opening/closing positions burns out here instead of at Kalshi).
+    "max_orders_per_day": 100,
     "min_edge_pp": 0.05,
     "max_entry_price_cents": 80,
     "min_entry_price_cents": 15,
@@ -49,7 +53,7 @@ HARD_CAPS = {
 
 DEFAULTS = {
     "max_open_positions": 6,
-    "max_orders_per_day": 10,
+    "max_orders_per_day": 50,
     "contracts_per_order": 1,
     "min_edge_pp": 0.05,
     "max_entry_price_cents": 80,
