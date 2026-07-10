@@ -610,12 +610,27 @@ def _load_sim_state_enrichment(bots: List[dict]) -> Dict[str, dict]:
         sim_path = b.get("sim_state_path")
         if not sim_path:
             continue
-        try:
-            with open(sim_path, "r", encoding="utf-8") as f:
-                st = json.load(f) or {}
-        except (OSError, json.JSONDecodeError):
-            continue
-        for c in (st.get("closed_positions") or []) + (st.get("positions") or []):
+        # Index BOTH sibling ledgers (outputs/ paper + outputs-live/
+        # executor), not just the current mode's file: the account
+        # settlements this joins against are REAL trades recorded by
+        # the live executors, so the sim dashboard's paper-side path
+        # alone left almost every settlement without a model prob
+        # ("untagged" in the By-edge panel — user 2026-07-10 asked for
+        # those to be mapped).
+        paths = [sim_path]
+        if "outputs-live" in sim_path:
+            paths.append(sim_path.replace("outputs-live", "outputs"))
+        elif "/outputs/" in sim_path:
+            paths.append(sim_path.replace("/outputs/", "/outputs-live/"))
+        records: list = []
+        for _p in paths:
+            try:
+                with open(_p, "r", encoding="utf-8") as f:
+                    st = json.load(f) or {}
+            except (OSError, json.JSONDecodeError):
+                continue
+            records += (st.get("closed_positions") or [])                        + (st.get("positions") or [])
+        for c in records:
             ticker = c.get("ticker") or c.get("match_id") or ""
             if not ticker:
                 continue
@@ -644,10 +659,15 @@ def _load_sim_state_enrichment(bots: List[dict]) -> Dict[str, dict]:
                         c.get("event_ticker") or ""}:
                 if not key:
                     continue
-                # First writer wins — closed_positions are iterated
-                # before open positions, so a closed row's data takes
-                # precedence over a still-open one on the same ticker.
-                idx.setdefault(key, payload)
+                # First writer wins (closed_positions are iterated
+                # before open positions) — EXCEPT that a record
+                # carrying a real model prob upgrades one that
+                # doesn't, so a paper-side stub can't block the live
+                # executor's fully-tagged record for the same ticker.
+                prev = idx.get(key)
+                if prev is None or (prev.get("entry_model_prob") is None
+                                     and entry_mp is not None):
+                    idx[key] = payload
     return idx
 
 
@@ -7194,6 +7214,12 @@ def _render_history_attribution(out: List[str],
         model_side = m if side == "YES" else (1.0 - m)
         return (model_side - p) * 100.0
 
+    # No "untagged" bucket (user 2026-07-10): settlements are joined
+    # back to the bot ledgers for their model prob (both the paper and
+    # executor sim_states are indexed — see _load_sim_state_enrichment),
+    # and the rare row that still has no recorded model prob (manual
+    # trades from before any bot tracked the series) is simply
+    # excluded from this panel; it still counts in the other three.
     edge_buckets = [
         ("< 0pp",    -100.0, 0.0),
         ("0–3pp",     0.0,   3.0),
@@ -7202,17 +7228,12 @@ def _render_history_attribution(out: List[str],
         ("7–10pp",    7.0,   10.0),
         ("10–15pp",   10.0,  15.0),
         ("15pp+",     15.0,  100.0),
-        ("untagged",  None,  None),  # bets without a recorded model prob
     ]
     edge_rows: List[dict] = []
     for label, lo, hi in edge_buckets:
         bucket_bets: List[dict] = []
         for h in history:
             edge_pp = _entry_edge_pp(h)
-            if lo is None:
-                if edge_pp is None:
-                    bucket_bets.append(h)
-                continue
             if edge_pp is None:
                 continue
             if edge_pp < lo or edge_pp >= hi:
