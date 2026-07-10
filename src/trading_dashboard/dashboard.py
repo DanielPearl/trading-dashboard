@@ -3794,26 +3794,45 @@ def render_page(
     # by-month is the useful one. EV bucket uses expected_ev_at_entry
     # which we synthesize as model_prob − avg_fill_price.)
     _render_history_attribution(out, tennis_rows)
-    # All Bets — Kalshi-sourced, with the 12-column layout. Always
-    # the last block on the History tab so it reads as the source of
-    # truth the cards / chart / attribution above are summarizing.
+    # Every closed bet across every bot — the user asked for the
+    # History tab to be truly cross-bot regardless of source (the
+    # earlier tennis-only view dropped WNBA / MLB / darts / world-cup /
+    # gas / claims / cpi paper closes because it was routed through
+    # the tennis Kalshi-settlements adapter only). Uses ``global_history``
+    # which was already built with every bot's closed positions above
+    # (per-bot cap raised to 10_000 in the same audit sweep).
     out.append("<h3 class='subhead'>All Bets "
                 "<span class='small gray'>"
-                "(direct from Kalshi settlements + fills)</span>"
+                "(cross-bot — every closed bet across every bot)</span>"
                 "</h3>")
     out.append("<div class='history-scroll'>")
-    try:
-        from . import tennis as _tennis
-        out.append(_tennis._render_tennis_history_page(
-            sim_state_tennis,
-            sim_state_path=sim_state_tennis_path,
-            rows=tennis_rows or None,
-        ))
-    except Exception:  # noqa: BLE001
-        log.exception("tennis history render failed")
-        out.append("<div class='empty'>Tennis history unavailable — "
-                    "see server log.</div>")
+    if global_history:
+        _render_bet_history_block(out, global_history, heading="",
+                                    shown_initially=25)
+    else:
+        out.append("<div class='empty'>No closed bets yet.</div>")
     out.append("</div>")
+    # Tennis Kalshi-settlement view kept as a supplementary block for
+    # anyone who wants the fills-level detail on the live tennis
+    # account (avg_fill_price etc.). Sits underneath the cross-bot
+    # ledger so the two views coexist without one displacing the other.
+    if tennis_rows:
+        out.append("<h3 class='subhead'>Tennis — Kalshi settlements &amp; fills "
+                    "<span class='small gray'>(live-account detail)</span>"
+                    "</h3>")
+        out.append("<div class='history-scroll'>")
+        try:
+            from . import tennis as _tennis
+            out.append(_tennis._render_tennis_history_page(
+                sim_state_tennis,
+                sim_state_path=sim_state_tennis_path,
+                rows=tennis_rows or None,
+            ))
+        except Exception:  # noqa: BLE001
+            log.exception("tennis history render failed")
+            out.append("<div class='empty'>Tennis history unavailable — "
+                        "see server log.</div>")
+        out.append("</div>")
     out.append("</div></div>")
     out.append("</div>")  # /history panel
 
