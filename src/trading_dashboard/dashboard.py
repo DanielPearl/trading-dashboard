@@ -3917,99 +3917,76 @@ def render_page(
         f"</span></h2>"
         f"<div class='body'>"
     )
-    # The History tab is sourced entirely from the tennis bot's
-    # Kalshi-settlement + fills data — the user's only live-trading
-    # bot. Summary cards, daily P&L chart, and the P&L attribution
-    # panels all use the same Kalshi-derived row list as the All Bets
-    # table below, so everything on this tab tells the same story.
-    # The legacy local-derived block (sim.db cross-bot ledger) was
-    # dropped — it was running on the broken hedge_pl/hedge_sl
-    # bookkeeping and showing inflated numbers.
-    tennis_rows: List[dict] = []
-    tennis_rollup: dict = {}
-    sim_state_tennis_path: str | None = None
-    sim_state_tennis: dict = {}
-    try:
-        from . import tennis as _tennis
-        tennis_bot_cfg = next(
-            (b for b in available_bots if b.get("key") == "tennis"), None,
-        )
-        if tennis_bot_cfg:
-            sim_state_tennis_path = tennis_bot_cfg.get("sim_state_path")
-            sim_state_tennis = _tennis.load_sim_state(sim_state_tennis_path)
-            tennis_rows = _tennis.build_tennis_history_for_page(
-                sim_state_tennis)
-            tennis_rollup = _tennis.compute_tennis_history_rollup(tennis_rows)
-            # Overlay the live open-bet count from the cross-bot
-            # global_summary (the cards' "Active bets" surface isn't
-            # closed-position-derived — it's whatever's currently open
-            # across all bots). show_closed_contracts=True hides the
-            # active count card anyway, so this is belt-and-braces.
-            tennis_rollup["active_bets"] = (
-                global_summary.get("active_bets", 0) if global_summary
-                else 0
-            )
-    except Exception:  # noqa: BLE001 — never let the history page 500
-        log.exception("tennis history fetch failed; "
-                       "summary/chart/attribution will be empty")
-        tennis_rows = []
-        tennis_rollup = {}
+    # 2026-07-11: History tab now sources every row from Kalshi's real
+    # ``/portfolio/settlements`` + ``/portfolio/fills`` endpoints,
+    # unified across every bot. A bot only appears in "By bot" if it
+    # has at least one settled Kalshi contract — paper positions that
+    # never became real orders no longer inflate the ledger. The
+    # tennis-only "All Bets" supplementary block is retired; every
+    # bot's rows sit in the single cross-bot ledger below.
+    kalshi_history: List[dict] = build_kalshi_cross_bot_history(
+        available_bots)
+    # Period filter — same rule as ``global_history``. None keeps all.
+    if period_days is not None:
+        cutoff_ts = (datetime.now(timezone.utc).timestamp()
+                      - period_days * 86400)
 
-    # Headline cards — driven by the tennis-derived rollup so they
-    # match the All Bets table below.
-    _render_summary_cards(out, tennis_rollup or global_summary,
+        def _within_period(h: dict) -> bool:
+            ex = h.get("exited_at") or ""
+            try:
+                if "T" in ex:
+                    t = datetime.fromisoformat(
+                        ex.replace("Z", "+00:00")).timestamp()
+                else:
+                    t = datetime.strptime(
+                        ex[:19], "%Y-%m-%d %H:%M:%S"
+                    ).replace(tzinfo=timezone.utc).timestamp()
+            except (TypeError, ValueError):
+                return False
+            return t >= cutoff_ts
+        kalshi_history = [h for h in kalshi_history if _within_period(h)]
+
+    # Cards synthesised from the same list every other block reads.
+    _kh_wins = sum(1 for h in kalshi_history
+                    if (h.get("realized_pnl_cents") or 0) > 0)
+    _kh_total_cents = sum(int(h.get("realized_pnl_cents") or 0)
+                           for h in kalshi_history)
+    _kh_spent_cents = sum(
+        int((h.get("entry_price_cents") or 0)
+             * (h.get("contracts") or 1))
+        for h in kalshi_history)
+    kalshi_rollup = {
+        "total_opened": len(kalshi_history),
+        "total_closed": len(kalshi_history),
+        "wins": _kh_wins,
+        "losses": len(kalshi_history) - _kh_wins,
+        "win_rate": (_kh_wins / len(kalshi_history))
+                     if kalshi_history else None,
+        "total_realized_pnl": _kh_total_cents / 100.0,
+        "total_staked": _kh_spent_cents / 100.0,
+        "active_bets": (global_summary.get("active_bets", 0)
+                         if global_summary else 0),
+    }
+    _render_summary_cards(out, kalshi_rollup or global_summary,
                            id_suffix="-history",
                            show_closed_contracts=True)
-    # Daily P&L chart over the same rows.
-    _render_history_chart(out, tennis_rows,
+    _render_history_chart(out, kalshi_history,
                             period_key=period_key,
                             current_bot=current_bot)
-    # P&L attribution panels. Sourced from ``global_history`` so every
-    # bot's closed bets participate — the earlier "tennis-only" flavour
-    # collapsed "By bot" to a single row (2026-07-10 user request).
-    # Row schemas from ``fetch_bet_history`` and ``closed_positions_for_
-    # rollup`` overlap on the fields the attribution code reads
-    # (entry_price_cents, exited_at, realized_pnl_cents, _bot_name).
-    _render_history_attribution(out, global_history)
-    # Every closed bet across every bot — the user asked for the
-    # History tab to be truly cross-bot regardless of source (the
-    # earlier tennis-only view dropped WNBA / MLB / darts / world-cup /
-    # gas / claims / cpi paper closes because it was routed through
-    # the tennis Kalshi-settlements adapter only). Uses ``global_history``
-    # which was already built with every bot's closed positions above
-    # (per-bot cap raised to 10_000 in the same audit sweep).
+    _render_history_attribution(out, kalshi_history)
     out.append("<h3 class='subhead'>All Bets "
                 "<span class='small gray'>"
-                "(cross-bot — every closed bet across every bot)</span>"
-                "</h3>")
+                "(from Kalshi /portfolio/settlements + /portfolio/fills "
+                "— every bot, every settled contract)</span></h3>")
     out.append("<div class='history-scroll'>")
-    if global_history:
-        _render_bet_history_block(out, global_history, heading="",
+    if kalshi_history:
+        _render_bet_history_block(out, kalshi_history, heading="",
                                     shown_initially=25)
     else:
-        out.append("<div class='empty'>No closed bets yet.</div>")
+        out.append("<div class='empty'>No settled Kalshi contracts yet "
+                    "— the ledger will populate as bots trade live and "
+                    "positions settle.</div>")
     out.append("</div>")
-    # Tennis Kalshi-settlement view kept as a supplementary block for
-    # anyone who wants the fills-level detail on the live tennis
-    # account (avg_fill_price etc.). Sits underneath the cross-bot
-    # ledger so the two views coexist without one displacing the other.
-    if tennis_rows:
-        out.append("<h3 class='subhead'>Tennis — Kalshi settlements &amp; fills "
-                    "<span class='small gray'>(live-account detail)</span>"
-                    "</h3>")
-        out.append("<div class='history-scroll'>")
-        try:
-            from . import tennis as _tennis
-            out.append(_tennis._render_tennis_history_page(
-                sim_state_tennis,
-                sim_state_path=sim_state_tennis_path,
-                rows=tennis_rows or None,
-            ))
-        except Exception:  # noqa: BLE001
-            log.exception("tennis history render failed")
-            out.append("<div class='empty'>Tennis history unavailable — "
-                        "see server log.</div>")
-        out.append("</div>")
     out.append("</div></div>")
     out.append("</div>")  # /history panel
 
