@@ -53,7 +53,7 @@ def match_pair_probs(lookup: Dict[frozenset, Dict[str, float]],
     if probs is None:
         want_a, want_b = name_a.lower(), name_b.lower()
         for names, p in lookup.items():
-            lowered = {n.lower() for n in names if n != "_source"}
+            lowered = {n.lower() for n in names if not n.startswith("_")}
             if all(any(w in n or n in w for n in lowered)
                    for w in (want_a, want_b)):
                 probs = p
@@ -64,8 +64,8 @@ def match_pair_probs(lookup: Dict[frozenset, Dict[str, float]],
     def _match(name: str):
         t = name.lower()
         for k, v in probs.items():
-            if k == "_source":
-                continue
+            if k.startswith("_"):
+                continue  # meta keys (_source / _start), not names
             kl = k.lower()
             if kl == t or t in kl or kl in t:
                 return v
@@ -78,6 +78,25 @@ def match_pair_probs(lookup: Dict[frozenset, Dict[str, float]],
     if pb is None and pa is not None:
         pb = 1.0 - pa
     return pa, pb
+
+
+def match_pair_start(lookup: Dict[frozenset, Dict[str, float]],
+                     name_a: str, name_b: str):
+    """The benchmark feed's scheduled start (ISO string or None) for a
+    pair — Pinnacle guest ``startTime`` / Odds-API ``commence_time``.
+    Same tolerant pair resolution as ``match_pair_probs``."""
+    if not (name_a and name_b):
+        return None
+    probs = lookup.get(frozenset({name_a, name_b}))
+    if probs is None:
+        want_a, want_b = name_a.lower(), name_b.lower()
+        for names, p in lookup.items():
+            lowered = {n.lower() for n in names if not n.startswith("_")}
+            if all(any(w in n or n in w for n in lowered)
+                   for w in (want_a, want_b)):
+                probs = p
+                break
+    return (probs or {}).get("_start")
 
 
 def apply_benchmark(rows: List[Dict[str, Any]],
@@ -122,6 +141,17 @@ def apply_benchmark(rows: List[Dict[str, Any]],
         if is_h2h:
             p_a, p_b = match_pair_probs(
                 lookup, row.get("player_a") or "", row.get("player_b") or "")
+            # Stamp the benchmark's scheduled start onto rows that
+            # don't carry one (darts / TT exporters have no kickoff
+            # field) so the live executor's prematch check can block
+            # in-play entries against a stale line — the exact failure
+            # the NBA executor hit on 2026-07-09.
+            if p_a is not None and not row.get("kickoff"):
+                start = match_pair_start(
+                    lookup, row.get("player_a") or "",
+                    row.get("player_b") or "")
+                if start:
+                    row["kickoff"] = start
 
         ask_a = row.get("market_prob_a")
         ask_b = row.get("market_prob_b")

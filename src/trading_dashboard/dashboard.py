@@ -11539,6 +11539,48 @@ def _render_watchlist(out: List[str], watchlist: List[dict],
         # already locked in, the buy/sell watch state is stale).
         _held_rows = [r for r in _held_rows if not _is_settled(r)]
         _open_rows = [r for r in _open_rows if not _is_settled(r)]
+        # Every held bet must render in Active bets even when its
+        # market has already left the watchlist (game finished but the
+        # position hasn't settled yet — exactly the overnight window
+        # where the user most wants to see what's still on the book).
+        # Synthesize a minimal standard-shape row from the bet record
+        # for any held ticker without a live watchlist row; the
+        # position cells (contracts / entry cost / total cost) come
+        # from held_by_ticker as usual. Added AFTER the settled filter
+        # on purpose: these rows live until the position leaves the
+        # book, not until Kalshi's quote pins.
+        _covered_held = {r.get("ticker") for r in _held_rows}
+        for _ab in bets:
+            _t = _ab.get("ticker")
+            if not _t or _t in _covered_held:
+                continue
+            _covered_held.add(_t)
+            _mark = _ab.get("mark_mid")
+            _held_rows.append({
+                "ticker": _t,
+                "direction": "yes",
+                "strike_low": None,
+                "strike_high": None,
+                "yes_ask_cents": (int(round(_mark))
+                                   if _mark is not None else None),
+                "no_ask_cents": None,
+                "spread_cents": None,
+                "volume": None,
+                "open_interest": None,
+                "model_prob_yes": _ab.get("model_yes_prob_at_entry"),
+                "raw_model_prob_yes": None,
+                "pinnacle_prob_yes": None,
+                "_skip_oi_filter": True,
+                "bot_verdict": "HOLDING",
+                "rejection_reason": "",
+                "title": (_ab.get("_title") or _ab.get("title")
+                           or _ab.get("_match") or _t),
+                "minutes_to_close": _ab.get("minutes_to_close"),
+                "_yes_label": _ab.get("_side_player") or "",
+                "_no_label": "",
+                "rules_primary": "",
+                "tournament": _ab.get("_tournament") or "",
+            })
         section_ctxs = [
             {
                 "kind": "active",
