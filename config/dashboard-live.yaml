@@ -98,8 +98,8 @@ bots:
   - key: wnba
     name: WNBA Forecast
     dashboard_type: sport
-    db_path: /root/wnba/data/live.db
-    decisions_path: /root/wnba/data/decisions-live.jsonl
+    db_path: /root/wnba/data/outputs-live/watchlist.json
+    decisions_path: /root/wnba/data/outputs-live/watchlist.json
     watchlist_json_path: /root/wnba/data/outputs-live/watchlist.json
     sim_state_path: /root/wnba/data/outputs-live/sim_state.json
     # Shared with sim — training artifacts are mode-agnostic. The sport
@@ -109,7 +109,7 @@ bots:
     metrics_path: /root/wnba/data/processed/artifacts/metrics.json
     series_ticker: KXWNBAGAME
     series_prefixes: [KXWNBAGAME]
-    data_source: "ESPN box scores (no API key)"
+    data_source: "Pinnacle moneylines (guest feed + The Odds API devig)"
     seasons:
       - name: "WNBA 2026 Season"
         start: "2026-05-01T00:00:00Z"
@@ -468,26 +468,28 @@ nba_trader:
     prematch_buffer_minutes: 10
     profit_lock_yes_bid_cents: 95
 
+# WNBA real-money executor — same arming model as MLB / NBA. NOTE:
+# the live Home-tab wnba toggle was already ON (2026-07-09), so this
+# executor arms REAL orders as soon as the service restarts with this
+# config. Every entry requires a live Pinnacle benchmark line and a
+# >=5pp edge.
 wnba_trader:
-  # Flip to true once ready to run WNBA live in dry-run. The ``live:``
-  # block below must match dashboard.yaml's — same gates in sim and
-  # live, only ``dry_run`` and ``sim_state_path`` differ. Change to
-  # ``dry_run: false`` here (and ONLY here) once you've verified
-  # dry-run behavior on the live dashboard.
-  enabled: false
+  enabled: true
   repo_path: /root/wnba
-  config_path: /root/wnba/config/config.yaml
+  interval_seconds: 120
   live:
     dry_run: true
     sim_state_path: /root/wnba/data/outputs-live/sim_state.json
-    max_open_positions: 4
-    max_orders_per_day: 6
+    max_open_positions: 10   # hard cap
+    # Backstop only — the real limit is max_open_positions
+    # ("10 at a time"); slots reopen as positions settle.
+    max_orders_per_day: 50
     contracts_per_order: 1
-    min_edge_pp: 0.08
-    max_entry_price_cents: 70
+    min_edge_pp: 0.05
+    max_entry_price_cents: 80
     min_entry_price_cents: 15
     price_deviation_cents: 3
-    require_pinnacle: true
+    prematch_buffer_minutes: 10
     profit_lock_yes_bid_cents: 95
 
 gas_trader:

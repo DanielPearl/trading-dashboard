@@ -1858,6 +1858,37 @@ def fetch_decisions(decisions_path: str, limit: int = 60) -> List[dict]:
     return rows[-limit:][::-1]  # newest first
 
 
+def _kalshi_held_for_snapshot() -> List[dict]:
+    """Real Kalshi holdings as [{ticker, side}], with parent-event
+    aliases — the ONLY source the client-side row highlighter keys on
+    (user 2026-07-10: only rows actually bought get highlighted).
+    Empty on missing creds / API failure so a transient error clears
+    highlights rather than inventing them."""
+    held: List[dict] = []
+    try:
+        from .kalshi_client import get_open_positions as _gop
+        _kp, _err = _gop()
+        for _p in (_kp or []):
+            _tk = _p.get("ticker")
+            if not _tk:
+                continue
+            try:
+                _fp = float(_p.get("position_fp")
+                             or _p.get("position") or 0)
+            except (TypeError, ValueError):
+                _fp = 0.0
+            if not _fp:
+                continue
+            _sd = "YES" if _fp > 0 else "NO"
+            held.append({"ticker": _tk, "side": _sd})
+            if "-" in _tk:
+                held.append({"ticker": _tk.rsplit("-", 1)[0],
+                             "side": _sd})
+    except Exception:  # noqa: BLE001
+        log.exception("snapshot kalshi_held lookup failed")
+    return held
+
+
 def build_snapshot(db_path: str, bots: List[dict],
                     edge_cfg: dict,
                     period_days: int | None = None,
@@ -1958,6 +1989,7 @@ def build_snapshot(db_path: str, bots: List[dict],
         },
         "watchlist": rows,
         "active_bets": actives,
+        "kalshi_held": _kalshi_held_for_snapshot(),
         "min_ev": min_ev,
         "captured_at": datetime.now(timezone.utc).isoformat(),
     }
@@ -2053,6 +2085,7 @@ def _tennis_like_snapshot(
         },
         "watchlist": rows,
         "active_bets": actives,
+        "kalshi_held": _kalshi_held_for_snapshot(),
         "min_ev": edge_cfg.get("min_ev_per_contract", 0.03),
         "captured_at": datetime.now(timezone.utc).isoformat(),
     }
@@ -4658,12 +4691,13 @@ def _live_update_script(current_bot: str, period_key: str = "all") -> str:
       // BOUGHT pill itself is server-rendered; if it's missing the
       // user can refresh to pick it up.
       const boughtBySide = {{}};
-      (snap.active_bets || []).forEach(function (ab) {{
+      // Only REAL Kalshi holdings paint a row as bought (user
+      // 2026-07-10) — paper/sim actives no longer drive the
+      // highlight, matching the server-rendered rule.
+      (snap.kalshi_held || []).forEach(function (ab) {{
         if (ab && ab.ticker) {{
           const s = (ab.side || "").toUpperCase();
-          boughtBySide[ab.ticker] = (s === "YES") ? "yes"
-                                  : (s === "NO")  ? "no"
-                                  : "yes";
+          boughtBySide[ab.ticker] = (s === "NO") ? "no" : "yes";
         }}
       }});
       tbodies.forEach(function (tbody) {{ tbody.querySelectorAll("tr[data-ticker]").forEach(function (tr) {{

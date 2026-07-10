@@ -127,9 +127,11 @@ bots:
     # tab renders WNBA's accuracy / brier / log-loss / ROC AUC card.
     # Shared with the live dashboard (training artifacts are
     # mode-agnostic).
+    # Last metrics.json the retired Elo pipeline synthesised —
+    # historical card only; the benchmark bot trains nothing.
     metrics_path: /root/wnba/data/processed/artifacts/metrics.json
     series_ticker: KXWNBAGAME
-    data_source: "ESPN box scores (no API key)"
+    data_source: "Pinnacle moneylines (guest feed + The Odds API devig)"
     # WNBA regular season runs ~mid-May through September.
     seasons:
       - name: "WNBA 2026 Season"
@@ -517,33 +519,13 @@ nba_trader:
 
 wnba_trader:
   enabled: true
-  # Path to the wnba-forecast repo. Bot module injects
-  # ``<repo_path>/src`` onto sys.path and imports
-  # ``wnba_bot.main.Bot``. Droplet repo is /root/wnba. Pure-ESPN
-  # data layer — no API key, no stats.nba.com rate-limit handling
-  # needed.
+  # Shape B since 2026-07-10 — bots/wnba.py loads the repo's
+  # data/dashboard/trading modules (alias wnba_src) and drives the
+  # benchmark tick loop, MLB-style; config_path went with the legacy
+  # Elo Bot. Paper simulator in this (sim) process; the real-money
+  # executor runs in the LIVE dashboard process.
   repo_path: /root/wnba
-  config_path: /root/wnba/config/config.yaml
-  # ``live:`` block presence flips bots/wnba.py from sim-only to
-  # sim + WNBALiveExecutor. Same shape and safety model as tennis:
-  # dry_run: true means paper-only, hard caps in code clamp anything
-  # widened here. Keep IN SYNC with dashboard-live.yaml so both
-  # dashboards evaluate every gate identically.
-  live:
-    dry_run: true
-    sim_state_path: /root/wnba/data/outputs-live/sim_state.json
-    max_open_positions: 4
-    max_orders_per_day: 6
-    contracts_per_order: 1
-    min_edge_pp: 0.08
-    max_entry_price_cents: 70
-    min_entry_price_cents: 15
-    price_deviation_cents: 3
-    # Skip the buy if Pinnacle isn't listing this game (matches
-    # tennis's no_pinnacle_reference gate). Flip to false only for
-    # late-tip games Pinnacle drops off.
-    require_pinnacle: true
-    profit_lock_yes_bid_cents: 95
+  interval_seconds: 120
 
 gas_trader:
   enabled: true
