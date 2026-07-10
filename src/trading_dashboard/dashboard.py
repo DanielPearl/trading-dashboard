@@ -6920,13 +6920,21 @@ def _render_history_attribution(out: List[str],
     # P&L pattern lives — deep-underdog (15-25¢) buys are the tail the
     # miscalibration reviews keep flagging, so isolating that bucket
     # from the moderate-favourite (50-65¢) bucket is the useful cut.
+    # 9 numeric buckets in ~10¢ steps across the 0-100¢ range plus one
+    # untagged catch-all. Finer resolution than the earlier 6-bucket cut
+    # so the deep-underdog (< 25¢) and heavy-favourite (75¢+) tails
+    # split into their own rows instead of getting averaged with the
+    # neighbouring band.
     price_buckets = [
-        ("< 20¢",     None, 20),
-        ("20–35¢",    20,   35),
-        ("35–50¢",    35,   50),
-        ("50–65¢",    50,   65),
-        ("65–80¢",    65,   80),
-        ("80¢+",      80,   None),
+        ("< 15¢",     None, 15),
+        ("15–25¢",    15,   25),
+        ("25–35¢",    25,   35),
+        ("35–45¢",    35,   45),
+        ("45–55¢",    45,   55),
+        ("55–65¢",    55,   65),
+        ("65–75¢",    65,   75),
+        ("75–85¢",    75,   85),
+        ("85¢+",      85,   None),
         ("untagged",  None, None),
     ]
     price_rows: List[dict] = []
