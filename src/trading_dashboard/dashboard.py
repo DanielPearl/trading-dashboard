@@ -622,6 +622,12 @@ def _load_sim_state_enrichment(bots: List[dict]) -> Dict[str, dict]:
             paths.append(sim_path.replace("outputs-live", "outputs"))
         elif "/outputs/" in sim_path:
             paths.append(sim_path.replace("/outputs/", "/outputs-live/"))
+        # Archived ledgers too: the 2026-07-08 tennis audit reset the
+        # live state file but kept the full pre-reset ledger beside it
+        # as *.pre-audit-backup — that's where the May/June real
+        # trades' model probs live. Current files are indexed first,
+        # so a backup never overrides a live record.
+        paths += [f"{_p}.pre-audit-backup" for _p in list(paths)]
         records: list = []
         for _p in paths:
             try:
