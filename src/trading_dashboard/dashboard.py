@@ -3789,11 +3789,13 @@ def render_page(
     _render_history_chart(out, tennis_rows,
                             period_key=period_key,
                             current_bot=current_bot)
-    # P&L attribution panels over the same rows. (By-bot collapses
-    # to a single row since everything is tennis; by-side is YES-only;
-    # by-month is the useful one. EV bucket uses expected_ev_at_entry
-    # which we synthesize as model_prob − avg_fill_price.)
-    _render_history_attribution(out, tennis_rows)
+    # P&L attribution panels. Sourced from ``global_history`` so every
+    # bot's closed bets participate — the earlier "tennis-only" flavour
+    # collapsed "By bot" to a single row (2026-07-10 user request).
+    # Row schemas from ``fetch_bet_history`` and ``closed_positions_for_
+    # rollup`` overlap on the fields the attribution code reads
+    # (entry_price_cents, exited_at, realized_pnl_cents, _bot_name).
+    _render_history_attribution(out, global_history)
     # Every closed bet across every bot — the user asked for the
     # History tab to be truly cross-bot regardless of source (the
     # earlier tennis-only view dropped WNBA / MLB / darts / world-cup /
@@ -6719,12 +6721,44 @@ def _render_history_attribution(out: List[str],
     month_rows = [_row(m, bets) for m, bets in
                   sorted(by_month.items(), reverse=True)]
 
-    # ── Slice: by side (YES vs NO) ──────────────────────────────────
-    by_side: dict[str, List[dict]] = {}
-    for h in history:
-        side = (h.get("side") or "").upper() or "—"
-        by_side.setdefault(side, []).append(h)
-    side_rows = [_row(s, bets) for s, bets in sorted(by_side.items())]
+    # ── Slice: by entry-price bucket ────────────────────────────────
+    # Replaces the earlier YES/NO breakdown (which was ~always YES on
+    # the sport bots, so it collapsed to a single row and told the user
+    # nothing). Bucketing by the actual paid price surfaces where the
+    # P&L pattern lives — deep-underdog (15-25¢) buys are the tail the
+    # miscalibration reviews keep flagging, so isolating that bucket
+    # from the moderate-favourite (50-65¢) bucket is the useful cut.
+    price_buckets = [
+        ("< 20¢",     None, 20),
+        ("20–35¢",    20,   35),
+        ("35–50¢",    35,   50),
+        ("50–65¢",    50,   65),
+        ("65–80¢",    65,   80),
+        ("80¢+",      80,   None),
+        ("untagged",  None, None),
+    ]
+    price_rows: List[dict] = []
+    for label, lo, hi in price_buckets:
+        bucket_bets: List[dict] = []
+        for h in history:
+            price = h.get("entry_price_cents")
+            if lo is None and hi is None:
+                if price is None:
+                    bucket_bets.append(h)
+                continue
+            if price is None:
+                continue
+            try:
+                p = int(price)
+            except (TypeError, ValueError):
+                continue
+            if lo is not None and p < lo:
+                continue
+            if hi is not None and p >= hi:
+                continue
+            bucket_bets.append(h)
+        if bucket_bets:
+            price_rows.append(_row(label, bucket_bets))
 
     # ── Slice: by predicted EV bucket (decimal $/contract) ──────────
     ev_buckets = [
@@ -6768,8 +6802,9 @@ def _render_history_attribution(out: List[str],
                  bot_rows)
     _emit_table("By month", "calendar month of exit",
                  month_rows)
-    _emit_table("By side", "YES vs NO",
-                 side_rows)
+    _emit_table("By entry price",
+                 "what price bucket the contract was bought at",
+                 price_rows)
     _emit_table("By predicted EV", "entry-EV bucket vs realized P&L",
                  ev_rows)
     out.append("</div>")
