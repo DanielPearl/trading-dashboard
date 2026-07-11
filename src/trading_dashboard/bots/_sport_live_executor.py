@@ -234,9 +234,13 @@ class SportLiveExecutor:
             # already knows about (operator opened out-of-band, or a
             # prior process crashed after placing the order). Runs only
             # in real-money mode — dry-run positions never touched
-            # Kalshi so there's nothing to recover.
+            # Kalshi so there's nothing to recover. Watchlist_rows are
+            # passed through so the stub can be enriched with player
+            # names / event_title from the current watchlist — leaving
+            # them empty produces "? vs — Model 50%" ghost rows on
+            # the Active bets display.
             if self.orphan_ticker_prefixes:
-                self._adopt_orphans(state)
+                self._adopt_orphans(state, watchlist_rows)
         mkt_by_ticker = snapshot_by_ticker(records)
 
         self._reconcile(state, mkt_by_ticker)
@@ -620,7 +624,8 @@ class SportLiveExecutor:
 
     # ── orphan adoption ─────────────────────────────────────────────
 
-    def _adopt_orphans(self, state: dict) -> None:
+    def _adopt_orphans(self, state: dict,
+                        watchlist_rows: list[dict] | None = None) -> None:
         """Re-adopt Kalshi positions the executor doesn't know about.
 
         Two source patterns motivate this:
@@ -628,6 +633,12 @@ class SportLiveExecutor:
              already open from a prior process / manual click.
           2. The executor voided a position as dry-run leftover but the
              actual Kalshi order had filled real contracts.
+
+        Watchlist_rows (when supplied) is looked up by ticker_a /
+        ticker_b to pull player names, event_title, and the
+        event-ticker parent onto the orphan record — otherwise the
+        adopted stub reaches the dashboard with empty fields and
+        renders as "? vs — Model 50%" (2026-07-11 regression).
 
         The prefix filter is a hard safety: a shared Kalshi account can
         list positions from every bot in the fleet, and adopting the
@@ -642,6 +653,17 @@ class SportLiveExecutor:
         known = {p.get("ticker") for p in state.get("open_positions", [])
                  if p.get("ticker")}
         recently_settled = set(state.get("last_settled_at_by_match_id", {}))
+        # Ticker → (row, "a"|"b") lookup for enrichment. Empty when
+        # the caller doesn't pass rows (upstream bots that never
+        # populate them).
+        rows_by_ticker: dict[str, tuple[dict, str]] = {}
+        for r in watchlist_rows or []:
+            ta = r.get("ticker_a")
+            tb = r.get("ticker_b")
+            if ta:
+                rows_by_ticker[ta] = (r, "a")
+            if tb:
+                rows_by_ticker[tb] = (r, "b")
         for kp in positions:
             ticker = kp.get("ticker") or ""
             if not ticker or ticker in known:
@@ -655,13 +677,36 @@ class SportLiveExecutor:
             if not any(ticker.startswith(p)
                        for p in self.orphan_ticker_prefixes):
                 continue
-            # Derive the base match_id (event ticker minus any -A / -B
-            # suffix Kalshi uses on side markets).
-            match_id = ticker
-            for suffix in ("-A", "-B", "-YES", "-NO"):
-                if match_id.endswith(suffix):
-                    match_id = match_id[: -len(suffix)]
-                    break
+            # Enrich from the watchlist row when we have one. Kalshi's
+            # position record doesn't carry player names — the
+            # watchlist row is the only place they live.
+            wl_entry = rows_by_ticker.get(ticker)
+            if wl_entry is not None:
+                row, side_key = wl_entry
+                player_a = row.get("player_a") or ""
+                player_b = row.get("player_b") or ""
+                side_player = (player_a if side_key == "a" else player_b)
+                side_code = "PLAYER_A" if side_key == "a" else "PLAYER_B"
+                event_title = (row.get("event_title") or row.get("title")
+                               or "")
+                match_id = row.get("match_id") or ticker.rsplit("-", 1)[0]
+                mp = (row.get("live_prob_a") if side_key == "a"
+                      else row.get("live_prob_b"))
+                model_prob = float(mp) if mp is not None else None
+            else:
+                player_a = ""
+                player_b = ""
+                side_player = ""
+                side_code = "PLAYER_A"
+                event_title = ""
+                # Fall back to stripping the ticker's final segment; if
+                # that isn't the event ticker Kalshi returned, the
+                # display-side ``kalshi_positions_to_active_bets``
+                # helper will re-derive from the current watchlist on
+                # its next tick.
+                match_id = (kp.get("event_ticker")
+                           or ticker.rsplit("-", 1)[0])
+                model_prob = None
             if match_id in recently_settled:
                 continue
             entry_price = (float(kp.get("avg_price_cents") or 0.0) / 100.0
@@ -677,14 +722,16 @@ class SportLiveExecutor:
                 "event_ticker": kp.get("event_ticker") or match_id,
                 "tournament": self.tournament,
                 "surface": self.surface,
-                "player_a": "",
-                "player_b": "",
-                "side": "PLAYER_A",
-                "side_player": "?",
+                "player_a": player_a,
+                "player_b": player_b,
+                "side": side_code,
+                "side_player": side_player,
                 "entry_market_prob": entry_price,
-                "entry_model_prob": entry_price,
+                "entry_model_prob": (model_prob if model_prob is not None
+                                     else entry_price),
                 "current_market_prob": entry_price,
-                "current_model_prob": entry_price,
+                "current_model_prob": (model_prob if model_prob is not None
+                                       else entry_price),
                 "stake": entry_price * abs(held),
                 "contracts": int(abs(held)),
                 "slippage": 0.0,
@@ -692,12 +739,15 @@ class SportLiveExecutor:
                 "label_at_open": "RECOVERED",
                 "reason_at_open": "orphan adoption from Kalshi",
                 "opened_at": core.now_iso(),
+                "event_title": event_title,
             }
             state.setdefault("open_positions", []).append(pos)
+            enrichment = ("enriched" if wl_entry is not None
+                           else "stub — no watchlist row")
             self._log.info(
-                "%s-live RECOVERED %s as orphan stub from Kalshi "
-                "(%d contracts @ %.2f)", self.bot_key, ticker,
-                int(abs(held)), entry_price)
+                "%s-live RECOVERED %s as orphan (%d contracts @ %.2f, %s)",
+                self.bot_key, ticker, int(abs(held)), entry_price,
+                enrichment)
 
     # ── state ───────────────────────────────────────────────────────
 

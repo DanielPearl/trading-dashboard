@@ -370,6 +370,21 @@ def active_bets_for_rollup(sim_state_path: str | None,
             # simulator's filter, but if it slips through we drop the
             # row from the table rather than show a fabricated 50%.
             continue
+        # Skip unenriched orphan stubs (executor's ``_adopt_orphans``
+        # writes a placeholder record with empty player names, side_
+        # player="?", and 0.5/0.5 probs for Kalshi positions it didn't
+        # place itself). The Kalshi-side path below (via
+        # ``kalshi_positions_to_active_bets`` in the caller) will
+        # surface those tickers with the current watchlist enrichment
+        # applied — proper player names, matchup, model prob — so we
+        # let it own the row instead of showing a "? vs — Model 50%"
+        # stub. Detected via the "recovered-" order-id prefix the
+        # orphan adopter stamps, backed by an empty player_a as
+        # belt-and-braces for pre-2026-07-11 stubs that lack the
+        # order_id.
+        _oid = str(p.get("order_id") or "")
+        if _oid.startswith("recovered-") and not p.get("player_a"):
+            continue
         entry = float(entry)
         mark = float(p.get("current_market_prob") or entry)
         mid = p.get("match_id", "")
