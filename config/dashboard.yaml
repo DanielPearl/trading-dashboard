@@ -489,7 +489,7 @@ tennis_trader:
     contracts_per_order: 1
     min_edge_pp: 0.09  # keep in lockstep with dashboard-live.yaml
     max_entry_price_cents: 70
-    min_entry_price_cents: 15
+    min_entry_price_cents: 30  # in lockstep with dashboard-live.yaml — 30-70¢ operating band
     price_deviation_cents: 3
     max_hours_to_close_for_open: 24.0
     profit_lock_yes_bid_cents: 95
