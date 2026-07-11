@@ -12285,10 +12285,10 @@ def _render_watchlist(out: List[str], watchlist: List[dict],
         if is_active:
             header_middle = (
                 f"{pos_head}"
-                "<th class='num' title='Time until the contract settles. Parsed from the Kalshi ticker&apos;s encoded date.'>Closes in</th>"
                 "<th class='num' title='Model probability — sharp devigged reference from the best available benchmark book (Pinnacle first, else Betfair Exchange UK / EU). Em-dash for matches no sharp book is quoting or when the Odds API key isn&apos;t set. YES on top, NO on bottom.'>Model %</th>"
                 "<th class='num' title='Kalshi entry % — the implied probability for each side at the price we paid, expressed on the yes-axis. YES on top, NO on bottom.'>Kalshi entry %</th>"
                 "<th class='num' title='Live Kalshi market price — updates continuously. YES on top (green), NO on bottom (red).'>Kalshi live %</th>"
+                "<th class='num' title='Time until the contract settles. Parsed from the Kalshi ticker&apos;s encoded date.'>Closes in</th>"
             )
         else:
             header_middle = (
@@ -12301,9 +12301,9 @@ def _render_watchlist(out: List[str], watchlist: List[dict],
                 "title='How is EV calculated?' "
                 "aria-label='How is EV calculated?'>i</button>"
                 "</th>"
-                "<th class='num' title='Time until the contract settles. Parsed from the Kalshi ticker&apos;s encoded date.'>Closes in</th>"
                 "<th>Verdict</th>"
                 f"{pos_head}"
+                "<th class='num' title='Time until the contract settles. Parsed from the Kalshi ticker&apos;s encoded date.'>Closes in</th>"
             )
         out.append("<div class='watchlist-scroll'>"
                    "<table><thead><tr>"
@@ -12884,14 +12884,15 @@ def _render_watchlist(out: List[str], watchlist: List[dict],
             if is_active:
                 # Verdict column removed on Active bets (user
                 # 2026-07-11) — a held row IS the verdict; the HOLDING
-                # state still shows via the row highlight.
+                # state still shows via the row highlight. Closes in
+                # sits at the far right per user 2026-07-11.
                 row_body = (
                     f"{rules_cell}{date_cell}{event_cell}{middle_cells}"
                     f"{position_cells}"
-                    f"{closes_in_cell}"
                     f"{pinnacle_cell}"
                     f"{entry_pct_cell}"
                     f"{kalshi_cell}"
+                    f"{closes_in_cell}"
                 )
             else:
                 row_body = (
@@ -12901,9 +12902,9 @@ def _render_watchlist(out: List[str], watchlist: List[dict],
                     f"{kalshi_cell}"
                     f"{edge_cell}"
                     f"{ev_cell}"
-                    f"{closes_in_cell}"
                     f"<td data-field='verdict'>{badge}</td>"
                     f"{position_cells}"
+                    f"{closes_in_cell}"
                 )
             out.append(f"<tr{row_cls} data-ticker='{tt_esc}'{strike_attr}{yes_attr}>"
                        f"{row_body}</tr>")
