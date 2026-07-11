@@ -391,11 +391,14 @@ tennis_trader:
     # 2026-07-08 audit paused live trading: the 264 settled trades
     # calibrated at 50-60% predicted → 17.2% actual (a -37.8pp miss),
     # driven by ~275 opens made against the silently-broken Elo-only
-    # fallback. Re-arm ONLY after ~50 fresh closes on the fixed
-    # ensemble show <10pp calibration miss on settled trades. Until
-    # then the executor still evaluates + logs so we can grade the
-    # fixed pipeline against reality without real capital at risk.
-    dry_run: true
+    # fallback. Re-armed 2026-07-11 per user directive after (a) the
+    # feature-expansion + retrain landed, (b) the STRONG_EDGE /
+    # SMALL_EDGE / label-gate contradictions were collapsed to one
+    # 9pp EDGE floor, and (c) 187+ sim closes on the fixed pipeline
+    # showed ROI +3.2% over the last 3 days. Executor still respects
+    # every hard cap in bots/tennis_live_executor.py (max 10 open, 20
+    # orders/day, 1 contract/order, 15-70¢ price band).
+    dry_run: false
     sim_state_path: /root/tennis-forecast/data/outputs-live/sim_state.json
     max_open_positions: 10  # restored to 10 per user (2026-06-07) — calibration data improving
     max_orders_per_day: 20
