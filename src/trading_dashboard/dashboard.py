@@ -12109,12 +12109,25 @@ def _render_watchlist(out: List[str], watchlist: List[dict],
         # from held_by_ticker as usual. Added AFTER the settled filter
         # on purpose: these rows live until the position leaves the
         # book, not until Kalshi's quote pins.
-        _covered_held = {r.get("ticker") for r in _held_rows}
+        # Dedupe against the event-ticker keys the watchlist uses AS
+        # WELL AS the side-specific tickers Kalshi records on the
+        # position. Without stripping the ``-<SIDE>`` suffix the synth
+        # loop would double-count every held position that ALSO has a
+        # matching row on the fresh watchlist — one row for the event
+        # ticker and one for the full side ticker.
+        _covered_held: set[str] = set()
+        for r in _held_rows:
+            t = r.get("ticker") or ""
+            _covered_held.add(t)
+            if "-" in t:
+                _covered_held.add(t.rsplit("-", 1)[0])
         for _ab in bets:
-            _t = _ab.get("ticker")
-            if not _t or _t in _covered_held:
+            _t = _ab.get("ticker") or ""
+            _t_base = _t.rsplit("-", 1)[0] if "-" in _t else _t
+            if not _t or _t in _covered_held or _t_base in _covered_held:
                 continue
             _covered_held.add(_t)
+            _covered_held.add(_t_base)
             _mark = _ab.get("mark_mid")
             _held_rows.append({
                 "ticker": _t,
