@@ -12439,10 +12439,12 @@ def _render_watchlist(out: List[str], watchlist: List[dict],
                 # model's current take so the user can audit "is the
                 # model still on board with this position?"
                 #
-                # Sport rows: name the TEAM actually held (the held
-                # market's side of the row) instead of a bare YES/NO —
-                # "HOLDING Spain" can't be misread against whichever
-                # side the row happens to display on top.
+                # Badge reads "HOLDING YES" or "HOLDING NO" (user
+                # 2026-07-11); the held team's name still surfaces in
+                # the tooltip so the row is unambiguous. The team-name
+                # variant that used to render inside the badge was
+                # dropped because the Side cell already names the
+                # player and the badge was echoing the same string.
                 _held_tk = (held_bet.get("ticker") or "")
                 _held_team = ""
                 if _held_tk == (v.get("_yes_ticker") or ""):
@@ -12452,17 +12454,17 @@ def _render_watchlist(out: List[str], watchlist: List[dict],
                 held_cls = "badge-yes" if bought_side == "YES" else "badge-no"
                 entry_c = held_bet.get("entry_price_cents")
                 entry_part = f" @ {entry_c}c" if entry_c is not None else ""
+                team_part = (f" on {_held_team}" if _held_team else "")
                 model_part = ""
                 if best_ev_v is not None and best_side_v in ("YES", "NO"):
                     _ev_sign = "+" if best_ev_v > 0 else "−"
                     model_part = (f" · model now: {best_side_v} "
                                   f"(EV {_ev_sign}${abs(best_ev_v):.2f})")
-                held_tt = (f"You are holding {bought_side}{entry_part}"
-                           f"{model_part}")
-                _badge_label = _held_team or bought_side
+                held_tt = (f"You are holding {bought_side}{team_part}"
+                           f"{entry_part}{model_part}")
                 badge = (f"<span class='badge {held_cls}' "
                          f"title='{html.escape(held_tt)}'>"
-                         f"HOLDING {html.escape(str(_badge_label))}</span>")
+                         f"HOLDING {bought_side}</span>")
             else:
                 # Tooltip carries the model's recommendation when there
                 # is one, so the user can still see "model would buy YES,
