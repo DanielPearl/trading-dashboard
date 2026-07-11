@@ -4788,7 +4788,7 @@ def _live_update_script(current_bot: str, period_key: str = "all") -> str:
           ? ((1 - refProb) - na / 100) : null;
         patchCell(tr.querySelector("[data-field='oi']"),
                   r.open_interest !== null && r.open_interest !== undefined
-                    ? Number(r.open_interest).toLocaleString() : "—");
+                    ? Math.round(Number(r.open_interest)).toLocaleString() : "—");
         // "kalshi" is the live-Kalshi column; My % / Kalshi-entry %
         // columns were dropped from the visual set (model_prob_yes
         // stays on the payload for JSON consumers).
@@ -12339,7 +12339,7 @@ def _render_watchlist(out: List[str], watchlist: List[dict],
             # total instead.
             volume = v.get("volume")
             oi = v.get("open_interest")
-            oi_str = f"{int(oi):,}" if oi is not None else "—"
+            oi_str = f"{int(round(float(oi))):,}" if oi is not None else "—"
             # Derive missing side from the other when only one ask is
             # quoted — render as a plain number (no "~" prefix) so the
             # cell parses as a real percentage. The derivation is exact
