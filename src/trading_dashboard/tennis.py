@@ -293,6 +293,17 @@ def build_standard_watchlist_rows(
             "minutes_to_close": None,
             "_yes_label": top_label,
             "_no_label": bot_label,
+            # Kalshi side-tickers for the top (YES) / bottom (NO) sides
+            # of THIS row after the favored-side flip. The dashboard
+            # renderer joins these against ``kalshi_held_by_ticker`` to
+            # decide whether a held position sits on the row's YES side
+            # (no re-orient needed) or its NO side (flip Model % /
+            # Kalshi % / Entry % onto the held axis so all three
+            # columns agree). Without these, held rows where our side
+            # is the underdog per our own model render three
+            # inconsistent axes across the stacked cells.
+            "_yes_ticker": r.get("ticker_b") if b_favoured else r.get("ticker_a"),
+            "_no_ticker": r.get("ticker_a") if b_favoured else r.get("ticker_b"),
             # Kalshi ``rules_primary`` — the resolution paragraph the
             # trading dashboard's "Kalshi rules" section renders. The
             # tennis-forecast exporter writes it onto the raw

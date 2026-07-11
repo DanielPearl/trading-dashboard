@@ -12304,6 +12304,19 @@ def _render_watchlist(out: List[str], watchlist: List[dict],
             ticker = v.get("ticker", "")
             qstr = question_str(v.get("direction", ""), v.get("strike_low"),
                                  v.get("strike_high"), display=display)
+            # Detect whether this Active-bets row is a held position on
+            # the row's underdog (NO) side per the adapter's favored-
+            # side flip. When it is, we re-orient the row so YES tracks
+            # the held side across every downstream cell — Model % /
+            # Kalshi % / Entry % / the Side player label. Left False on
+            # Model-vs-market (favored side stays on top there).
+            _held_probe = kalshi_held_by_ticker.get(ticker)
+            flip_active = (
+                is_active
+                and _held_probe is not None
+                and (_held_probe.get("ticker") or "")
+                    == (v.get("_no_ticker") or "")
+            )
             ya_c = v.get("yes_ask_cents"); na_c = v.get("no_ask_cents")
             spread_cents = v.get("spread_cents")
             # Volume still drives the "thin volume" row-suspect flag below
@@ -12604,6 +12617,12 @@ def _render_watchlist(out: List[str], watchlist: List[dict],
                     ticker, "YES")
                 opp_team = v.get("_no_label") or _side_tricode_from_ticker(
                     ticker, "NO")
+                # Held-side re-orientation on Active bets: swap the
+                # players so the held one renders on top (bold),
+                # matching the flipped Model % / Kalshi % / Entry %
+                # cells below.
+                if flip_active:
+                    yes_team, opp_team = opp_team, yes_team
                 if yes_team:
                     side_cell = (
                         f"<td><strong>{html.escape(str(yes_team))}</strong>"
@@ -12650,7 +12669,10 @@ def _render_watchlist(out: List[str], watchlist: List[dict],
             # and Kalshi entry % moved out per user spec — model_prob_yes
             # still populates on every row for JSON consumers + downstream
             # code, just isn't rendered as a table column.)
-            kalshi_cell = _stacked(kyes_str, kno_str, "kalshi")
+            if flip_active:
+                kalshi_cell = _stacked(kno_str, kyes_str, "kalshi")
+            else:
+                kalshi_cell = _stacked(kyes_str, kno_str, "kalshi")
             # "Model %" stacked cell. On Model-vs-market it's Pinnacle-
             # only — showing "—" is the right signal (no sharp reference
             # → no buy signal). On Active bets we already own the
@@ -12664,8 +12686,12 @@ def _render_watchlist(out: List[str], watchlist: List[dict],
             if is_active and pinn_p is None:
                 pinn_p = v.get("model_prob_yes")
             if pinn_p is not None:
-                pinn_yes_str = f"{int(round(float(pinn_p)*100))}%"
-                pinn_no_str = f"{int(round((1-float(pinn_p))*100))}%"
+                if flip_active:
+                    pinn_yes_str = f"{int(round((1-float(pinn_p))*100))}%"
+                    pinn_no_str = f"{int(round(float(pinn_p)*100))}%"
+                else:
+                    pinn_yes_str = f"{int(round(float(pinn_p)*100))}%"
+                    pinn_no_str = f"{int(round((1-float(pinn_p))*100))}%"
             else:
                 pinn_yes_str = "—"
                 pinn_no_str = "—"
