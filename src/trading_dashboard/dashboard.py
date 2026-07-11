@@ -3744,6 +3744,13 @@ tr.row-bought td { opacity: 1 !important; color: #ffffff !important;
 tr.row-bought td:first-child { border-left: 3px solid #8b949e; }
 tr.row-bought td a.ticker-link,
 tr.row-bought td.mono { color: #ffffff; }
+/* Preserve the red / green colouring on cost / earnings cells even
+   inside a row-bought row — otherwise the row's white-color override
+   above wins and Kalshi total cost / Potential earnings both render
+   white. Higher-specificity selector with the same !important cast
+   flips them back to their intended colours. */
+tr.row-bought td.num.red   { color: #f85149 !important; }
+tr.row-bought td.num.green { color: #56d364 !important; }
 /* Watchlist table: fixed scrolling viewport so the strike list never
    pushes the rest of the page off-screen. Sticky header keeps the
    column labels in view as the user scrolls. */
