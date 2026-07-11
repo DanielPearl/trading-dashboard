@@ -12317,16 +12317,18 @@ def _render_watchlist(out: List[str], watchlist: List[dict],
             ticker = v.get("ticker", "")
             qstr = question_str(v.get("direction", ""), v.get("strike_low"),
                                  v.get("strike_high"), display=display)
-            # Detect whether this Active-bets row is a held position on
-            # the row's underdog (NO) side per the adapter's favored-
-            # side flip. When it is, we re-orient the row so YES tracks
-            # the held side across every downstream cell — Model % /
-            # Kalshi % / Entry % / the Side player label. Left False on
-            # Model-vs-market (favored side stays on top there).
+            # Detect whether this row is a held position on the row's
+            # underdog (NO) side per the adapter's favored-side flip.
+            # When it is, re-orient the row so YES tracks the HELD side
+            # across every downstream cell — Model % / Kalshi % /
+            # Entry % / the Side player label. Applies to BOTH the
+            # Active bets AND Model-vs-market tables (user 2026-07-11:
+            # France vs Spain rendered France on top with a HOLDING
+            # badge while the actual position was Spain — for a held
+            # row, "what am I holding" beats "who's favoured").
             _held_probe = kalshi_held_by_ticker.get(ticker)
             flip_active = (
-                is_active
-                and _held_probe is not None
+                _held_probe is not None
                 and (_held_probe.get("ticker") or "")
                     == (v.get("_no_ticker") or "")
             )
@@ -12436,6 +12438,17 @@ def _render_watchlist(out: List[str], watchlist: List[dict],
                 # in plain white). Tooltip surfaces entry price + the
                 # model's current take so the user can audit "is the
                 # model still on board with this position?"
+                #
+                # Sport rows: name the TEAM actually held (the held
+                # market's side of the row) instead of a bare YES/NO —
+                # "HOLDING Spain" can't be misread against whichever
+                # side the row happens to display on top.
+                _held_tk = (held_bet.get("ticker") or "")
+                _held_team = ""
+                if _held_tk == (v.get("_yes_ticker") or ""):
+                    _held_team = v.get("_yes_label") or ""
+                elif _held_tk == (v.get("_no_ticker") or ""):
+                    _held_team = v.get("_no_label") or ""
                 held_cls = "badge-yes" if bought_side == "YES" else "badge-no"
                 entry_c = held_bet.get("entry_price_cents")
                 entry_part = f" @ {entry_c}c" if entry_c is not None else ""
@@ -12446,9 +12459,10 @@ def _render_watchlist(out: List[str], watchlist: List[dict],
                                   f"(EV {_ev_sign}${abs(best_ev_v):.2f})")
                 held_tt = (f"You are holding {bought_side}{entry_part}"
                            f"{model_part}")
+                _badge_label = _held_team or bought_side
                 badge = (f"<span class='badge {held_cls}' "
                          f"title='{html.escape(held_tt)}'>"
-                         f"HOLDING {bought_side}</span>")
+                         f"HOLDING {html.escape(str(_badge_label))}</span>")
             else:
                 # Tooltip carries the model's recommendation when there
                 # is one, so the user can still see "model would buy YES,
