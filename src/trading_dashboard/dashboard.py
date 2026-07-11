@@ -12062,39 +12062,38 @@ def _render_watchlist(out: List[str], watchlist: List[dict],
     if is_sport_bot:
         _held_rows = [r for r in watchlist
                        if r.get("ticker") in held_by_ticker]
-        _open_rows = [r for r in watchlist
-                       if r.get("ticker") not in held_by_ticker]
+        # Model-vs-market shows every watchlist row (including the
+        # ones we hold). Duplicating held rows across both sections
+        # is intentional (user 2026-07-11): the Active-bets pane
+        # answers "what are we in?"; the Model-vs-market pane
+        # answers "what does the model like right now?" — and having
+        # our positions surface alongside the fresh watch pane makes
+        # it easy to see how a bet we own compares to the alternatives
+        # the model is currently evaluating. The row-bought /
+        # bought-yes / bought-no CSS classes downstream apply the
+        # highlight so held rows stand out visually.
+        _open_rows = list(watchlist)
         # 2026-07-08 (updated 2026-07-09): Model-vs-market rows only
-        # show up when a benchmark line is quoting the match.
-        # "Benchmark" means the first sharp book to publish — Pinnacle
-        # preferred, Betfair Exchange (UK / EU) as a fallback for
-        # events Pinnacle doesn't list (Challengers / ITF / lower-
-        # league TT / lower-tier darts / early-open WNBA / WC ties
-        # before Pinnacle posts). Without any sharp reference the
-        # decision cells fall back to the model's own view — which
-        # tends to encourage bad clicks on markets nobody in the world
-        # has priced. Active-bets rows still show unconditionally
-        # since we already hold those positions.
+        # show up when a benchmark line is quoting the match, so
+        # decision cells don't fall back to the model's own view on
+        # markets nobody in the world has priced. Exception carved out
+        # 2026-07-11: held rows always pass the filter — leaving a
+        # position invisible on Model-vs-market just because Pinnacle
+        # stopped quoting it (common for late ITF matches) would hide
+        # the very context this duplication is meant to provide.
         #
         # With Betfair Exchange added to the cascade, the WNBA / WC
         # rationale for exemption ("Pinnacle posts hours after Kalshi
         # opens") no longer holds — Betfair typically has a line from
         # opening on those two — so the filter now covers them too.
-        # NBA joined 2026-07-09 with the benchmark rearchitecture:
-        # its rows now carry the devigged Pinnacle line (guest feed +
-        # Odds-API cascade) as their probability source, so the same
-        # "no sharp reference → no decision cell" rule applies.
-        # table-tennis is EXEMPT (removed 2026-07-09 per user request:
-        # "connect all the table tennis tickers … show them in model
-        # vs market"): Pinnacle currently quotes no TT at all, so the
-        # filter would blank the table permanently. TT rows without a
-        # line are safe to show — the benchmark pass forces them to
-        # WATCH / not-buy-eligible, and the Model % column carries the
-        # upstream Elo view for information only.
+        # NBA joined 2026-07-09 with the benchmark rearchitecture.
+        # table-tennis is EXEMPT: Pinnacle currently quotes no TT at
+        # all, so the filter would blank the table permanently.
         if current_bot in {"tennis", "darts",
                             "wnba", "world-cup", "mlb", "nba"}:
             _open_rows = [r for r in _open_rows
-                           if r.get("pinnacle_prob_yes") is not None]
+                           if r.get("pinnacle_prob_yes") is not None
+                           or r.get("ticker") in held_by_ticker]
         # Settled-row filter on both panes — a resolved match
         # shouldn't sit in Active bets either (the position is
         # already locked in, the buy/sell watch state is stale).
