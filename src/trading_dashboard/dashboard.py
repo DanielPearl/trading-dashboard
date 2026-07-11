@@ -7311,9 +7311,7 @@ def _render_history_attribution(out: List[str],
 
     out.append(
         "<h3 class='subhead' style='margin-top:14px;'>"
-        "P&amp;L attribution "
-        "<span class='small gray'>(where the closed-bet P&amp;L came "
-        "from in the selected period)</span></h3>"
+        "P&amp;L attribution</h3>"
     )
     out.append("<div class='attribution-grid'>")
     # Short titles per user 2026-07-10 — the hint text moved into
