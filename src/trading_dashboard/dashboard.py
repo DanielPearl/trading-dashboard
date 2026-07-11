@@ -12652,11 +12652,18 @@ def _render_watchlist(out: List[str], watchlist: List[dict],
             # still populates on every row for JSON consumers + downstream
             # code, just isn't rendered as a table column.)
             kalshi_cell = _stacked(kyes_str, kno_str, "kalshi")
-            # Pinnacle stacked cell — devigged sharp-book prob for the YES /
-            # NO sides. None when the sport bot's watchlist row doesn't
-            # carry it (Pinnacle not listing the match, or non-tennis bots
-            # that don't wire this in yet).
+            # "Model %" stacked cell. On Model-vs-market it's Pinnacle-
+            # only — showing "—" is the right signal (no sharp reference
+            # → no buy signal). On Active bets we already own the
+            # position, so the user wants the Model % cell to reflect
+            # WHATEVER our forecast is right now (Pinnacle if available,
+            # else the bot's internal model). That matches the buy path
+            # inside the tennis executor, which itself falls back to
+            # ``live_prob_a`` / ``live_prob_b`` when Pinnacle doesn't
+            # list the match.
             pinn_p = v.get("pinnacle_prob_yes")
+            if is_active and pinn_p is None:
+                pinn_p = v.get("model_prob_yes")
             if pinn_p is not None:
                 pinn_yes_str = f"{int(round(float(pinn_p)*100))}%"
                 pinn_no_str = f"{int(round((1-float(pinn_p))*100))}%"
