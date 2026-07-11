@@ -131,6 +131,11 @@ class KalshiSession:
         client = self.client()
         if client is None:
             return None, "no_client"
+        # Kalshi rejects prices outside 1–99¢ ("invalid_price" 400).
+        # Profit-lock sells hit this when a decided market's bid pins
+        # at 100¢ — clamp so the sell fills at 99¢ instead of
+        # error-looping until settlement.
+        yes_price_cents = max(1, min(99, int(yes_price_cents)))
         try:
             resp = client.place_order(
                 ticker=ticker, side="yes", action=action, count=count,
