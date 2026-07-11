@@ -165,13 +165,19 @@ def start_daemon(cfg: dict) -> Any:
         upstream = _load_upstream(repo_path)
         executor = None
         if live_cfg is not None:
-            from . import world_cup_live_executor
+            # Generic executor since 2026-07-10 — same code path and
+            # hard caps as MLB / NBA / WNBA / darts / TT, so the buy
+            # criteria stay uniform across every sport bot. The old
+            # WorldCupLiveExecutor module remains for reference only.
+            from ._sport_live_executor import SportLiveExecutor
             state_path = live_cfg.get(
                 "sim_state_path",
                 str(Path(repo_path) / "data" / "outputs-live"
                     / "sim_state.json"))
-            executor = world_cup_live_executor.WorldCupLiveExecutor(
-                cfg=live_cfg, state_path=state_path)
+            executor = SportLiveExecutor(
+                cfg=live_cfg, state_path=state_path,
+                bot_key=BOT_KEY, tournament="FIFA World Cup 2026",
+                surface="Soccer", win_verb="advancing")
         log.info("world-cup-bot upstream loaded; entering tick loop")
         while True:
             try:

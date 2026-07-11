@@ -561,14 +561,16 @@ world_cup_trader:
   live:
     dry_run: true
     sim_state_path: /root/world-cup/data/outputs-live/sim_state.json
-    max_open_positions: 4
-    max_orders_per_day: 6
+    max_open_positions: 10   # hard cap — uniform across sport bots
+    # Backstop only — the real limit is max_open_positions
+    # ("10 at a time"); slots reopen as positions settle.
+    max_orders_per_day: 50
     contracts_per_order: 1
-    min_edge_pp: 0.08
-    max_entry_price_cents: 85
-    min_entry_price_cents: 10
+    min_edge_pp: 0.05
+    max_entry_price_cents: 80
+    min_entry_price_cents: 15
     price_deviation_cents: 3
-    prematch_buffer_minutes: 15
+    prematch_buffer_minutes: 10
     profit_lock_yes_bid_cents: 95
 
 
