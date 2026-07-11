@@ -6509,10 +6509,10 @@ def _render_active_bets_table(out: List[str], bets: List[dict],
             "<th class='num' title='Model % − Kalshi % — the edge remaining on the position.'>Edge</th>"
             "<th class='num' title='Net-of-fee expected value the bot saw at entry.'>EV</th>"
             "<th class='num' title='Time until the contract resolves'>Closes in</th>"
-            "<th>Verdict</th>"
-            "<th class='num' title='Number of contracts in this position.'>My contracts</th>"
+            "<th class='num' title='Number of contracts bought in this position.'>Contracts bought</th>"
             "<th class='num' title='Entry price × contracts — cash out at open, before fees.'>Kalshi entry cost</th>"
             "<th class='num' title='Kalshi entry cost + Kalshi entry fee.'>Total cost</th>"
+            "<th class='num' title='Money returned if this side wins — $1 × contracts at settlement minus entry cost and fee.'>Potential earnings</th>"
             "<th></th>"
             f"</tr></thead><tbody{tbody_attrs}>")
     else:
@@ -6864,10 +6864,8 @@ def _render_active_bets_table(out: List[str], bets: List[dict],
                 v_sign = "+" if ev_f > 0 else ("−" if ev_f < 0 else "")
                 ev_cell = (f"<td class='num {v_cls}'>"
                            f"{v_sign}${abs(ev_f):.2f}</td>")
-            verdict_cell = (
-                f"<td><span class='badge "
-                f"{'badge-yes' if side == 'YES' else 'badge-no'}'>"
-                f"HOLDING {side}</span></td>")
+            # Verdict column removed (user 2026-07-11) — a held row
+            # IS the verdict.
             total_cost = entry_cost_base + entry_fee_dollars
             out.append(
                 f"<tr{tr_attrs}>"
@@ -6881,12 +6879,14 @@ def _render_active_bets_table(out: List[str], bets: List[dict],
                 f"{edge_cell}"
                 f"{ev_cell}"
                 f"<td class='num'>{time_to_close_str(mtc)}</td>"
-                f"{verdict_cell}"
                 f"<td class='num'>{contracts}</td>"
                 f"<td class='num red'>−${entry_cost_base:.2f}</td>"
                 f"<td class='num red' title='Entry cost + "
                 f"${entry_fee_dollars:.2f} Kalshi entry fee'>"
                 f"−${total_cost:.2f}</td>"
+                f"<td class='num {pg_cls}' title='$1 × {contracts} "
+                f"contracts at settlement − ${total_cost:.2f} paid'>"
+                f"{pg_sign}${abs(potential_gain):.2f}</td>"
                 f"<td><button type='button' class='criteria-btn' "
                 f"title='Why was this bet chosen?' "
                 f"data-criteria='{criteria_json}'>i</button></td>"
@@ -12234,6 +12234,7 @@ def _render_watchlist(out: List[str], watchlist: List[dict],
             pos_head = (
                 "<th class='num' title='Number of contracts bought on this row. Blank when no position is open.'>Contracts bought</th>"
                 "<th class='num' title='Kalshi total cost — entry price × contracts + Kalshi entry fee. Blank when no position is held on this row.'>Kalshi total cost</th>"
+                "<th class='num' title='Money returned if this side wins — settlement pays $1 × contracts (no exit fee); the figure shown is that payout minus what you paid (entry + fee), i.e. the net earnings.'>Potential earnings</th>"
             )
         elif include_position_cols:
             pos_head = (
@@ -12283,7 +12284,6 @@ def _render_watchlist(out: List[str], watchlist: List[dict],
         # (Edge / EV / no entry-% column / Closes in before Verdict).
         if is_active:
             header_middle = (
-                "<th>Verdict</th>"
                 f"{pos_head}"
                 "<th class='num' title='Time until the contract settles. Parsed from the Kalshi ticker&apos;s encoded date.'>Closes in</th>"
                 "<th class='num' title='Model probability — sharp devigged reference from the best available benchmark book (Pinnacle first, else Betfair Exchange UK / EU). Em-dash for matches no sharp book is quoting or when the Odds API key isn&apos;t set. YES on top, NO on bottom.'>Model %</th>"
@@ -12759,7 +12759,24 @@ def _render_watchlist(out: List[str], watchlist: List[dict],
                     _entry_cost_cell = "<td class='num red' data-field='entry-cost'></td>"
                     _total_cost_cell = "<td class='num red' data-field='total-cost'></td>"
                 if is_active:
-                    position_cells = _my_contracts_cell + _total_cost_cell
+                    if _entry_c is not None and _ctr:
+                        _gain = ((100 - int(_entry_c)) * int(_ctr)
+                                 - kalshi_fee_cents(int(_entry_c),
+                                                    int(_ctr))) / 100.0
+                        _earnings_cell = (
+                            f"<td class='num green' title='"
+                            f"$1 × {int(_ctr)} contracts paid at settlement "
+                            f"− ${float(_entry_c) * int(_ctr) / 100.0:.2f} "
+                            f"entry − fee = net if this side wins.' "
+                            f"data-field='potential-earnings'>"
+                            f"+${_gain:.2f}</td>"
+                        )
+                    else:
+                        _earnings_cell = ("<td class='num green' "
+                                          "data-field='potential-earnings'>"
+                                          "</td>")
+                    position_cells = (_my_contracts_cell + _total_cost_cell
+                                      + _earnings_cell)
                 else:
                     position_cells = _my_contracts_cell + _entry_cost_cell + _total_cost_cell
             else:
@@ -12767,6 +12784,8 @@ def _render_watchlist(out: List[str], watchlist: List[dict],
                     position_cells = (
                         "<td class='num' data-field='my-contracts'></td>"
                         "<td class='num red' data-field='total-cost'></td>"
+                        "<td class='num green' "
+                        "data-field='potential-earnings'></td>"
                     )
                 else:
                     position_cells = (
@@ -12849,9 +12868,11 @@ def _render_watchlist(out: List[str], watchlist: List[dict],
             #   (Total contracts | Model % | Kalshi % | Edge | EV
             #    | Closes in | Verdict | position cells).
             if is_active:
+                # Verdict column removed on Active bets (user
+                # 2026-07-11) — a held row IS the verdict; the HOLDING
+                # state still shows via the row highlight.
                 row_body = (
                     f"{rules_cell}{date_cell}{event_cell}{middle_cells}"
-                    f"<td data-field='verdict'>{badge}</td>"
                     f"{position_cells}"
                     f"{closes_in_cell}"
                     f"{pinnacle_cell}"
