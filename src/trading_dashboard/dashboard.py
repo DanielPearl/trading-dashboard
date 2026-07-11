@@ -7223,14 +7223,18 @@ def _render_history_attribution(out: List[str],
     # slices carve the 30-70¢ zone finely enough to see where the P&L
     # pattern lives. Untagged catches rows without a recorded entry
     # price and stays empty-hidden.
+    # Bucket edges per user 2026-07-10: <35 / 35–39.99 / 40–44.99 /
+    # 45–49.99 / 50–54.99 / 55–59.99 / 60–64.99 / ≥65. Entry prices
+    # are integer cents, so each bucket is [lo, hi).
     price_buckets = [
-        ("< 30¢",     None, 30),
-        ("30–38¢",    30,   38),
-        ("38–46¢",    38,   46),
-        ("46–54¢",    46,   54),
-        ("54–62¢",    54,   62),
-        ("62–70¢",    62,   70),
-        ("> 70¢",     70,   None),
+        ("< 35¢",     None, 35),
+        ("35–39¢",    35,   40),
+        ("40–44¢",    40,   45),
+        ("45–49¢",    45,   50),
+        ("50–54¢",    50,   55),
+        ("55–59¢",    55,   60),
+        ("60–64¢",    60,   65),
+        ("≥ 65¢",     65,   None),
         ("untagged",  None, None),
     ]
     price_rows: List[dict] = []
