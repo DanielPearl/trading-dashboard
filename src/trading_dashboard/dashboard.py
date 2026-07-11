@@ -4133,26 +4133,14 @@ def render_page(
         f"</span></h2>"
         f"<div class='body'>"
     )
-    # 2026-07-11: History tab now sources every row from Kalshi's real
-    # ``/portfolio/settlements`` + ``/portfolio/fills`` endpoints,
-    # unified across every bot. A bot only appears in "By bot" if it
-    # has at least one settled Kalshi contract — paper positions that
-    # never became real orders no longer inflate the ledger. The
-    # tennis-only "All Bets" supplementary block is retired; every
-    # bot's rows sit in the single cross-bot ledger below.
-    #
-    # Mode split (user 2026-07-10, "make sure baseball closed
-    # contracts end up in History after they close"): the LIVE
-    # History is the real account ledger (settlements + fills); the
-    # SIM History is the paper book — every bot's closed paper trades
-    # — which is what "closed contracts" means on the sim site. The
-    # account-ledger rebuild earlier today had silently dropped paper
-    # closes from the sim tab.
-    if is_live:
-        kalshi_history: List[dict] = build_kalshi_cross_bot_history(
-            available_bots)
-    else:
-        kalshi_history = list(global_history or [])
+    # 2026-07-11 (updated): History tab sources every row from Kalshi's
+    # real ``/portfolio/settlements`` + ``/portfolio/fills`` endpoints
+    # on BOTH LIVE and SIM. Per user 2026-07-11 "only show actual closed
+    # contracts in history. no paper bets should be in here." — the
+    # earlier SIM branch that retained ``global_history`` (paper closes)
+    # was retired. Both dashboards now show the same real-Kalshi ledger.
+    kalshi_history: List[dict] = build_kalshi_cross_bot_history(
+        available_bots)
     # Period filter — same rule as ``global_history``. None keeps all.
     _pd_days = _period_days(period_key)
     if _pd_days is not None:
@@ -7345,8 +7333,9 @@ def _render_bet_history_block(out: List[str], history: List[dict],
         "<table><thead><tr>"
         "<th title='Date the contract was opened (UTC).'>Opened</th>"
         "<th title='Date the contract was closed (UTC).'>Closed</th>"
-        "<th>Bot</th><th>Ticker</th>"
+        "<th>Bot</th>"
         "<th>Title</th>"
+        "<th title='Player / team that actually won the match. Derived from settlement outcome + which side we bet on.'>Winner</th>"
         "<th>Side</th>"
         "<th class='num' title='Model probability for the side we bet on, recorded at entry.'>Model p</th>"
         "<th class='num'>Entry</th><th class='num'>Exit</th>"
@@ -7443,25 +7432,43 @@ def _render_bet_history_block(out: List[str], history: List[dict],
         # ``merged_trade_count > 1`` flags a history row that collapses
         # multiple flap-trades (open + close + re-open on the same
         # match/strike) into one. Surface a small "×N" badge next to
-        # the ticker so the user can tell a merged row from a single
+        # the Title so the user can tell a merged row from a single
         # trade — and the P&L column makes sense as the *net* across
-        # those N trades.
+        # those N trades. Moved from the Ticker cell 2026-07-11 when
+        # that column was retired.
         merged_n = int(b.get("merged_trade_count") or 1)
         if merged_n > 1:
             merged_badge = (
                 f"<span class='merged-badge' "
                 f"title='Net P&L across {merged_n} trades on this same "
-                f"ticker (bot re-opened the position after each close). "
-                f"Click for the raw trade IDs.'>×{merged_n}</span>"
+                f"ticker (bot re-opened the position after each close).'"
+                f">×{merged_n}</span>"
             )
         else:
             merged_badge = ""
+        # Winner cell — derive who won the match from the settlement
+        # outcome + which side we bet on. Sport rows carry _match
+        # ("Player A vs Player B") and _side_player (whichever one we
+        # took); a positive P&L means our side won, a negative one
+        # means the opponent won. Non-sport rows (gas / claims / cpi)
+        # don't have a "match winner" concept — they render "—".
+        _match_text = b.get("_match") or ""
+        _side_player = b.get("_side_player") or ""
+        winner_str = "—"
+        if _side_player and _match_text and pnl != 0:
+            if pnl > 0:
+                winner_str = _side_player
+            else:
+                opp = (_match_text
+                       .replace(_side_player, "")
+                       .replace(" vs ", " ")
+                       .strip(" -"))
+                winner_str = opp or "—"
         return (f"<tr><td>{html.escape(opened)}</td>"
                 f"<td>{html.escape(closed)}</td>"
                 f"{bot_cell}"
-                f"<td class='mono'>{ticker_cell_html(b.get('ticker'))}"
-                f"{merged_badge}</td>"
-                f"<td>{html.escape(title_text)}</td>"
+                f"<td>{html.escape(title_text)}{merged_badge}</td>"
+                f"<td>{html.escape(winner_str)}</td>"
                 f"<td><span class='badge {badge_cls}'>{side}</span></td>"
                 f"<td class='num'>{mp_str}</td>"
                 f"<td class='num'>{entry}c</td>"
