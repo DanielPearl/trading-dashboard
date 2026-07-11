@@ -488,12 +488,25 @@ wnba_trader:
     # ("10 at a time"); slots reopen as positions settle.
     max_orders_per_day: 50
     contracts_per_order: 1
-    min_edge_pp: 0.05
+    # 2026-07-11: raised 0.05 → 0.09 after the Portland Fire /
+    # Phoenix Mercury bets went in on stale-Pinnacle ~50/50 lines
+    # that later corrected to 14-25% underdogs. Matches tennis's
+    # 9pp floor; the 4-9pp band is where the audit's ROI already
+    # sat flat after fees.
+    min_edge_pp: 0.09
     max_entry_price_cents: 80
     min_entry_price_cents: 15
     price_deviation_cents: 3
     prematch_buffer_minutes: 10
     profit_lock_yes_bid_cents: 95
+    # Skip buys where Pinnacle isn't quoting the match — added
+    # 2026-07-11 for the same reason as the edge-floor bump. Without
+    # this, an expansion-team fixture (Portland Fire, Toronto Tempo,
+    # Golden State Valkyries) that Pinnacle hasn't posted a line for
+    # yet falls back to an internal-model prob near 50%, which
+    # then clears the 9pp gate against a deep-underdog Kalshi price
+    # and triggers a bogus +30pp "edge" buy.
+    require_pinnacle: true
 
 gas_trader:
   enabled: false
