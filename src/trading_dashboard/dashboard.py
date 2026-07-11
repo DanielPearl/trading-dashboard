@@ -7156,10 +7156,11 @@ def _render_history_attribution(out: List[str],
                 "win_pct": (wins / n) if n else 0.0}
 
     def _emit_table(title: str, hint: str, rows: List[dict]) -> None:
+        hint_html = (f" <span class='small gray'>{html.escape(hint)}</span>"
+                     if hint else "")
         out.append(
             f"<div class='attribution-panel'>"
-            f"<h3 class='subhead'>{html.escape(title)} "
-            f"<span class='small gray'>{html.escape(hint)}</span></h3>"
+            f"<h3 class='subhead'>{html.escape(title)}{hint_html}</h3>"
         )
         if not rows:
             out.append("<div class='empty'>No data in this slice.</div>"
@@ -7315,16 +7316,12 @@ def _render_history_attribution(out: List[str],
         "from in the selected period)</span></h3>"
     )
     out.append("<div class='attribution-grid'>")
-    _emit_table("By bot", "which bots carried this period",
-                 bot_rows)
-    _emit_table("By month", "calendar month of exit",
-                 month_rows)
-    _emit_table("By entry price",
-                 "what price bucket the contract was bought at",
-                 price_rows)
-    _emit_table("By edge",
-                 "model − market at entry (pp) vs realized P&L",
-                 edge_rows)
+    # Short titles per user 2026-07-10 — the hint text moved into
+    # each table's Bucket-column semantics and is self-evident.
+    _emit_table("By bot", "", bot_rows)
+    _emit_table("By month", "", month_rows)
+    _emit_table("By price", "", price_rows)
+    _emit_table("By edge", "", edge_rows)
     out.append("</div>")
 
 
