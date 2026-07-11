@@ -12301,9 +12301,9 @@ def _render_watchlist(out: List[str], watchlist: List[dict],
                 "title='How is EV calculated?' "
                 "aria-label='How is EV calculated?'>i</button>"
                 "</th>"
+                "<th class='num' title='Time until the contract settles. Parsed from the Kalshi ticker&apos;s encoded date.'>Closes in</th>"
                 "<th>Verdict</th>"
                 f"{pos_head}"
-                "<th class='num' title='Time until the contract settles. Parsed from the Kalshi ticker&apos;s encoded date.'>Closes in</th>"
             )
         out.append("<div class='watchlist-scroll'>"
                    "<table><thead><tr>"
@@ -12904,9 +12904,9 @@ def _render_watchlist(out: List[str], watchlist: List[dict],
                     f"{kalshi_cell}"
                     f"{edge_cell}"
                     f"{ev_cell}"
+                    f"{closes_in_cell}"
                     f"<td data-field='verdict'>{badge}</td>"
                     f"{position_cells}"
-                    f"{closes_in_cell}"
                 )
             out.append(f"<tr{row_cls} data-ticker='{tt_esc}'{strike_attr}{yes_attr}>"
                        f"{row_body}</tr>")
