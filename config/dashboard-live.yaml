@@ -407,6 +407,12 @@ tennis_trader:
     max_entry_price_cents: 70
     min_entry_price_cents: 30  # matches the History By-Entry-Price buckets + audit's <30¢ underdog bucket ran $-6.32 P&L on 37 closes (fee drag ate the edge)
     price_deviation_cents: 3
+    # Skip buys where Pinnacle isn't quoting the match. Added
+    # 2026-07-11 after the fresh-franchise / stale-line bugs on WNBA
+    # spilled over into tennis — the internal-model fallback let bogus
+    # +30pp edges through when Pinnacle simply wasn't listing the game
+    # yet. Same gate WNBA now enforces.
+    require_pinnacle: true
     # Pre-match window: how many hours before close the bot is
     # willing to open. Raised 12h → 24h after the Platt calibration
     # layer landed — the original 12h cutoff was zeroing out the

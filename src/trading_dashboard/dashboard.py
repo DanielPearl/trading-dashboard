@@ -12080,27 +12080,25 @@ def _render_watchlist(out: List[str], watchlist: List[dict],
         # bought-yes / bought-no CSS classes downstream apply the
         # highlight so held rows stand out visually.
         _open_rows = list(watchlist)
-        # 2026-07-08 (updated 2026-07-09): Model-vs-market rows only
-        # show up when a benchmark line is quoting the match, so
-        # decision cells don't fall back to the model's own view on
-        # markets nobody in the world has priced. Exception carved out
-        # 2026-07-11: held rows always pass the filter — leaving a
-        # position invisible on Model-vs-market just because Pinnacle
-        # stopped quoting it (common for late ITF matches) would hide
-        # the very context this duplication is meant to provide.
+        # Model-vs-market rows only show up when a benchmark line is
+        # quoting the match (user 2026-07-11: "if there is no model %
+        # from odds sources, don't show it in model vs market
+        # section"). The 2026-07-11 held-row exemption was retired at
+        # the same time — a held row without a sharp benchmark ends
+        # up as a blank Model % cell either way, so it belongs in
+        # Active bets alone.
         #
         # With Betfair Exchange added to the cascade, the WNBA / WC
         # rationale for exemption ("Pinnacle posts hours after Kalshi
         # opens") no longer holds — Betfair typically has a line from
-        # opening on those two — so the filter now covers them too.
-        # NBA joined 2026-07-09 with the benchmark rearchitecture.
-        # table-tennis is EXEMPT: Pinnacle currently quotes no TT at
-        # all, so the filter would blank the table permanently.
+        # opening on those two. NBA joined 2026-07-09 with the
+        # benchmark rearchitecture. table-tennis is EXEMPT: Pinnacle
+        # currently quotes no TT at all, so the filter would blank the
+        # table permanently.
         if current_bot in {"tennis", "darts",
                             "wnba", "world-cup", "mlb", "nba"}:
             _open_rows = [r for r in _open_rows
-                           if r.get("pinnacle_prob_yes") is not None
-                           or r.get("ticker") in held_by_ticker]
+                           if r.get("pinnacle_prob_yes") is not None]
         # Settled-row filter on both panes — a resolved match
         # shouldn't sit in Active bets either (the position is
         # already locked in, the buy/sell watch state is stale).
