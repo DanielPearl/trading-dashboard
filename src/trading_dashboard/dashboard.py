@@ -4140,8 +4140,19 @@ def render_page(
     # never became real orders no longer inflate the ledger. The
     # tennis-only "All Bets" supplementary block is retired; every
     # bot's rows sit in the single cross-bot ledger below.
-    kalshi_history: List[dict] = build_kalshi_cross_bot_history(
-        available_bots)
+    #
+    # Mode split (user 2026-07-10, "make sure baseball closed
+    # contracts end up in History after they close"): the LIVE
+    # History is the real account ledger (settlements + fills); the
+    # SIM History is the paper book — every bot's closed paper trades
+    # — which is what "closed contracts" means on the sim site. The
+    # account-ledger rebuild earlier today had silently dropped paper
+    # closes from the sim tab.
+    if is_live:
+        kalshi_history: List[dict] = build_kalshi_cross_bot_history(
+            available_bots)
+    else:
+        kalshi_history = list(global_history or [])
     # Period filter — same rule as ``global_history``. None keeps all.
     _pd_days = _period_days(period_key)
     if _pd_days is not None:
@@ -4191,18 +4202,25 @@ def render_page(
                             period_key=period_key,
                             current_bot=current_bot)
     _render_history_attribution(out, kalshi_history)
+    _ledger_hint = (
+        "(from Kalshi /portfolio/settlements + /portfolio/fills "
+        "— every bot, every settled contract)" if is_live else
+        "(every bot's closed paper bets — the sim ledger)")
     out.append("<h3 class='subhead'>All Bets "
                 "<span class='small gray'>"
-                "(from Kalshi /portfolio/settlements + /portfolio/fills "
-                "— every bot, every settled contract)</span></h3>")
+                f"{_ledger_hint}</span></h3>")
     out.append("<div class='history-scroll'>")
     if kalshi_history:
         _render_bet_history_block(out, kalshi_history, heading="",
                                     shown_initially=25)
-    else:
+    elif is_live:
         out.append("<div class='empty'>No settled Kalshi contracts yet "
                     "— the ledger will populate as bots trade live and "
                     "positions settle.</div>")
+    else:
+        out.append("<div class='empty'>No closed paper bets yet — the "
+                    "ledger fills in as the simulators' positions "
+                    "settle.</div>")
     out.append("</div>")
     out.append("</div></div>")
     out.append("</div>")  # /history panel

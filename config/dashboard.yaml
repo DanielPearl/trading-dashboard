@@ -88,6 +88,7 @@ bots:
     # trains nothing, so this file no longer updates.
     metrics_path: /root/nba/data/processed/artifacts/metrics.json
     series_ticker: KXNBAGAME
+    series_prefixes: [KXNBAGAME, KXNBASUMMERGAME]
     data_source: "Pinnacle moneylines (guest feed + The Odds API devig)"
     # One window per Kalshi NBA series the bot polls: KXNBAGAME
     # (regular season + playoffs) and KXNBASUMMERGAME (Las Vegas
@@ -131,6 +132,7 @@ bots:
     # historical card only; the benchmark bot trains nothing.
     metrics_path: /root/wnba/data/processed/artifacts/metrics.json
     series_ticker: KXWNBAGAME
+    series_prefixes: [KXWNBAGAME]
     data_source: "Pinnacle moneylines (guest feed + The Odds API devig)"
     # WNBA regular season runs ~mid-May through September.
     seasons:
@@ -265,6 +267,7 @@ bots:
     # series_ticker meta label distinguishes the cards on the home grid.
     dashboard_type: sport
     series_ticker: TABLETENNIS
+    series_prefixes: [KXTABLETENNIS, KXITTFMENMATCH, KXITTFWOMENMATCH, KXTTELITEGAME]
     # 2026-07: probability source is the devigged Pinnacle TT line
     # (guest feed — The Odds API has no table-tennis coverage). Rows
     # without a Pinnacle line are WATCH-only; while Pinnacle isn't
@@ -326,6 +329,7 @@ bots:
     # (Premier League, Worlds, PDC tour) under that umbrella.
     dashboard_type: sport
     series_ticker: KXDARTS
+    series_prefixes: ["KXDARTS*", KXPDCDARTS]
     # 2026-07: probability source is the devigged Pinnacle darts line
     # (guest feed — The Odds API has no darts coverage). Between PDC
     # events Pinnacle quotes nothing and the bot is dormant by design.
@@ -366,6 +370,7 @@ bots:
     watchlist_json_path: /root/world-cup/data/outputs/watchlist.json
     sim_state_path: /root/world-cup/data/outputs/sim_state.json
     series_ticker: KXWCADVANCE
+    series_prefixes: [KXWCADVANCE, KXWCGAME]
     data_source: "martj42/international_results (open data, no API key)"
     model_report_path: /root/world-cup/data/processed/artifacts/model_report.json
     training_data_path: /root/world-cup/data/training_data.csv
@@ -385,6 +390,7 @@ bots:
     # daemon (mlb_trader below) paper-trades eligible rows.
     dashboard_type: sport
     series_ticker: KXMLBGAME
+    series_prefixes: [KXMLBGAME]
     data_source: "Pinnacle moneylines (The Odds API devig, Betfair fallback)"
     # Tennis idiom: no sim.db — db_path points at the watchlist JSON
     # so the generic "available" check tracks the bot's first tick.
