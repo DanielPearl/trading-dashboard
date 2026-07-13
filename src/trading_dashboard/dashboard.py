@@ -3199,6 +3199,23 @@ code { background: #161b22; padding: 1px 6px; border-radius: 3px; color: #c9d1d9
     margin-bottom: -1px; font-weight: 600; }
 .tab-panel { display: none; }
 .tab-panel-active { display: block; }
+/* Contracts sub-tabs (Watchlist / Model / Training Data). Same pill
+   idiom as the top-level bar, slightly smaller so the hierarchy reads
+   "tab > sub-tab > filter > content". The bot filter renders directly
+   below this bar and scopes all three sub-pages. */
+.subtab-bar { display: flex; align-items: center; gap: 6px;
+    padding: 0 0 8px 0; margin: 0 0 10px;
+    border-bottom: 1px solid #21262d; flex-wrap: wrap; }
+.subtab-pill { background: transparent; color: #8b949e; cursor: pointer;
+    padding: 4px 12px; border-radius: 6px 6px 0 0; font-size: 12px;
+    border: 1px solid transparent; line-height: 1.4;
+    text-decoration: none; transition: color 120ms, background 120ms; }
+.subtab-pill:hover { color: #c9d1d9; background: #1c2128; }
+.subtab-pill-active { color: #f0f6fc; background: #21262d;
+    border-color: #30363d; border-bottom-color: #21262d;
+    margin-bottom: -1px; font-weight: 600; }
+.subtab-panel { display: none; }
+.subtab-panel-active { display: block; }
 /* Seasons tab — one card per league. Fixed-width slots (auto-fill
    so a single card never stretches to fill its row) keep the grid
    uniform regardless of how many cards are on the page. */
@@ -3964,32 +3981,37 @@ def render_page(
     )
 
     # ── Top-level page tabs ───────────────────────────────────────────
-    # All four panels live on the same page; clicks swap which one is
-    # visible. URL persists the choice via ?tab=X.
+    # 2026-07-13 redesign: four top-level tabs — Home, Contracts,
+    # History, Seasons. The old Watchlist / Models / Training Data
+    # tabs became sub-tabs INSIDE the Contracts tab (watchlist is the
+    # default sub-tab). Legacy ?tab=watchlist|models|training URLs
+    # keep working — they land on Contracts with that sub-tab active,
+    # and sub-tab clicks keep writing those same legacy keys to the
+    # URL so every deep link elsewhere in the codebase stays valid.
     tabs = [
         ("home", "Home"),
-        ("watchlist", "Watchlist"),
-        ("models", "Models"),
-        ("training", "Training Data"),
+        ("contracts", "Contracts"),
         ("history", "History"),
         ("seasons", "Seasons"),
     ]
-    valid_tabs = {k for k, _ in tabs}
-    active_tab = tab_key if tab_key in valid_tabs else "home"
-
-    # Bot filter sits above the tab bar (per user request) so it
-    # applies uniformly across every tab and doesn't reflow when
-    # panels swap. Selecting a bot navigates to that bot's URL on
-    # the current tab — the per-tab filters that previously lived
-    # inside Summary / Watchlist / Models sections were removed to
-    # avoid duplication.
-    if available_bots:
-        _render_bot_filter(out, available_bots,
-                            current_bot=current_bot,
-                            period_key=period_key,
-                            select_id="bot-select-top",
-                            include_all_option=True,
-                            tab_key=active_tab)
+    subtabs = [
+        ("watchlist", "Watchlist"),
+        ("models", "Model"),
+        ("training", "Training Data"),
+    ]
+    subtab_keys = {k for k, _ in subtabs}
+    if tab_key in subtab_keys:
+        active_tab = "contracts"
+        active_subtab = tab_key
+    elif tab_key == "contracts":
+        active_tab = "contracts"
+        active_subtab = "watchlist"
+    elif tab_key in {k for k, _ in tabs}:
+        active_tab = tab_key
+        active_subtab = "watchlist"
+    else:
+        active_tab = "home"
+        active_subtab = "watchlist"
 
     out.append("<div class='tab-bar'>")
     for k, label in tabs:
@@ -4003,6 +4025,11 @@ def render_page(
     def _open_panel(name: str) -> None:
         cls = "tab-panel" + (" tab-panel-active" if name == active_tab else "")
         out.append(f"<div class='{cls}' data-panel='{html.escape(name)}'>")
+
+    def _open_subpanel(name: str) -> None:
+        cls = ("subtab-panel"
+               + (" subtab-panel-active" if name == active_subtab else ""))
+        out.append(f"<div class='{cls}' data-subpanel='{html.escape(name)}'>")
 
     period_label = next(
         (lbl for k, lbl, _ in PERIOD_OPTIONS if k == period_key),
@@ -4031,8 +4058,32 @@ def render_page(
     out.append("</div></div>")
     out.append("</div>")  # /home panel
 
-    # ── WATCHLIST tab — chart + strike ladder + Kalshi rules ─────────
-    _open_panel("watchlist")
+    # ── CONTRACTS tab — sub-tabs: Watchlist / Model / Training Data ──
+    # The sub-tab bar sits at the top of the panel; the bot filter sits
+    # directly below it (per user request) and applies to all three
+    # sub-pages — switching bots keeps the active sub-tab via the
+    # legacy ?tab=<subtab> key baked into the option URLs (the JS
+    # overrides it with whichever sub-tab is visible at click time).
+    _open_panel("contracts")
+    out.append("<div class='subtab-bar'>")
+    for k, label in subtabs:
+        cls = ("subtab-pill"
+               + (" subtab-pill-active" if k == active_subtab else ""))
+        out.append(
+            f"<a class='{cls}' data-subtab='{html.escape(k)}' "
+            f"href='#tab-{html.escape(k)}'>{html.escape(label)}</a>"
+        )
+    out.append("</div>")
+    if available_bots:
+        _render_bot_filter(out, available_bots,
+                            current_bot=current_bot,
+                            period_key=period_key,
+                            select_id="bot-select-top",
+                            include_all_option=True,
+                            tab_key=active_subtab)
+
+    # ── Watchlist sub-tab — chart + strike ladder + Kalshi rules ─────
+    _open_subpanel("watchlist")
     if (not watchlist and not latest_active
             and not [b for b in available_bots
                      if b["key"] == current_bot and b.get("available")]):
@@ -4068,10 +4119,10 @@ def render_page(
         # value because their strike ladder shares one rule across
         # every row, but the popover-per-row idiom scales cleanly to
         # the sport bots' one-rule-per-match reality.
-    out.append("</div>")  # /watchlist panel
+    out.append("</div>")  # /watchlist subpanel
 
-    # ── MODELS tab — per-bot model deep-dive ─────────────────────────
-    _open_panel("models")
+    # ── Model sub-tab — per-bot model deep-dive ──────────────────────
+    _open_subpanel("models")
     current_bot_dict = next(
         (b for b in available_bots if b.get("key") == current_bot),
         None,
@@ -4087,14 +4138,14 @@ def render_page(
         bot_active_bets=bot_active_bets,
         bot_closed_positions=bot_closed_positions,
     )
-    out.append("</div>")  # /models panel
+    out.append("</div>")  # /models subpanel
 
-    # ── TRAINING DATA tab — tennis model's training panel + Kalshi outcomes
+    # ── Training Data sub-tab — training panel + Kalshi outcomes ─────
     # Sourced from data/training_history.db on the tennis-forecast
     # droplet. Currently tennis-only since it's the only bot whose
     # trainer writes to the DB; tab still renders for other bots with
     # an explanatory message rather than blank.
-    _open_panel("training")
+    _open_subpanel("training")
     try:
         from . import tennis as _tennis_mod
         from urllib.parse import parse_qs as _parse_qs
@@ -4113,7 +4164,7 @@ def render_page(
                 page=_page,
                 page_size=20,
                 segment=_td_qs.get("seg", [None])[0],
-                current_tab=active_tab,
+                current_tab="training",
                 period_key=period_key,
             ))
         else:
@@ -4123,14 +4174,15 @@ def render_page(
                 page_size=20,
                 tour_filter=_td_qs.get("tour", [None])[0],
                 split_filter=_td_qs.get("split", [None])[0],
-                current_tab=active_tab,
+                current_tab="training",
                 period_key=period_key,
             ))
     except Exception:  # noqa: BLE001
         log.exception("training data panel failed to render")
         out.append("<div class='empty'>Training Data unavailable — "
                     "see dashboard log for details.</div>")
-    out.append("</div>")  # /training panel
+    out.append("</div>")  # /training subpanel
+    out.append("</div>")  # /contracts panel
 
     # ── HISTORY tab — closed-bet history across all bots ──────────────
     _open_panel("history")
@@ -4861,6 +4913,14 @@ def _live_update_script(current_bot: str, period_key: str = "all") -> str:
       let currentTab = null;
       const activePill = document.querySelector(".tab-pill-active");
       if (activePill) currentTab = activePill.getAttribute("data-tab");
+      // Contracts is a container — the meaningful destination is the
+      // active sub-tab (watchlist / models / training). Those legacy
+      // keys are what the server maps back to Contracts + sub-tab.
+      if (currentTab === "contracts") {{
+        const activeSub = document.querySelector(".subtab-pill-active");
+        currentTab = (activeSub && activeSub.getAttribute("data-subtab"))
+                       || "watchlist";
+      }}
       if (!currentTab) {{
         try {{
           currentTab = new URL(window.location.href)
@@ -5605,14 +5665,55 @@ def _live_update_script(current_bot: str, period_key: str = "all") -> str:
           panel.classList.toggle("tab-panel-active",
                                    panel.getAttribute("data-panel") === key);
         }});
+        // Selecting Contracts always lands on the Watchlist sub-tab
+        // (per user request) — reset the sub-tab state on every
+        // top-level Contracts click, not just the first.
+        let urlKey = key;
+        if (key === "contracts") {{
+          urlKey = "watchlist";
+          document.querySelectorAll(".subtab-pill").forEach(function (p) {{
+            p.classList.toggle("subtab-pill-active",
+                                p.getAttribute("data-subtab") === "watchlist");
+          }});
+          document.querySelectorAll(".subtab-panel").forEach(function (sp) {{
+            sp.classList.toggle("subtab-panel-active",
+                                 sp.getAttribute("data-subpanel") === "watchlist");
+          }});
+        }}
         try {{
           const url = new URL(window.location.href);
-          url.searchParams.set("tab", key);
+          url.searchParams.set("tab", urlKey);
           history.replaceState(null, "", url.toString());
         }} catch (err) {{ /* old browser; skip */ }}
       }});
     }});
   }}
+
+  // ── Contracts sub-tab switcher ──────────────────────────────────
+  // Watchlist / Model / Training Data live inside the Contracts
+  // panel. Clicks swap the visible sub-panel client-side and write
+  // the LEGACY key (?tab=watchlist|models|training) to the URL so
+  // reloads and every existing deep link land on the right sub-tab.
+  document.querySelectorAll(".subtab-pill").forEach(function (pill) {{
+    pill.addEventListener("click", function (e) {{
+      e.preventDefault();
+      const key = pill.getAttribute("data-subtab");
+      if (!key) return;
+      document.querySelectorAll(".subtab-pill").forEach(function (p) {{
+        p.classList.toggle("subtab-pill-active",
+                            p.getAttribute("data-subtab") === key);
+      }});
+      document.querySelectorAll(".subtab-panel").forEach(function (sp) {{
+        sp.classList.toggle("subtab-panel-active",
+                             sp.getAttribute("data-subpanel") === key);
+      }});
+      try {{
+        const url = new URL(window.location.href);
+        url.searchParams.set("tab", key);
+        history.replaceState(null, "", url.toString());
+      }} catch (err) {{ /* old browser; skip */ }}
+    }});
+  }});
 
   // ── Hover crosshair on the underlying chart ───────────────────
   // The SVG carries data-* attrs with t_min/t_max + chart geometry.
@@ -13373,8 +13474,9 @@ class Handler(BaseHTTPRequestHandler):
                 # silently redirect to home so deep links keep working.
                 if tab_key == "performance":
                     tab_key = "home"
-                if tab_key not in {"home", "watchlist", "models",
-                                    "training", "history", "seasons"}:
+                if tab_key not in {"home", "contracts", "watchlist",
+                                    "models", "training", "history",
+                                    "seasons"}:
                     tab_key = "home"
                 # Models tab supports a pregame / ingame view toggle on
                 # sport bots. Defaults to pregame; ignored for non-sport

@@ -188,23 +188,39 @@ def _verdict_badge(verdict: str, blockers: List[str]) -> str:
 # --------------------------------------------------------------------------- #
 
 def _render_tab_bar(current_bot_key: str, active: str = "watchlist") -> str:
-    """Three-tab bar matching the tennis renderer's chrome.
-
-    Home → / (cross-bot home), Watchlist → ?bot=…&tab=watchlist,
-    Models → ?bot=…&tab=models, History → /?tab=history.
+    """Tab chrome matching the standard renderer's 2026-07-13 redesign:
+    a top-level bar (Home / Contracts / History / Seasons) plus a
+    Contracts sub-tab bar (Watchlist / Model). Survivor has no
+    training-data source, so that sub-tab is omitted here. All links
+    are full-page navigations because the survivor page is rendered by
+    a different code path than the standard one — the legacy
+    ``?tab=watchlist|models`` keys land on the right sub-tab.
     """
     tabs = [
         ("home", "Home", "/"),
-        ("watchlist", "Watchlist", f"?bot={current_bot_key}&tab=watchlist"),
-        ("models", "Models", f"?bot={current_bot_key}&tab=models"),
+        ("contracts", "Contracts",
+         f"?bot={current_bot_key}&tab=watchlist"),
         ("history", "History", "/?tab=history"),
         ("seasons", "Seasons", "/?tab=seasons"),
     ]
+    active_top = "contracts" if active in ("watchlist", "models") else active
     out = ["<div class='tab-bar'>"]
     for k, label, href in tabs:
-        cls = "tab-pill" + (" tab-pill-active" if k == active else "")
+        cls = "tab-pill" + (" tab-pill-active" if k == active_top else "")
         out.append(
             f"<a class='{cls}' data-tab='{html.escape(k)}' "
+            f"href='{html.escape(href)}'>{html.escape(label)}</a>"
+        )
+    out.append("</div>")
+    subtabs = [
+        ("watchlist", "Watchlist", f"?bot={current_bot_key}&tab=watchlist"),
+        ("models", "Model", f"?bot={current_bot_key}&tab=models"),
+    ]
+    out.append("<div class='subtab-bar'>")
+    for k, label, href in subtabs:
+        cls = "subtab-pill" + (" subtab-pill-active" if k == active else "")
+        out.append(
+            f"<a class='{cls}' data-subtab='{html.escape(k)}' "
             f"href='{html.escape(href)}'>{html.escape(label)}</a>"
         )
     out.append("</div>")
