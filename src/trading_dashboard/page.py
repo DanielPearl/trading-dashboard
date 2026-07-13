@@ -7,7 +7,7 @@ from datetime import datetime
 from datetime import timezone
 from typing import List
 from .css import CSS
-from .data import build_kalshi_cross_bot_history
+from .data import build_kalshi_cross_bot_history, filter_history_by_period
 from .fmt import _favicon_link
 from .models_panel import _render_models_panel
 from .panels import (
@@ -346,25 +346,8 @@ def render_page(
     kalshi_history: List[dict] = build_kalshi_cross_bot_history(
         available_bots)
     # Period filter — same rule as ``global_history``. None keeps all.
-    _pd_days = _period_days(period_key)
-    if _pd_days is not None:
-        cutoff_ts = (datetime.now(timezone.utc).timestamp()
-                      - _pd_days * 86400)
-
-        def _within_period(h: dict) -> bool:
-            ex = h.get("exited_at") or ""
-            try:
-                if "T" in ex:
-                    t = datetime.fromisoformat(
-                        ex.replace("Z", "+00:00")).timestamp()
-                else:
-                    t = datetime.strptime(
-                        ex[:19], "%Y-%m-%d %H:%M:%S"
-                    ).replace(tzinfo=timezone.utc).timestamp()
-            except (TypeError, ValueError):
-                return False
-            return t >= cutoff_ts
-        kalshi_history = [h for h in kalshi_history if _within_period(h)]
+    kalshi_history = filter_history_by_period(
+        kalshi_history, _period_days(period_key))
 
     # Cards synthesised from the same list every other block reads.
     _kh_wins = sum(1 for h in kalshi_history

@@ -851,6 +851,35 @@ def build_kalshi_cross_bot_history(bots: List[dict]) -> List[dict]:
     return out
 
 
+def filter_history_by_period(rows: List[dict],
+                              period_days: int | None) -> List[dict]:
+    """Trim closed-bet rows to the user-selected period window by
+    ``exited_at``. None keeps everything. Shared by the server's
+    cross-bot rollup and the History panel so the two ledgers always
+    agree on what "this week" means. Rows whose timestamp can't be
+    parsed are dropped (same rule both call sites already applied)."""
+    if period_days is None:
+        return rows
+    cutoff_ts = (datetime.now(timezone.utc).timestamp()
+                 - period_days * 86400)
+
+    def _within(h: dict) -> bool:
+        ex = h.get("exited_at") or ""
+        try:
+            if "T" in ex:
+                t = datetime.fromisoformat(
+                    ex.replace("Z", "+00:00")).timestamp()
+            else:
+                t = datetime.strptime(
+                    ex[:19], "%Y-%m-%d %H:%M:%S"
+                ).replace(tzinfo=timezone.utc).timestamp()
+        except (TypeError, ValueError):
+            return False
+        return t >= cutoff_ts
+
+    return [h for h in rows if _within(h)]
+
+
 def fetch_bet_history(db_path: str, limit: int = 100) -> List[dict]:
     """Closed positions only — for the Bet History section.
 

@@ -3,6 +3,8 @@ from __future__ import annotations
 
 import argparse
 import json
+import threading
+import time
 from datetime import datetime
 from datetime import timezone
 from http.server import BaseHTTPRequestHandler
@@ -11,6 +13,7 @@ from pathlib import Path
 from typing import Any
 from typing import List
 from .data import (
+    filter_history_by_period,
     _compute_active_bets_totals,
     _live_kalshi_held_tickers,
     _merge_kalshi_with_local,
@@ -37,6 +40,324 @@ log = logging.getLogger("dashboard")
 # --------------------------------------------------------------------------- #
 # Server
 # --------------------------------------------------------------------------- #
+
+# ── Cross-bot rollup cache ───────────────────────────────────────────
+# The Summary / Home / History data (global summary cards, cross-bot
+# active bets, cross-bot paper history, per-bot model cards) is
+# identical regardless of which bot the URL selects, yet it used to be
+# recomputed on EVERY page request — 13 bots × (bet-history scan +
+# watchlist scan + summary aggregate) per click. Cached for a few
+# seconds keyed by (mode, period); callers get shallow copies so the
+# renderers can annotate rows without corrupting the shared cache
+# (the HTTP server is threaded).
+_ROLLUP_TTL_S = 10.0
+_ROLLUP_CACHE: dict = {}
+_ROLLUP_LOCK = threading.Lock()
+
+
+def _cross_bot_rollup(bots: List[dict], *, period_days: int | None,
+                       period_key: str, mode: str):
+    key = (mode, period_key)
+    now = time.time()
+    with _ROLLUP_LOCK:
+        hit = _ROLLUP_CACHE.get(key)
+    if hit is not None and now - hit[0] < _ROLLUP_TTL_S:
+        gs, gab, gh, bm = hit[1]
+    else:
+        gs, gab, gh, bm = _compute_cross_bot_rollup(
+            bots, period_days=period_days, mode=mode)
+        with _ROLLUP_LOCK:
+            _ROLLUP_CACHE[key] = (now, (gs, gab, gh, bm))
+    return (dict(gs), [dict(r) for r in gab],
+            [dict(r) for r in gh], [dict(r) for r in bm])
+
+
+def _compute_cross_bot_rollup(bots: List[dict], *, period_days: int | None,
+                               mode: str):
+    # Global cross-bot fetches (these power the Summary section
+    # which is identical regardless of which bot is selected).
+    global_summary = fetch_global_summary(bots,
+                                           period_days=period_days)
+    # On LIVE, cross-reference every bot's sim_state active
+    # bets against Kalshi's real portfolio so the Home tab
+    # Active bets card + table don't drift when the bot
+    # executor's reconciliation lags. ``None`` = skip filter
+    # (sim dashboard, or Kalshi fetch failed / no creds).
+    _live_held_tickers = (_live_kalshi_held_tickers()
+                           if mode == "live" else None)
+
+    def _keep_on_kalshi(ab: dict) -> bool:
+        """Filter passthrough — sim dashboard always keeps
+        rows; live dashboard keeps only rows whose ticker is
+        in the live-held set. Sport rows may carry the
+        parent EVENT ticker while the portfolio lists the
+        per-side MARKET ticker (event + "-XXX"), so accept
+        a prefix match too."""
+        if _live_held_tickers is None:
+            return True
+        t = str(ab.get("ticker") or "")
+        if t in _live_held_tickers:
+            return True
+        return any(h.startswith(t + "-")
+                   for h in _live_held_tickers)
+
+    global_active_bets: List[dict] = []
+    global_history: List[dict] = []
+    # Per-bot models for the Performance tab — one card-row
+    # per bot showing accuracy / precision / recall / F1.
+    # Include bots whose sim.db doesn't exist yet (e.g. a
+    # newly-registered bot before its first run) so they
+    # show up in the grid with a "no snapshot yet"
+    # placeholder rather than vanishing entirely. The
+    # fetch_* helpers below all tolerate a missing DB.
+    bot_models: List[dict] = []
+    for b in bots:
+        # Tennis bot doesn't have a sim.db, but it does have a
+        # metrics.json / coefficients.json. Synthesize a model
+        # dict for the card grid so the tennis bot shows up
+        # alongside the Kalshi bots on the home page.
+        if b.get("dashboard_type") in ("sport", "survivor", "billboard"):
+            # Tennis, survivor, and billboard share the
+            # sim_state.json shape — the survivor and
+            # billboard adapters delegate
+            # closed_positions_for_rollup to the tennis
+            # adapter under the hood. The
+            # model_summary_for_card signature is the
+            # same across all three.
+            from . import tennis as _tennis
+            from . import survivor as _survivor
+            from . import billboard as _billboard
+            if b.get("dashboard_type") == "survivor":
+                adapter = _survivor
+            elif b.get("dashboard_type") == "billboard":
+                adapter = _billboard
+            else:
+                adapter = _tennis
+            if b.get("key") == "world-cup":
+                # No metrics.json — the card summary comes
+                # from the offline bake-off report, plus
+                # the sim trader's win/loss ledger.
+                from . import world_cup as _world_cup
+                m = _world_cup.model_summary_for_card(
+                    b.get("model_report_path"),
+                    b.get("sim_state_path"))
+            else:
+                m = adapter.model_summary_for_card(
+                    b.get("metrics_path"),
+                    b.get("sim_state_path"),
+                )
+            bot_models.append({
+                "bot": b,
+                "model": m,
+                "rules_text": "",
+                "strike_count": 0,
+                "strike_lo": None, "strike_hi": None,
+            })
+            # Pull open paper bets into the cross-bot
+            # active-bets table. On LIVE, drop any row
+            # whose ticker isn't in the actual Kalshi
+            # portfolio (see ``_keep_on_kalshi``).
+            if b.get("dashboard_type") == "sport":
+                for ab in _tennis.active_bets_for_rollup(
+                    b.get("sim_state_path"),
+                    watchlist_path=b.get("watchlist_json_path"),
+                ):
+                    if not _keep_on_kalshi(ab):
+                        continue
+                    ab["_bot_name"] = b["name"]
+                    ab["_bot_key"] = b["key"]
+                    ab["_dashboard_type"] = b.get("dashboard_type") or "standard"
+                    ab["_display"] = b.get("display") or {}
+                    try:
+                        from . import in_game as _ig
+                        _pred = _ig.predict(b, ab)
+                        if _pred is not None:
+                            ab["_in_game"] = {
+                                "live_prob_yes": _pred.live_prob_yes,
+                                "confidence": _pred.confidence,
+                                "action": _pred.recommended_action,
+                                "reason": _pred.reason,
+                            }
+                    except Exception:  # noqa: BLE001
+                        log.exception("in_game.predict in enrich failed")
+                    global_active_bets.append(ab)
+                # Real Kalshi positions in this bot's series
+                # that the executor didn't open (manual /
+                # external orders) — same union as the
+                # per-bot watchlist page, so the home-page
+                # Active bets shows every current contract.
+                if mode == "live":
+                    from .kalshi_client import get_open_positions
+                    _kpos, _kerr = get_open_positions()
+                    _prefixes = (b.get("series_prefixes")
+                                 or ([b.get("series_ticker")]
+                                     if b.get("series_ticker")
+                                     else []))
+                    if _kpos and _prefixes:
+                        _covered = {
+                            str(ab.get("ticker") or "")
+                            for ab in global_active_bets
+                            if ab.get("_bot_key") == b["key"]
+                        }
+                        _wl_payload = _tennis.load_watchlist(
+                            b.get("watchlist_json_path"))
+                        for ab in (
+                            _tennis.kalshi_positions_to_active_bets(
+                                _kpos, _wl_payload, _prefixes,
+                                exclude_tickers=_covered,
+                            )):
+                            ab["_bot_name"] = b["name"]
+                            ab["_bot_key"] = b["key"]
+                            ab["_dashboard_type"] = "sport"
+                            ab["_display"] = b.get("display") or {}
+                            global_active_bets.append(ab)
+            elif b.get("dashboard_type") == "billboard":
+                # Billboard writes a real sim.db — same
+                # readers as the standard bots below.
+                for ab in fetch_active_bets_with_marks(b["db_path"]):
+                    if not _keep_on_kalshi(ab):
+                        continue
+                    ab["_bot_name"] = b["name"]
+                    ab["_bot_key"] = b["key"]
+                    ab["_dashboard_type"] = "billboard"
+                    ab["_display"] = b.get("display") or {}
+                    global_active_bets.append(ab)
+            # Closed paper bets into the cross-bot history
+            # so hedge exits + natural settles surface on
+            # the History tab. Same row shape the standard
+            # ``fetch_bet_history`` produces. Billboard
+            # closed bets live in its sim.db (standard
+            # schema); the legacy
+            # ``_billboard.closed_positions_for_rollup``
+            # stub always returned [].
+            # 2026-07-09: per-bot cap raised from 50 to
+            # 10_000 so bots with hundreds of settled
+            # paper closes (tennis at 174, WNBA at 99, NBA
+            # at 28, etc.) fully contribute to the cross-
+            # bot History tab. The period filter below
+            # still trims by the user-selected window
+            # (30d / 90d / all-time); this cap is just the
+            # "don't OOM on a runaway ledger" safety.
+            # LIVE history is REAL FILLS ONLY (user
+            # 2026-07-10: "the history page should only
+            # show real bets that were made"). That
+            # supersedes the same-day paper-side fallbacks
+            # that backfilled By-bot from paper ledgers
+            # when a bot had no live closes — a bot that
+            # never traded real money now simply shows
+            # empty on the LIVE ledger, and the sport
+            # rollup drops dry-run evaluations too.
+            if b.get("dashboard_type") == "billboard":
+                closed_iter = fetch_bet_history(
+                    b["db_path"], limit=10_000)
+            elif b.get("dashboard_type") == "sport":
+                closed_iter = list(
+                    adapter.closed_positions_for_rollup(
+                        b.get("sim_state_path"), limit=10_000,
+                        real_only=(mode == "live"),
+                    ))
+            else:
+                closed_iter = list(
+                    adapter.closed_positions_for_rollup(
+                        b.get("sim_state_path"), limit=10_000,
+                    ))
+            for h in closed_iter:
+                h["_bot_name"] = b["name"]
+                h["_bot_key"] = b["key"]
+                h["_dashboard_type"] = b.get("dashboard_type") or "standard"
+                h["_display"] = b.get("display") or {}
+                global_history.append(h)
+            continue
+        if b.get("dashboard_type") and b["dashboard_type"] != "standard":
+            continue
+        for ab in fetch_active_bets_with_marks(b["db_path"]):
+            if not _keep_on_kalshi(ab):
+                continue
+            ab["_bot_name"] = b["name"]
+            ab["_bot_key"] = b["key"]
+            ab["_dashboard_type"] = b.get("dashboard_type") or "standard"
+            # Attach the bot's display config so the
+            # question column can be formatted in the bot's
+            # native units (K claims vs $ vs ...).
+            ab["_display"] = b.get("display") or {}
+            # In-game model advisory — attached for the
+            # active-bets table renderer. None for non-
+            # sport bots; harmless to read.
+            try:
+                from . import in_game as _ig
+                _pred = _ig.predict(b, ab)
+                if _pred is not None:
+                    ab["_in_game"] = {
+                        "live_prob_yes": _pred.live_prob_yes,
+                        "confidence": _pred.confidence,
+                        "action": _pred.recommended_action,
+                        "reason": _pred.reason,
+                    }
+            except Exception:  # noqa: BLE001
+                log.exception("in_game.predict in enrich failed")
+            global_active_bets.append(ab)
+        # See the per-bot cap comment in the sport-family
+        # branch above — same reasoning for the standard
+        # sim.db bots.
+        #
+        # No paper-side fallback here: LIVE history is real
+        # fills only (user 2026-07-10), so macro bots that
+        # have never traded live show empty on the LIVE
+        # ledger — their paper history stays on the sim
+        # dashboard, which reads sim.db directly.
+        _closed_rows = fetch_bet_history(
+            b["db_path"], limit=10_000)
+        for h in _closed_rows:
+            h["_bot_name"] = b["name"]
+            h["_bot_key"] = b["key"]
+            h["_dashboard_type"] = b.get("dashboard_type") or "standard"
+            h["_display"] = b.get("display") or {}
+            global_history.append(h)
+        m = fetch_latest_model(b["db_path"])
+        # Pull contract rules from the bot's watchlist —
+        # any one populated row will do (the rules_primary
+        # text is the same template across the whole series).
+        rules_text = ""
+        strike_count = 0
+        strike_lo = strike_hi = None
+        bot_wl = fetch_watchlist(b["db_path"])
+        for wv in bot_wl:
+            if not rules_text:
+                rt = (wv.get("rules_primary") or "").strip()
+                if rt:
+                    rules_text = rt
+            sl = wv.get("strike_low")
+            if sl is not None:
+                strike_count += 1
+                try:
+                    slf = float(sl)
+                    strike_lo = slf if strike_lo is None else min(strike_lo, slf)
+                    strike_hi = slf if strike_hi is None else max(strike_hi, slf)
+                except (TypeError, ValueError):
+                    pass
+        bot_models.append({
+            "bot": b,
+            "model": m,
+            "rules_text": rules_text,
+            "strike_count": strike_count,
+            "strike_lo": strike_lo,
+            "strike_hi": strike_hi,
+        })
+    global_active_bets.sort(key=lambda x: x.get("opened_at", ""), reverse=True)
+    global_history.sort(key=lambda x: x.get("exited_at", ""), reverse=True)
+    # Override the Summary's active-bets headline fields
+    # with values computed straight from the global active
+    # bets list (post-hide-settled, same per-row math as
+    # the table renderer). Guarantees the Money spent /
+    # Potential gain / Active bots / Active contracts
+    # cards equal the column totals of the table just
+    # below them.
+    global_summary.update(_compute_active_bets_totals(global_active_bets))
+    # Period-filter the history so the History tab agrees
+    # with the rest of the period-aware UI. None → keep all.
+    global_history = filter_history_by_period(global_history, period_days)
+    return global_summary, global_active_bets, global_history, bot_models
+
 
 class Handler(BaseHTTPRequestHandler):
     """Multi-bot HTTP handler.
@@ -403,305 +724,13 @@ class Handler(BaseHTTPRequestHandler):
                         kalshi_markets, watchlist,
                     )
 
-                # Global cross-bot fetches (these power the Summary section
-                # which is identical regardless of which bot is selected).
-                global_summary = fetch_global_summary(self.bots,
-                                                       period_days=period_days)
-                # On LIVE, cross-reference every bot's sim_state active
-                # bets against Kalshi's real portfolio so the Home tab
-                # Active bets card + table don't drift when the bot
-                # executor's reconciliation lags. ``None`` = skip filter
-                # (sim dashboard, or Kalshi fetch failed / no creds).
-                _live_held_tickers = (_live_kalshi_held_tickers()
-                                       if self.mode == "live" else None)
-
-                def _keep_on_kalshi(ab: dict) -> bool:
-                    """Filter passthrough — sim dashboard always keeps
-                    rows; live dashboard keeps only rows whose ticker is
-                    in the live-held set. Sport rows may carry the
-                    parent EVENT ticker while the portfolio lists the
-                    per-side MARKET ticker (event + "-XXX"), so accept
-                    a prefix match too."""
-                    if _live_held_tickers is None:
-                        return True
-                    t = str(ab.get("ticker") or "")
-                    if t in _live_held_tickers:
-                        return True
-                    return any(h.startswith(t + "-")
-                               for h in _live_held_tickers)
-
-                global_active_bets: List[dict] = []
-                global_history: List[dict] = []
-                # Per-bot models for the Performance tab — one card-row
-                # per bot showing accuracy / precision / recall / F1.
-                # Include bots whose sim.db doesn't exist yet (e.g. a
-                # newly-registered bot before its first run) so they
-                # show up in the grid with a "no snapshot yet"
-                # placeholder rather than vanishing entirely. The
-                # fetch_* helpers below all tolerate a missing DB.
-                bot_models: List[dict] = []
-                for b in self.bots:
-                    # Tennis bot doesn't have a sim.db, but it does have a
-                    # metrics.json / coefficients.json. Synthesize a model
-                    # dict for the card grid so the tennis bot shows up
-                    # alongside the Kalshi bots on the home page.
-                    if b.get("dashboard_type") in ("sport", "survivor", "billboard"):
-                        # Tennis, survivor, and billboard share the
-                        # sim_state.json shape — the survivor and
-                        # billboard adapters delegate
-                        # closed_positions_for_rollup to the tennis
-                        # adapter under the hood. The
-                        # model_summary_for_card signature is the
-                        # same across all three.
-                        from . import tennis as _tennis
-                        from . import survivor as _survivor
-                        from . import billboard as _billboard
-                        if b.get("dashboard_type") == "survivor":
-                            adapter = _survivor
-                        elif b.get("dashboard_type") == "billboard":
-                            adapter = _billboard
-                        else:
-                            adapter = _tennis
-                        if b.get("key") == "world-cup":
-                            # No metrics.json — the card summary comes
-                            # from the offline bake-off report, plus
-                            # the sim trader's win/loss ledger.
-                            from . import world_cup as _world_cup
-                            m = _world_cup.model_summary_for_card(
-                                b.get("model_report_path"),
-                                b.get("sim_state_path"))
-                        else:
-                            m = adapter.model_summary_for_card(
-                                b.get("metrics_path"),
-                                b.get("sim_state_path"),
-                            )
-                        bot_models.append({
-                            "bot": b,
-                            "model": m,
-                            "rules_text": "",
-                            "strike_count": 0,
-                            "strike_lo": None, "strike_hi": None,
-                        })
-                        # Pull open paper bets into the cross-bot
-                        # active-bets table. On LIVE, drop any row
-                        # whose ticker isn't in the actual Kalshi
-                        # portfolio (see ``_keep_on_kalshi``).
-                        if b.get("dashboard_type") == "sport":
-                            for ab in _tennis.active_bets_for_rollup(
-                                b.get("sim_state_path"),
-                                watchlist_path=b.get("watchlist_json_path"),
-                            ):
-                                if not _keep_on_kalshi(ab):
-                                    continue
-                                ab["_bot_name"] = b["name"]
-                                ab["_bot_key"] = b["key"]
-                                ab["_dashboard_type"] = b.get("dashboard_type") or "standard"
-                                ab["_display"] = b.get("display") or {}
-                                try:
-                                    from . import in_game as _ig
-                                    _pred = _ig.predict(b, ab)
-                                    if _pred is not None:
-                                        ab["_in_game"] = {
-                                            "live_prob_yes": _pred.live_prob_yes,
-                                            "confidence": _pred.confidence,
-                                            "action": _pred.recommended_action,
-                                            "reason": _pred.reason,
-                                        }
-                                except Exception:  # noqa: BLE001
-                                    log.exception("in_game.predict in enrich failed")
-                                global_active_bets.append(ab)
-                            # Real Kalshi positions in this bot's series
-                            # that the executor didn't open (manual /
-                            # external orders) — same union as the
-                            # per-bot watchlist page, so the home-page
-                            # Active bets shows every current contract.
-                            if self.mode == "live":
-                                from .kalshi_client import get_open_positions
-                                _kpos, _kerr = get_open_positions()
-                                _prefixes = (b.get("series_prefixes")
-                                             or ([b.get("series_ticker")]
-                                                 if b.get("series_ticker")
-                                                 else []))
-                                if _kpos and _prefixes:
-                                    _covered = {
-                                        str(ab.get("ticker") or "")
-                                        for ab in global_active_bets
-                                        if ab.get("_bot_key") == b["key"]
-                                    }
-                                    _wl_payload = _tennis.load_watchlist(
-                                        b.get("watchlist_json_path"))
-                                    for ab in (
-                                        _tennis.kalshi_positions_to_active_bets(
-                                            _kpos, _wl_payload, _prefixes,
-                                            exclude_tickers=_covered,
-                                        )):
-                                        ab["_bot_name"] = b["name"]
-                                        ab["_bot_key"] = b["key"]
-                                        ab["_dashboard_type"] = "sport"
-                                        ab["_display"] = b.get("display") or {}
-                                        global_active_bets.append(ab)
-                        elif b.get("dashboard_type") == "billboard":
-                            # Billboard writes a real sim.db — same
-                            # readers as the standard bots below.
-                            for ab in fetch_active_bets_with_marks(b["db_path"]):
-                                if not _keep_on_kalshi(ab):
-                                    continue
-                                ab["_bot_name"] = b["name"]
-                                ab["_bot_key"] = b["key"]
-                                ab["_dashboard_type"] = "billboard"
-                                ab["_display"] = b.get("display") or {}
-                                global_active_bets.append(ab)
-                        # Closed paper bets into the cross-bot history
-                        # so hedge exits + natural settles surface on
-                        # the History tab. Same row shape the standard
-                        # ``fetch_bet_history`` produces. Billboard
-                        # closed bets live in its sim.db (standard
-                        # schema); the legacy
-                        # ``_billboard.closed_positions_for_rollup``
-                        # stub always returned [].
-                        # 2026-07-09: per-bot cap raised from 50 to
-                        # 10_000 so bots with hundreds of settled
-                        # paper closes (tennis at 174, WNBA at 99, NBA
-                        # at 28, etc.) fully contribute to the cross-
-                        # bot History tab. The period filter below
-                        # still trims by the user-selected window
-                        # (30d / 90d / all-time); this cap is just the
-                        # "don't OOM on a runaway ledger" safety.
-                        # LIVE history is REAL FILLS ONLY (user
-                        # 2026-07-10: "the history page should only
-                        # show real bets that were made"). That
-                        # supersedes the same-day paper-side fallbacks
-                        # that backfilled By-bot from paper ledgers
-                        # when a bot had no live closes — a bot that
-                        # never traded real money now simply shows
-                        # empty on the LIVE ledger, and the sport
-                        # rollup drops dry-run evaluations too.
-                        if b.get("dashboard_type") == "billboard":
-                            closed_iter = fetch_bet_history(
-                                b["db_path"], limit=10_000)
-                        elif b.get("dashboard_type") == "sport":
-                            closed_iter = list(
-                                adapter.closed_positions_for_rollup(
-                                    b.get("sim_state_path"), limit=10_000,
-                                    real_only=(self.mode == "live"),
-                                ))
-                        else:
-                            closed_iter = list(
-                                adapter.closed_positions_for_rollup(
-                                    b.get("sim_state_path"), limit=10_000,
-                                ))
-                        for h in closed_iter:
-                            h["_bot_name"] = b["name"]
-                            h["_bot_key"] = b["key"]
-                            h["_dashboard_type"] = b.get("dashboard_type") or "standard"
-                            h["_display"] = b.get("display") or {}
-                            global_history.append(h)
-                        continue
-                    if b.get("dashboard_type") and b["dashboard_type"] != "standard":
-                        continue
-                    for ab in fetch_active_bets_with_marks(b["db_path"]):
-                        if not _keep_on_kalshi(ab):
-                            continue
-                        ab["_bot_name"] = b["name"]
-                        ab["_bot_key"] = b["key"]
-                        ab["_dashboard_type"] = b.get("dashboard_type") or "standard"
-                        # Attach the bot's display config so the
-                        # question column can be formatted in the bot's
-                        # native units (K claims vs $ vs ...).
-                        ab["_display"] = b.get("display") or {}
-                        # In-game model advisory — attached for the
-                        # active-bets table renderer. None for non-
-                        # sport bots; harmless to read.
-                        try:
-                            from . import in_game as _ig
-                            _pred = _ig.predict(b, ab)
-                            if _pred is not None:
-                                ab["_in_game"] = {
-                                    "live_prob_yes": _pred.live_prob_yes,
-                                    "confidence": _pred.confidence,
-                                    "action": _pred.recommended_action,
-                                    "reason": _pred.reason,
-                                }
-                        except Exception:  # noqa: BLE001
-                            log.exception("in_game.predict in enrich failed")
-                        global_active_bets.append(ab)
-                    # See the per-bot cap comment in the sport-family
-                    # branch above — same reasoning for the standard
-                    # sim.db bots.
-                    #
-                    # No paper-side fallback here: LIVE history is real
-                    # fills only (user 2026-07-10), so macro bots that
-                    # have never traded live show empty on the LIVE
-                    # ledger — their paper history stays on the sim
-                    # dashboard, which reads sim.db directly.
-                    _closed_rows = fetch_bet_history(
-                        b["db_path"], limit=10_000)
-                    for h in _closed_rows:
-                        h["_bot_name"] = b["name"]
-                        h["_bot_key"] = b["key"]
-                        h["_dashboard_type"] = b.get("dashboard_type") or "standard"
-                        h["_display"] = b.get("display") or {}
-                        global_history.append(h)
-                    m = fetch_latest_model(b["db_path"])
-                    # Pull contract rules from the bot's watchlist —
-                    # any one populated row will do (the rules_primary
-                    # text is the same template across the whole series).
-                    rules_text = ""
-                    strike_count = 0
-                    strike_lo = strike_hi = None
-                    bot_wl = fetch_watchlist(b["db_path"])
-                    for wv in bot_wl:
-                        if not rules_text:
-                            rt = (wv.get("rules_primary") or "").strip()
-                            if rt:
-                                rules_text = rt
-                        sl = wv.get("strike_low")
-                        if sl is not None:
-                            strike_count += 1
-                            try:
-                                slf = float(sl)
-                                strike_lo = slf if strike_lo is None else min(strike_lo, slf)
-                                strike_hi = slf if strike_hi is None else max(strike_hi, slf)
-                            except (TypeError, ValueError):
-                                pass
-                    bot_models.append({
-                        "bot": b,
-                        "model": m,
-                        "rules_text": rules_text,
-                        "strike_count": strike_count,
-                        "strike_lo": strike_lo,
-                        "strike_hi": strike_hi,
-                    })
-                global_active_bets.sort(key=lambda x: x.get("opened_at", ""), reverse=True)
-                global_history.sort(key=lambda x: x.get("exited_at", ""), reverse=True)
-                # Override the Summary's active-bets headline fields
-                # with values computed straight from the global active
-                # bets list (post-hide-settled, same per-row math as
-                # the table renderer). Guarantees the Money spent /
-                # Potential gain / Active bots / Active contracts
-                # cards equal the column totals of the table just
-                # below them.
-                global_summary.update(_compute_active_bets_totals(global_active_bets))
-                # Period-filter the history so the History tab agrees
-                # with the rest of the period-aware UI. None → keep all.
-                if period_days is not None:
-                    cutoff_ts = (datetime.now(timezone.utc).timestamp()
-                                  - period_days * 86400)
-                    def _within(h):
-                        ex = h.get("exited_at") or ""
-                        try:
-                            t = datetime.fromisoformat(
-                                ex.replace("Z", "+00:00")
-                            ).timestamp()
-                        except (TypeError, ValueError):
-                            try:
-                                t = datetime.strptime(
-                                    ex[:19], "%Y-%m-%d %H:%M:%S"
-                                ).replace(tzinfo=timezone.utc).timestamp()
-                            except (TypeError, ValueError):
-                                return False
-                        return t >= cutoff_ts
-                    global_history = [h for h in global_history if _within(h)]
+                # Cross-bot rollup (Summary cards, Home active bets,
+                # cross-bot history, model cards) — cached, see
+                # _cross_bot_rollup above.
+                (global_summary, global_active_bets,
+                 global_history, bot_models) = _cross_bot_rollup(
+                    self.bots, period_days=period_days,
+                    period_key=period_key, mode=self.mode)
 
                 # Bot-scoped closed positions — used in Section 5 underneath
                 # the active-bet table per request. Tennis-shape bots
@@ -973,6 +1002,29 @@ def serve(host: str, port: int, bots: List[dict], risk_caps: dict,
     Handler.validator_cfg = validator_cfg
     Handler.hedge_cfg = hedge_cfg
     Handler.mode = mode
+    # One-time read-path index on each bot's market_views table.
+    # fetch_watchlist's latest-row-per-ticker CTE otherwise full-scans
+    # the table on every call — CPI's is 390k rows / 400MB, ~250ms per
+    # request before this. IF NOT EXISTS makes restarts a no-op; a
+    # 5s busy timeout yields to a bot mid-write instead of failing
+    # the startup.
+    import sqlite3
+    from contextlib import closing
+    from .data import _conn
+    for _b in bots:
+        _db = _b.get("db_path") or ""
+        if not _db or not Path(_db).exists():
+            continue
+        try:
+            with closing(_conn(_db)) as _c:
+                _c.execute("PRAGMA busy_timeout=5000")
+                _c.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_mv_ticker_id "
+                    "ON market_views(ticker, id)")
+                _c.commit()
+        except (sqlite3.OperationalError, sqlite3.DatabaseError) as e:
+            log.info("market_views index skipped for %s (%s)",
+                     _b.get("key"), e)
     Handler.live_state_paths = list(live_state_paths or [])
     # Auto-hedge daemon. Reads each sim.db bot's positions table on a
     # 30s interval and closes any position whose unrealized P&L per
