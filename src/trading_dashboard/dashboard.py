@@ -12102,16 +12102,16 @@ def _render_watchlist(out: List[str], watchlist: List[dict],
         # benchmark rearchitecture. table-tennis is EXEMPT: Pinnacle
         # currently quotes no TT at all, so the filter would blank the
         # table permanently.
-        # 2026-07-13 (supersedes the 07-11 hide-unquoted rule for the
-        # benchmark bots): "the bots should continually be showing and
-        # buying contracts when they are available on kalshi" — every
-        # Kalshi-listed game renders; rows without a sharp line carry
-        # blank probs + WATCH, and populate as Pinnacle posts lines
-        # (Summer League / MLB lines typically appear hours before
-        # start). Tennis and world-cup keep the filter — their rows
-        # carry real in-house model numbers that would otherwise
-        # invite bad clicks on unpriced markets.
-        if current_bot in {"tennis", "world-cup"}:
+        # 2026-07-13 (final): Model-vs-market only shows games that
+        # HAVE odds from the benchmark sources (The Odds API cascade +
+        # Pinnacle guest feed) — "please get these odds from the
+        # sources ... and not show games when no odds are available."
+        # Rows appear automatically as books post lines (Summer League
+        # ~1-2h before tip, MLB the day before). table-tennis stays
+        # exempt: its rows display the upstream Elo model's odds, so
+        # the "no odds shown" concern doesn't apply.
+        if current_bot in {"tennis", "darts",
+                            "wnba", "world-cup", "mlb", "nba"}:
             _open_rows = [r for r in _open_rows
                            if r.get("pinnacle_prob_yes") is not None]
         # Settled-row filter on both panes — a resolved match
