@@ -63,7 +63,7 @@ bots:
       watchlist_title_use_event: true
       question_format: at_least_full
   - key: nba
-    name: NBA Forecast
+    name: Basketball Forecast (M)
     # 2026-07 benchmark rearchitecture (MLB pattern): the nba_trader
     # daemon below runs in THIS process with a ``live:`` block, so
     # bots/nba.py drives the SportLiveExecutor (dry-run until armed)
@@ -96,7 +96,7 @@ bots:
       chart_period_minutes: 1440
       prediction_period_label: this game
   - key: wnba
-    name: WNBA Forecast
+    name: Basketball Forecast (W)
     dashboard_type: sport
     db_path: /root/wnba/data/outputs-live/watchlist.json
     decisions_path: /root/wnba/data/outputs-live/watchlist.json

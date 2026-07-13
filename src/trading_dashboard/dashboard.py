@@ -7631,6 +7631,18 @@ def _render_bot_filter(out: List[str], available_bots: List[dict],
     """
     period_qs = (f"&period={html.escape(period_key)}"
                  if period_key and period_key != "all" else "")
+    # Dropdown whitelist (user 2026-07-13): only surface bots that are
+    # actively trading against a sharp benchmark. Macro / commentary
+    # bots (gas / claims / cpi / natural-gas / survivor / billboard)
+    # and paper-only MLB stay out of the dropdown even when their
+    # sim.db exists. Currently-selected bot is still shown so a stale
+    # bookmark doesn't render an empty picker.
+    _dropdown_keys = {
+        "nba", "wnba", "tennis", "table-tennis", "darts", "world-cup",
+    }
+    _bots_for_dropdown = [b for b in available_bots
+                          if b.get("key") in _dropdown_keys
+                          or b.get("key") == current_bot]
     out.append("<div class='bot-filter-bar'>")
     out.append(f"<label for='{html.escape(select_id)}' "
                f"class='filter-label'>Bot</label>")
@@ -7645,7 +7657,7 @@ def _render_bot_filter(out: List[str], available_bots: List[dict],
         out.append(
             f"<option value='{html.escape(all_url)}'{sel}>All bots</option>"
         )
-    for b in available_bots:
+    for b in _bots_for_dropdown:
         avail = b.get("available", True)
         suffix = "" if avail else " (no data)"
         sel = " selected" if b["key"] == current_bot else ""

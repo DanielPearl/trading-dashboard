@@ -65,7 +65,7 @@ bots:
       # rather than the K-shorthand fmt_underlying produces.
       question_format: at_least_full
   - key: nba
-    name: NBA Forecast
+    name: Basketball Forecast (M)
     # NBA is a head-to-head sport bot ("Will Team A win?") — same
     # match-row shape as tennis / table-tennis / darts, so it
     # renders under the unified ``dashboard_type: sport`` page.
@@ -111,7 +111,7 @@ bots:
       # makes more sense than "next month" or "next week".
       prediction_period_label: this game
   - key: wnba
-    name: WNBA Forecast
+    name: Basketball Forecast (W)
     # WNBA is a head-to-head sport bot ("Will Team A win?") — same
     # match-row shape as NBA / tennis, so it renders under the unified
     # ``dashboard_type: sport`` page. Its loop writes the standard-bot
