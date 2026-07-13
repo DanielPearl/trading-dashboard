@@ -170,6 +170,14 @@ class SportLiveExecutor:
         else:
             self.max_hours_to_close = min(float(raw_hrs),
                                             h["max_hours_to_close"])
+        # Skip buys where the sharp benchmark (Pinnacle guest feed or
+        # The Odds API cascade) isn't quoting the match. Added
+        # 2026-07-11 after the "no edge" audits on WNBA + tennis
+        # traced back to the internal-model fallback firing on
+        # matches Pinnacle hadn't posted a line for yet. The config
+        # key existed in dashboard-live.yaml before this — the
+        # executor just wasn't reading it.
+        self.require_pinnacle = bool(cfg.get("require_pinnacle", False))
         self.state_path = Path(state_path)
         self._config_dry_run = self.dry_run
         self._daily = core.DailyOrderCounter()
@@ -186,7 +194,8 @@ class SportLiveExecutor:
             "%s-live-executor configured (dry_run=%s, max_open=%d, "
             "orders/day=%d, contracts=%d, min_edge=%.2f, "
             "price=[%d¢,%d¢], profit_lock=%d¢, gain=%s, stop_loss=%s, "
-            "hours_to_close=%s, orphan_prefixes=%s, state=%s)",
+            "hours_to_close=%s, require_pinnacle=%s, "
+            "orphan_prefixes=%s, state=%s)",
             bot_key, self.dry_run, self.max_open, self.max_orders_per_day,
             self.contracts_per_order, self.min_edge,
             self.min_entry_price_cents, self.max_entry_price_cents,
@@ -194,6 +203,7 @@ class SportLiveExecutor:
             f"+{self.profit_lock_gain}¢" if self.profit_lock_gain else "off",
             f"-{self.stop_loss}¢" if self.stop_loss else "off",
             f"{self.max_hours_to_close}h" if self.max_hours_to_close else "off",
+            self.require_pinnacle,
             self.orphan_ticker_prefixes or "off",
             self.state_path)
         if not self.dry_run:
@@ -293,6 +303,21 @@ class SportLiveExecutor:
                    else row.get("live_prob_b"))
         edge = float(row.get("buy_side_edge") or 0.0)
         if ask_cents is None or model_p is None:
+            return
+        # Sharp-benchmark gate. When ``require_pinnacle`` is true in the
+        # config, refuse to trade any row where the row's
+        # ``pinnacle_prob_yes`` (populated by the tennis / WNBA / MLB
+        # exporter from the Pinnacle guest feed + Odds API cascade)
+        # isn't set. This prevents the exact failure mode the
+        # 2026-07-11 tennis audit surfaced: rows without a sharp line
+        # fall back to the internal Sackmann-trained model, which
+        # emits ~50% on unseen fixtures and clears the 9pp gate on
+        # deep-underdog Kalshi asks — a phantom edge that dissolves
+        # once Pinnacle actually posts.
+        if self.require_pinnacle and row.get("pinnacle_prob_yes") is None:
+            self._log.info(
+                "%s-live skip %s: no Pinnacle line (require_pinnacle)",
+                self.bot_key, ticker)
             return
         ask_cents = int(ask_cents)
         if not (self.min_entry_price_cents <= ask_cents
