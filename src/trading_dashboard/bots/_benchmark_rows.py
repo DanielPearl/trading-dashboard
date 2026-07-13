@@ -33,6 +33,7 @@ DEFAULTS = {
     "slippage": 0.02,
     "min_edge": 0.05,
     "strong_edge": 0.10,
+    "max_edge": 0.15,   # suspect-benchmark ceiling — see edge_sane gate
     "min_entry_price": 0.15,
     "max_entry_price": 0.80,
     "max_spread_cents": 6,
@@ -72,11 +73,11 @@ def match_pair_probs(lookup: Dict[frozenset, Dict[str, float]],
         return None
 
     pa, pb = _match(name_a), _match(name_b)
-    # Two-way devig sums to 1; tolerate a one-sided name match.
-    if pa is None and pb is not None:
-        pa = 1.0 - pb
-    if pb is None and pa is not None:
-        pb = 1.0 - pa
+    # BOTH sides must match — the old one-sided complement fallback
+    # manufactured degenerate benchmark probs from bad single-name
+    # matches (fantasy +25pp edges, 2026-07-13 WNBA audit).
+    if pa is None or pb is None:
+        return None, None
     return pa, pb
 
 
@@ -200,6 +201,9 @@ def apply_benchmark(rows: List[Dict[str, Any]],
             matched += 1
             gates = {
                 "edge": (side_edge or 0) >= cfg["min_edge"],
+                # Fake-edge guard: beyond max_edge the benchmark is
+                # almost certainly stale or mispaired — WATCH, never buy.
+                "edge_sane": (side_edge or 0) <= cfg["max_edge"],
                 "ev": (side_ev or 0) > 0,
                 "price_band": (side_price is not None
                                and cfg["min_entry_price"] <= side_price
