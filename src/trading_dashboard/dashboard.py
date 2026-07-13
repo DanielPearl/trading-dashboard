@@ -7635,14 +7635,13 @@ def _render_bot_filter(out: List[str], available_bots: List[dict],
     # actively trading against a sharp benchmark. Macro / commentary
     # bots (gas / claims / cpi / natural-gas / survivor / billboard)
     # and paper-only MLB stay out of the dropdown even when their
-    # sim.db exists. Currently-selected bot is still shown so a stale
-    # bookmark doesn't render an empty picker.
+    # sim.db exists. Strict list — a URL that lands on an off-whitelist
+    # bot renders the bot's page but the picker only shows the six.
     _dropdown_keys = {
         "nba", "wnba", "tennis", "table-tennis", "darts", "world-cup",
     }
     _bots_for_dropdown = [b for b in available_bots
-                          if b.get("key") in _dropdown_keys
-                          or b.get("key") == current_bot]
+                          if b.get("key") in _dropdown_keys]
     out.append("<div class='bot-filter-bar'>")
     out.append(f"<label for='{html.escape(select_id)}' "
                f"class='filter-label'>Bot</label>")
