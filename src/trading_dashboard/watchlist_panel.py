@@ -835,6 +835,16 @@ def _render_watchlist(out: List[str], watchlist: List[dict],
                             "wnba", "world-cup", "mlb", "nba"}:
             _open_rows = [r for r in _open_rows
                            if r.get("pinnacle_prob_yes") is not None]
+        # Zero-volume filter (user 2026-07-13): a match where the pair's
+        # total Kalshi volume is 0 hasn't traded at all — hide it from
+        # Model-vs-market until someone trades. Applies to every sport
+        # pane (table-tennis included — volume is Kalshi-side data, so
+        # the no-benchmark exemption above doesn't carry over). Rows
+        # with volume=None (bot doesn't stamp it) stay visible: unknown
+        # is not zero.
+        _open_rows = [r for r in _open_rows
+                       if r.get("volume") is None
+                       or (r.get("volume") or 0) > 0]
         # Settled-row filter on both panes — a resolved match
         # shouldn't sit in Active bets either (the position is
         # already locked in, the buy/sell watch state is stale).
