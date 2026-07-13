@@ -34,9 +34,9 @@ class WorldCupLiveExecutor(SportLiveExecutor):
             defaults={
                 "max_open_positions": 4,
                 "max_orders_per_day": 6,
-                "min_edge_pp": 0.08,
-                "max_entry_price_cents": 85,
-                "min_entry_price_cents": 10,
+                "min_edge_pp": 0.09,
+                "max_entry_price_cents": 60,
+                "min_entry_price_cents": 30,
                 "prematch_buffer_minutes": 15,
             },
             orphan_ticker_prefixes=WORLD_CUP_TICKER_PREFIXES,

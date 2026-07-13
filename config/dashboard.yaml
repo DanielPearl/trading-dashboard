@@ -434,7 +434,7 @@ edge:
 hedge:
   enabled: true
   profit_lock_cents: 20
-  stop_loss_cents: 15
+  stop_loss_cents: 0   # OFF per 2026-07-13 audit — SL exits were the largest loss bucket; profit lock stays
   hedge_size_fraction: 0.5
 
 validators:
@@ -488,7 +488,7 @@ tennis_trader:
     max_orders_per_day: 20
     contracts_per_order: 1
     min_edge_pp: 0.09  # keep in lockstep with dashboard-live.yaml
-    max_entry_price_cents: 70
+    max_entry_price_cents: 60  # 30-60¢ band per 2026-07-13 audit
     min_entry_price_cents: 30  # in lockstep with dashboard-live.yaml — 30-70¢ operating band
     price_deviation_cents: 3
     max_hours_to_close_for_open: 24.0

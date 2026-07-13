@@ -39,9 +39,9 @@ HARD_CAPS = {
     # daily counter exists only as a runaway backstop (a bug rapidly
     # opening/closing positions burns out here instead of at Kalshi).
     "max_orders_per_day": 100,
-    "min_edge_pp": 0.05,
-    "max_entry_price_cents": 80,
-    "min_entry_price_cents": 15,
+    "min_edge_pp": 0.09,
+    "max_entry_price_cents": 60,
+    "min_entry_price_cents": 30,
     "price_deviation_cents": 3,
     "min_profit_lock_bid": 90,
     # Tennis / darts extras — enforced whenever the subclass exposes them.
@@ -55,9 +55,9 @@ DEFAULTS = {
     "max_open_positions": 6,
     "max_orders_per_day": 50,
     "contracts_per_order": 1,
-    "min_edge_pp": 0.05,
-    "max_entry_price_cents": 80,
-    "min_entry_price_cents": 15,
+    "min_edge_pp": 0.09,
+    "max_entry_price_cents": 60,
+    "min_entry_price_cents": 30,
     "price_deviation_cents": 3,
     "prematch_buffer_minutes": 10,
     "profit_lock_yes_bid_cents": 95,

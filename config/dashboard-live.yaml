@@ -317,7 +317,7 @@ edge:
 hedge:
   enabled: true
   profit_lock_cents: 20
-  stop_loss_cents: 15
+  stop_loss_cents: 0   # OFF per 2026-07-13 audit — SL exits were the largest loss bucket; profit lock stays
   hedge_size_fraction: 0.5
 
 validators:
@@ -404,7 +404,7 @@ tennis_trader:
     max_orders_per_day: 20
     contracts_per_order: 1
     min_edge_pp: 0.09  # in lockstep with dashboard.yaml + tennis config's small_edge_min  # ratcheted 0.05 → 0.10 → 0.09 → 0.15 (2026-07-07). Post-audit: 695-trade paper history showed 5-15pp cohort ran -0.7% ROI (436 trades); 15pp+ cohort ran +2-9%. Matches tennis-forecast/config.yaml small_edge_min so the watchlist gate and the executor's belt-and-braces floor line up. Note this only bites in dry_run since prod already reads buy_eligible off the watchlist.
-    max_entry_price_cents: 70
+    max_entry_price_cents: 60  # 30-60¢ band per 2026-07-13 audit
     min_entry_price_cents: 30  # matches the History By-Entry-Price buckets + audit's <30¢ underdog bucket ran $-6.32 P&L on 37 closes (fee drag ate the edge)
     price_deviation_cents: 3
     # Skip buys where Pinnacle isn't quoting the match. Added
@@ -441,7 +441,7 @@ tennis_trader:
     # position drew down more than ~20c), while cutting the tail of
     # the 264 settled trades that averaged -35% ROI held to expiry.
     # Hard floor 15c / ceiling 40c — set to 0 to disable the branch.
-    stop_loss_cents: 25
+    stop_loss_cents: 0  # OFF per 2026-07-13 audit (was 25)
 
 unemployment_trader:
   enabled: false
@@ -470,9 +470,9 @@ nba_trader:
     # ("10 at a time"); slots reopen as positions settle.
     max_orders_per_day: 50
     contracts_per_order: 1
-    min_edge_pp: 0.05
-    max_entry_price_cents: 80
-    min_entry_price_cents: 15
+    min_edge_pp: 0.09  # raised 0.05 → 0.09 per 2026-07-13 real-money audit
+    max_entry_price_cents: 60  # 30-60¢ band per audit
+    min_entry_price_cents: 30
     price_deviation_cents: 3
     prematch_buffer_minutes: 10
     profit_lock_yes_bid_cents: 95
@@ -500,8 +500,8 @@ wnba_trader:
     # 9pp floor; the 4-9pp band is where the audit's ROI already
     # sat flat after fees.
     min_edge_pp: 0.09
-    max_entry_price_cents: 80
-    min_entry_price_cents: 15
+    max_entry_price_cents: 60  # 30-60¢ band per 2026-07-13 audit
+    min_entry_price_cents: 30
     price_deviation_cents: 3
     prematch_buffer_minutes: 10
     profit_lock_yes_bid_cents: 95
@@ -539,9 +539,9 @@ table_tennis_trader:
     # ("10 at a time"); slots reopen as positions settle.
     max_orders_per_day: 50
     contracts_per_order: 1
-    min_edge_pp: 0.05
-    max_entry_price_cents: 80
-    min_entry_price_cents: 15
+    min_edge_pp: 0.09  # raised 0.05 → 0.09 per 2026-07-13 real-money audit
+    max_entry_price_cents: 60  # 30-60¢ band per audit
+    min_entry_price_cents: 30
     price_deviation_cents: 3
     profit_lock_yes_bid_cents: 95
 
@@ -560,9 +560,9 @@ darts_trader:
     # ("10 at a time"); slots reopen as positions settle.
     max_orders_per_day: 50
     contracts_per_order: 1
-    min_edge_pp: 0.05
-    max_entry_price_cents: 80
-    min_entry_price_cents: 15
+    min_edge_pp: 0.09  # raised 0.05 → 0.09 per 2026-07-13 real-money audit
+    max_entry_price_cents: 60  # 30-60¢ band per audit
+    min_entry_price_cents: 30
     price_deviation_cents: 3
     profit_lock_yes_bid_cents: 95
 
@@ -585,9 +585,9 @@ world_cup_trader:
     # ("10 at a time"); slots reopen as positions settle.
     max_orders_per_day: 50
     contracts_per_order: 1
-    min_edge_pp: 0.05
-    max_entry_price_cents: 80
-    min_entry_price_cents: 15
+    min_edge_pp: 0.09  # raised 0.05 → 0.09 per 2026-07-13 real-money audit
+    max_entry_price_cents: 60  # 30-60¢ band per audit
+    min_entry_price_cents: 30
     price_deviation_cents: 3
     prematch_buffer_minutes: 10
     profit_lock_yes_bid_cents: 95
@@ -614,9 +614,9 @@ mlb_trader:
     # ("10 at a time"); slots reopen as positions settle.
     max_orders_per_day: 50
     contracts_per_order: 1
-    min_edge_pp: 0.05
-    max_entry_price_cents: 80
-    min_entry_price_cents: 15
+    min_edge_pp: 0.09  # raised 0.05 → 0.09 per 2026-07-13 real-money audit
+    max_entry_price_cents: 60  # 30-60¢ band per audit
+    min_entry_price_cents: 30
     price_deviation_cents: 3
     prematch_buffer_minutes: 10
     profit_lock_yes_bid_cents: 95

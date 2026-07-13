@@ -31,11 +31,11 @@ log = logging.getLogger("dashboard.benchmark-rows")
 # (Baseball Forecast src/dashboard/export_watchlist.py).
 DEFAULTS = {
     "slippage": 0.02,
-    "min_edge": 0.05,
+    "min_edge": 0.09,   # raised 0.05 → 0.09 (2026-07-13 real-money audit: −15% ROI; 5pp gross barely cleared spread+fee)
     "strong_edge": 0.10,
     "max_edge": 0.15,   # suspect-benchmark ceiling — see edge_sane gate
-    "min_entry_price": 0.15,
-    "max_entry_price": 0.80,
+    "min_entry_price": 0.30,  # 30–60¢ band (audit: 20-29¢ ran −43%, 60-69¢ −41%)
+    "max_entry_price": 0.60,
     "max_spread_cents": 6,
     "min_open_interest": 1,
 }

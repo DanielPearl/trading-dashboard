@@ -36,9 +36,9 @@ class WNBALiveExecutor(SportLiveExecutor):
             defaults={
                 "max_open_positions": 4,
                 "max_orders_per_day": 6,
-                "min_edge_pp": 0.08,
-                "max_entry_price_cents": 70,
-                "min_entry_price_cents": 15,
+                "min_edge_pp": 0.09,
+                "max_entry_price_cents": 60,
+                "min_entry_price_cents": 30,
             },
             orphan_ticker_prefixes=WNBA_TICKER_PREFIXES,
         )
