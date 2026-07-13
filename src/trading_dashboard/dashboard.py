@@ -4069,12 +4069,19 @@ def render_page(
     out.append("</div>")  # /home panel
 
     # ── CONTRACTS tab — sub-tabs: Watchlist / Model / Training Data ──
-    # The sub-tab bar sits at the top of the panel; the bot filter sits
-    # directly below it (per user request) and applies to all three
-    # sub-pages — switching bots keeps the active sub-tab via the
-    # legacy ?tab=<subtab> key baked into the option URLs (the JS
-    # overrides it with whichever sub-tab is visible at click time).
+    # The bot filter sits at the top of the panel, ABOVE the sub-tab
+    # bar (user 2026-07-13), and applies to all three sub-pages —
+    # switching bots keeps the active sub-tab via the legacy
+    # ?tab=<subtab> key baked into the option URLs (the JS overrides
+    # it with whichever sub-tab is visible at click time).
     _open_panel("contracts")
+    if available_bots:
+        _render_bot_filter(out, available_bots,
+                            current_bot=current_bot,
+                            period_key=period_key,
+                            select_id="bot-select-top",
+                            include_all_option=True,
+                            tab_key=active_subtab)
     out.append("<div class='subtab-bar'>")
     for k, label in subtabs:
         cls = ("subtab-pill"
@@ -4084,13 +4091,6 @@ def render_page(
             f"href='#tab-{html.escape(k)}'>{html.escape(label)}</a>"
         )
     out.append("</div>")
-    if available_bots:
-        _render_bot_filter(out, available_bots,
-                            current_bot=current_bot,
-                            period_key=period_key,
-                            select_id="bot-select-top",
-                            include_all_option=True,
-                            tab_key=active_subtab)
 
     # ── Watchlist sub-tab — chart + strike ladder + Kalshi rules ─────
     _open_subpanel("watchlist")

@@ -187,7 +187,8 @@ def _verdict_badge(verdict: str, blockers: List[str]) -> str:
 # Sections (rendered inside section/body wrappers identical to tennis)        #
 # --------------------------------------------------------------------------- #
 
-def _render_tab_bar(current_bot_key: str, active: str = "watchlist") -> str:
+def _render_tab_bar(current_bot_key: str, active: str = "watchlist",
+                     filter_html: str = "") -> str:
     """Tab chrome matching the standard renderer's 2026-07-13 redesign:
     a top-level bar (Home / Contracts / History / Seasons) plus a
     Contracts sub-tab bar (Watchlist / Model). Survivor has no
@@ -195,6 +196,10 @@ def _render_tab_bar(current_bot_key: str, active: str = "watchlist") -> str:
     are full-page navigations because the survivor page is rendered by
     a different code path than the standard one — the legacy
     ``?tab=watchlist|models`` keys land on the right sub-tab.
+
+    ``filter_html`` (the bot dropdown) renders between the top-level
+    bar and the sub-tab bar, matching the standard page's Contracts
+    layout (filter above the sub-tabs, user 2026-07-13).
     """
     tabs = [
         ("home", "Home", "/"),
@@ -212,6 +217,8 @@ def _render_tab_bar(current_bot_key: str, active: str = "watchlist") -> str:
             f"href='{html.escape(href)}'>{html.escape(label)}</a>"
         )
     out.append("</div>")
+    if filter_html:
+        out.append(filter_html)
     subtabs = [
         ("watchlist", "Watchlist", f"?bot={current_bot_key}&tab=watchlist"),
         ("models", "Model", f"?bot={current_bot_key}&tab=models"),
@@ -669,10 +676,13 @@ def render_page(*, metrics_path: str | None, coefficients_path: str | None,
         f" · live updates every 60s · DRY-RUN mode (no real orders)</div>"
     )
     active_tab = tab_key if tab_key in ("watchlist", "models") else "watchlist"
-    # Bot dropdown sits above the tab bar (matches the standard +
-    # tennis page layout — single filter applies to every tab).
-    out.append(_render_bot_dropdown(available_bots, current_bot_key))
-    out.append(_render_tab_bar(current_bot_key, active=active_tab))
+    # Bot dropdown renders between the top-level tab bar and the
+    # Contracts sub-tab bar (matches the standard page's layout —
+    # filter above the sub-tabs, user 2026-07-13).
+    out.append(_render_tab_bar(
+        current_bot_key, active=active_tab,
+        filter_html=_render_bot_dropdown(available_bots,
+                                          current_bot_key)))
 
     if active_tab == "models":
         out.append("<div class='section'><h2>Model</h2><div class='body'>")
