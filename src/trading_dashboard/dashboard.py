@@ -4075,12 +4075,14 @@ def render_page(
     # ?tab=<subtab> key baked into the option URLs (the JS overrides
     # it with whichever sub-tab is visible at click time).
     _open_panel("contracts")
+    # No "All bots" entry (user 2026-07-13) — each bot trades its own
+    # contract series, so a cross-bot view of the Contracts sub-pages
+    # doesn't exist; the dropdown always names a specific bot.
     if available_bots:
         _render_bot_filter(out, available_bots,
                             current_bot=current_bot,
                             period_key=period_key,
                             select_id="bot-select-top",
-                            include_all_option=True,
                             tab_key=active_subtab)
     out.append("<div class='subtab-bar'>")
     for k, label in subtabs:
