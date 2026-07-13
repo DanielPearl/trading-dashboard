@@ -3347,7 +3347,9 @@ th.num .th-side-row { display: block; line-height: 1.3;
 td.num.cell-stack { padding-top: 2px; padding-bottom: 2px;
     line-height: 1.2; }
 td.num.cell-stack .side-yes,
-td.num.cell-stack .side-no {
+td.num.cell-stack .side-no,
+td.num.cell-stack .inv-earn,
+td.num.cell-stack .inv-cost {
     display: block; text-align: right;
     font-variant-numeric: tabular-nums;
     /* drop the inline-block min-width set by the [data-side]
@@ -3356,6 +3358,14 @@ td.num.cell-stack .side-no {
     min-width: 0; }
 td.num.cell-stack .side-yes { color: #3fb950 !important; }  /* green */
 td.num.cell-stack .side-no  { color: #f85149 !important; }  /* red   */
+/* Investment column (Active bets) — Potential earnings on top in
+   green, Kalshi total cost beneath in red, consolidated into one
+   cell per user 2026-07-13. ``.neg`` flips a (rare) negative
+   potential-earnings figure to red so the colour still tracks the
+   sign, not the row position. */
+td.num.cell-stack .inv-earn { color: #3fb950 !important; }
+td.num.cell-stack .inv-earn.neg { color: #f85149 !important; }
+td.num.cell-stack .inv-cost { color: #f85149 !important; }
 /* Bot card drift badge — amber pill that lights up when the model's
    training accuracy and live actual-win-% diverge by >10pp on n≥10
    closed bets. Surfaces "this model may have drifted" as a one-look
@@ -6607,8 +6617,7 @@ def _render_active_bets_table(out: List[str], bets: List[dict],
             "<th class='num' title='Time until the contract resolves'>Closes in</th>"
             "<th class='num' title='Number of contracts bought in this position.'>Contracts bought</th>"
             "<th class='num' title='Entry price × contracts — cash out at open, before fees.'>Kalshi entry cost</th>"
-            "<th class='num' title='Kalshi entry cost + Kalshi entry fee.'>Total cost</th>"
-            "<th class='num' title='Money returned if this side wins — $1 × contracts at settlement minus entry cost and fee.'>Potential earnings</th>"
+            "<th class='num' title='Top: potential earnings — money returned if this side wins ($1 × contracts at settlement minus entry cost and fee). Bottom: total cost — Kalshi entry cost + Kalshi entry fee.'>Investment</th>"
             "<th></th>"
             f"</tr></thead><tbody{tbody_attrs}>")
     else:
@@ -6977,12 +6986,14 @@ def _render_active_bets_table(out: List[str], bets: List[dict],
                 f"<td class='num'>{time_to_close_str(mtc)}</td>"
                 f"<td class='num'>{contracts}</td>"
                 f"<td class='num red'>−${entry_cost_base:.2f}</td>"
-                f"<td class='num red' title='Entry cost + "
-                f"${entry_fee_dollars:.2f} Kalshi entry fee'>"
-                f"−${total_cost:.2f}</td>"
-                f"<td class='num {pg_cls}' title='$1 × {contracts} "
-                f"contracts at settlement − ${total_cost:.2f} paid'>"
-                f"{pg_sign}${abs(potential_gain):.2f}</td>"
+                f"<td class='num cell-stack' title='Top: potential "
+                f"earnings — $1 × {contracts} contracts at settlement − "
+                f"${total_cost:.2f} paid. Bottom: total cost — entry "
+                f"cost + ${entry_fee_dollars:.2f} Kalshi entry fee.'>"
+                f"<div class='inv-earn{' neg' if potential_gain < 0 else ''}'>"
+                f"{pg_sign}${abs(potential_gain):.2f}</div>"
+                f"<div class='inv-cost'>−${total_cost:.2f}</div>"
+                f"</td>"
                 f"<td><button type='button' class='criteria-btn' "
                 f"title='Why was this bet chosen?' "
                 f"data-criteria='{criteria_json}'>i</button></td>"
@@ -12354,8 +12365,7 @@ def _render_watchlist(out: List[str], watchlist: List[dict],
         if include_position_cols and is_active:
             pos_head = (
                 "<th class='num' title='Number of contracts bought on this row. Blank when no position is open.'>Contracts bought</th>"
-                "<th class='num' title='Kalshi total cost — entry price × contracts + Kalshi entry fee. Blank when no position is held on this row.'>Kalshi total cost</th>"
-                "<th class='num' title='Money returned if this side wins — settlement pays $1 × contracts (no exit fee); the figure shown is that payout minus what you paid (entry + fee), i.e. the net earnings.'>Potential earnings</th>"
+                "<th class='num' title='Top: potential earnings — settlement pays $1 × contracts (no exit fee); the figure shown is that payout minus what you paid (entry + fee), i.e. the net earnings. Bottom: Kalshi total cost — entry price × contracts + Kalshi entry fee. Blank when no position is held on this row.'>Investment</th>"
             )
         elif include_position_cols:
             pos_head = (
@@ -12896,33 +12906,44 @@ def _render_watchlist(out: List[str], watchlist: List[dict],
                     _entry_cost_cell = "<td class='num red' data-field='entry-cost'></td>"
                     _total_cost_cell = "<td class='num red' data-field='total-cost'></td>"
                 if is_active:
+                    # Investment cell — potential earnings on top
+                    # (green), Kalshi total cost beneath (red),
+                    # consolidated per user 2026-07-13.
                     if _entry_c is not None and _ctr:
                         _gain = ((100 - int(_entry_c)) * int(_ctr)
                                  - kalshi_fee_cents(int(_entry_c),
                                                     int(_ctr))) / 100.0
-                        _earnings_cell = (
-                            f"<td class='num green' title='"
-                            f"$1 × {int(_ctr)} contracts paid at settlement "
-                            f"− ${float(_entry_c) * int(_ctr) / 100.0:.2f} "
-                            f"entry − fee = net if this side wins.' "
-                            f"data-field='potential-earnings'>"
-                            f"+${_gain:.2f}</td>"
+                        _g_sign = "+" if _gain >= 0 else "−"
+                        _g_neg = " neg" if _gain < 0 else ""
+                        _investment_cell = (
+                            f"<td class='num cell-stack' title='"
+                            f"Top: potential earnings — $1 × {int(_ctr)} "
+                            f"contracts paid at settlement − "
+                            f"${float(_entry_c) * int(_ctr) / 100.0:.2f} "
+                            f"entry − fee = net if this side wins. "
+                            f"Bottom: Kalshi total cost — "
+                            f"{int(_entry_c)}¢ × {int(_ctr)} contracts + "
+                            f"${_fee:.2f} entry fee = total cash out at "
+                            f"open.' data-field='investment'>"
+                            f"<div class='inv-earn{_g_neg}'>"
+                            f"{_g_sign}${abs(_gain):.2f}</div>"
+                            f"<div class='inv-cost'>−${_base + _fee:.2f}"
+                            f"</div></td>"
                         )
                     else:
-                        _earnings_cell = ("<td class='num green' "
-                                          "data-field='potential-earnings'>"
-                                          "</td>")
-                    position_cells = (_my_contracts_cell + _total_cost_cell
-                                      + _earnings_cell)
+                        _investment_cell = (
+                            "<td class='num cell-stack' "
+                            "data-field='investment'></td>"
+                        )
+                    position_cells = _my_contracts_cell + _investment_cell
                 else:
                     position_cells = _my_contracts_cell + _entry_cost_cell + _total_cost_cell
             else:
                 if is_active:
                     position_cells = (
                         "<td class='num' data-field='my-contracts'></td>"
-                        "<td class='num red' data-field='total-cost'></td>"
-                        "<td class='num green' "
-                        "data-field='potential-earnings'></td>"
+                        "<td class='num cell-stack' "
+                        "data-field='investment'></td>"
                     )
                 else:
                     position_cells = (
