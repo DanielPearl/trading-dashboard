@@ -28,7 +28,7 @@ from .data import (
     resolve_bot_thresholds,
 )
 from .page import render_page
-from .panels import PERIOD_OPTIONS, _period_days
+from .panels import PERIOD_OPTIONS, _period_days, default_filter_bot
 
 import logging
 log = logging.getLogger("dashboard")
@@ -92,7 +92,11 @@ class Handler(BaseHTTPRequestHandler):
             for b in self.bots:
                 if b["key"] == requested:
                     return b
-        return self.bots[0]
+        # No ?bot= in the URL: default to the topmost bot in the
+        # filter dropdown (user 2026-07-13), so opening Contracts →
+        # Watchlist shows the same bot the picker shows first. Falls
+        # back to the first registered bot if nothing is whitelisted.
+        return default_filter_bot(self.bots) or self.bots[0]
 
     def do_GET(self) -> None:
         from urllib.parse import urlparse, parse_qs

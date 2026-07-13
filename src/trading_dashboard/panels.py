@@ -1704,6 +1704,32 @@ def _render_bet_history_block(out: List[str], history: List[dict],
     out.append("</tbody></table>")
 
 
+# Bot-filter whitelist (user 2026-07-13): only surface bots that are
+# actively trading against a sharp benchmark. Macro / commentary bots
+# (gas / claims / cpi / natural-gas / survivor / billboard) stay out
+# of the dropdown even when their sim.db exists. Strict list — a URL
+# that lands on an off-whitelist bot renders the bot's page but the
+# picker only shows these. Baseball added same-day per user ("include
+# the baseball forecast in the contracts filter too") — it trades
+# real money via the armed live executor, same as NBA / WNBA.
+BOT_FILTER_KEYS = {
+    "mlb", "nba", "wnba", "tennis", "table-tennis", "darts",
+    "world-cup",
+}
+
+
+def default_filter_bot(bots: List[dict]) -> dict | None:
+    """The topmost bot in the filter dropdown — the first entry of the
+    registry (display order) whose key is whitelisted. This is what a
+    bot-less URL resolves to, so opening Contracts → Watchlist lands
+    on the same bot the dropdown shows first (user 2026-07-13).
+    Returns None when no registered bot is whitelisted."""
+    for b in bots:
+        if b.get("key") in BOT_FILTER_KEYS:
+            return b
+    return None
+
+
 def _render_bot_filter(out: List[str], available_bots: List[dict],
                        current_bot: str,
                        period_key: str = "all",
@@ -1725,21 +1751,8 @@ def _render_bot_filter(out: List[str], available_bots: List[dict],
     """
     period_qs = (f"&period={html.escape(period_key)}"
                  if period_key and period_key != "all" else "")
-    # Dropdown whitelist (user 2026-07-13): only surface bots that are
-    # actively trading against a sharp benchmark. Macro / commentary
-    # bots (gas / claims / cpi / natural-gas / survivor / billboard)
-    # stay out of the dropdown even when their sim.db exists. Strict
-    # list — a URL that lands on an off-whitelist bot renders the
-    # bot's page but the picker only shows these. Baseball added
-    # same-day per user ("include the baseball forecast in the
-    # contracts filter too") — it trades real money via the armed
-    # live executor, same as NBA / WNBA.
-    _dropdown_keys = {
-        "mlb", "nba", "wnba", "tennis", "table-tennis", "darts",
-        "world-cup",
-    }
     _bots_for_dropdown = [b for b in available_bots
-                          if b.get("key") in _dropdown_keys]
+                          if b.get("key") in BOT_FILTER_KEYS]
     out.append("<div class='bot-filter-bar'>")
     out.append(f"<label for='{html.escape(select_id)}' "
                f"class='filter-label'>Bot</label>")
