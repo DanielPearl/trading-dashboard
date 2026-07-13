@@ -286,7 +286,7 @@ bots:
     # the live executor saw, isolated from the sim site's paper state.
     dashboard_type: sport
     series_ticker: KXMLBGAME
-    series_prefixes: [KXMLBGAME]
+    series_prefixes: [KXMLBGAME, KXNPBGAME, KXKBOGAME]
     data_source: "Pinnacle moneylines (The Odds API devig, Betfair fallback)"
     db_path: /root/baseball/data/outputs-live/watchlist.json
     decisions_path: /root/baseball/data/outputs-live/watchlist.json

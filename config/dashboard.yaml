@@ -390,7 +390,7 @@ bots:
     # daemon (mlb_trader below) paper-trades eligible rows.
     dashboard_type: sport
     series_ticker: KXMLBGAME
-    series_prefixes: [KXMLBGAME]
+    series_prefixes: [KXMLBGAME, KXNPBGAME, KXKBOGAME]
     data_source: "Pinnacle moneylines (The Odds API devig, Betfair fallback)"
     # Tennis idiom: no sim.db — db_path points at the watchlist JSON
     # so the generic "available" check tracks the bot's first tick.
