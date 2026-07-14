@@ -1215,7 +1215,7 @@ def main(argv: list[str] | None = None) -> int:
             # their sim.db exists. Sport-shape bots (tennis,
             # table-tennis, darts) write watchlist.json directly on
             # every refresh; the NBA bot writes it via the
-            # _sport_adapter after each Bot.tick(), and on a fresh
+            # the upstream exporter after each tick, and on a fresh
             # boot the adapter hasn't run yet — so we accept db_path
             # as evidence the bot is wired up. The page renders an
             # empty-state placeholder until the adapter's first sync.

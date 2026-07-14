@@ -336,7 +336,7 @@ def _check_tennis_state(sim_state_path: str | None, bot: Dict[str, Any],
     in open_positions.
 
     SKIPPED in live mode. The tennis live executor in
-    ``bots/tennis_live_executor.py`` is explicit that it holds
+    ``bots/_sport_live_executor.py`` is explicit that it holds
     positions to natural Kalshi expiry ("always settle, never
     partial-close") — it never sends a sell order. The hedge here
     only mutates the local JSON, which:
@@ -633,7 +633,7 @@ def tick(bots: List[dict], hedge_cfg: dict) -> List[Dict[str, Any]]:
                 # place — as soon as the bot starts paper-trading
                 # elimination markets, this path picks them up
                 # automatically. NBA's sim_state.json is synthesized
-                # by bots/_sport_adapter from sim.db after each tick.
+                # by the upstream exporter after each tick.
                 results = _check_tennis_state(
                     b.get("sim_state_path"), b,
                     profit_lock_cents=pl, stop_loss_cents=sl,

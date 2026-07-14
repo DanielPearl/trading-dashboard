@@ -97,7 +97,7 @@ def _one_tick(upstream: dict[str, Callable[..., Any]],
 
       sim  → upstream's paper simulator. Writes positions to
              ``data/outputs/sim_state.json``; never touches Kalshi.
-      live → ``tennis_live_executor.TennisLiveExecutor`` (passed
+      live → the shared ``SportLiveExecutor`` (passed
              in as ``live_executor``). Places real Kalshi orders
              when its dry_run flag is off; writes positions to
              ``data/outputs-live/sim_state.json`` so it stays
@@ -223,14 +223,20 @@ def start_daemon(cfg: dict) -> Any:
         # paper simulator.
         executor = None
         if live_cfg is not None:
-            from . import tennis_live_executor
+            from ._sport_live_executor import SportLiveExecutor
             state_path = live_cfg.get(
                 "sim_state_path",
                 str(Path(repo_path) / "data" / "outputs-live"
                     / "sim_state.json"),
             )
-            executor = tennis_live_executor.TennisLiveExecutor(
+            # Orphan prefixes: a shared Kalshi account lists positions
+            # from every bot; adoption must only claim tennis tickers.
+            executor = SportLiveExecutor(
                 cfg=live_cfg, state_path=state_path,
+                bot_key="tennis", tournament="Tennis", surface="Unknown",
+                win_verb="winning",
+                orphan_ticker_prefixes=("KXATPMATCH", "KXWTAMATCH",
+                                         "KXITFMATCH"),
             )
 
         log.info("tennis-bot upstream loaded; entering tick loop")

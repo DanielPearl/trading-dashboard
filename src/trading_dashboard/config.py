@@ -90,7 +90,7 @@ class BotEntry:
     # watchlist_json_path + sim_state_path. Used by tennis,
     # table-tennis, darts (which write the JSONs directly) and NBA
     # (whose sim.db is translated to the sport schema by
-    # bots/_sport_adapter after each tick).
+    # the upstream exporter after each tick).
     # "survivor" → JSON-source shape with a per-contestant table.
     # "billboard" → JSON-source shape with a song-rank table.
     dashboard_type: str = "standard"
