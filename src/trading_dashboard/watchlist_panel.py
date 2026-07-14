@@ -475,8 +475,13 @@ def _render_watchlist(out: List[str], watchlist: List[dict],
                     # entry %, entry cost and total cost cells populate
                     # for real positions.
                     try:
-                        _traded = float(_p.get("total_traded_dollars")
-                                         or _p.get("market_exposure_dollars")
+                        # market_exposure = cost basis of the CURRENT
+                        # position. total_traded is GROSS volume (buys
+                        # + sells), so after any partial exit it
+                        # over-prices the entry (2026-07-14: FARWAW
+                        # showed a 102% entry after a 78c sell).
+                        _traded = float(_p.get("market_exposure_dollars")
+                                         or _p.get("total_traded_dollars")
                                          or 0)
                         if _traded > 0 and _pos_fp:
                             _avg = round(_traded / abs(_pos_fp) * 100)

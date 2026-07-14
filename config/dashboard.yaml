@@ -473,27 +473,14 @@ tennis_trader:
   # default. Lower = more frequent watchlist refresh + more Kalshi
   # API calls.
   interval_seconds: 60
-  # ``live:`` block presence flips bots/tennis.py from the upstream
-  # paper-trade simulator to TennisLiveExecutor. Keep this block
-  # IN SYNC with dashboard-live.yaml's so sim and live evaluate
-  # every gate identically (edge floor, model-favourite gate,
-  # model_source gate, profit-lock, etc.) — the user explicitly
-  # asked for "same logic in sim and live". The ONLY differences:
-  # ``dry_run: true`` (no real Kalshi orders) and the state file
-  # path (kept in outputs/ so sim doesn't trample the live state).
-  live:
-    dry_run: true
-    sim_state_path: /root/tennis-forecast/data/outputs/sim_state.json
-    max_open_positions: 10
-    max_orders_per_day: 20
-    contracts_per_order: 1
-    min_edge_pp: 0.09  # keep in lockstep with dashboard-live.yaml
-    max_entry_price_cents: 60  # 30-60¢ band per 2026-07-13 audit
-    min_entry_price_cents: 30  # in lockstep with dashboard-live.yaml — 30-70¢ operating band
-    price_deviation_cents: 3
-    max_hours_to_close_for_open: 24.0
-    profit_lock_yes_bid_cents: 95
-    profit_lock_gain_cents: 30
+  # NO ``live:`` block here (removed 2026-07-14). The sim service ran
+  # a second real-money tennis executor: config said dry_run but the
+  # Home-tab toggle ARMS an executor, and the sim site's tennis toggle
+  # is on for paper trading — so both services placed real orders with
+  # separate state (duplicate buys: FARWAW/TSIBUS x2, the CHOBAS
+  # accidental hedge, and a 78c gain-exit after gain-taking was turned
+  # off live). Sim now runs the upstream paper simulator like every
+  # other sport; the same exporter gates drive buy_eligible in both.
 
 unemployment_trader:
   enabled: true

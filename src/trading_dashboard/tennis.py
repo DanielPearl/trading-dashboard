@@ -500,7 +500,10 @@ def kalshi_positions_to_active_bets(kalshi_positions: List[Dict[str, Any]],
             continue
         contracts = max(1, int(round(abs(fp))))
         traded = None
-        for k in ("total_traded_dollars", "market_exposure_dollars"):
+        # Exposure first: it is the open position's cost basis;
+        # total_traded is gross volume and misprices any position
+        # with a partial exit (2026-07-14 FARWAW 102% entry bug).
+        for k in ("market_exposure_dollars", "total_traded_dollars"):
             try:
                 v = float(p.get(k))
                 if v > 0:
