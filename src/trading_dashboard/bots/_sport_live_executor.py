@@ -380,6 +380,21 @@ class SportLiveExecutor:
             self._log.info("%s-live skip %s: market moved %d¢ → %d¢",
                            self.bot_key, ticker, ask_cents, current_ask)
             return
+        # Re-verify the edge against the price we're actually about to
+        # pay. ``buy_side_edge`` was computed off the exporter-time ask;
+        # the deviation gate above tolerates a 3¢ adverse move, which
+        # silently turns a 9pp row into a ~6pp fill (2026-07-14 audit:
+        # "bets are being bought when the pp difference is much less
+        # than 9pp"). Only adverse moves shrink the edge — a cheaper
+        # ask than the exporter saw makes the trade better, not worse.
+        edge_at_order = edge - max(0, current_ask - ask_cents) / 100.0
+        if edge_at_order < self.min_edge:
+            self._log.info(
+                "%s-live skip %s: edge %.1fpp at ask %d¢ < %.0fpp floor "
+                "(row had %.1fpp at %d¢)", self.bot_key, ticker,
+                edge_at_order * 100, current_ask, self.min_edge * 100,
+                edge * 100, ask_cents)
+            return
         balance = self._session.balance_cents()
         cost = current_ask * self.contracts_per_order
         if balance is not None and balance < cost:
