@@ -433,7 +433,12 @@ tennis_trader:
     # price moved +30c). Triggers independently of the absolute
     # threshold above — whichever fires first wins. Hard floor 5c so
     # a typo can't fire on routine 1-2c spread chatter. 0 disables.
-    profit_lock_gain_cents: 30
+    profit_lock_gain_cents: 0  # OFF per 2026-07-14 audit: 156
+    # settled gain-exits realized +$52.89 vs +$65.53 held to
+    # settlement (-$12.64). Post-trigger win rate 86.5% beats
+    # every exit band (65-79c bucket alone gave up $9.08), so no
+    # threshold fixes it; the 95c absolute lock stays as the
+    # near-settlement insurance.
     # Stop-loss: sell at the live YES bid when (entry - bid) has
     # reached this many cents. 25 was picked as the smallest value
     # that would NOT have cut winners in the 2026-07-08 audit's
