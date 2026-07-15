@@ -413,6 +413,15 @@ tennis_trader:
     # +30pp edges through when Pinnacle simply wasn't listing the game
     # yet. Same gate WNBA now enforces.
     require_pinnacle: true
+    # Lower the strong-edge bypass floor from the executor default
+    # (0.20 = 20pp) to 0.12 = 12pp so real Pinnacle-backed edges just
+    # above the 9pp base floor can still trade even when ask < 30¢.
+    # 2026-07-15 audit: Fahim vs Caldwell (+11.8pp Pinnacle at 23¢
+    # Caldwell ask) was being missed because the 20pp bypass was
+    # calibrated for Berrut's +31pp mega-edge. The 9pp base gate + 6-
+    # 12pp fee drag concern still bites the +6-9pp underdog band that
+    # lost money in the earlier audit.
+    strong_edge_bypass_price_floor_pp: 0.12
     # Pre-match window: how many hours before close the bot is
     # willing to open. Raised 12h → 24h after the Platt calibration
     # layer landed — the original 12h cutoff was zeroing out the
