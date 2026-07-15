@@ -403,25 +403,23 @@ tennis_trader:
     max_open_positions: 10  # restored to 10 per user (2026-06-07) — calibration data improving
     max_orders_per_day: 20
     contracts_per_order: 1
-    min_edge_pp: 0.09  # in lockstep with dashboard.yaml + tennis config's small_edge_min  # ratcheted 0.05 → 0.10 → 0.09 → 0.15 (2026-07-07). Post-audit: 695-trade paper history showed 5-15pp cohort ran -0.7% ROI (436 trades); 15pp+ cohort ran +2-9%. Matches tennis-forecast/config.yaml small_edge_min so the watchlist gate and the executor's belt-and-braces floor line up. Note this only bites in dry_run since prod already reads buy_eligible off the watchlist.
-    max_entry_price_cents: 70  # 30-70¢ band (restored 2026-07-15 per user)
-    min_entry_price_cents: 30  # matches the History By-Entry-Price buckets + audit's <30¢ underdog bucket ran $-6.32 P&L on 37 closes (fee drag ate the edge)
+    # Gate simplification 2026-07-15 (user directive):
+    #   * true-edge floor  5pp (was 9pp SDK-inflated) — measured on
+    #     the actual ask, principled fee-adjusted breakeven + margin.
+    #   * price band [15¢, 70¢] (was [30¢, 70¢]) — the 30¢ floor was
+    #     fee-drag protection from a 37-trade audit; math shows fees
+    #     at 15¢ are ~3% of stake, not a cliff. True-edge gate does
+    #     the filtering now.
+    #   * strong_edge_bypass removed — was a patch for the 30¢ floor
+    #     that's now gone.
+    #   * require_pinnacle kept — sharp-book anchoring is the single
+    #     most load-bearing gate (Portland Fire / Bueno-Marcondes
+    #     class of bug).
+    min_edge_pp: 0.05
+    max_entry_price_cents: 70
+    min_entry_price_cents: 15
     price_deviation_cents: 3
-    # Skip buys where Pinnacle isn't quoting the match. Added
-    # 2026-07-11 after the fresh-franchise / stale-line bugs on WNBA
-    # spilled over into tennis — the internal-model fallback let bogus
-    # +30pp edges through when Pinnacle simply wasn't listing the game
-    # yet. Same gate WNBA now enforces.
     require_pinnacle: true
-    # Lower the strong-edge bypass floor from the executor default
-    # (0.20 = 20pp) to 0.12 = 12pp so real Pinnacle-backed edges just
-    # above the 9pp base floor can still trade even when ask < 30¢.
-    # 2026-07-15 audit: Fahim vs Caldwell (+11.8pp Pinnacle at 23¢
-    # Caldwell ask) was being missed because the 20pp bypass was
-    # calibrated for Berrut's +31pp mega-edge. The 9pp base gate + 6-
-    # 12pp fee drag concern still bites the +6-9pp underdog band that
-    # lost money in the earlier audit.
-    strong_edge_bypass_price_floor_pp: 0.12
     # Pre-match window: how many hours before close the bot is
     # willing to open. Raised 12h → 24h after the Platt calibration
     # layer landed — the original 12h cutoff was zeroing out the
