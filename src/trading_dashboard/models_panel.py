@@ -351,30 +351,40 @@ def _svg_calibration(bins: List[dict],
 FEATURE_RULES: List[dict] = [
     # ── Billboard Hot 100: real weekly chart history from the
     # utdata/rwd-billboard-data public mirror of billboard.com.
-    # All 15 features in the Hot 100 Top-10 model are derived
-    # entirely from this one source. Split into four logical groups
-    # so the chart legend and table can show users which part of
-    # the chart panel each feature came from.
-    {"patterns": ("artist_total_prior_top10s",
+    # All 20 features in the Hot 100 membership + #1 models are
+    # derived entirely from this one source. Split into five logical
+    # groups so the chart legend and table can show users which part
+    # of the chart panel each feature came from.
+    {"patterns": ("artist_prior_top10_songweeks",
                    "artist_weeks_since_last_top10",
+                   "artist_prior_top10_weeks",
+                   "artist_prior_no1_weeks",
+                   # legacy names, pre-2026-07-15 artifacts
+                   "artist_total_prior_top10s",
                    "artist_prior_top10_count"),
      "label": "Billboard Hot 100 (artist history)", "color": "#58a6ff",
-     "description": "How often this artist has had songs in the Hot 100 top 10 in the past, and how recently. An artist who just had a top-10 hit is more likely to put another song there.",
+     "description": "How often this artist has had top-10 songs and #1s in the past, and how recently. An artist with prior #1 weeks is far more likely to debut another song at the top.",
      "link": "https://www.billboard.com/charts/hot-100/"},
     {"patterns": ("peak_position_so_far", "weeks_on_chart",
                    "debut_rank", "weeks_since_debut",
+                   "last_seen_rank", "weeks_since_last_on_chart",
                    "best_3wk_rank", "rank_change_last_week",
-                   "weeks_in_top10_so_far", "weeks_in_top40_so_far"),
+                   "weeks_in_top10_so_far", "weeks_in_top40_so_far",
+                   "weeks_at_no1_so_far"),
      "label": "Billboard Hot 100 (song trajectory)", "color": "#58a6ff",
-     "description": "The song's own chart history before this week — how high it has climbed, how long it has been on the chart, how it has moved week-to-week, and how many weeks it has already spent in the top 10 or top 40.",
+     "description": "The song's own chart history strictly before this week — how high it has climbed, its most recent rank and how long since it last charted, how it has moved week-to-week, and how many weeks it has spent in the top 10 / top 40 / at #1.",
      "link": "https://www.billboard.com/charts/hot-100/"},
     {"patterns": ("debut_month_sin", "debut_month_cos", "debut_dow"),
      "label": "Billboard Hot 100 (release timing)", "color": "#58a6ff",
-     "description": "When the song first appeared on the Hot 100 (month of the year and day of the week). Captures any seasonal pattern in which release windows tend to produce top-10 hits.",
+     "description": "When the song first appeared on the Hot 100 (month of the year). Captures seasonal patterns in which release windows produce chart hits.",
      "link": "https://www.billboard.com/charts/hot-100/"},
-    {"patterns": ("competition_count",),
+    {"patterns": ("competition_last_week", "competition_count"),
      "label": "Billboard Hot 100 (weekly competition)", "color": "#58a6ff",
-     "description": "How crowded the chart's top 40 is with other fresh debuts this week. A busy release week means more competition for a top-10 slot.",
+     "description": "How crowded the most recent chart week's top 40 was with fresh debuts. A busy release window means more competition for chart slots.",
+     "link": "https://www.billboard.com/charts/hot-100/"},
+    {"patterns": ("is_new_to_pool",),
+     "label": "Billboard Hot 100 (panel structure)", "color": "#58a6ff",
+     "description": "Flags rows for songs that debuted or re-entered from outside the trailing 12-week popular pool — the #1 model uses it to treat album-bomb debuts differently from established chart songs.",
      "link": "https://www.billboard.com/charts/hot-100/"},
 
     # ── Tennis / Table tennis: Jeff Sackmann dataset + bot-computed Elo

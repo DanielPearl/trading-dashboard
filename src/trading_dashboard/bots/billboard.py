@@ -1,20 +1,21 @@
-"""Billboard bot — runs the Billboard Hot 100 + 200 #1 forecast loop
-inside the dashboard process.
+"""Billboard bot — runs the Billboard Hot 100 #1 (KXTOPSONG)
+forecast loop inside the dashboard process.
 
 Shape B but trivially simple — upstream's ``export()`` does the whole
 fetch / predict / write / trade cycle in a single call, returning
 ``(csv_path, json_path)``. The bot module just wraps it in a sleep
 loop, mirroring the upstream's ``scripts/run_live_monitor.py``.
 
-The 81MB model.joblib is the largest artifact in any bot; upstream's
-``predict_top10_proba()`` lazy-loads it on first call via
+The model.joblib is a large artifact; upstream's
+``predict_candidates()`` lazy-loads it on first call via
 ``@lru_cache``. So importing this module costs nothing for memory
 — the spike only happens on the first tick that actually finds
 Billboard markets open.
 
-Live trader gated by upstream's own ``trading.live.dry_run`` flag in
-its config — separate from our Home-tab toggle, which only governs
-whether the watchlist export runs at all.
+The trader is PAPER-ONLY: upstream's ``trading.live.dry_run: true``
+records positions in sim.db without placing orders (2026-07-15
+decision — no live Billboard trading). Our Home-tab toggle only
+governs whether the watchlist export runs at all.
 """
 from __future__ import annotations
 

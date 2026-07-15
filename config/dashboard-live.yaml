@@ -219,7 +219,7 @@ bots:
   - key: billboard
     name: Billboard Hot 100
     dashboard_type: billboard
-    series_ticker: KXRANKLISTSONGTOP10
+    series_ticker: KXTOPSONG
     data_source: "Billboard Hot 100 weekly chart"
     db_path: /root/billboard-charts/data/outputs-live/sim.db
     decisions_path: /root/billboard-charts/data/outputs-live/watchlist.json
@@ -227,6 +227,7 @@ bots:
     metrics_path: /root/billboard-charts/data/processed/artifacts/metrics.json
     coefficients_path: /root/billboard-charts/data/processed/artifacts/model_coefficients.json
     sim_state_path: /root/billboard-charts/data/outputs-live/sim_state.json
+    training_db_path: /root/billboard-charts/data/processed/artifacts/training_data.db
 
   - key: darts
     name: Darts Forecast

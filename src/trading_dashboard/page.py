@@ -312,6 +312,20 @@ def render_page(
                 current_tab="training",
                 period_key=period_key,
             ))
+        elif current_bot == "billboard":
+            # Billboard ships its own training panel — the full
+            # (song × chart-week) popular-pool grain with the
+            # in_hot_100 label, paged from training_data.db.
+            from . import billboard as _bb_mod
+            out.append(_bb_mod.render_training_data_panel(
+                bot=current_bot_dict or {},
+                current_bot=current_bot,
+                page=_page,
+                page_size=100,
+                week=_td_qs.get("week", [None])[0],
+                current_tab="training",
+                period_key=period_key,
+            ))
         else:
             out.append(_tennis_mod.render_training_data_panel(
                 current_bot=current_bot,

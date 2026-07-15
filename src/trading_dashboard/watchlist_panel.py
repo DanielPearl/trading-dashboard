@@ -744,8 +744,10 @@ def _render_watchlist(out: List[str], watchlist: List[dict],
             "<th title='Kalshi-published contract title — the YES "
             "question shown on the market page.'>Title</th>"
             "<th title='Song title (the contract resolves YES if this "
-            "song is top 10 on the Billboard Hot 100 for the listed "
-            "chart week).'>Song</th>"
+            "song is #1 on the Billboard Hot 100 for the listed chart "
+            "week). The small percentage underneath is the model&apos;s "
+            "P(song is on the Hot 100 at all) — context for the #1 "
+            "probability in Model live %.'>Song</th>"
             "<th title='Recording artist.'>Artist</th>"
         )
     else:
@@ -804,10 +806,15 @@ def _render_watchlist(out: List[str], watchlist: List[dict],
         # Any side clamped to an extreme → contract has priced-in the
         # decisive side. Only fire when the extreme is on YES / NO ask
         # cents, not on internal "confidence" fields; asks are ints
-        # in [0, 100].
-        for a in asks:
-            if isinstance(a, (int, float)) and (a <= 1 or a >= 99):
-                return True
+        # in [0, 100]. Billboard is exempt: KXTOPSONG quotes every
+        # non-favourite candidate at a 1¢ ask all week long (and the
+        # decided-week favourite pins at 99¢ days before settlement),
+        # so the extreme-ask heuristic would blank the entire slate —
+        # the completed/expiration checks above still retire rows.
+        if not is_billboard_bot:
+            for a in asks:
+                if isinstance(a, (int, float)) and (a <= 1 or a >= 99):
+                    return True
         return all(a is None for a in asks)
 
     # Split rows for sport bots: held rows go into the Active-bets
@@ -1453,9 +1460,20 @@ def _render_watchlist(out: List[str], watchlist: List[dict],
             elif is_billboard_bot:
                 artist_text = v.get("_artist") or ""
                 song_text = v.get("_song") or v.get("direction") or ""
+                # P(on the Hot 100) as small context under the song —
+                # the headline Model % column carries P(#1).
+                _p100 = v.get("_p_hot100")
+                _p100_html = ""
+                if _p100 is not None:
+                    try:
+                        _p100_html = (
+                            "<br><span class='small gray'>Hot 100: "
+                            f"{float(_p100) * 100:.0f}%</span>")
+                    except (TypeError, ValueError):
+                        _p100_html = ""
                 middle_cells = (
                     f"<td>{title_link}</td>"
-                    f"<td>{html.escape(str(song_text))}</td>"
+                    f"<td>{html.escape(str(song_text))}{_p100_html}</td>"
                     f"<td>{html.escape(str(artist_text))}</td>"
                 )
             else:
@@ -1498,7 +1516,9 @@ def _render_watchlist(out: List[str], watchlist: List[dict],
             # ``live_prob_a`` / ``live_prob_b`` when Pinnacle doesn't
             # list the match.
             pinn_p = v.get("pinnacle_prob_yes")
-            if is_active and pinn_p is None:
+            if (is_active or is_billboard_bot) and pinn_p is None:
+                # Billboard has no external benchmark book — the bot's
+                # own P(#1) is the Model % on every pane.
                 pinn_p = v.get("model_prob_yes")
             if pinn_p is not None:
                 if flip_active:
