@@ -837,10 +837,21 @@ def _render_active_bets_table(out: List[str], bets: List[dict],
         else:
             bot_link = html.escape(bot_name)
         bot_td = (f"<td>{bot_link}</td>" if show_bot else "")
-        # Build the "why was this bet chosen" payload from entry-time
-        # snapshot fields recorded on the position. JS reads this from
-        # data-criteria on click and populates the shared modal.
-        m_yes = b.get("model_yes_prob_at_entry")
+        # Model % display — prefer today's fresh Pinnacle value if
+        # the rollup builder attached it (``current_model_prob_yes``),
+        # else fall back to the entry-time stamped prob. This keeps
+        # the Home page's Active bets in sync with the per-bot
+        # Watchlist page's Model %, which uses the fresh line
+        # (Chiba Marines vs Seibu Lions 2026-07-15: entry-time 68%
+        # drifted to fresh Pinnacle 56%; the two pages showed
+        # different numbers for the same match until this joined
+        # them on the fresh side).
+        # The criteria modal ("why was this bet chosen") is a
+        # decision snapshot, so it uses the ENTRY-TIME prob directly
+        # via ``m_yes_entry`` below.
+        m_yes_now = b.get("current_model_prob_yes")
+        m_yes_entry = b.get("model_yes_prob_at_entry")
+        m_yes = m_yes_now if m_yes_now is not None else m_yes_entry
         k_yes = b.get("kalshi_yes_prob_at_entry")
         # Backfill from decision_json for bots whose schema doesn't
         # have dedicated columns (natural-gas stashes both probs
@@ -879,6 +890,20 @@ def _render_active_bets_table(out: List[str], bets: List[dict],
             (model_p - kalshi_p) * 100.0
             if (model_p is not None and kalshi_p is not None) else None
         )
+        # Criteria modal uses the ENTRY-TIME prob (a decision-snapshot
+        # view), independent of what fresh Pinnacle says now.
+        if m_yes_entry is not None:
+            try:
+                _me_f = float(m_yes_entry)
+                model_p_entry = _me_f if side == "YES" else (1.0 - _me_f)
+            except (TypeError, ValueError):
+                model_p_entry = None
+        else:
+            model_p_entry = None
+        edge_pts_entry = (
+            (model_p_entry - kalshi_p) * 100.0
+            if (model_p_entry is not None and kalshi_p is not None) else None
+        )
         criteria = {
             "ticker": b.get("ticker"),
             "side": side,
@@ -886,9 +911,9 @@ def _render_active_bets_table(out: List[str], bets: List[dict],
             "contracts": contracts,
             "question": question,
             "bot": bot_name if show_bot else b.get("_bot_name", ""),
-            "model_p": model_p,
+            "model_p": model_p_entry,
             "kalshi_p": kalshi_p,
-            "edge_pts": edge_pts,
+            "edge_pts": edge_pts_entry,
             "entry_ev": b.get("expected_ev_at_entry"),
             "break_even": b.get("break_even_probability"),
             "opened": opened,

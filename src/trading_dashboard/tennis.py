@@ -317,6 +317,29 @@ def build_standard_watchlist_rows(
     return out
 
 
+def _current_model_prob_yes(pos: dict,
+                             fresh_pinn: Dict[str, dict]) -> float | None:
+    """Return today's Pinnacle prob on the SIDE this position holds,
+    from the fresh watchlist ``fresh_pinn`` lookup — or None when the
+    match isn't on today's board. Sport positions store the held side
+    as ``PLAYER_A`` / ``PLAYER_B`` and the specific ticker as
+    ``ticker`` (side-specific) with ``match_id`` as the event ticker;
+    the lookup is keyed under both forms."""
+    # Try side-specific ticker first, then event ticker.
+    for key in (pos.get("ticker") or "", pos.get("match_id") or ""):
+        pair = fresh_pinn.get(key)
+        if pair is None:
+            continue
+        s = str(pos.get("side", "")).upper()
+        if s == "PLAYER_A":
+            return pair["a"]
+        if s == "PLAYER_B":
+            return pair["b"]
+        # side_player fallback — match against player name
+        return None
+    return None
+
+
 def active_bets_for_rollup(sim_state_path: str | None,
                              watchlist_path: str | None = None
                              ) -> List[Dict[str, Any]]:
@@ -359,6 +382,37 @@ def active_bets_for_rollup(sim_state_path: str | None,
                         exp = rec.get("expected_expiration_time")
                         if mid and exp:
                             exp_by_id[str(mid)] = str(exp)
+        except (OSError, json.JSONDecodeError):
+            pass
+    # Current-Pinnacle lookup for each ticker in the fresh watchlist.
+    # Home page's Active bets renderer preferred entry-time model
+    # (``entry_model_prob``) which drifts away from today's Pinnacle
+    # line as the market moves — the Chiba/Seibu case 2026-07-15
+    # showed 68% on Home (entry-time) vs 56% on the baseball
+    # watchlist page (fresh Pinnacle) for the same match. Attach the
+    # current per-side value here so both pages read the same
+    # source of truth.
+    fresh_pinn: Dict[str, dict] = {}
+    if watchlist_path:
+        try:
+            with open(watchlist_path, "r", encoding="utf-8") as f:
+                _wl = json.load(f) or {}
+            for r in _wl.get("rows") or []:
+                pa_prob = r.get("pinnacle_prob_a")
+                if pa_prob is None:
+                    continue
+                pa_prob = float(pa_prob)
+                # Register under BOTH ticker forms — the position's
+                # ``ticker`` is the side-specific one (KX..-A/B),
+                # while ``match_id`` on the position may be the event
+                # ticker; the caller keys off either.
+                mid = r.get("match_id") or ""
+                if mid:
+                    fresh_pinn[mid] = {"a": pa_prob, "b": 1.0 - pa_prob}
+                for tk_field, side in (("ticker_a", "a"), ("ticker_b", "b")):
+                    tk = r.get(tk_field)
+                    if tk:
+                        fresh_pinn[tk] = {"a": pa_prob, "b": 1.0 - pa_prob}
         except (OSError, json.JSONDecodeError):
             pass
     now = datetime.now(timezone.utc)
@@ -424,6 +478,15 @@ def active_bets_for_rollup(sim_state_path: str | None,
             "reason_at_open": p.get("reason_at_open", ""),
             # Required by the renderer's "why was this bet chosen" hook.
             "model_yes_prob_at_entry": float(p.get("entry_model_prob") or entry),
+            # Current-Pinnacle prob on the SIDE WE HELD, from today's
+            # fresh watchlist row. When available, renderers should
+            # prefer this over ``model_yes_prob_at_entry`` for the
+            # Model % display cell so the Home page's Active bets
+            # doesn't drift from the per-bot Watchlist page's number
+            # once the Pinnacle line moves after we opened. None when
+            # Pinnacle isn't quoting the match today.
+            "current_model_prob_yes": _current_model_prob_yes(
+                p, fresh_pinn),
             "kalshi_yes_prob_at_entry": entry,
             # Reconstruct the net-of-fee EV the bot saw at open from
             # (entry_model_prob, entry_market_prob). Same formula the
