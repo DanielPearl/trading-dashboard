@@ -36,7 +36,10 @@ DEFAULTS = {
     "max_edge": 0.15,   # suspect-benchmark ceiling — see edge_sane gate
     "min_entry_price": 0.30,  # 30–60¢ band (audit: 20-29¢ ran −43%, 60-69¢ −41%)
     "max_entry_price": 0.60,
-    "max_spread_cents": 6,
+    # None = spread gate disabled (2026-07-15: user retired the 6¢
+    # cap across every bot — wide books get filtered by the true-edge
+    # gate instead, which is spread-aware).
+    "max_spread_cents": None,
     "min_open_interest": 1,
 }
 
@@ -209,8 +212,12 @@ def apply_benchmark(rows: List[Dict[str, Any]],
                                and cfg["min_entry_price"] <= side_price
                                <= cfg["max_entry_price"]),
                 "open_interest": (oi or 0) >= cfg["min_open_interest"],
-                "spread": (spread is not None
-                           and spread <= cfg["max_spread_cents"]),
+                # Spread gate disabled when max_spread_cents is None
+                # (default since 2026-07-15). Treat the gate as passed
+                # so the row's other gates decide eligibility.
+                "spread": (cfg["max_spread_cents"] is None
+                           or (spread is not None
+                               and spread <= cfg["max_spread_cents"])),
             }
             eligible = all(gates.values())
             if (side_edge or 0) >= cfg["strong_edge"]:

@@ -14,7 +14,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import List, Tuple
+from typing import List, Optional, Tuple
 
 import yaml
 
@@ -178,7 +178,8 @@ class HedgeCfg:
 @dataclass
 class ValidatorCfg:
     min_book_depth_contracts: int
-    max_spread_cents: int
+    # None = spread gate disabled (2026-07-15 sweep).
+    max_spread_cents: Optional[int]
     min_minutes_to_close: int
     max_minutes_to_close: int
     prob_bounds_cents: Tuple[int, int]

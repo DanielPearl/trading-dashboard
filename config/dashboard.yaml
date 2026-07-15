@@ -439,7 +439,7 @@ hedge:
 
 validators:
   min_book_depth_contracts: 100
-  max_spread_cents: 8
+  max_spread_cents: null  # gate retired 2026-07-15 per user
   min_minutes_to_close: 30
   max_minutes_to_close: 10080
   prob_bounds_cents: [15, 85]
