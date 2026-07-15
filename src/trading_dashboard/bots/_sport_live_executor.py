@@ -178,6 +178,16 @@ class SportLiveExecutor:
         # key existed in dashboard-live.yaml before this — the
         # executor just wasn't reading it.
         self.require_pinnacle = bool(cfg.get("require_pinnacle", False))
+        # Strong-edge bypass for the min_entry_price floor. Deep
+        # underdogs (< min_entry_price_cents) normally get skipped
+        # because the fee drag eats the model edge in that bucket. A
+        # very strong Pinnacle edge (default 20pp on the actual ask)
+        # is worth taking regardless — 15¢ with a 46% real prob is
+        # a >100% expected-value trade even after fees. Set to 0 to
+        # disable the bypass and hold the floor absolutely.
+        raw_bypass = cfg.get("strong_edge_bypass_price_floor_pp", 0.20)
+        self.strong_edge_bypass_pp = (float(raw_bypass)
+                                      if raw_bypass is not None else 0.0)
         self.state_path = Path(state_path)
         self._config_dry_run = self.dry_run
         self._daily = core.DailyOrderCounter()
@@ -193,12 +203,15 @@ class SportLiveExecutor:
         self._log.info(
             "%s-live-executor configured (dry_run=%s, max_open=%d, "
             "orders/day=%d, contracts=%d, min_edge=%.2f, "
-            "price=[%d¢,%d¢], profit_lock=%d¢, gain=%s, stop_loss=%s, "
+            "price=[%d¢,%d¢], strong_edge_bypass=%s, "
+            "profit_lock=%d¢, gain=%s, stop_loss=%s, "
             "hours_to_close=%s, require_pinnacle=%s, "
             "orphan_prefixes=%s, state=%s)",
             bot_key, self.dry_run, self.max_open, self.max_orders_per_day,
             self.contracts_per_order, self.min_edge,
             self.min_entry_price_cents, self.max_entry_price_cents,
+            (f"≥{self.strong_edge_bypass_pp*100:.0f}pp"
+             if self.strong_edge_bypass_pp > 0 else "off"),
             self.profit_lock_yes_bid,
             f"+{self.profit_lock_gain}¢" if self.profit_lock_gain else "off",
             f"-{self.stop_loss}¢" if self.stop_loss else "off",
@@ -322,11 +335,38 @@ class SportLiveExecutor:
         ask_cents = int(ask_cents)
         if not (self.min_entry_price_cents <= ask_cents
                 <= self.max_entry_price_cents):
-            self._log.info("%s-live skip %s: ask %d¢ outside [%d, %d]",
-                           self.bot_key, ticker, ask_cents,
-                           self.min_entry_price_cents,
-                           self.max_entry_price_cents)
-            return
+            # Strong-edge bypass — only for asks BELOW the min-entry
+            # floor. Above-max asks (>70¢ default) get no bypass;
+            # that ceiling is a per-contract-loss cap, not a fee-drag
+            # gate. Compute the true edge on our side using the actual
+            # yes-ask (Pinnacle-based when available, internal model
+            # otherwise). Berrut vs Domenc case 2026-07-13: Pinnacle
+            # gave Berrut 46.4% at Kalshi 15¢ → +31pp true edge, but
+            # the 30¢ floor was blocking it.
+            bypass = False
+            if (self.strong_edge_bypass_pp > 0
+                    and ask_cents < self.min_entry_price_cents):
+                _pinn_a = row.get("pinnacle_prob_a")
+                if _pinn_a is not None:
+                    _our_prob = (float(_pinn_a) if side == "A"
+                                  else 1.0 - float(_pinn_a))
+                else:
+                    _our_prob = float(model_p)
+                _true_edge = _our_prob - (ask_cents / 100.0)
+                if _true_edge >= self.strong_edge_bypass_pp:
+                    bypass = True
+                    self._log.info(
+                        "%s-live bypass min_entry_price %d¢ on %s: "
+                        "true edge %+.1fpp >= %.0fpp strong-edge cutoff",
+                        self.bot_key, self.min_entry_price_cents,
+                        ticker, _true_edge * 100,
+                        self.strong_edge_bypass_pp * 100)
+            if not bypass:
+                self._log.info("%s-live skip %s: ask %d¢ outside [%d, %d]",
+                               self.bot_key, ticker, ask_cents,
+                               self.min_entry_price_cents,
+                               self.max_entry_price_cents)
+                return
         if edge < self.min_edge:
             return
         # No favorites-only gate here (the model-driven executors keep
