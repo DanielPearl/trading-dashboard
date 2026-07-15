@@ -487,7 +487,14 @@ def _render_watchlist(out: List[str], watchlist: List[dict],
                             _avg = round(_traded / abs(_pos_fp) * 100)
                     except (TypeError, ValueError):
                         _avg = None
-                _paper = held_by_ticker.get(_tk) or {}
+                # ``held_by_ticker`` keys on the SIM state's ticker,
+                # which for sport bots is the event ticker (no -SIDE
+                # suffix). Try side-specific first (non-sport bots)
+                # then fall back to the base event ticker.
+                _base_tk = (_tk.rsplit("-", 1)[0]
+                            if "-" in _tk else _tk)
+                _paper = (held_by_ticker.get(_tk)
+                          or held_by_ticker.get(_base_tk) or {})
                 _record = {
                     "ticker": _tk,
                     "side": _side,
@@ -496,6 +503,16 @@ def _render_watchlist(out: List[str], watchlist: List[dict],
                                           if _avg is not None else
                                           _paper.get("entry_price_cents")),
                     "opened_at": _paper.get("opened_at"),
+                    # Model % at ENTRY time on the side we bought
+                    # (Pinnacle or internal at open, whichever the
+                    # executor stamped). Populates the new "Model
+                    # entry %" column on Active bets.
+                    "model_prob_at_entry": _paper.get(
+                        "model_yes_prob_at_entry"),
+                    # Model % NOW on the side we bought — refreshed
+                    # every watchlist tick. Populates "Model live %".
+                    "current_model_prob": _paper.get(
+                        "current_model_prob_yes"),
                 }
                 # Register under the FULL Kalshi ticker AND the base
                 # match_id (ticker minus its final ``-<SIDE>`` segment)
@@ -987,9 +1004,15 @@ def _render_watchlist(out: List[str], watchlist: List[dict],
         is_active = _ctx.get("kind") == "active"
         pos_head = ""
         if include_position_cols and is_active:
+            # 2026-07-15 (user): "Contracts bought" → "My contracts",
+            # and the stacked Investment cell splits into two columns:
+            # Cost (what we paid, red) and Payout (net earnings if
+            # this side wins, green). Same order Home page's cross-
+            # bot Active bets uses.
             pos_head = (
-                "<th class='num' title='Number of contracts bought on this row. Blank when no position is open.'>Contracts bought</th>"
-                "<th class='num' title='Top: potential earnings — settlement pays $1 × contracts (no exit fee); the figure shown is that payout minus what you paid (entry + fee), i.e. the net earnings. Bottom: Kalshi total cost — entry price × contracts + Kalshi entry fee. Blank when no position is held on this row.'>Investment</th>"
+                "<th class='num' title='Number of contracts held on this row. Blank when no position is open.'>My contracts</th>"
+                "<th class='num' title='Kalshi total cost — entry price × contracts + Kalshi entry fee. Blank when no position is held on this row.'>Cost</th>"
+                "<th class='num' title='Potential earnings if this side wins — $1 × contracts settlement payout minus (entry + fee). Blank when no position is held on this row.'>Payout</th>"
             )
         elif include_position_cols:
             pos_head = (
@@ -1038,18 +1061,26 @@ def _render_watchlist(out: List[str], watchlist: List[dict],
         # Model-vs-market + non-sport single keep the legacy layout
         # (Edge / EV / no entry-% column / Closes in before Verdict).
         if is_active:
+            # 2026-07-15 (user): four probability columns —
+            # Model entry % · Kalshi entry % · Model live % · Kalshi live %
+            # in that order. Rename "Model %" → "Model live %" so both
+            # tables use the "live" qualifier for today's Pinnacle line.
             header_middle = (
                 f"{pos_head}"
-                "<th class='num' title='Model probability — sharp devigged reference from the best available benchmark book (Pinnacle first, else Betfair Exchange UK / EU). Em-dash for matches no sharp book is quoting or when the Odds API key isn&apos;t set. YES on top, NO on bottom.'>Model %</th>"
-                "<th class='num' title='Kalshi entry % — the implied probability for each side at the price we paid, expressed on the yes-axis. YES on top, NO on bottom.'>Kalshi entry %</th>"
+                "<th class='num' title='Model % at ENTRY — Pinnacle&apos;s prob for our side at the moment we opened the position. Static once the trade is on. YES on top, NO on bottom.'>Model entry %</th>"
+                "<th class='num' title='Kalshi entry % — the implied probability for each side at the price we paid. Static once opened. YES on top, NO on bottom.'>Kalshi entry %</th>"
+                "<th class='num' title='Model % NOW — today&apos;s Pinnacle prob for our side. Updates every tick; compare to Model entry % to see how the line has moved. Em-dash when Pinnacle isn&apos;t quoting the match today. YES on top, NO on bottom.'>Model live %</th>"
                 "<th class='num' title='Live Kalshi market price — updates continuously. YES on top (green), NO on bottom (red).'>Kalshi live %</th>"
                 "<th class='num' title='Time until the contract settles. Parsed from the Kalshi ticker&apos;s encoded date.'>Closes in</th>"
             )
         else:
+            # Model vs Market: renamed to "Model live %" / "Kalshi
+            # live %" 2026-07-15 for consistency with Active bets'
+            # naming — both tables are showing today's live values.
             header_middle = (
                 "<th class='num' title='Open interest — total contracts currently held open across all traders on this strike.'>Total contracts</th>"
-                "<th class='num' title='Model probability — sharp devigged reference from the best available benchmark book (Pinnacle first, else Betfair Exchange UK / EU). Em-dash for matches no sharp book is quoting or when the Odds API key isn&apos;t set. YES on top, NO on bottom.'>Model %</th>"
-                "<th class='num' title='Live Kalshi market price — YES on top (green), NO on bottom (red). Each side&apos;s implied probability that side wins.'>Kalshi %</th>"
+                "<th class='num' title='Model probability NOW — sharp devigged reference from the best available benchmark book (Pinnacle first, else Betfair Exchange UK / EU). Em-dash for matches no sharp book is quoting or when the Odds API key isn&apos;t set. YES on top, NO on bottom.'>Model live %</th>"
+                "<th class='num' title='Live Kalshi market price — YES on top (green), NO on bottom (red). Each side&apos;s implied probability that side wins.'>Kalshi live %</th>"
                 "<th class='num' title='Edge = benchmark probability (Pinnacle / Betfair) − Kalshi price, per side. YES on top (green), NO on bottom (red).'>Edge</th>"
                 "<th class='num'>EV"
                 "<button type='button' class='ev-info-btn' "
@@ -1530,44 +1561,45 @@ def _render_watchlist(out: List[str], watchlist: List[dict],
                     _entry_cost_cell = "<td class='num red' data-field='entry-cost'></td>"
                     _total_cost_cell = "<td class='num red' data-field='total-cost'></td>"
                 if is_active:
-                    # Investment cell — potential earnings on top
-                    # (green), Kalshi total cost beneath (red),
-                    # consolidated per user 2026-07-13.
+                    # 2026-07-15: split the Investment stack into two
+                    # cells — Cost (red) and Payout (green) — per user
+                    # spec. Order: My contracts | Cost | Payout.
                     if _entry_c is not None and _ctr:
                         _gain = ((100 - int(_entry_c)) * int(_ctr)
                                  - kalshi_fee_cents(int(_entry_c),
                                                     int(_ctr))) / 100.0
                         _g_sign = "+" if _gain >= 0 else "−"
-                        _g_neg = " neg" if _gain < 0 else ""
-                        _investment_cell = (
-                            f"<td class='num cell-stack' title='"
-                            f"Top: potential earnings — $1 × {int(_ctr)} "
-                            f"contracts paid at settlement − "
-                            f"${float(_entry_c) * int(_ctr) / 100.0:.2f} "
-                            f"entry − fee = net if this side wins. "
-                            f"Bottom: Kalshi total cost — "
-                            f"{int(_entry_c)}¢ × {int(_ctr)} contracts + "
-                            f"${_fee:.2f} entry fee = total cash out at "
-                            f"open.' data-field='investment'>"
-                            f"<div class='inv-earn{_g_neg}'>"
-                            f"{_g_sign}${abs(_gain):.2f}</div>"
-                            f"<div class='inv-cost'>−${_base + _fee:.2f}"
-                            f"</div></td>"
+                        _g_cls = "num green" if _gain >= 0 else "num red"
+                        _cost_cell = (
+                            f"<td class='num red' title='"
+                            f"Kalshi total cost — {int(_entry_c)}¢ × "
+                            f"{int(_ctr)} contracts + ${_fee:.2f} entry "
+                            f"fee = ${_base + _fee:.2f} total cash out "
+                            f"at open.' data-field='total-cost'>"
+                            f"−${_base + _fee:.2f}</td>"
+                        )
+                        _payout_cell = (
+                            f"<td class='{_g_cls}' title='"
+                            f"Potential earnings if this side wins — "
+                            f"$1 × {int(_ctr)} contracts settlement "
+                            f"payout − ${float(_entry_c) * int(_ctr) / 100.0:.2f} "
+                            f"entry − ${_fee:.2f} fee = net gain.' "
+                            f"data-field='payout'>"
+                            f"{_g_sign}${abs(_gain):.2f}</td>"
                         )
                     else:
-                        _investment_cell = (
-                            "<td class='num cell-stack' "
-                            "data-field='investment'></td>"
-                        )
-                    position_cells = _my_contracts_cell + _investment_cell
+                        _cost_cell = "<td class='num red' data-field='total-cost'></td>"
+                        _payout_cell = "<td class='num green' data-field='payout'></td>"
+                    position_cells = (_my_contracts_cell + _cost_cell
+                                      + _payout_cell)
                 else:
                     position_cells = _my_contracts_cell + _entry_cost_cell + _total_cost_cell
             else:
                 if is_active:
                     position_cells = (
                         "<td class='num' data-field='my-contracts'></td>"
-                        "<td class='num cell-stack' "
-                        "data-field='investment'></td>"
+                        "<td class='num red' data-field='total-cost'></td>"
+                        "<td class='num green' data-field='payout'></td>"
                     )
                 else:
                     position_cells = (
@@ -1577,9 +1609,11 @@ def _render_watchlist(out: List[str], watchlist: List[dict],
                     )
 
             # Kalshi entry % (Active bets only) — stacked YES / NO
-            # implied prob at our entry price, on the yes-axis. Static
-            # once opened, so no data-field poller patch is needed
-            # (still tagged for consistency with other stacked cells).
+            # implied prob at our entry price. Static once opened.
+            # Model entry % (Active bets only) — stacked YES / NO
+            # Pinnacle prob for our side at the moment we opened.
+            # Static, populated from held_bet.model_prob_at_entry (set
+            # by _paper join above from active_bets_for_rollup).
             if is_active:
                 if held_bet is not None:
                     _ep_c = held_bet.get("entry_price_cents")
@@ -1595,10 +1629,35 @@ def _render_watchlist(out: List[str], watchlist: List[dict],
                         )
                     else:
                         entry_pct_cell = _stacked("—", "—", "entry-pct")
+                    # Model entry % — model_prob_at_entry is stored
+                    # on the SIDE-WE-BOUGHT axis (from active_bets_
+                    # for_rollup). After flip_active makes the row's
+                    # YES axis = held side, YES entry = model_at_entry
+                    # and NO entry = 1 - that.
+                    _mp_entry = held_bet.get("model_prob_at_entry")
+                    if _mp_entry is not None:
+                        try:
+                            _mp_f = float(_mp_entry)
+                            yes_mp_pct = int(round(_mp_f * 100))
+                            no_mp_pct = 100 - yes_mp_pct
+                            model_entry_pct_cell = _stacked(
+                                f"{yes_mp_pct}%",
+                                f"{no_mp_pct}%",
+                                "model-entry-pct",
+                            )
+                        except (TypeError, ValueError):
+                            model_entry_pct_cell = _stacked(
+                                "—", "—", "model-entry-pct")
+                    else:
+                        model_entry_pct_cell = _stacked(
+                            "—", "—", "model-entry-pct")
                 else:
                     entry_pct_cell = _stacked("—", "—", "entry-pct")
+                    model_entry_pct_cell = _stacked(
+                        "—", "—", "model-entry-pct")
             else:
                 entry_pct_cell = ""
+                model_entry_pct_cell = ""
 
             # Rules cell — an info button carrying the row's Kalshi
             # ``rules_primary`` on ``data-rules``. Blank cell when no
@@ -1651,14 +1710,17 @@ def _render_watchlist(out: List[str], watchlist: List[dict],
             #    | Closes in | Verdict | position cells).
             if is_active:
                 # Verdict column removed on Active bets (user
-                # 2026-07-11) — a held row IS the verdict; the HOLDING
-                # state still shows via the row highlight. Closes in
-                # sits at the far right per user 2026-07-11.
+                # 2026-07-11) — a held row IS the verdict. Column
+                # order updated 2026-07-15: probability cells go
+                # Model entry % · Kalshi entry % · Model live % ·
+                # Kalshi live %, matching the two-vs-two entry/live
+                # comparison the user asked for.
                 row_body = (
                     f"{rules_cell}{date_cell}{event_cell}{middle_cells}"
                     f"{position_cells}"
-                    f"{pinnacle_cell}"
+                    f"{model_entry_pct_cell}"
                     f"{entry_pct_cell}"
+                    f"{pinnacle_cell}"
                     f"{kalshi_cell}"
                     f"{closes_in_cell}"
                 )

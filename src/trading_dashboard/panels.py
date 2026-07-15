@@ -697,6 +697,13 @@ def _render_active_bets_table(out: List[str], bets: List[dict],
         # watchlist page"). Rules / Total-contracts columns are
         # omitted — position records carry neither the rules text nor
         # market-wide volume.
+        # 2026-07-15 (user): mirror the per-bot Active bets column set.
+        # Order: Date | [Bot] | Event | Title | Side
+        #      | My contracts | Cost | Payout
+        #      | Model entry % | Kalshi entry % | Model live % | Kalshi live %
+        #      | Closes in
+        # Edge / EV columns dropped (Model entry % vs Model live %
+        # comparison replaces them for held positions).
         out.append(
             "<table><thead><tr>"
             "<th title='Market date parsed from the Kalshi ticker.'>Date</th>"
@@ -704,14 +711,14 @@ def _render_active_bets_table(out: List[str], bets: List[dict],
             "<th title='Competition (MLB, NBA Summer League, PDC, ...)'>Event</th>"
             "<th>Title</th>"
             "<th>Side</th>"
-            "<th class='num' title='Model probability for our side (benchmark bots: the devigged Pinnacle line at entry).'>Model %</th>"
-            "<th class='num' title='Implied probability of our side right now, from the market mid.'>Kalshi %</th>"
-            "<th class='num' title='Model % − Kalshi % — the edge remaining on the position.'>Edge</th>"
-            "<th class='num' title='Net-of-fee expected value the bot saw at entry.'>EV</th>"
+            "<th class='num' title='Number of contracts in this position.'>My contracts</th>"
+            "<th class='num' title='Kalshi total cost — entry price × contracts + Kalshi entry fee.'>Cost</th>"
+            "<th class='num' title='Potential earnings if this side wins — $1 × contracts settlement payout minus (entry + fee).'>Payout</th>"
+            "<th class='num' title='Model % at ENTRY — Pinnacle&apos;s prob for our side at the moment we opened. Static once the trade is on.'>Model entry %</th>"
+            "<th class='num' title='Kalshi entry % — the implied probability for our side at the price we paid. Static.'>Kalshi entry %</th>"
+            "<th class='num' title='Model % NOW — today&apos;s Pinnacle prob for our side. Compare to Model entry % to see how the line has moved.'>Model live %</th>"
+            "<th class='num' title='Live Kalshi market price for our side — updates continuously.'>Kalshi live %</th>"
             "<th class='num' title='Time until the contract resolves'>Closes in</th>"
-            "<th class='num' title='Number of contracts bought in this position.'>Contracts bought</th>"
-            "<th class='num' title='Entry price × contracts — cash out at open, before fees.'>Kalshi entry cost</th>"
-            "<th class='num' title='Top: potential earnings — money returned if this side wins ($1 × contracts at settlement minus entry cost and fee). Bottom: total cost — Kalshi entry cost + Kalshi entry fee.'>Investment</th>"
             "<th></th>"
             f"</tr></thead><tbody{tbody_attrs}>")
     else:
@@ -968,9 +975,10 @@ def _render_active_bets_table(out: List[str], bets: List[dict],
                 pass
         else:
             tr_attrs = ""
-        # Model prob cell — renders the side-adjusted model probability
-        # from the criteria computation above. Tooltip surfaces the
-        # implied edge (model − Kalshi) when both are available.
+        # Model prob cell — renders the side-adjusted LIVE model
+        # probability (Pinnacle NOW, from current_model_prob_yes).
+        # Tooltip surfaces the implied edge (model − Kalshi) when
+        # both are available.
         if model_p is None:
             model_prob_cell = "<td class='num gray'>—</td>"
         else:
@@ -981,6 +989,21 @@ def _render_active_bets_table(out: List[str], bets: List[dict],
             model_prob_cell = (
                 f"<td class='num'{tip}>{model_p*100:.0f}%</td>"
             )
+        # Model ENTRY % cell — Pinnacle's prob for our side at the
+        # moment we opened. Static once the trade is on.
+        if model_p_entry is None:
+            model_entry_cell = "<td class='num gray'>—</td>"
+        else:
+            model_entry_cell = (
+                f"<td class='num'>{model_p_entry*100:.0f}%</td>"
+            )
+        # Kalshi ENTRY % cell — implied prob of our side at the
+        # price we actually paid. entry_price_cents is already
+        # scoped to the side we bought (tennis convention).
+        kalshi_entry_cell = (
+            f"<td class='num'>{entry}%</td>" if entry
+            else "<td class='num gray'>—</td>"
+        )
         # Side cell: for sport bots, mirror the watchlist row underneath
         # (team tricode on top, "vs opponent" beneath). The team we're
         # actually rooting for sits on top — on a NO bet that's the
@@ -1069,28 +1092,16 @@ def _render_active_bets_table(out: List[str], bets: List[dict],
                     + "</td>")
             else:
                 side_cell_s = side_cell
-            if (model_p is not None and current_prob_pct is not None):
-                edge_now = model_p * 100.0 - float(current_prob_pct)
-                e_cls = "green" if edge_now > 0 else (
-                    "red" if edge_now < 0 else "gray")
-                e_sign = "+" if edge_now > 0 else ""
-                edge_cell = (f"<td class='num {e_cls}'>"
-                             f"{e_sign}{edge_now:.0f}%</td>")
-            else:
-                edge_cell = "<td class='num gray'>—</td>"
-            ev_v = b.get("expected_ev_at_entry")
-            if ev_v is None:
-                ev_cell = "<td class='num gray'>—</td>"
-            else:
-                ev_f = float(ev_v)
-                v_cls = "green" if ev_f > 0 else (
-                    "red" if ev_f < 0 else "gray")
-                v_sign = "+" if ev_f > 0 else ("−" if ev_f < 0 else "")
-                ev_cell = (f"<td class='num {v_cls}'>"
-                           f"{v_sign}${abs(ev_f):.2f}</td>")
-            # Verdict column removed (user 2026-07-11) — a held row
-            # IS the verdict.
+            # 2026-07-15 layout mirrors the per-bot Active bets table:
+            # Date | [Bot] | Event | Title | Side
+            #   | My contracts | Cost | Payout
+            #   | Model entry % | Kalshi entry % | Model live % | Kalshi live %
+            #   | Closes in | why-button
+            # Edge / EV dropped — the entry-vs-live comparison across
+            # Model + Kalshi shows the same information in a more
+            # actionable form.
             total_cost = entry_cost_base + entry_fee_dollars
+            _payout_cls = "num green" if potential_gain >= 0 else "num red"
             out.append(
                 f"<tr{tr_attrs}>"
                 f"<td>{html.escape(date_label or '—')}</td>"
@@ -1098,21 +1109,21 @@ def _render_active_bets_table(out: List[str], bets: List[dict],
                 f"<td>{html.escape(event_label or '—')}</td>"
                 f"<td>{html.escape(title_text)}</td>"
                 f"{side_cell_s}"
+                f"<td class='num'>{contracts}</td>"
+                f"<td class='num red' title='Kalshi total cost — "
+                f"{entry}¢ × {contracts} contracts + "
+                f"${entry_fee_dollars:.2f} entry fee = "
+                f"${total_cost:.2f} total cash out at open.'>"
+                f"−${total_cost:.2f}</td>"
+                f"<td class='{_payout_cls}' title='Potential earnings "
+                f"if this side wins — $1 × {contracts} contracts − "
+                f"${total_cost:.2f} paid = net gain.'>"
+                f"{pg_sign}${abs(potential_gain):.2f}</td>"
+                f"{model_entry_cell}"
+                f"{kalshi_entry_cell}"
                 f"{model_prob_cell}"
                 f"{current_prob_cell}"
-                f"{edge_cell}"
-                f"{ev_cell}"
                 f"<td class='num'>{time_to_close_str(mtc)}</td>"
-                f"<td class='num'>{contracts}</td>"
-                f"<td class='num red'>−${entry_cost_base:.2f}</td>"
-                f"<td class='num cell-stack' title='Top: potential "
-                f"earnings — $1 × {contracts} contracts at settlement − "
-                f"${total_cost:.2f} paid. Bottom: total cost — entry "
-                f"cost + ${entry_fee_dollars:.2f} Kalshi entry fee.'>"
-                f"<div class='inv-earn{' neg' if potential_gain < 0 else ''}'>"
-                f"{pg_sign}${abs(potential_gain):.2f}</div>"
-                f"<div class='inv-cost'>−${total_cost:.2f}</div>"
-                f"</td>"
                 f"<td><button type='button' class='criteria-btn' "
                 f"title='Why was this bet chosen?' "
                 f"data-criteria='{criteria_json}'>i</button></td>"
