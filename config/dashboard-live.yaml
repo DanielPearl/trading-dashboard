@@ -221,9 +221,15 @@ bots:
     dashboard_type: billboard
     series_ticker: KXTOPSONG
     data_source: "Billboard Hot 100 weekly chart"
+    # Positions/history stay on the -live paths (empty by design —
+    # billboard is PAPER-ONLY, the daemon is disabled on the live
+    # service). The watchlist is advisory model-vs-market data, so it
+    # reads the file the SIM service's billboard tick regenerates
+    # every 5 minutes; the -live copy was a stale leftover that
+    # blanked the Model vs market pane on 8081 (user 2026-07-16).
     db_path: /root/billboard-charts/data/outputs-live/sim.db
-    decisions_path: /root/billboard-charts/data/outputs-live/watchlist.json
-    watchlist_json_path: /root/billboard-charts/data/outputs-live/watchlist.json
+    decisions_path: /root/billboard-charts/data/outputs/watchlist.json
+    watchlist_json_path: /root/billboard-charts/data/outputs/watchlist.json
     metrics_path: /root/billboard-charts/data/processed/artifacts/metrics.json
     coefficients_path: /root/billboard-charts/data/processed/artifacts/model_coefficients.json
     sim_state_path: /root/billboard-charts/data/outputs-live/sim_state.json
