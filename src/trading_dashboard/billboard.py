@@ -316,7 +316,10 @@ def _render_feature_coef_table(log_block: Dict[str, Any]) -> str:
             "<tr style='border-top:1px solid #21262d;'>"
             f"<td style='padding:5px 10px 5px 0;white-space:nowrap;'>"
             f"<b>{html.escape(label)}</b><br>"
-            f"<span class='small gray'><code>{html.escape(name)}</code>"
+            # Plain-English form of the column key (underscores
+            # stripped) — user 2026-07-16.
+            f"<span class='small gray'>"
+            f"{html.escape(name.replace('_', ' '))}"
             "</span></td>"
             f"<td class='small' style='padding:5px 10px;max-width:420px;'>"
             f"{html.escape(desc)}</td>"
