@@ -1742,15 +1742,17 @@ def _render_bet_history_block(out: List[str], history: List[dict],
 
 # Bot-filter whitelist (user 2026-07-13): only surface bots that are
 # actively trading against a sharp benchmark. Macro / commentary bots
-# (gas / claims / cpi / natural-gas / survivor / billboard) stay out
-# of the dropdown even when their sim.db exists. Strict list — a URL
+# (gas / claims / cpi / natural-gas / survivor) stay out of the
+# dropdown even when their sim.db exists. Strict list — a URL
 # that lands on an off-whitelist bot renders the bot's page but the
 # picker only shows these. Baseball added same-day per user ("include
 # the baseball forecast in the contracts filter too") — it trades
 # real money via the armed live executor, same as NBA / WNBA.
+# Billboard added 2026-07-15 per user after the KXTOPSONG retarget —
+# paper-only, but its watchlist / model / training pages are live.
 BOT_FILTER_KEYS = {
     "mlb", "nba", "wnba", "tennis", "table-tennis", "darts",
-    "world-cup",
+    "world-cup", "billboard",
 }
 
 
