@@ -473,6 +473,50 @@ _TD_COLUMNS = [
      "1 = this row is a debut/re-entry from outside the trailing "
      "pool (its in_hot_100 label is 1 by construction, so the "
      "membership model does not train on it)."),
+    ("was_top10_last_week", "Top 10 last wk",
+     "1 = the song was in the top 10 on last week's chart. The "
+     "single strongest top-10 predictor: the top 10 is sticky "
+     "week-over-week."),
+    ("weeks_since_top10", "Wks since top 10",
+     "Weeks since the song was last in the top 10 (9999 = never)."),
+    ("chart_streak", "Streak",
+     "Consecutive-week run on the chart entering this week (0 = the "
+     "song was not on last week's chart, so any prior run is "
+     "broken)."),
+    ("peak_weeks_ago", "Peak wks ago",
+     "Weeks since the song set its peak position. Songs far past "
+     "their peak rarely climb back into the top 10."),
+    ("rank_trend_3wk", "3-wk trend",
+     "Rank change between the song's last appearance and its "
+     "third-to-last (negative = climbing over the last three "
+     "weeks)."),
+    ("rank_volatility_5wk", "Volatility",
+     "Standard deviation of the song's last five ranks (0 = fewer "
+     "than two prior appearances). Stable songs hold position; "
+     "volatile ones swing."),
+    ("debut_peak_gap", "Debut→peak climb",
+     "How many places the song climbed from its debut rank to its "
+     "peak — separates slow-burn climbers from debut-and-decay "
+     "songs."),
+    ("artist_songs_last_week", "Artist songs last wk",
+     "How many songs this artist had on last week's chart — star "
+     "heat / an album bomb in progress."),
+    ("artist_best_rank_last_week", "Artist best last wk",
+     "The artist's best song rank on last week's chart (999 = "
+     "artist absent last week)."),
+    ("artist_distinct_top10_songs", "Artist top-10 songs",
+     "Career count of DISTINCT songs by this artist that have "
+     "reached the top 10 (vs. the week-count columns)."),
+    ("current_month_sin", "Month (sin)",
+     "Seasonality encoding of the CURRENT chart week's month (sine "
+     "component) — knowable in advance."),
+    ("current_month_cos", "Month (cos)",
+     "Seasonality encoding of the CURRENT chart week's month "
+     "(cosine component)."),
+    ("is_holiday_window", "Holiday window",
+     "1 = chart week falls in Nov 20 – Jan 10, when recurrent "
+     "holiday classics flood back into the top 10 and displace "
+     "regular contenders."),
 ]
 _TD_TEXT_COLS = {"chart_date", "title", "artist"}
 
