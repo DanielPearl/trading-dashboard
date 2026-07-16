@@ -607,6 +607,32 @@ def _render_bot_cards(out: List[str], rollup: dict,
                     f"{html.escape(str(ds))}</dd>"
                 )
             out.append("</dl>")
+            # Top model coefficients — rendered when the bot's adapter
+            # supplies them (billboard does; see
+            # billboard.model_summary_for_card). Signed and colored:
+            # green raises the probability, red lowers it.
+            top_coefs = m.get("top_coefficients") or []
+            if top_coefs:
+                out.append(
+                    "<div class='small' style='margin-top:6px;'>"
+                    "<span class='gray' title='Largest standardized "
+                    "logistic coefficients of the production target — "
+                    "positive raises the predicted probability.'>"
+                    "Top coefficients</span></div>")
+                out.append("<dl>")
+                for tc in top_coefs[:6]:
+                    try:
+                        cv = float(tc.get("coef"))
+                    except (TypeError, ValueError):
+                        continue
+                    c_cls = "green" if cv > 0 else ("red" if cv < 0
+                                                     else "gray")
+                    fname = str(tc.get("feature") or "")
+                    out.append(
+                        f"<dt style='font-size:0.85em;'>"
+                        f"{html.escape(fname)}</dt>"
+                        f"<dd class='{c_cls}'>{cv:+.2f}</dd>")
+                out.append("</dl>")
 
         # Footer hints at the click affordance — same idiom as the
         # ticker cells in the watchlist (subtle "go here" signal).

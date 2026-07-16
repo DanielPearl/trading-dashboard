@@ -104,6 +104,29 @@ def is_available(metrics_path: str | None) -> bool:
     return bool(metrics_path and Path(metrics_path).exists())
 
 
+def _top_coefficients(metrics_path: str | None,
+                       n: int = 6) -> List[Dict[str, Any]]:
+    """Top-|coef| standardized logistic coefficients of the tradeable
+    target, for the Home model card. model_coefficients.json lives
+    next to metrics.json."""
+    if not metrics_path:
+        return []
+    coefs = load_metrics(str(Path(metrics_path).parent
+                             / "model_coefficients.json"))
+    log_block = ((coefs.get("targets") or {})
+                 .get(_MODEL_PAGE_TARGET) or {}).get("logistic") or {}
+    feats = log_block.get("features") or []
+    vals = log_block.get("coefficients") or []
+    pairs = []
+    for f, c in zip(feats, vals):
+        try:
+            pairs.append({"feature": str(f), "coef": float(c)})
+        except (TypeError, ValueError):
+            continue
+    pairs.sort(key=lambda p: -abs(p["coef"]))
+    return pairs[:n]
+
+
 def model_summary_for_card(metrics_path: str | None,
                             sim_state_path: str | None = None
                             ) -> Dict[str, Any]:
@@ -112,6 +135,7 @@ def model_summary_for_card(metrics_path: str | None,
         return {}
     blended = metrics.get("blended") or {}
     return {
+        "top_coefficients": _top_coefficients(metrics_path),
         "classifier_accuracy": blended.get("accuracy"),
         "training_brier": blended.get("brier"),
         "training_log_loss": blended.get("log_loss"),

@@ -146,13 +146,20 @@ def _compute_cross_bot_rollup(bots: List[dict], *, period_days: int | None,
                     b.get("metrics_path"),
                     b.get("sim_state_path"),
                 )
-            bot_models.append({
-                "bot": b,
-                "model": m,
-                "rules_text": "",
-                "strike_count": 0,
-                "strike_lo": None, "strike_hi": None,
-            })
+            # MLB has no in-house model — the probability source IS
+            # the devigged Pinnacle benchmark, so its "model card"
+            # only ever showed the retired Elo pipeline's stale
+            # numbers. Skip the card (user 2026-07-16: "remove the
+            # generic baseball one"); the bot itself — watchlist,
+            # trading, rollups, history — is untouched below.
+            if b.get("key") != "mlb":
+                bot_models.append({
+                    "bot": b,
+                    "model": m,
+                    "rules_text": "",
+                    "strike_count": 0,
+                    "strike_lo": None, "strike_hi": None,
+                })
             # Pull open paper bets into the cross-bot
             # active-bets table. On LIVE, drop any row
             # whose ticker isn't in the actual Kalshi
