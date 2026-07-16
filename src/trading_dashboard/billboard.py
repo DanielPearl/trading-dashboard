@@ -367,10 +367,16 @@ def render_models_panel(out: List[str], bot: Dict[str, Any]) -> None:
         f"<b>{tm.get('rows_train', 0):,}</b> (song, week) rows "
         f"(positive rate {float(tm.get('train_positive_rate') or 0):.2%}), "
         f"tested on the last 52 chart weeks "
-        f"(<b>{tm.get('rows_test', 0):,}</b> rows). This probability "
+        f"(<b>{tm.get('rows_test', 0):,}</b> rows) — an untouched "
+        f"slice: family selection, threshold tuning, and calibration "
+        f"all happen on a separate validation year. This probability "
         f"prices the KXRANKLISTSONGTOP10 YES contracts on the "
         f"Watchlist. Production model: <b>{html.escape(best.upper())}"
-        "</b>.</p>"
+        "</b>"
+        + (", isotonic-calibrated on cross-fitted out-of-fold "
+           "predictions" if (tm.get("calibration") or {}).get("method")
+           else "")
+        + ".</p>"
     )
     # Models-run table: reshape families into the per_model dict the
     # unified renderer expects, plus the winner's held-out block as
