@@ -206,6 +206,9 @@ def build_standard_watchlist_rows(payload: Dict[str, Any]
             "rejection_reason": (", ".join(str(b) for b in blockers)
                                   if blockers else ""),
             "minutes_to_close": r.get("minutes_to_close"),
+            # Kalshi resolution paragraph — feeds the Rules i-button
+            # popover column, same as the tennis adapter.
+            "rules_primary": r.get("rules_primary"),
         })
     return out
 
