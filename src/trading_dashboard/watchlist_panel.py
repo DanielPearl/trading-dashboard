@@ -749,10 +749,10 @@ def _render_watchlist(out: List[str], watchlist: List[dict],
             "<th title='Kalshi-published contract title — the YES "
             "question shown on the market page.'>Title</th>"
             "<th title='Song title (the contract resolves YES if this "
-            "song is #1 on the Billboard Hot 100 for the listed chart "
-            "week). The small percentage underneath is the model&apos;s "
-            "P(song is on the Hot 100 at all) — context for the #1 "
-            "probability in Model live %.'>Song</th>"
+            "song is Top 10 on the Billboard Hot 100 for the listed "
+            "chart week). The small percentage underneath is the "
+            "model&apos;s P(song is on the Hot 100 at all) — context "
+            "for the top-10 probability in Model live %.'>Song</th>"
             "<th title='Recording artist.'>Artist</th>"
         )
     else:
@@ -811,10 +811,10 @@ def _render_watchlist(out: List[str], watchlist: List[dict],
         # Any side clamped to an extreme → contract has priced-in the
         # decisive side. Only fire when the extreme is on YES / NO ask
         # cents, not on internal "confidence" fields; asks are ints
-        # in [0, 100]. Billboard is exempt: KXTOPSONG quotes every
-        # non-favourite candidate at a 1¢ ask all week long (and the
-        # decided-week favourite pins at 99¢ days before settlement),
-        # so the extreme-ask heuristic would blank the entire slate —
+        # in [0, 100]. Billboard is exempt: the weekly Hot 100 series
+        # quote longshot candidates at a 1¢ ask all week long (and
+        # locked-in favourites pin at 99¢ days before settlement),
+        # so the extreme-ask heuristic would blank most of the slate —
         # the completed/expiration checks above still retire rows.
         if not is_billboard_bot:
             for a in asks:

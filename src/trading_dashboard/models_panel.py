@@ -384,7 +384,7 @@ FEATURE_RULES: List[dict] = [
      "link": "https://www.billboard.com/charts/hot-100/"},
     {"patterns": ("is_new_to_pool",),
      "label": "Billboard Hot 100 (panel structure)", "color": "#58a6ff",
-     "description": "Flags rows for songs that debuted or re-entered from outside the trailing 12-week popular pool — the #1 model uses it to treat album-bomb debuts differently from established chart songs.",
+     "description": "Flags rows for songs that debuted or re-entered from outside the trailing 12-week popular pool — the top-10 model uses it to treat album-bomb debuts differently from established chart songs.",
      "link": "https://www.billboard.com/charts/hot-100/"},
 
     # ── Tennis / Table tennis: Jeff Sackmann dataset + bot-computed Elo

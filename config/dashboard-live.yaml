@@ -219,7 +219,7 @@ bots:
   - key: billboard
     name: Billboard Hot 100
     dashboard_type: billboard
-    series_ticker: KXTOPSONG
+    series_ticker: KXRANKLISTSONGTOP10
     data_source: "Billboard Hot 100 weekly chart"
     # Positions/history stay on the -live paths (empty by design —
     # billboard is PAPER-ONLY, the daemon is disabled on the live

@@ -301,7 +301,7 @@ bots:
 
   - key: billboard
     name: Billboard Hot 100
-    # Hot 100 #1 forecaster (KXTOPSONG). JSON-source for the watchlist
+    # Hot 100 Top-10 forecaster (KXRANKLISTSONGTOP10). JSON-source for the watchlist
     # tab (model probs / verdicts come from watchlist.json), sim.db-
     # source for positions / closed bets (the PAPER trader writes into
     # the standard simulator schema so the dashboard's shared readers
@@ -309,7 +309,7 @@ bots:
     # Locked to a single Kalshi series; the bot auto-advances to
     # the next weekly event once today's settles.
     dashboard_type: billboard
-    series_ticker: KXTOPSONG
+    series_ticker: KXRANKLISTSONGTOP10
     data_source: "Billboard Hot 100 weekly chart"
     db_path: /root/billboard-charts/data/outputs/sim.db
     decisions_path: /root/billboard-charts/data/outputs/watchlist.json

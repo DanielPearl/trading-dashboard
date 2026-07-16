@@ -1,13 +1,14 @@
 """Billboard Hot 100 dashboard adapter.
 
-The bot (Billboard Charts repo) targets the KXTOPSONG series — the
-weekly "#1 on the Billboard Hot 100" market — and trains two models
-on the same (song × chart-week) popular-pool panel:
+The bot (Billboard Charts repo) targets the KXRANKLISTSONGTOP10
+series — the weekly "Top 10 on the Billboard Hot 100" market — and
+trains two models on the same (song × chart-week) popular-pool panel:
 
     in_hot_100      P(song is on the Hot 100 that week) — the
                     primary/interpretable target
-    is_number_one   P(song is the #1) — prices the KXTOPSONG YES
-                    contract; watchlist ``model_prob`` carries this
+    is_top_10       P(song is in the top 10) — prices the
+                    KXRANKLISTSONGTOP10 YES contract; watchlist
+                    ``model_prob`` carries this
 
 It writes watchlist.json + metrics.json + model_coefficients.json +
 training_data.db (the full training panel) on every train/tick, plus
@@ -40,11 +41,17 @@ _TARGETS = [
      "P(song is on the Billboard Hot 100 that chart week). Trained on "
      "pool rows only — songs that charted within the trailing 12 weeks "
      "— so every row has a real 0/1 outcome."),
+    ("is_top_10",
+     "Top 10 on the Hot 100",
+     "P(song is in the top 10 of the Hot 100 that chart week). Trained "
+     "on all panel rows including debuts; this probability prices the "
+     "KXRANKLISTSONGTOP10 YES contract on the Watchlist."),
+    # Legacy target from the KXTOPSONG era — renders only if a stale
+    # pre-2026-07-16 artifact is still on disk.
     ("is_number_one",
-     "#1 on the Hot 100",
-     "P(song is the #1 on the Hot 100 that chart week). Trained on all "
-     "panel rows including debuts; this probability prices the "
-     "KXTOPSONG YES contract on the Watchlist."),
+     "#1 on the Hot 100 (legacy)",
+     "P(song is the #1). Retired 2026-07-16 when the bot retargeted "
+     "to the Top 10 series."),
 ]
 
 
@@ -164,10 +171,11 @@ def build_standard_watchlist_rows(payload: Dict[str, Any]
       ``question_str`` returns "<song>" in the Question column.
       ``strike_low`` / ``strike_high`` stay None so question_str
       doesn't append a strike clause.
-    - ``model_prob_yes`` = the bot's P(song is #1 on the Hot 100 for
-      the contract's chart week) — the tradeable probability.
+    - ``model_prob_yes`` = the bot's P(song is Top 10 on the Hot 100
+      for the contract's chart week) — the tradeable probability.
     - ``_p_hot100`` = P(song is on the Hot 100 at all) — context
-      shown under the Song cell (a #1 candidate near 100% is normal).
+      shown under the Song cell (a top-10 candidate near 100% is
+      normal).
     - ``bot_verdict`` maps the billboard vocabulary to the standard
       one (BUY YES → BUY_YES, BUY NO → BUY_NO, WATCH / SKIP → SKIP).
     """
@@ -396,9 +404,10 @@ _TD_COLUMNS = [
      "DEPENDENT VARIABLE — 1 if the song is on this week's Hot 100, "
      "0 if it is not. The in_hot_100 model is trained on pool rows "
      "only (In pool = 1)."),
-    ("is_number_one", "Is #1",
-     "Second label — 1 if the song is #1 this week. The is_number_one "
-     "model (trained on all rows) prices KXTOPSONG contracts."),
+    ("is_top_10", "Is top 10",
+     "Second label — 1 if the song is in the top 10 this week. The "
+     "is_top_10 model (trained on all rows) prices KXRANKLISTSONGTOP10 "
+     "contracts."),
     ("rank_this_week", "Rank",
      "The song's actual Hot 100 rank this week (blank when the song "
      "is not on the chart). Not a feature — shown for context."),
@@ -499,7 +508,7 @@ def _td_fmt(key: str, v: Any) -> str:
         f = float(v)
     except (TypeError, ValueError):
         return html.escape(str(v))
-    if key in ("in_hot_100", "is_number_one", "in_pool", "is_new_to_pool"):
+    if key in ("in_hot_100", "is_top_10", "in_pool", "is_new_to_pool"):
         return "1" if f >= 0.5 else "0"
     if key in ("rank_this_week", "weeks_on_chart", "peak_position_so_far",
                "debut_rank", "last_seen_rank", "best_3wk_rank",
@@ -566,8 +575,8 @@ def render_training_data_panel(*, bot: Dict[str, Any],
         f"weeks) plus this week's debuts. <b>{total:,}</b> rows"
         f"{' in this week' if week else f' across {n_weeks:,} weeks'}"
         f". <b>In Hot 100</b> is the dependent variable (1 = on that "
-        f"week's chart, 0 = not); <b>Is #1</b> is the second label "
-        f"that prices KXTOPSONG. Every feature uses only data from "
+        f"week's chart, 0 = not); <b>Is top 10</b> is the second label "
+        f"that prices KXRANKLISTSONGTOP10. Every feature uses only data from "
         f"strictly BEFORE the row's chart week. Sorted newest week "
         f"first, chart rank ascending. Click a column header for its "
         f"definition.</p>"
