@@ -227,7 +227,9 @@ bots:
     # reads the file the SIM service's billboard tick regenerates
     # every 5 minutes; the -live copy was a stale leftover that
     # blanked the Model vs market pane on 8081 (user 2026-07-16).
-    db_path: /root/billboard-charts/data/outputs-live/sim.db
+    # Real-order ledger written by the live billboard daemon
+    # (upstream paths.sim_db -> live.db, armed 2026-07-16).
+    db_path: /root/billboard-charts/data/outputs/live.db
     decisions_path: /root/billboard-charts/data/outputs/watchlist.json
     watchlist_json_path: /root/billboard-charts/data/outputs/watchlist.json
     metrics_path: /root/billboard-charts/data/processed/artifacts/metrics.json
@@ -645,6 +647,10 @@ natgas_trader:
   repo_path: /root/peak-load
 
 billboard_trader:
-  enabled: false
+  # 2026-07-16: LIVE trading armed per user sign-off. This daemon
+  # runs upstream export() every tick: fetch KXRANKLISTSONGTOP10,
+  # score, write watchlist.json, and place REAL orders through the
+  # unified validator suite (upstream trading.live.dry_run: false).
+  enabled: true
   repo_path: /root/billboard-charts
   interval_seconds: 300

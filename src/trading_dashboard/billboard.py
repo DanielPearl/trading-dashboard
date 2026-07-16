@@ -12,14 +12,15 @@ trains two models on the same (song × chart-week) popular-pool panel:
 
 It writes watchlist.json + metrics.json + model_coefficients.json +
 training_data.db (the full training panel) on every train/tick, plus
-a standard sim.db from the PAPER trader (dry_run — never places real
-orders). This module is the seam between those artifacts and the
+a standard-schema live.db ledger from the LIVE trader (armed
+2026-07-16 per user sign-off; unified validator suite gates every
+order). This module is the seam between those artifacts and the
 shared renderers.
 
 Routing pattern matches tennis: the GET handler synthesises a
 standard ``watchlist`` row list from the bot's JSON output, sets
 ``model = None``, and falls through to the shared ``render_page``.
-Positions/history come straight from sim.db via the standard
+Positions/history come straight from the ledger db via the standard
 readers (see server.py / data.py billboard branches).
 """
 from __future__ import annotations
@@ -104,29 +105,6 @@ def is_available(metrics_path: str | None) -> bool:
     return bool(metrics_path and Path(metrics_path).exists())
 
 
-def _top_coefficients(metrics_path: str | None,
-                       n: int = 6) -> List[Dict[str, Any]]:
-    """Top-|coef| standardized logistic coefficients of the tradeable
-    target, for the Home model card. model_coefficients.json lives
-    next to metrics.json."""
-    if not metrics_path:
-        return []
-    coefs = load_metrics(str(Path(metrics_path).parent
-                             / "model_coefficients.json"))
-    log_block = ((coefs.get("targets") or {})
-                 .get(_MODEL_PAGE_TARGET) or {}).get("logistic") or {}
-    feats = log_block.get("features") or []
-    vals = log_block.get("coefficients") or []
-    pairs = []
-    for f, c in zip(feats, vals):
-        try:
-            pairs.append({"feature": str(f), "coef": float(c)})
-        except (TypeError, ValueError):
-            continue
-    pairs.sort(key=lambda p: -abs(p["coef"]))
-    return pairs[:n]
-
-
 def model_summary_for_card(metrics_path: str | None,
                             sim_state_path: str | None = None
                             ) -> Dict[str, Any]:
@@ -135,7 +113,6 @@ def model_summary_for_card(metrics_path: str | None,
         return {}
     blended = metrics.get("blended") or {}
     return {
-        "top_coefficients": _top_coefficients(metrics_path),
         "classifier_accuracy": blended.get("accuracy"),
         "training_brier": blended.get("brier"),
         "training_log_loss": blended.get("log_loss"),

@@ -12,10 +12,12 @@ The model.joblib is a large artifact; upstream's
 — the spike only happens on the first tick that actually finds
 Billboard markets open.
 
-The trader is PAPER-ONLY: upstream's ``trading.live.dry_run: true``
-records positions in sim.db without placing orders (2026-07-15
-decision — no live Billboard trading). Our Home-tab toggle only
-governs whether the watchlist export runs at all.
+LIVE trading armed 2026-07-16 per user sign-off: upstream's
+``trading.live.dry_run: false`` places real marketable-limit IOC
+orders (1 contract per pick, unified validator suite) and records
+positions in live.db. This daemon now runs in the LIVE dashboard
+service; the sim service's block is disabled. The Home-tab toggle
+(bot_states_live.json) gates whether the tick runs at all.
 """
 from __future__ import annotations
 

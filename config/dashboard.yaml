@@ -590,6 +590,11 @@ natgas_trader:
 # pressure becomes a problem under high market load, flip
 # enabled: false to free the loaded model on next restart.
 billboard_trader:
-  enabled: true
+  # 2026-07-16: LIVE trading armed per user sign-off — the billboard
+  # loop (watchlist export + real-order trader) now runs in the LIVE
+  # dashboard service, not here. The sim dashboard still renders the
+  # advisory pages from the shared watchlist/artifacts the live loop
+  # writes.
+  enabled: false
   repo_path: /root/billboard-charts
   interval_seconds: 300
