@@ -417,7 +417,12 @@ def _render_watchlist(out: List[str], watchlist: List[dict],
     is_sport_bot = current_bot in {"nba", "wnba", "tennis", "table-tennis",
                                     "darts", "world-cup", "mlb"}
     is_billboard_bot = current_bot == "billboard"
-    if not is_sport_bot:
+    # Billboard uses the sport-style two-section layout (Active bets ·
+    # Model vs market, no hero chart, no position columns on the
+    # Model-vs-market table) but keeps its own columns / sort — user
+    # 2026-07-16: "design should be similar to tennis".
+    use_sections = is_sport_bot or is_billboard_bot
+    if not use_sections:
         out.append("<div class='section'><h2>"
                    "Watchlist — model vs market</h2>"
                    "<div class='body'>")
@@ -531,10 +536,10 @@ def _render_watchlist(out: List[str], watchlist: List[dict],
                        "Model-vs-market highlight will be empty")
 
     # Non-sport bots: full Active-bets section + hero chart, same as
-    # before. Sport bots skip this block; their Active bets and
-    # Model-vs-market tables are emitted as separate top-level
-    # sections at the bottom of this function.
-    if not is_sport_bot:
+    # before. Sport + billboard bots skip this block; their Active
+    # bets and Model-vs-market tables are emitted as separate
+    # top-level sections at the bottom of this function.
+    if not use_sections:
         label = ("Active bets" if n_bets > 1 else "Active bet")
         count_suffix = (f" <span class='small gray'>({n_bets})</span>"
                          if n_bets > 1 else "")
@@ -587,7 +592,7 @@ def _render_watchlist(out: List[str], watchlist: List[dict],
                                event_title=event_title)
 
     if not watchlist:
-        if is_sport_bot:
+        if use_sections:
             # No section wrapper is open yet for sport bots — emit both
             # sections with empty states so the page still looks like
             # the three-section layout.
@@ -817,13 +822,13 @@ def _render_watchlist(out: List[str], watchlist: List[dict],
                     return True
         return all(a is None for a in asks)
 
-    # Split rows for sport bots: held rows go into the Active-bets
-    # section, everything else into Model-vs-market. Non-sport bots
-    # keep a single ordered list. Each section context carries its
-    # own tbody id (for live-updates), position-columns flag, and
-    # optional section header. The emission loop after the row
-    # renderer walks this list once per section.
-    if is_sport_bot:
+    # Split rows for sport + billboard bots: held rows go into the
+    # Active-bets section, everything else into Model-vs-market.
+    # Non-sport bots keep a single ordered list. Each section context
+    # carries its own tbody id (for live-updates), position-columns
+    # flag, and optional section header. The emission loop after the
+    # row renderer walks this list once per section.
+    if use_sections:
         _held_rows = [r for r in watchlist
                        if r.get("ticker") in held_by_ticker]
         # Model-vs-market shows every watchlist row (including the
@@ -969,10 +974,10 @@ def _render_watchlist(out: List[str], watchlist: List[dict],
         include_position_cols = _ctx["include_position_cols"]
         _tbody_id = _ctx["tbody_id"]
 
-        # Sport bots wrap each table in its own `<div class='section'>`
-        # with its own h2 title. Non-sport bots share the single
-        # section opened at the top of the function.
-        if is_sport_bot:
+        # Sport + billboard bots wrap each table in its own
+        # `<div class='section'>` with its own h2 title. Non-sport
+        # bots share the single section opened at the top.
+        if use_sections:
             if _ctx["kind"] == "active":
                 out.append("<div class='section'><h2>Active bets</h2>"
                            "<div class='body'>")
@@ -1759,9 +1764,10 @@ def _render_watchlist(out: List[str], watchlist: List[dict],
             out.append(f"<tr{row_cls} data-ticker='{tt_esc}'{strike_attr}{yes_attr}>"
                        f"{row_body}</tr>")
         out.append("</tbody></table></div>")
-        # For sport bots, close the per-table `<div class='section'>`
-        # wrapper opened at the top of this loop iteration.
-        if is_sport_bot:
+        # For sport + billboard bots, close the per-table
+        # `<div class='section'>` wrapper opened at the top of this
+        # loop iteration.
+        if use_sections:
             out.append("</div></div>")
     # Append the row-click JS hook once — after every table is
     # emitted. The hook globs both tbodies (`watchlist-tbody` and,
@@ -1775,9 +1781,9 @@ def _render_watchlist(out: List[str], watchlist: List[dict],
     # column to see that ticker's Kalshi ``rules_primary`` text.
     out.append(_RULES_INFO_POPOVER_HTML_JS)
     # Non-sport bots also need to close the single section wrapper
-    # opened at the top of the function. Sport bots already closed
-    # theirs at the end of each section-loop iteration.
-    if not is_sport_bot:
+    # opened at the top of the function. Sport + billboard bots
+    # already closed theirs at the end of each section-loop iteration.
+    if not use_sections:
         out.append("</div></div>")
 
 
