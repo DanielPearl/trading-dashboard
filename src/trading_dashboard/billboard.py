@@ -222,82 +222,95 @@ def build_standard_watchlist_rows(payload: Dict[str, Any]
 
 
 # --------------------------------------------------------------------------- #
-# Models tab — per-target sections: models-run table + signed logistic        #
-# coefficients at the top, feature definitions underneath.                    #
+# Models tab — the is_top_10 target only: models-run table at the top,        #
+# then ONE unified features table (name · description · signed logistic       #
+# coefficient · magnitude bar). Per user spec 2026-07-16.                     #
 # --------------------------------------------------------------------------- #
 
-def _logistic_coefs_as_features(coefficients: Dict[str, Any]
-                                  ) -> List[Dict[str, Any]]:
-    """Convert the logistic block of model_coefficients.json into the
-    feats list shape the standard ``_svg_feature_importance_vertical``
-    / ``_render_feature_source_table`` consume:
-        [{feature, mean_importance, positive_folds, selected}, …]
-
-    Logistic coefficients are signed — the standard helpers want a
-    magnitude — so we use |coef|. ``selected`` is True for every
-    feature (logistic uses all of them).
-    """
-    log_block = (coefficients or {}).get("logistic") or {}
-    feats = log_block.get("features") or []
-    coefs = log_block.get("coefficients") or []
-    out: List[Dict[str, Any]] = []
-    for n, c in zip(feats, coefs):
-        try:
-            mag = abs(float(c))
-        except (TypeError, ValueError):
-            mag = 0.0
-        out.append({
-            "feature": str(n),
-            "mean_importance": mag,
-            "positive_folds": 1,   # logistic is single-fit, not k-fold
-            "selected": True,
-        })
-    return out
+# The dependent variable shown on the Models tab. The bot also trains
+# in_hot_100 (feeds the watchlist's "Hot 100 %" context and the
+# Training Data page's label), but the page shows the tradeable
+# target only.
+_MODEL_PAGE_TARGET = "is_top_10"
 
 
-def _render_coefficients_table(target_label: str,
-                                 log_block: Dict[str, Any]) -> str:
-    """Signed logistic coefficients for one target, sorted by |coef|
-    descending, with green/red signing. These are standardized-input
-    coefficients, so magnitudes are directly comparable across
-    features."""
+def _feature_defs() -> Dict[str, Dict[str, str]]:
+    """{feature_key: {label, def}} from the training-data column
+    metadata, so the Models tab and Training Data tab describe every
+    feature with the same words."""
+    return {k: {"label": lbl, "def": d} for k, lbl, d in _TD_COLUMNS}
+
+
+def _render_feature_coef_table(log_block: Dict[str, Any]) -> str:
+    """One row per feature: readable name, plain-English description,
+    signed standardized-input logistic coefficient, and a magnitude
+    bar (green = raises P(top 10), red = lowers it). Sorted by |coef|
+    descending."""
     feats = log_block.get("features") or []
     coefs = log_block.get("coefficients") or []
     if not feats or not coefs:
-        return ""
-    rows = sorted(zip(feats, coefs),
-                  key=lambda fc: -abs(float(fc[1] or 0.0)))
-    parts: List[str] = []
-    parts.append(
-        f"<h4 class='subhead' style='margin-top:10px;'>Logistic "
-        f"coefficients — {html.escape(target_label)} "
-        "<span class='small gray'>(standardized inputs; positive = "
-        "raises the probability)</span></h4>"
-    )
-    parts.append(
-        "<div style='overflow-x:auto;margin-bottom:14px;'>"
-        "<table style='border-collapse:collapse;font-size:12.5px;'>"
-        "<thead><tr><th style='text-align:left;'>Feature</th>"
-        "<th class='num'>Coefficient</th></tr></thead><tbody>"
-    )
-    for n, c in rows:
+        return ("<p class='small gray'>No coefficients yet — "
+                "model_coefficients.json is missing the logistic block "
+                "for the top-10 target. Retrain the bot.</p>")
+    defs = _feature_defs()
+    rows = []
+    for n, c in zip(feats, coefs):
         try:
             cf = float(c)
         except (TypeError, ValueError):
             cf = 0.0
+        rows.append((str(n), cf))
+    rows.sort(key=lambda fc: -abs(fc[1]))
+    max_mag = max((abs(c) for _, c in rows), default=1.0) or 1.0
+
+    parts: List[str] = []
+    parts.append(
+        "<h3 class='subhead' style='margin-top:16px;'>Features "
+        "<span class='small gray'>(logistic coefficients on "
+        "standardized inputs — magnitudes are comparable; positive "
+        "raises P(top 10), negative lowers it)</span></h3>"
+    )
+    parts.append(
+        "<div style='overflow-x:auto;'>"
+        "<table style='width:100%;border-collapse:collapse;"
+        "font-size:12.5px;'>"
+        "<thead><tr>"
+        "<th style='text-align:left;padding:4px 10px 4px 0;'>Feature</th>"
+        "<th style='text-align:left;padding:4px 10px;'>Description</th>"
+        "<th class='num' style='padding:4px 10px;'>Coefficient</th>"
+        "<th style='text-align:left;padding:4px 0 4px 10px;"
+        "min-width:140px;'>Weight</th>"
+        "</tr></thead><tbody>"
+    )
+    for name, cf in rows:
+        meta = defs.get(name) or {}
+        label = meta.get("label") or name.replace("_", " ")
+        desc = meta.get("def") or ""
         color = "#3fb950" if cf > 0 else ("#f85149" if cf < 0 else "#8b949e")
+        width = max(2.0, abs(cf) / max_mag * 100.0)
         parts.append(
-            "<tr>"
-            f"<td style='padding:2px 18px 2px 0;'>{html.escape(str(n))}</td>"
-            f"<td class='num' style='color:{color};'>{cf:+.4f}</td>"
+            "<tr style='border-top:1px solid #21262d;'>"
+            f"<td style='padding:5px 10px 5px 0;white-space:nowrap;'>"
+            f"<b>{html.escape(label)}</b><br>"
+            f"<span class='small gray'><code>{html.escape(name)}</code>"
+            "</span></td>"
+            f"<td class='small' style='padding:5px 10px;max-width:420px;'>"
+            f"{html.escape(desc)}</td>"
+            f"<td class='num' style='padding:5px 10px;color:{color};"
+            f"white-space:nowrap;'>{cf:+.4f}</td>"
+            "<td style='padding:5px 0 5px 10px;'>"
+            f"<div style='height:10px;width:{width:.1f}%;"
+            f"background:{color};border-radius:3px;'></div></td>"
             "</tr>"
         )
     try:
         icpt = float(log_block.get("intercept"))
         parts.append(
-            "<tr><td style='padding:2px 18px 2px 0;' class='gray'>"
-            "(intercept)</td>"
-            f"<td class='num gray'>{icpt:+.4f}</td></tr>"
+            "<tr style='border-top:1px solid #21262d;'>"
+            "<td class='gray' style='padding:5px 10px 5px 0;'>"
+            "(intercept)</td><td></td>"
+            f"<td class='num gray' style='padding:5px 10px;'>"
+            f"{icpt:+.4f}</td><td></td></tr>"
         )
     except (TypeError, ValueError):
         pass
@@ -306,17 +319,17 @@ def _render_coefficients_table(target_label: str,
 
 
 def render_models_panel(out: List[str], bot: Dict[str, Any]) -> None:
-    """Billboard Models tab — per-target sections at the top (models
-    run + signed logistic coefficients for each of the two targets),
-    then the shared readable-features panel underneath. Layout per
-    user spec 2026-07-15: "coefficients at the top and the features
-    underneath"."""
+    """Billboard Models tab — the is_top_10 dependent variable only
+    (user 2026-07-16: "we don't need both sections, just the is top
+    10"): the models-run table at the top, then one unified features
+    table with name, description, signed coefficient, and a magnitude
+    bar."""
     from . import dashboard as _d  # peer module — late import avoids cycle
 
     metrics = load_metrics(bot.get("metrics_path"))
     coefficients = load_coefficients(bot.get("coefficients_path"))
-    target_metrics = metrics.get("targets") or {}
-    target_coefs = coefficients.get("targets") or {}
+    tm = (metrics.get("targets") or {}).get(_MODEL_PAGE_TARGET) or {}
+    families = tm.get("families") or {}
 
     last_trained = "—"
     metrics_path = bot.get("metrics_path")
@@ -330,62 +343,55 @@ def render_models_panel(out: List[str], bot: Dict[str, Any]) -> None:
         except (OSError, OverflowError):
             pass
 
-    rendered_any = False
-    for key, label, desc in _TARGETS:
-        tm = target_metrics.get(key) or {}
-        families = tm.get("families") or {}
-        if not families:
-            continue
-        rendered_any = True
-        best = tm.get("best_model") or ""
-        out.append(
-            f"<h3 class='subhead' style='margin-top:18px;'>Target: "
-            f"<code>{html.escape(key)}</code> — {html.escape(label)}"
-            "</h3>"
-            f"<p class='small gray'>{html.escape(desc)} "
-            f"Trained on <b>{tm.get('rows_train', 0):,}</b> rows "
-            f"(positive rate {float(tm.get('train_positive_rate') or 0):.2%}), "
-            f"tested on <b>{tm.get('rows_test', 0):,}</b>. "
-            f"Production model: <b>{html.escape(best.upper())}</b>.</p>"
-        )
-        # Models-run table for this target: reshape families into the
-        # per_model dict the unified renderer expects, plus the
-        # winner's held-out block as "Blended (final)".
-        per_model = {name: fam.get("test") or {}
-                     for name, fam in families.items()}
-        table_metrics = {
-            "per_model": per_model,
-            "blended": (families.get(best) or {}).get("test"),
-            "rows_train": tm.get("rows_train"),
-            "rows_test": tm.get("rows_test"),
-        }
-        out.append(_d._render_models_run_table(
-            table_metrics,
-            feature_count=metrics.get("feature_count"),
-            last_trained=last_trained,
-        ))
-        # Signed coefficients for this target.
-        log_block = (target_coefs.get(key) or {}).get("logistic") or {}
-        out.append(_render_coefficients_table(label, log_block))
-
-    if not rendered_any:
-        # Pre-retrain artifact on disk (no "targets" block) — fall back
-        # to the legacy single-target layout so the page never blanks.
+    if not families:
+        # Stale artifact from before the is_top_10 retarget — show the
+        # top-level (legacy) metrics so the page never blanks.
+        out.append("<p class='small gray'>The on-disk model artifact "
+                   "predates the top-10 retarget — showing its legacy "
+                   "metrics. Retrain the bot to refresh.</p>")
         out.append(_d._render_models_run_table(
             metrics,
             feature_count=metrics.get("feature_count"),
             last_trained=last_trained,
         ))
-        out.append(_render_coefficients_table(
-            "primary target", coefficients.get("logistic") or {}))
+        out.append(_render_feature_coef_table(
+            coefficients.get("logistic") or {}))
+        return
 
-    # Feature definitions + importance bars underneath. Importance
-    # bars use the membership target's |coef| (primary/interpretable).
-    primary_coefs = (target_coefs.get("in_hot_100")
-                     or {k: v for k, v in coefficients.items()
-                         if k != "targets"})
-    feats = _logistic_coefs_as_features(primary_coefs)
-    out.append(_d._render_feature_source_table(feats))
+    best = tm.get("best_model") or ""
+    out.append(
+        "<h3 class='subhead' style='margin-top:18px;'>Dependent "
+        "variable: <code>is_top_10</code> — is the song in the Top 10 "
+        "of the Billboard Hot 100 that chart week?</h3>"
+        f"<p class='small gray'>Trained on "
+        f"<b>{tm.get('rows_train', 0):,}</b> (song, week) rows "
+        f"(positive rate {float(tm.get('train_positive_rate') or 0):.2%}), "
+        f"tested on the last 52 chart weeks "
+        f"(<b>{tm.get('rows_test', 0):,}</b> rows). This probability "
+        f"prices the KXRANKLISTSONGTOP10 YES contracts on the "
+        f"Watchlist. Production model: <b>{html.escape(best.upper())}"
+        "</b>.</p>"
+    )
+    # Models-run table: reshape families into the per_model dict the
+    # unified renderer expects, plus the winner's held-out block as
+    # "Blended (final)".
+    per_model = {name: fam.get("test") or {}
+                 for name, fam in families.items()}
+    table_metrics = {
+        "per_model": per_model,
+        "blended": (families.get(best) or {}).get("test"),
+        "rows_train": tm.get("rows_train"),
+        "rows_test": tm.get("rows_test"),
+    }
+    out.append(_d._render_models_run_table(
+        table_metrics,
+        feature_count=metrics.get("feature_count"),
+        last_trained=last_trained,
+    ))
+    # Unified features table for the same target.
+    log_block = ((coefficients.get("targets") or {})
+                 .get(_MODEL_PAGE_TARGET) or {}).get("logistic") or {}
+    out.append(_render_feature_coef_table(log_block))
 
 
 # --------------------------------------------------------------------------- #
@@ -605,7 +611,23 @@ def render_training_data_panel(*, bot: Dict[str, Any],
     out.append("</select></form>")
 
     defs: Dict[str, Dict[str, str]] = {}
-    out.append("<div style='overflow-x:auto;margin-top:8px;'>")
+    # Scroll container: the panel is wide (20+ feature columns) AND
+    # tall (100 rows/page), so it scrolls on both axes inside a
+    # capped-height box with a sticky header row — the page itself
+    # never grows a horizontal scrollbar.
+    out.append(
+        "<style>"
+        ".bb-td-scroll { overflow:auto; max-height:72vh; "
+        "margin-top:8px; border:1px solid #21262d; border-radius:6px; }"
+        ".bb-td-scroll table { border-collapse:separate; "
+        "border-spacing:0; }"
+        ".bb-td-scroll thead th { position:sticky; top:0; "
+        "background:#0d1117; z-index:2; "
+        "border-bottom:1px solid #30363d; }"
+        ".bb-td-scroll td, .bb-td-scroll th { white-space:nowrap; }"
+        "</style>"
+    )
+    out.append("<div class='bb-td-scroll'>")
     out.append("<table class='training-data-table'><thead><tr>")
     for key, label, definition in _TD_COLUMNS:
         defs[key] = {"label": label, "def": definition}
