@@ -789,21 +789,25 @@ def _render_watchlist(out: List[str], watchlist: List[dict],
             "<th title='Recording artist.'>Artist</th>"
         )
     elif is_reality_bot:
-        # Reality-leaks layout: Title | Contestant | Show | Leak. The
-        # Leak column is the whole thesis — status + source, with the
-        # leak headline linked underneath.
+        # Reality-leaks layout (user 2026-07-17): Show | Type |
+        # Title | Source | Statement. Title links to the Kalshi
+        # contract; Source names the news source of the leak;
+        # Statement is a click-to-open ⓘ with the leaked headline +
+        # link. Model live % = leak-implied probability that the
+        # statement is true for the contract's YES side.
         head_cols = (
-            "<th title='Kalshi-published contract title — the YES "
-            "question shown on the market page.'>Title</th>"
-            "<th title='Contestant the contract is about (from the "
-            "Kalshi YES subtitle).'>Contestant</th>"
-            "<th title='Show + market kind (winner / weekly "
-            "elimination / rank).'>Show</th>"
-            "<th title='Leak signal: confirmed (spoiler outlet, "
-            "high-upvote thread, or explicit spoiler language) or "
-            "rumor. The linked headline underneath is the actual "
-            "leak post. Model live % is the leak-implied "
-            "probability.'>Leak</th>"
+            "<th title='Which show this contract belongs to.'>Show</th>"
+            "<th title='Market type — winner, elimination (who goes "
+            "home), rank, or other.'>Type</th>"
+            "<th title='Kalshi-published contract title — links to "
+            "the live Kalshi market page.'>Title</th>"
+            "<th title='News source the leak came from (Reddit "
+            "spoiler community, Reality Steve, tabloid). Status "
+            "colour: green = confirmed, yellow = rumor.'>Source</th>"
+            "<th title='The leaked statement. Click the ⓘ to read "
+            "the headline and open the source post. Model live % is "
+            "the probability the statement is true for this "
+            "contract&apos;s YES side.'>Statement</th>"
         )
     else:
         head_cols = (
@@ -1534,7 +1538,6 @@ def _render_watchlist(out: List[str], watchlist: List[dict],
                     f"<td>{html.escape(str(artist_text))}</td>"
                 )
             elif is_reality_bot:
-                contestant_text = v.get("_contestant") or v.get("direction") or ""
                 show_text = v.get("_show") or ""
                 kind_text = v.get("_market_kind") or ""
                 leak_status = v.get("_leak_status") or "none"
@@ -1542,41 +1545,60 @@ def _render_watchlist(out: List[str], watchlist: List[dict],
                 leak_url = v.get("_leak_url") or ""
                 leak_title = v.get("_leak_title") or ""
                 leak_age = v.get("_leak_age_hours")
-                if leak_status == "confirmed":
-                    _pill = ("<span style='color:#3fb950;font-weight:600;'>"
-                             "confirmed</span>")
-                elif leak_status == "rumor":
-                    _pill = ("<span style='color:#d29922;font-weight:600;'>"
-                             "rumor</span>")
-                else:
-                    _pill = "<span class='gray'>—</span>"
-                leak_bits = _pill
+                # Source cell — the news source name, coloured by
+                # leak status (green = confirmed, yellow = rumor).
                 if leak_source:
-                    leak_bits += (f" <span class='small gray'>"
-                                  f"{html.escape(str(leak_source))}</span>")
-                try:
-                    if leak_age is not None:
-                        leak_bits += (f" <span class='small gray'>"
-                                      f"({float(leak_age):.0f}h)</span>")
-                except (TypeError, ValueError):
-                    pass
+                    _src_color = ("#3fb950" if leak_status == "confirmed"
+                                  else "#d29922")
+                    _age_html = ""
+                    try:
+                        if leak_age is not None:
+                            _age_html = (f"<br><span class='small gray'>"
+                                         f"{leak_status} · "
+                                         f"{float(leak_age):.0f}h ago</span>")
+                    except (TypeError, ValueError):
+                        _age_html = ""
+                    source_cell = (
+                        f"<td style='white-space:nowrap;'>"
+                        f"<span style='color:{_src_color};"
+                        f"font-weight:600;'>"
+                        f"{html.escape(str(leak_source))}</span>"
+                        f"{_age_html}</td>")
+                else:
+                    source_cell = "<td class='gray'>—</td>"
+                # Statement cell — native <details> ⓘ popover: click
+                # to read the leaked headline, with a link out to the
+                # source post. No JS needed.
                 if leak_title:
-                    _lt = html.escape(str(leak_title)[:80])
+                    _stmt = html.escape(str(leak_title))
+                    _link_html = ""
                     if leak_url:
-                        leak_bits += (
-                            f"<br><a class='small' href='"
-                            f"{html.escape(str(leak_url))}' target='_blank' "
-                            f"rel='noopener noreferrer'>{_lt}</a>")
-                    else:
-                        leak_bits += f"<br><span class='small gray'>{_lt}</span>"
+                        _link_html = (
+                            f"<br><a href='{html.escape(str(leak_url))}' "
+                            f"target='_blank' rel='noopener noreferrer'>"
+                            f"open source ↗</a>")
+                    statement_cell = (
+                        "<td style='max-width:60px;'>"
+                        "<details class='leak-stmt'>"
+                        "<summary style='cursor:pointer;list-style:none;"
+                        "color:#79c0ff;font-weight:600;' "
+                        "title='Click to read the leaked statement'>"
+                        "ⓘ</summary>"
+                        "<div class='small' style='position:absolute;"
+                        "z-index:100;max-width:340px;padding:10px 12px;"
+                        "background:#0d1117;border:1px solid #30363d;"
+                        "border-radius:6px;"
+                        "box-shadow:0 8px 24px rgba(0,0,0,.4);'>"
+                        f"{_stmt}{_link_html}</div>"
+                        "</details></td>")
+                else:
+                    statement_cell = "<td class='gray'>—</td>"
                 middle_cells = (
+                    f"<td>{html.escape(str(show_text))}</td>"
+                    f"<td class='small'>{html.escape(str(kind_text))}</td>"
                     f"<td>{title_link}</td>"
-                    f"<td><strong>{html.escape(str(contestant_text))}"
-                    f"</strong></td>"
-                    f"<td>{html.escape(str(show_text))}"
-                    f"<br><span class='small gray'>"
-                    f"{html.escape(str(kind_text))}</span></td>"
-                    f"<td style='max-width:340px;'>{leak_bits}</td>"
+                    f"{source_cell}"
+                    f"{statement_cell}"
                 )
             else:
                 middle_cells = (
