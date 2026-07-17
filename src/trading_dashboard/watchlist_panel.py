@@ -740,9 +740,7 @@ def _render_watchlist(out: List[str], watchlist: List[dict],
         watchlist = sorted(
             [r for r in watchlist
              if r.get("ticker") in held_by_ticker
-             or (r.get("bot_verdict") or "SKIP") in ("BUY_YES", "BUY_NO")
-             or ((r.get("_leak_status") or "none") != "none"
-                 and r.get("_leak_source") and r.get("_leak_title"))],
+             or (r.get("_leak_source") and r.get("_leak_title"))],
             key=_reality_sort_key)
     else:
         watchlist = sorted(
@@ -802,10 +800,9 @@ def _render_watchlist(out: List[str], watchlist: List[dict],
             "<th title='News source the leak came from (Reddit "
             "spoiler community, Reality Steve, tabloid). Status "
             "colour: green = confirmed, yellow = rumor.'>Source</th>"
-            "<th title='The leaked statement. Click the ⓘ to read "
-            "the headline and open the source post. Model live % is "
-            "the likelihood the leaked information is valid.'>"
-            "Statement</th>"
+            "<th title='The leaked statement — click to open the "
+            "source post. Model live % is the likelihood the leaked "
+            "information is valid.'>Statement</th>"
         )
     else:
         head_cols = (
@@ -923,6 +920,13 @@ def _render_watchlist(out: List[str], watchlist: List[dict],
                             "wnba", "world-cup", "mlb", "nba"}:
             _open_rows = [r for r in _open_rows
                            if r.get("pinnacle_prob_yes") is not None]
+        # Reality-leaks Model-vs-market: ONLY contracts with an actual
+        # matched leak — source AND statement — render (user
+        # 2026-07-17, repeated). Held rows without a live leak stay in
+        # Active bets alone.
+        if is_reality_bot:
+            _open_rows = [r for r in _open_rows
+                           if r.get("_leak_source") and r.get("_leak_title")]
         # Zero-volume filter (user 2026-07-13): a match where the pair's
         # total Kalshi volume is 0 hasn't traded at all — hide it from
         # Model-vs-market until someone trades. Applies to every sport
@@ -1572,31 +1576,25 @@ def _render_watchlist(out: List[str], watchlist: List[dict],
                         f"{_age_html}</td>")
                 else:
                     source_cell = "<td class='gray'>—</td>"
-                # Statement cell — native <details> ⓘ popover: click
-                # to read the leaked headline, with a link out to the
-                # source post. No JS needed.
+                # Statement cell — the leaked statement rendered
+                # inline (the <details> popover clipped inside the
+                # scroll container, user 2026-07-17: "the info popups
+                # don't work"), linking out to the source post.
                 if leak_title:
-                    _stmt = html.escape(str(leak_title))
-                    _link_html = ""
+                    _stmt = html.escape(str(leak_title)[:160])
                     if leak_url:
-                        _link_html = (
-                            f"<br><a href='{html.escape(str(leak_url))}' "
-                            f"target='_blank' rel='noopener noreferrer'>"
-                            f"open source ↗</a>")
-                    statement_cell = (
-                        "<td style='max-width:60px;'>"
-                        "<details class='leak-stmt'>"
-                        "<summary style='cursor:pointer;list-style:none;"
-                        "color:#79c0ff;font-weight:600;' "
-                        "title='Click to read the leaked statement'>"
-                        "ⓘ</summary>"
-                        "<div class='small' style='position:absolute;"
-                        "z-index:100;max-width:340px;padding:10px 12px;"
-                        "background:#0d1117;border:1px solid #30363d;"
-                        "border-radius:6px;"
-                        "box-shadow:0 8px 24px rgba(0,0,0,.4);'>"
-                        f"{_stmt}{_link_html}</div>"
-                        "</details></td>")
+                        statement_cell = (
+                            "<td class='small' style='max-width:320px;"
+                            "min-width:200px;white-space:normal;'>"
+                            f"<a href='{html.escape(str(leak_url))}' "
+                            f"target='_blank' rel='noopener noreferrer' "
+                            f"title='Open the source post'>{_stmt} ↗</a>"
+                            "</td>")
+                    else:
+                        statement_cell = (
+                            "<td class='small' style='max-width:320px;"
+                            "min-width:200px;white-space:normal;'>"
+                            f"{_stmt}</td>")
                 else:
                     statement_cell = "<td class='gray'>—</td>"
                 contestant_text = (v.get("_contestant")
