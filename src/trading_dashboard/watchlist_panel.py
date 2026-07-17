@@ -801,13 +801,15 @@ def _render_watchlist(out: List[str], watchlist: List[dict],
             "home), rank, or other.'>Type</th>"
             "<th title='Kalshi-published contract title — links to "
             "the live Kalshi market page.'>Title</th>"
+            "<th title='Contestant this contract is about (from the "
+            "Kalshi YES subtitle).'>Contestant</th>"
             "<th title='News source the leak came from (Reddit "
             "spoiler community, Reality Steve, tabloid). Status "
             "colour: green = confirmed, yellow = rumor.'>Source</th>"
             "<th title='The leaked statement. Click the ⓘ to read "
             "the headline and open the source post. Model live % is "
-            "the probability the statement is true for this "
-            "contract&apos;s YES side.'>Statement</th>"
+            "the likelihood the leaked information is valid.'>"
+            "Statement</th>"
         )
     else:
         head_cols = (
@@ -1145,9 +1147,17 @@ def _render_watchlist(out: List[str], watchlist: List[dict],
             # Model vs Market: renamed to "Model live %" / "Kalshi
             # live %" 2026-07-15 for consistency with Active bets'
             # naming — both tables are showing today's live values.
+            _model_live_th = (
+                "<th class='num' title='Likelihood the leaked "
+                "information is valid — 93% for a confirmed leak, 72% "
+                "for a rumor. Em-dash when no leak has been matched "
+                "to this contract.'>Model live %</th>"
+                if is_reality_bot else
+                "<th class='num' title='Model probability NOW — sharp devigged reference from the best available benchmark book (Pinnacle first, else Betfair Exchange UK / EU). Em-dash for matches no sharp book is quoting or when the Odds API key isn&apos;t set. YES on top, NO on bottom.'>Model live %</th>"
+            )
             header_middle = (
                 "<th class='num' title='Open interest — total contracts currently held open across all traders on this strike.'>Total contracts</th>"
-                "<th class='num' title='Model probability NOW — sharp devigged reference from the best available benchmark book (Pinnacle first, else Betfair Exchange UK / EU). Em-dash for matches no sharp book is quoting or when the Odds API key isn&apos;t set. YES on top, NO on bottom.'>Model live %</th>"
+                f"{_model_live_th}"
                 "<th class='num' title='Live Kalshi market price — YES on top (green), NO on bottom (red). Each side&apos;s implied probability that side wins.'>Kalshi live %</th>"
                 "<th class='num' title='Edge = benchmark probability (Pinnacle / Betfair) − Kalshi price, per side. YES on top (green), NO on bottom (red).'>Edge</th>"
                 "<th class='num'>EV"
@@ -1593,10 +1603,14 @@ def _render_watchlist(out: List[str], watchlist: List[dict],
                         "</details></td>")
                 else:
                     statement_cell = "<td class='gray'>—</td>"
+                contestant_text = (v.get("_contestant")
+                                   or v.get("direction") or "")
                 middle_cells = (
                     f"<td>{html.escape(str(show_text))}</td>"
-                    f"<td class='small'>{html.escape(str(kind_text))}</td>"
+                    f"<td>{html.escape(str(kind_text))}</td>"
                     f"<td>{title_link}</td>"
+                    f"<td><strong>{html.escape(str(contestant_text))}"
+                    f"</strong></td>"
                     f"{source_cell}"
                     f"{statement_cell}"
                 )
@@ -1656,7 +1670,25 @@ def _render_watchlist(out: List[str], watchlist: List[dict],
             else:
                 pinn_yes_str = "—"
                 pinn_no_str = "—"
-            pinnacle_cell = _stacked(pinn_yes_str, pinn_no_str, "pinnacle")
+            if is_reality_bot and not is_active:
+                # Model live % = the likelihood the leaked information
+                # is valid (user 2026-07-17) — a single number, not a
+                # YES/NO stack. The leak's direction (which side it
+                # supports) is already conveyed by Edge / Verdict.
+                if (v.get("_leak_status") or "none") != "none" \
+                        and pinn_p is not None:
+                    _validity = max(float(pinn_p), 1.0 - float(pinn_p))
+                    pinnacle_cell = (
+                        f"<td class='num' data-field='pinnacle' "
+                        f"title='Likelihood the leaked statement is "
+                        f"valid ({html.escape(str(v.get('_leak_status')))}"
+                        f" leak)'>{int(round(_validity * 100))}%</td>")
+                else:
+                    pinnacle_cell = ("<td class='num gray' "
+                                     "data-field='pinnacle'>—</td>")
+            else:
+                pinnacle_cell = _stacked(pinn_yes_str, pinn_no_str,
+                                          "pinnacle")
             edge_cell   = _stacked(edge_yes_str, edge_no_str, "edge")
             ev_cell     = _stacked(ev_yes_str, ev_no_str, "ev")
 
