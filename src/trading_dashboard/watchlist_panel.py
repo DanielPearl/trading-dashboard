@@ -1607,7 +1607,7 @@ def _render_watchlist(out: List[str], watchlist: List[dict],
                                    or v.get("direction") or "")
                 middle_cells = (
                     f"<td>{html.escape(str(show_text))}</td>"
-                    f"<td>{html.escape(str(kind_text))}</td>"
+                    f"<td>{html.escape(str(kind_text).capitalize())}</td>"
                     f"<td>{title_link}</td>"
                     f"<td><strong>{html.escape(str(contestant_text))}"
                     f"</strong></td>"
