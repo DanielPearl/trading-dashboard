@@ -801,7 +801,7 @@ def _render_watchlist(out: List[str], watchlist: List[dict],
             "spoiler community, Reality Steve, tabloid). Status "
             "colour: green = confirmed, yellow = rumor.'>Source</th>"
             "<th title='The leaked statement — click to open the "
-            "source post. Model live % is the likelihood the leaked "
+            "source post. Fact check % is the likelihood the leaked "
             "information is valid.'>Statement</th>"
         )
     else:
@@ -1139,8 +1139,10 @@ def _render_watchlist(out: List[str], watchlist: List[dict],
                 f"{pos_head}"
                 "<th class='num' title='Model % at ENTRY — Pinnacle&apos;s prob for our side at the moment we opened the position. Static once the trade is on. YES on top, NO on bottom.'>Model entry %</th>"
                 "<th class='num' title='Kalshi entry % — the implied probability for each side at the price we paid. Static once opened. YES on top, NO on bottom.'>Kalshi entry %</th>"
-                "<th class='num' title='Model % NOW — today&apos;s Pinnacle prob for our side. Updates every tick; compare to Model entry % to see how the line has moved. Em-dash when Pinnacle isn&apos;t quoting the match today. YES on top, NO on bottom.'>Model live %</th>"
-                "<th class='num' title='Live Kalshi market price — updates continuously. YES on top (green), NO on bottom (red).'>Kalshi live %</th>"
+                + ("<th class='num' title='Fact check — likelihood the leaked information is valid: 93% confirmed, 72% rumor.'>Fact check %</th>"
+                   if is_reality_bot else
+                   "<th class='num' title='Model % NOW — today&apos;s Pinnacle prob for our side. Updates every tick; compare to Model entry % to see how the line has moved. Em-dash when Pinnacle isn&apos;t quoting the match today. YES on top, NO on bottom.'>Model live %</th>")
+                + "<th class='num' title='Live Kalshi market price — updates continuously. YES on top (green), NO on bottom (red).'>Kalshi live %</th>"
                 "<th class='num' title='Time until the contract settles. Parsed from the Kalshi ticker&apos;s encoded date.'>Closes in</th>"
             )
         else:
@@ -1148,23 +1150,28 @@ def _render_watchlist(out: List[str], watchlist: List[dict],
             # live %" 2026-07-15 for consistency with Active bets'
             # naming — both tables are showing today's live values.
             _model_live_th = (
-                "<th class='num' title='Likelihood the leaked "
-                "information is valid — 93% for a confirmed leak, 72% "
-                "for a rumor. Em-dash when no leak has been matched "
-                "to this contract.'>Model live %</th>"
+                "<th class='num' title='Fact check — likelihood the "
+                "leaked information is valid: 93% for a confirmed "
+                "leak, 72% for a rumor. Em-dash when no leak has been "
+                "matched to this contract.'>Fact check %</th>"
                 if is_reality_bot else
                 "<th class='num' title='Model probability NOW — sharp devigged reference from the best available benchmark book (Pinnacle first, else Betfair Exchange UK / EU). Em-dash for matches no sharp book is quoting or when the Odds API key isn&apos;t set. YES on top, NO on bottom.'>Model live %</th>"
             )
-            header_middle = (
-                "<th class='num' title='Open interest — total contracts currently held open across all traders on this strike.'>Total contracts</th>"
-                f"{_model_live_th}"
-                "<th class='num' title='Live Kalshi market price — YES on top (green), NO on bottom (red). Each side&apos;s implied probability that side wins.'>Kalshi live %</th>"
+            # Reality-leaks drops Edge + EV — its buy rule is
+            # price-vs-70¢, not edge-vs-model.
+            _edge_ev_th = "" if is_reality_bot else (
                 "<th class='num' title='Edge = benchmark probability (Pinnacle / Betfair) − Kalshi price, per side. YES on top (green), NO on bottom (red).'>Edge</th>"
                 "<th class='num'>EV"
                 "<button type='button' class='ev-info-btn' "
                 "title='How is EV calculated?' "
                 "aria-label='How is EV calculated?'>i</button>"
                 "</th>"
+            )
+            header_middle = (
+                "<th class='num' title='Open interest — total contracts currently held open across all traders on this strike.'>Total contracts</th>"
+                f"{_model_live_th}"
+                "<th class='num' title='Live Kalshi market price — YES on top (green), NO on bottom (red). Each side&apos;s implied probability that side wins.'>Kalshi live %</th>"
+                f"{_edge_ev_th}"
                 "<th class='num' title='Time until the contract settles. Parsed from the Kalshi ticker&apos;s encoded date.'>Closes in</th>"
                 "<th>Verdict</th>"
                 f"{pos_head}"
@@ -1904,13 +1911,17 @@ def _render_watchlist(out: List[str], watchlist: List[dict],
                     f"{closes_in_cell}"
                 )
             else:
+                # Reality-leaks drops Edge + EV (user 2026-07-17) —
+                # the buy rule is price-vs-70¢, not edge-vs-model, so
+                # those columns carry no signal here.
+                _edge_ev = ("" if is_reality_bot
+                            else f"{edge_cell}{ev_cell}")
                 row_body = (
                     f"{rules_cell}{date_cell}{event_cell}{middle_cells}"
                     f"<td class='num' data-field='oi'>{oi_str}</td>"
                     f"{pinnacle_cell}"
                     f"{kalshi_cell}"
-                    f"{edge_cell}"
-                    f"{ev_cell}"
+                    f"{_edge_ev}"
                     f"{closes_in_cell}"
                     f"<td data-field='verdict'>{badge}</td>"
                     f"{position_cells}"
