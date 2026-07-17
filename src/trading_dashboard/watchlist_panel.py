@@ -797,6 +797,9 @@ def _render_watchlist(out: List[str], watchlist: List[dict],
             "the live Kalshi market page.'>Title</th>"
             "<th title='Contestant this contract is about (from the "
             "Kalshi YES subtitle).'>Contestant</th>"
+            "<th title='What the leaked statement claims about this "
+            "contestant: Winner, Eliminated, Safe, or a placement "
+            "(Top 3, Ranked 2nd, ...).'>Prediction</th>"
             "<th title='News source the leak came from (Reddit "
             "spoiler community, Reality Steve, tabloid). Status "
             "colour: green = confirmed, yellow = rumor.'>Source</th>"
@@ -1613,12 +1616,24 @@ def _render_watchlist(out: List[str], watchlist: List[dict],
                     statement_cell = "<td class='gray'>—</td>"
                 contestant_text = (v.get("_contestant")
                                    or v.get("direction") or "")
+                _pred = v.get("_leak_prediction") or ""
+                if _pred in ("Eliminated",):
+                    _pred_color = "#f85149"
+                elif _pred in ("Winner",):
+                    _pred_color = "#3fb950"
+                else:
+                    _pred_color = "#d29922"   # Safe / placements
+                pred_cell = (
+                    f"<td style='color:{_pred_color};font-weight:600;"
+                    f"white-space:nowrap;'>{html.escape(_pred)}</td>"
+                    if _pred else "<td class='gray'>—</td>")
                 middle_cells = (
                     f"<td>{html.escape(str(show_text))}</td>"
                     f"<td>{html.escape(str(kind_text).capitalize())}</td>"
                     f"<td>{title_link}</td>"
                     f"<td><strong>{html.escape(str(contestant_text))}"
                     f"</strong></td>"
+                    f"{pred_cell}"
                     f"{source_cell}"
                     f"{statement_cell}"
                 )

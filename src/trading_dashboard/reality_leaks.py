@@ -126,6 +126,7 @@ def build_standard_watchlist_rows(payload: Dict[str, Any]
             "_contestant": r.get("contestant") or "",
             "_market_kind": r.get("market_kind") or "",
             "_leak_status": r.get("leak_status") or "none",
+            "_leak_prediction": r.get("leak_prediction"),
             "_leak_source": r.get("leak_source"),
             "_leak_url": r.get("leak_url"),
             "_leak_title": r.get("leak_title"),
