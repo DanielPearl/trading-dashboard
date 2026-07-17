@@ -722,8 +722,11 @@ def _render_watchlist(out: List[str], watchlist: List[dict],
         # Hundreds of rows across every show, almost all leak-less
         # SKIPs. Sort: held first, then BUY verdicts, then leaked
         # rows (confirmed before rumor), then everything else by
-        # closes-soonest; cap at 40 so every leaked contract is
-        # visible without drowning the table in off-season SKIPs.
+        # closes-soonest. EVERY held / BUY / leaked row is always
+        # shown (user 2026-07-17: "the watchlist page should be
+        # populated with all the leaks"); only the leak-less SKIP
+        # tail is trimmed so the table doesn't drown in off-season
+        # rows.
         _leak_rank = {"confirmed": 0, "rumor": 1}
         def _reality_sort_key(r: dict) -> Tuple[int, int, int, float]:
             is_held = 0 if r.get("ticker") in held_by_ticker else 1
@@ -736,7 +739,15 @@ def _render_watchlist(out: List[str], watchlist: List[dict],
             except (TypeError, ValueError):
                 closes = 1e9
             return (is_held, actionable, leak, closes)
-        watchlist = sorted(watchlist, key=_reality_sort_key)[:40]
+        watchlist = sorted(watchlist, key=_reality_sort_key)
+        _always = [r for r in watchlist
+                   if r.get("ticker") in held_by_ticker
+                   or (r.get("bot_verdict") or "SKIP") in ("BUY_YES",
+                                                            "BUY_NO")
+                   or (r.get("_leak_status") or "none") != "none"]
+        _always_ids = {id(r) for r in _always}
+        _rest = [r for r in watchlist if id(r) not in _always_ids]
+        watchlist = _always + _rest[:max(0, 40 - len(_always))]
     else:
         watchlist = sorted(
             watchlist,

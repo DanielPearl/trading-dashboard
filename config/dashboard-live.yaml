@@ -237,6 +237,34 @@ bots:
     sim_state_path: /root/billboard-charts/data/outputs-live/sim_state.json
     training_db_path: /root/billboard-charts/data/processed/artifacts/training_data.db
 
+  - key: reality-leaks
+    name: Reality Leaks
+    # Leak-driven reality-TV trader — PAPER ONLY, permanently. The
+    # daemon runs in the SIM service (no reality_leaks_trader block
+    # here → no daemon on live); this entry just renders the same
+    # sim-written artifacts on 8081: watchlist.json for the
+    # Model-vs-market/leak table and the paper sim.db for positions.
+    dashboard_type: reality
+    data_source: "Reddit spoiler communities + Reality Steve + UK tabloids"
+    db_path: /root/reality-leaks/data/outputs/sim.db
+    decisions_path: /root/reality-leaks/data/outputs/watchlist.json
+    watchlist_json_path: /root/reality-leaks/data/outputs/watchlist.json
+    series_prefixes:
+      - KXBIGBROTHER
+      - KXSURVIVOR
+      - KXBACHELORETTE
+      - KXGOLDENBACHELOR
+      - KXTHEMASKEDSINGER
+      - KXTHEAMAZINGRACE
+      - KXLOVEISBLIND
+      - KXLIUK
+      - KXLIEUKRANK
+      - KXLIUSA
+      - KXLOVEISLANDALLSTARS
+      - KXTRAITORS
+      - KXMRBEASTGAMES
+      - KXLACASADELOSFAMOSOS
+
   - key: darts
     name: Darts Forecast
     dashboard_type: sport
