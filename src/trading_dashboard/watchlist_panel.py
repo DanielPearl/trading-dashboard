@@ -1583,10 +1583,17 @@ def _render_watchlist(out: List[str], watchlist: List[dict],
                 if leak_title:
                     _stmt = html.escape(str(leak_title)[:160])
                     if leak_url:
+                        # ticker-link class = inherit the page's text
+                        # colour (hover turns blue) — the default
+                        # anchor blue clashed with the palette (user
+                        # 2026-07-17). Dotted underline keeps it
+                        # visibly clickable.
                         statement_cell = (
                             "<td class='small' style='max-width:320px;"
                             "min-width:200px;white-space:normal;'>"
-                            f"<a href='{html.escape(str(leak_url))}' "
+                            f"<a class='ticker-link' "
+                            f"style='text-decoration:underline dotted;' "
+                            f"href='{html.escape(str(leak_url))}' "
                             f"target='_blank' rel='noopener noreferrer' "
                             f"title='Open the source post'>{_stmt} ↗</a>"
                             "</td>")
