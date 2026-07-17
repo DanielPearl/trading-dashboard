@@ -156,6 +156,15 @@ def build_standard_watchlist_rows(payload: Dict[str, Any]
 def render_models_panel(out: List[str], bot: Dict[str, Any]) -> None:
     payload = load_watchlist(bot.get("watchlist_json_path"))
     coverage = payload.get("coverage") or []
+    if payload.get("classifier_enabled") is False:
+        out.append(
+            "<p style='color:#d29922;border:1px solid #d29922;"
+            "border-radius:6px;padding:10px 12px;'>⚠ Leak classifier "
+            "OFFLINE — <code>ANTHROPIC_API_KEY</code> is not set in "
+            "the bot's environment (/root/gas-prices/.env). In strict "
+            "mode nothing is marked as a leak and no trades are "
+            "made until the key is added and the sim service is "
+            "restarted.</p>")
     out.append(
         "<h3 class='subhead' style='margin-top:18px;'>Leak-confidence "
         "model</h3>"
