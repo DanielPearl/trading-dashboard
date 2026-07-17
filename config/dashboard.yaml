@@ -319,6 +319,37 @@ bots:
     sim_state_path: /root/billboard-charts/data/outputs/sim_state.json
     training_db_path: /root/billboard-charts/data/processed/artifacts/training_data.db
 
+  - key: reality-leaks
+    name: Reality Leaks
+    # Leak-driven reality-TV PAPER trader (2026-07-17). Watches public
+    # leak channels (Reddit spoiler subs, Reality Steve RSS, UK
+    # tabloids) across every leak-capable show — Big Brother,
+    # Survivor, Bachelor franchise, Love Island UK/USA, Masked
+    # Singer, Amazing Race, Love Is Blind, Traitors, Beast Games,
+    # BBB, La Casa — and paper-buys the leaked side when the market
+    # hasn't priced it. JSON-source watchlist (leak columns ride on
+    # _-prefixed keys), standard-schema sim.db for positions.
+    dashboard_type: reality
+    data_source: "Reddit spoiler communities + Reality Steve + UK tabloids"
+    db_path: /root/reality-leaks/data/outputs/sim.db
+    decisions_path: /root/reality-leaks/data/outputs/watchlist.json
+    watchlist_json_path: /root/reality-leaks/data/outputs/watchlist.json
+    series_prefixes:
+      - KXBIGBROTHER
+      - KXSURVIVOR
+      - KXBACHELORETTE
+      - KXGOLDENBACHELOR
+      - KXTHEMASKEDSINGER
+      - KXTHEAMAZINGRACE
+      - KXLOVEISBLIND
+      - KXLIUK
+      - KXLIEUKRANK
+      - KXLIUSA
+      - KXLOVEISLANDALLSTARS
+      - KXTRAITORS
+      - KXMRBEASTGAMES
+      - KXLACASADELOSFAMOSOS
+
   - key: darts
     name: Darts Forecast
     # Darts bot writes the same JSON output schema as tennis (one row
@@ -597,4 +628,15 @@ billboard_trader:
   # writes.
   enabled: false
   repo_path: /root/billboard-charts
+  interval_seconds: 300
+
+reality_leaks_trader:
+  # Leak-driven reality-TV PAPER trader (2026-07-17). Public data
+  # only — no Kalshi creds required, and no live: block exists
+  # anywhere; the trader writes sim.db and never places orders.
+  # Reddit polling upgrades to OAuth via the REDDIT_CLIENT_ID /
+  # REDDIT_CLIENT_SECRET already in /root/gas-prices/.env (survivor
+  # bot), else falls back to the public JSON endpoint.
+  enabled: true
+  repo_path: /root/reality-leaks
   interval_seconds: 300

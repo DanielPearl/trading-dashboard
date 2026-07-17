@@ -116,21 +116,26 @@ def _compute_cross_bot_rollup(bots: List[dict], *, period_days: int | None,
         # metrics.json / coefficients.json. Synthesize a model
         # dict for the card grid so the tennis bot shows up
         # alongside the Kalshi bots on the home page.
-        if b.get("dashboard_type") in ("sport", "survivor", "billboard"):
+        if b.get("dashboard_type") in ("sport", "survivor", "billboard",
+                                        "reality"):
             # Tennis, survivor, and billboard share the
             # sim_state.json shape — the survivor and
             # billboard adapters delegate
             # closed_positions_for_rollup to the tennis
             # adapter under the hood. The
             # model_summary_for_card signature is the
-            # same across all three.
+            # same across all three. Reality-leaks mirrors
+            # billboard (JSON watchlist + standard sim.db).
             from . import tennis as _tennis
             from . import survivor as _survivor
             from . import billboard as _billboard
+            from . import reality_leaks as _reality
             if b.get("dashboard_type") == "survivor":
                 adapter = _survivor
             elif b.get("dashboard_type") == "billboard":
                 adapter = _billboard
+            elif b.get("dashboard_type") == "reality":
+                adapter = _reality
             else:
                 adapter = _tennis
             if b.get("key") == "world-cup":
@@ -218,15 +223,15 @@ def _compute_cross_bot_rollup(bots: List[dict], *, period_days: int | None,
                             ab["_dashboard_type"] = "sport"
                             ab["_display"] = b.get("display") or {}
                             global_active_bets.append(ab)
-            elif b.get("dashboard_type") == "billboard":
-                # Billboard writes a real sim.db — same
-                # readers as the standard bots below.
+            elif b.get("dashboard_type") in ("billboard", "reality"):
+                # Billboard + reality-leaks write a real sim.db —
+                # same readers as the standard bots below.
                 for ab in fetch_active_bets_with_marks(b["db_path"]):
                     if not _keep_on_kalshi(ab):
                         continue
                     ab["_bot_name"] = b["name"]
                     ab["_bot_key"] = b["key"]
-                    ab["_dashboard_type"] = "billboard"
+                    ab["_dashboard_type"] = b.get("dashboard_type")
                     ab["_display"] = b.get("display") or {}
                     global_active_bets.append(ab)
             # Closed paper bets into the cross-bot history
@@ -254,7 +259,7 @@ def _compute_cross_bot_rollup(bots: List[dict], *, period_days: int | None,
             # never traded real money now simply shows
             # empty on the LIVE ledger, and the sport
             # rollup drops dry-run evaluations too.
-            if b.get("dashboard_type") == "billboard":
+            if b.get("dashboard_type") in ("billboard", "reality"):
                 closed_iter = fetch_bet_history(
                     b["db_path"], limit=10_000)
             elif b.get("dashboard_type") == "sport":
@@ -596,6 +601,22 @@ class Handler(BaseHTTPRequestHandler):
                         ab.setdefault("_display", bot.get("display") or {})
                     latest_active = fetch_latest_open_position(db_path)
                     model = None
+                elif bot.get("dashboard_type") == "reality":
+                    # Reality-leaks mirrors the billboard pattern:
+                    # watchlist rows synthesised from watchlist.json
+                    # (with leak columns riding on _-prefixed keys),
+                    # paper positions from the standard sim.db
+                    # readers, model None.
+                    from . import reality_leaks as _reality
+                    payload_wl = _reality.load_watchlist(
+                        bot.get("watchlist_json_path"))
+                    watchlist = _reality.build_standard_watchlist_rows(
+                        payload_wl)
+                    bot_active_bets = fetch_active_bets_with_marks(db_path)
+                    for ab in bot_active_bets:
+                        ab.setdefault("_display", bot.get("display") or {})
+                    latest_active = fetch_latest_open_position(db_path)
+                    model = None
                 else:
                     # Bot-scoped fetches for standard sim.db bots.
                     model = fetch_latest_model(db_path)
@@ -649,7 +670,8 @@ class Handler(BaseHTTPRequestHandler):
                 # empty chart frame rather than 500ing.
                 if (series_ticker
                         and bot.get("dashboard_type") not in ("sport",
-                                                              "billboard")):
+                                                              "billboard",
+                                                              "reality")):
                     from . import kalshi_client
                     # Sport series like KXNBAGAME have many concurrent
                     # open events (one per game on the slate). Narrowing
@@ -692,7 +714,8 @@ class Handler(BaseHTTPRequestHandler):
                 if (db_path
                         and bot.get("dashboard_type") not in ("sport",
                                                               "survivor",
-                                                              "billboard")):
+                                                              "billboard",
+                                                              "reality")):
                     candidates: List[str] = []
                     if latest_active and latest_active.get("ticker"):
                         candidates.append(latest_active["ticker"])
@@ -880,6 +903,17 @@ class Handler(BaseHTTPRequestHandler):
                     )
                     payload_dict["bot"] = bot["key"]
                     payload_dict["type"] = "billboard"
+                elif bot.get("dashboard_type") == "reality":
+                    # Same reasoning as billboard above — feed the
+                    # cross-bot summary so the Home cards stay live.
+                    payload_dict = _tennis_like_snapshot(
+                        [], [], self.bots,
+                        edge_cfg=self.edge_cfg,
+                        period_days=snap_period_days,
+                        mode=self.mode,
+                    )
+                    payload_dict["bot"] = bot["key"]
+                    payload_dict["type"] = "reality"
                 else:
                     db_path = bot["db_path"]
                     payload_dict = build_snapshot(db_path, self.bots,
@@ -1001,6 +1035,7 @@ def serve(host: str, port: int, bots: List[dict], risk_caps: dict,
           billboard_trader_cfg: dict | None = None,
           world_cup_trader_cfg: dict | None = None,
           mlb_trader_cfg: dict | None = None,
+          reality_leaks_trader_cfg: dict | None = None,
           mode: str = "sim",
           live_state_paths: List[str] | None = None) -> None:
     Handler.bots = bots
@@ -1119,6 +1154,11 @@ def serve(host: str, port: int, bots: List[dict], risk_caps: dict,
     if billboard_trader_cfg:
         from .bots import billboard as billboard_bot
         billboard_bot.start_daemon(billboard_trader_cfg)
+    # Reality Leaks paper trader — public-data only (no Kalshi creds
+    # needed), permanently sim-side.
+    if reality_leaks_trader_cfg:
+        from .bots import reality_leaks as reality_leaks_bot
+        reality_leaks_bot.start_daemon(reality_leaks_trader_cfg)
     server = ThreadingHTTPServer((host, port), Handler)
     log.info("dashboard listening on http://%s:%d", host, port)
     log.info("registered bots: %s",
@@ -1247,6 +1287,11 @@ def main(argv: list[str] | None = None) -> int:
             # empty-state placeholder when rows is empty.
             available = bool(b.metrics_path
                              and Path(b.metrics_path).exists())
+        elif b.dashboard_type == "reality":
+            # No trained model / metrics.json — the bot is available
+            # once its exporter has written a watchlist snapshot.
+            available = bool(b.watchlist_json_path
+                             and Path(b.watchlist_json_path).exists())
         else:
             available = Path(b.db_path).exists()
         bots.append({
@@ -1298,6 +1343,7 @@ def main(argv: list[str] | None = None) -> int:
     billboard_trader_cfg = cfg.raw.get("billboard_trader") or {}
     world_cup_trader_cfg = cfg.raw.get("world_cup_trader") or {}
     mlb_trader_cfg = cfg.raw.get("mlb_trader") or {}
+    reality_leaks_trader_cfg = cfg.raw.get("reality_leaks_trader") or {}
 
     host = args.host or cfg.host
     port = args.port or cfg.port
@@ -1337,6 +1383,7 @@ def main(argv: list[str] | None = None) -> int:
           billboard_trader_cfg=billboard_trader_cfg,
           world_cup_trader_cfg=world_cup_trader_cfg,
           mlb_trader_cfg=mlb_trader_cfg,
+          reality_leaks_trader_cfg=reality_leaks_trader_cfg,
           mode=cfg.mode,
           live_state_paths=live_state_paths)
     return 0

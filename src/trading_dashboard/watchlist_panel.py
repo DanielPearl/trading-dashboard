@@ -417,11 +417,14 @@ def _render_watchlist(out: List[str], watchlist: List[dict],
     is_sport_bot = current_bot in {"nba", "wnba", "tennis", "table-tennis",
                                     "darts", "world-cup", "mlb"}
     is_billboard_bot = current_bot == "billboard"
+    is_reality_bot = current_bot == "reality-leaks"
     # Billboard uses the sport-style two-section layout (Active bets ·
     # Model vs market, no hero chart, no position columns on the
     # Model-vs-market table) but keeps its own columns / sort — user
-    # 2026-07-16: "design should be similar to tennis".
-    use_sections = is_sport_bot or is_billboard_bot
+    # 2026-07-16: "design should be similar to tennis". Reality-leaks
+    # follows the same layout with its own Show / Contestant / Leak
+    # columns.
+    use_sections = is_sport_bot or is_billboard_bot or is_reality_bot
     if not use_sections:
         out.append("<div class='section'><h2>"
                    "Watchlist — model vs market</h2>"
@@ -715,6 +718,25 @@ def _render_watchlist(out: List[str], watchlist: List[dict],
                 ev_neg = 0.0
             return (is_held, actionable, ev_neg)
         watchlist = sorted(watchlist, key=_billboard_sort_key)[:10]
+    elif is_reality_bot:
+        # Hundreds of rows across every show, almost all leak-less
+        # SKIPs. Sort: held first, then BUY verdicts, then leaked
+        # rows (confirmed before rumor), then everything else by
+        # closes-soonest; cap at 40 so every leaked contract is
+        # visible without drowning the table in off-season SKIPs.
+        _leak_rank = {"confirmed": 0, "rumor": 1}
+        def _reality_sort_key(r: dict) -> Tuple[int, int, int, float]:
+            is_held = 0 if r.get("ticker") in held_by_ticker else 1
+            v = r.get("bot_verdict") or "SKIP"
+            actionable = 0 if v in ("BUY_YES", "BUY_NO") else 1
+            leak = _leak_rank.get(r.get("_leak_status") or "none", 2)
+            mtc = r.get("minutes_to_close")
+            try:
+                closes = float(mtc) if mtc is not None else 1e9
+            except (TypeError, ValueError):
+                closes = 1e9
+            return (is_held, actionable, leak, closes)
+        watchlist = sorted(watchlist, key=_reality_sort_key)[:40]
     else:
         watchlist = sorted(
             watchlist,
@@ -754,6 +776,23 @@ def _render_watchlist(out: List[str], watchlist: List[dict],
             "model&apos;s P(song is on the Hot 100 at all) — context "
             "for the top-10 probability in Model live %.'>Song</th>"
             "<th title='Recording artist.'>Artist</th>"
+        )
+    elif is_reality_bot:
+        # Reality-leaks layout: Title | Contestant | Show | Leak. The
+        # Leak column is the whole thesis — status + source, with the
+        # leak headline linked underneath.
+        head_cols = (
+            "<th title='Kalshi-published contract title — the YES "
+            "question shown on the market page.'>Title</th>"
+            "<th title='Contestant the contract is about (from the "
+            "Kalshi YES subtitle).'>Contestant</th>"
+            "<th title='Show + market kind (winner / weekly "
+            "elimination / rank).'>Show</th>"
+            "<th title='Leak signal: confirmed (spoiler outlet, "
+            "high-upvote thread, or explicit spoiler language) or "
+            "rumor. The linked headline underneath is the actual "
+            "leak post. Model live % is the leak-implied "
+            "probability.'>Leak</th>"
         )
     else:
         head_cols = (
@@ -816,7 +855,9 @@ def _render_watchlist(out: List[str], watchlist: List[dict],
         # locked-in favourites pin at 99¢ days before settlement),
         # so the extreme-ask heuristic would blank most of the slate —
         # the completed/expiration checks above still retire rows.
-        if not is_billboard_bot:
+        if not (is_billboard_bot or is_reality_bot):
+            # Reality-leaks exempt too: a leaked longshot sitting at a
+            # 1–2¢ ask is exactly the row the user needs to see.
             for a in asks:
                 if isinstance(a, (int, float)) and (a <= 1 or a >= 99):
                     return True
@@ -1481,6 +1522,51 @@ def _render_watchlist(out: List[str], watchlist: List[dict],
                     f"<td>{html.escape(str(song_text))}{_p100_html}</td>"
                     f"<td>{html.escape(str(artist_text))}</td>"
                 )
+            elif is_reality_bot:
+                contestant_text = v.get("_contestant") or v.get("direction") or ""
+                show_text = v.get("_show") or ""
+                kind_text = v.get("_market_kind") or ""
+                leak_status = v.get("_leak_status") or "none"
+                leak_source = v.get("_leak_source") or ""
+                leak_url = v.get("_leak_url") or ""
+                leak_title = v.get("_leak_title") or ""
+                leak_age = v.get("_leak_age_hours")
+                if leak_status == "confirmed":
+                    _pill = ("<span style='color:#3fb950;font-weight:600;'>"
+                             "confirmed</span>")
+                elif leak_status == "rumor":
+                    _pill = ("<span style='color:#d29922;font-weight:600;'>"
+                             "rumor</span>")
+                else:
+                    _pill = "<span class='gray'>—</span>"
+                leak_bits = _pill
+                if leak_source:
+                    leak_bits += (f" <span class='small gray'>"
+                                  f"{html.escape(str(leak_source))}</span>")
+                try:
+                    if leak_age is not None:
+                        leak_bits += (f" <span class='small gray'>"
+                                      f"({float(leak_age):.0f}h)</span>")
+                except (TypeError, ValueError):
+                    pass
+                if leak_title:
+                    _lt = html.escape(str(leak_title)[:80])
+                    if leak_url:
+                        leak_bits += (
+                            f"<br><a class='small' href='"
+                            f"{html.escape(str(leak_url))}' target='_blank' "
+                            f"rel='noopener noreferrer'>{_lt}</a>")
+                    else:
+                        leak_bits += f"<br><span class='small gray'>{_lt}</span>"
+                middle_cells = (
+                    f"<td>{title_link}</td>"
+                    f"<td><strong>{html.escape(str(contestant_text))}"
+                    f"</strong></td>"
+                    f"<td>{html.escape(str(show_text))}"
+                    f"<br><span class='small gray'>"
+                    f"{html.escape(str(kind_text))}</span></td>"
+                    f"<td style='max-width:340px;'>{leak_bits}</td>"
+                )
             else:
                 middle_cells = (
                     f"<td>{title_link}</td>"
@@ -1521,9 +1607,11 @@ def _render_watchlist(out: List[str], watchlist: List[dict],
             # ``live_prob_a`` / ``live_prob_b`` when Pinnacle doesn't
             # list the match.
             pinn_p = v.get("pinnacle_prob_yes")
-            if (is_active or is_billboard_bot) and pinn_p is None:
+            if (is_active or is_billboard_bot or is_reality_bot) \
+                    and pinn_p is None:
                 # Billboard has no external benchmark book — the bot's
-                # own P(#1) is the Model % on every pane.
+                # own P(#1) is the Model % on every pane. Reality-leaks
+                # likewise: Model % is the leak-implied probability.
                 pinn_p = v.get("model_prob_yes")
             if pinn_p is not None:
                 if flip_active:

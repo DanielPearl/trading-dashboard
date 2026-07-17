@@ -1130,11 +1130,12 @@ def fetch_global_summary(bots: List[dict],
         elif b.get("dashboard_type") == "survivor":
             from . import survivor as _survivor
             s = _survivor.summary_for_rollup(b.get("sim_state_path"))
-        elif b.get("dashboard_type") == "billboard":
-            # Billboard now writes a real sim.db (standard schema) so
-            # the same summary reader the gas / claims bots use works
-            # here too. The legacy `_billboard.summary_for_rollup`
-            # always returned zeros (advisory-only era).
+        elif b.get("dashboard_type") in ("billboard", "reality"):
+            # Billboard + reality-leaks write a real sim.db (standard
+            # schema) so the same summary reader the gas / claims
+            # bots use works here too. The legacy
+            # `_billboard.summary_for_rollup` always returned zeros
+            # (advisory-only era).
             s = fetch_summary(b["db_path"], period_days=period_days)
         elif b.get("dashboard_type") and b["dashboard_type"] != "standard":
             continue

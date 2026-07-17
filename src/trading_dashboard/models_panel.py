@@ -2747,6 +2747,13 @@ def _render_models_panel(out: List[str], bot: dict, model: dict | None,
         _billboard.render_models_panel(out, bot)
         out.append("</div></div>")
         return
+    # Reality-leaks has no trained model at all — its Models tab
+    # documents the leak-confidence mapping + per-show coverage.
+    if bot.get("dashboard_type") == "reality":
+        from . import reality_leaks as _reality
+        _reality.render_models_panel(out, bot)
+        out.append("</div></div>")
+        return
     db_path = bot.get("db_path") or ""
     if not db_path or not Path(db_path).exists():
         _render_bot_unavailable(out, bot.get("key", ""))

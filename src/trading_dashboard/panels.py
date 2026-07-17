@@ -394,7 +394,7 @@ def _render_bot_cards(out: List[str], rollup: dict,
         # through its own page since its model has its own renderer.
         if not bot_key:
             href = "#"
-        elif b.get("dashboard_type") in ("sport", "survivor", "billboard"):
+        elif b.get("dashboard_type") in ("sport", "survivor", "billboard", "reality"):
             href = f"?bot={html.escape(bot_key)}&tab=models"
         else:
             href = f"?tab=models&bot={html.escape(bot_key)}"
@@ -413,7 +413,7 @@ def _render_bot_cards(out: List[str], rollup: dict,
         # "training accuracy" is a per-strike grid average that doesn't
         # line up apples-to-apples with the live actual-win-%, so the
         # drift badge fires spuriously on every load.
-        _drift_exempt = b.get("dashboard_type") in ("sport", "survivor", "billboard") \
+        _drift_exempt = b.get("dashboard_type") in ("sport", "survivor", "billboard", "reality") \
             or bot_key == "natural-gas"
         if m and not _drift_exempt:
             a_wins_pre = int(m.get("actual_wins") or 0)
@@ -442,7 +442,7 @@ def _render_bot_cards(out: List[str], rollup: dict,
         # the schema we need, so they get no pill (rather than a
         # misleading "no data" badge on every load).
         regime_html = ""
-        if b.get("dashboard_type") not in ("sport", "survivor", "billboard"):
+        if b.get("dashboard_type") not in ("sport", "survivor", "billboard", "reality"):
             regime = bot_regime_status(b.get("db_path") or "")
             if regime.get("status") and regime["status"] != "gray":
                 regime_html = (
@@ -465,7 +465,7 @@ def _render_bot_cards(out: List[str], rollup: dict,
         # underlying — same exclusion as the regime pill above.
         staleness_html = ""
         if (b.get("dashboard_type") not in
-                ("sport", "survivor", "billboard", "whale", "rules-parser")
+                ("sport", "survivor", "billboard", "reality", "whale", "rules-parser")
                 and m and m.get("current_gas_price") is not None
                 and b.get("series_ticker")):
             try:
@@ -1752,7 +1752,7 @@ def _render_bet_history_block(out: List[str], history: List[dict],
 # paper-only, but its watchlist / model / training pages are live.
 BOT_FILTER_KEYS = {
     "mlb", "nba", "wnba", "tennis", "table-tennis", "darts",
-    "world-cup", "billboard",
+    "world-cup", "billboard", "reality-leaks",
 }
 
 
