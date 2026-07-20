@@ -309,17 +309,27 @@ class SportLiveExecutor:
         edge = float(row.get("buy_side_edge") or 0.0)
         if ask_cents is None or model_p is None:
             return
-        # Sharp-benchmark gate. When ``require_pinnacle`` is true in the
-        # config, refuse to trade any row where the row's
-        # ``pinnacle_prob_yes`` (populated by the tennis / WNBA / MLB
-        # exporter from the Pinnacle guest feed + Odds API cascade)
-        # isn't set. This prevents the exact failure mode the
-        # 2026-07-11 tennis audit surfaced: rows without a sharp line
-        # fall back to the internal Sackmann-trained model, which
-        # emits ~50% on unseen fixtures and clears the 9pp gate on
-        # deep-underdog Kalshi asks — a phantom edge that dissolves
-        # once Pinnacle actually posts.
-        if self.require_pinnacle and row.get("pinnacle_prob_yes") is None:
+        # Sharp-benchmark gate. When ``require_pinnacle`` is true in
+        # the config, refuse to trade any row where the sharp-book
+        # line isn't populated. Sport exporters all stamp
+        # ``pinnacle_prob_a`` (Tennis / WNBA / NBA / MLB / WC follow
+        # the same schema) on the RAW row the executor receives, but
+        # only the dashboard's render-time adapter adds
+        # ``pinnacle_prob_yes``. Check every variant so the gate
+        # correctly recognises a Pinnacle line no matter which
+        # schema the row came from.
+        #
+        # (Bug caught 2026-07-20: since 07-11 the gate was ONLY
+        # checking ``pinnacle_prob_yes``, which is never present on
+        # the executor-facing row → every tennis / WNBA buy skipped
+        # silently. Tennis went ~6 days without opening a new
+        # position because of this.)
+        _pinn_present = (
+            row.get("pinnacle_prob_yes") is not None
+            or row.get("pinnacle_prob_a") is not None
+            or row.get("pinnacle_prob_b") is not None
+        )
+        if self.require_pinnacle and not _pinn_present:
             self._log.info(
                 "%s-live skip %s: no Pinnacle line (require_pinnacle)",
                 self.bot_key, ticker)
