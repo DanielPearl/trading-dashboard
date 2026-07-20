@@ -222,6 +222,42 @@ class KalshiClient:
             return None
 
 
+def market_cents(m: dict, name: str) -> Optional[int]:
+    """Price field in cents, tolerant of the API's migration from int
+    cents (``yes_ask``) to dollar strings (``yes_ask_dollars``)."""
+    v = m.get(name)
+    if v not in (None, 0):
+        try:
+            return int(v)
+        except (TypeError, ValueError):
+            pass
+    d = m.get(f"{name}_dollars")
+    if d not in (None, "", "0", "0.0000"):
+        try:
+            return int(round(float(d) * 100))
+        except (TypeError, ValueError):
+            pass
+    return None
+
+
+def market_count(m: dict, name: str) -> Optional[float]:
+    """Count field (open_interest / volume), tolerant of the ``_fp``
+    string variants the API migrated to."""
+    v = m.get(name)
+    if v is not None:
+        try:
+            return float(v)
+        except (TypeError, ValueError):
+            pass
+    fp = m.get(f"{name}_fp")
+    if fp is not None:
+        try:
+            return float(fp)
+        except (TypeError, ValueError):
+            pass
+    return None
+
+
 def get_client() -> KalshiClient:
     """Process-wide singleton — keeps the loaded RSA key in memory."""
     global _cached

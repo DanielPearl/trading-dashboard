@@ -1004,20 +1004,20 @@ def _render_watchlist(out: List[str], watchlist: List[dict],
             _mkt_title = ""
             _mkt_yes_ask = _mkt_no_ask = _mkt_oi = None
             try:
-                from .kalshi_client import get_client
+                from .kalshi_client import (get_client, market_cents,
+                                             market_count)
                 _mkt = get_client().get_market(_t) or {}
                 _mkt_title = _mkt.get("title") or ""
-                _ya = _mkt.get("yes_ask")
-                if _ya in (None, 0):
+                _ya = market_cents(_mkt, "yes_ask")
+                if _ya is None:
                     # Closed/halted market: the last trade is the best
                     # remaining "Kalshi %" (no live book exists).
-                    _ya = _mkt.get("last_price")
-                if _ya not in (None, 0):
-                    _mkt_yes_ask = int(_ya)
-                    _mkt_no_ask = int(_mkt.get("no_ask")
-                                       or (100 - int(_ya)))
-                if _mkt_oi is None:
-                    _mkt_oi = _mkt.get("open_interest")
+                    _ya = market_cents(_mkt, "last_price")
+                if _ya is not None:
+                    _mkt_yes_ask = _ya
+                    _mkt_no_ask = (market_cents(_mkt, "no_ask")
+                                    or (100 - _ya))
+                _mkt_oi = market_count(_mkt, "open_interest")
             except Exception:  # noqa: BLE001 — display-only enrichment
                 pass
             _held_rows.append({

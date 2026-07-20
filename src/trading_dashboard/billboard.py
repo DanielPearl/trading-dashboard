@@ -300,15 +300,17 @@ def augment_with_kalshi_markets(rows: List[Dict[str, Any]],
         if existing is not None:
             # Exporter row wins; just backfill liquidity fields the
             # payload may lack.
+            from .kalshi_client import market_count as _mc
             if existing.get("open_interest") is None:
-                existing["open_interest"] = m.get("open_interest")
+                existing["open_interest"] = _mc(m, "open_interest")
             if existing.get("volume") is None:
-                existing["volume"] = m.get("volume")
+                existing["volume"] = _mc(m, "volume")
             continue
         song = (m.get("yes_sub_title") or "").strip()
         artist = (m.get("subtitle") or "").strip().lstrip(": ").strip()
-        ya = m.get("yes_ask")
-        na = m.get("no_ask")
+        from .kalshi_client import market_cents, market_count
+        ya = market_cents(m, "yes_ask")
+        na = market_cents(m, "no_ask")
         out.append({
             "ticker": t,
             "title": m.get("title") or song or t,
@@ -318,11 +320,11 @@ def augment_with_kalshi_markets(rows: List[Dict[str, Any]],
             "_p_hot100": None,
             "strike_low": None,
             "strike_high": None,
-            "yes_ask_cents": int(ya) if ya else None,
-            "no_ask_cents": int(na) if na else None,
+            "yes_ask_cents": ya,
+            "no_ask_cents": na,
             "spread_cents": None,
-            "volume": m.get("volume"),
-            "open_interest": m.get("open_interest"),
+            "volume": market_count(m, "volume"),
+            "open_interest": market_count(m, "open_interest"),
             "model_prob_yes": None,
             "raw_model_prob_yes": None,
             "bot_verdict": "SKIP",
