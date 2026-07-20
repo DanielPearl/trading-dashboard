@@ -190,6 +190,7 @@ def enrich_active_bets(bets: List[Dict[str, Any]],
         if song:
             ab.setdefault("_song", song)
             ab.setdefault("_side_player", song)
+            ab.setdefault("_artist", artist)
             ab["_title"] = (f"{song} — {artist}" if artist else song)
         if dj.get("model_prob") is not None:
             ab.setdefault("model_yes_prob_at_entry", dj["model_prob"])
@@ -267,6 +268,72 @@ def build_standard_watchlist_rows(payload: Dict[str, Any]
             "rules_primary": r.get("rules_primary"),
         })
     return out
+
+
+def augment_with_kalshi_markets(rows: List[Dict[str, Any]],
+                                 series_ticker: str = "KXRANKLISTSONGTOP10",
+                                 ) -> List[Dict[str, Any]]:
+    """Union the model-scored watchlist with EVERY open Kalshi market
+    in the Billboard series, then drop markets nobody holds contracts
+    in (user 2026-07-20: "show all the hot 100 billboard contracts on
+    kalshi but don't show if there are no contracts").
+
+    The exporter only scores songs its model knows, so on a typical
+    day Kalshi lists 3x more markets than the payload carries. For the
+    unscored balance, everything the table needs comes from Kalshi
+    itself: song = ``yes_sub_title``, artist = ``subtitle`` (":: X"),
+    live YES/NO asks, open interest, volume. Model % stays blank —
+    honest: the model has no opinion on those songs.
+    """
+    try:
+        from .kalshi_client import get_client
+        markets = get_client().list_markets(series_ticker=series_ticker)
+    except Exception:  # noqa: BLE001 — augmentation is best-effort
+        markets = []
+    by_ticker = {r.get("ticker"): r for r in rows}
+    out = list(rows)
+    for m in markets or []:
+        t = m.get("ticker") or ""
+        if not t:
+            continue
+        existing = by_ticker.get(t)
+        if existing is not None:
+            # Exporter row wins; just backfill liquidity fields the
+            # payload may lack.
+            if existing.get("open_interest") is None:
+                existing["open_interest"] = m.get("open_interest")
+            if existing.get("volume") is None:
+                existing["volume"] = m.get("volume")
+            continue
+        song = (m.get("yes_sub_title") or "").strip()
+        artist = (m.get("subtitle") or "").strip().lstrip(": ").strip()
+        ya = m.get("yes_ask")
+        na = m.get("no_ask")
+        out.append({
+            "ticker": t,
+            "title": m.get("title") or song or t,
+            "direction": song,
+            "_artist": artist,
+            "_song": song,
+            "_p_hot100": None,
+            "strike_low": None,
+            "strike_high": None,
+            "yes_ask_cents": int(ya) if ya else None,
+            "no_ask_cents": int(na) if na else None,
+            "spread_cents": None,
+            "volume": m.get("volume"),
+            "open_interest": m.get("open_interest"),
+            "model_prob_yes": None,
+            "raw_model_prob_yes": None,
+            "bot_verdict": "SKIP",
+            "rejection_reason": "model has not scored this song",
+            "minutes_to_close": None,
+            "rules_primary": m.get("rules_primary"),
+        })
+    # "No contracts" filter: a market with zero open interest has no
+    # positions to speak of. Held rows re-enter later via the panel's
+    # kalshi-held mirror, so this can't hide a bought contract.
+    return [r for r in out if (r.get("open_interest") or 0) > 0]
 
 
 # --------------------------------------------------------------------------- #

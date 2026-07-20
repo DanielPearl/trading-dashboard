@@ -599,6 +599,9 @@ class Handler(BaseHTTPRequestHandler):
                         bot.get("watchlist_json_path"))
                     watchlist = _billboard.build_standard_watchlist_rows(
                         payload_wl)
+                    watchlist = _billboard.augment_with_kalshi_markets(
+                        watchlist,
+                        bot.get("series_ticker") or "KXRANKLISTSONGTOP10")
                     # Live trader writes a standard sim.db; share the
                     # readers used by gas/claims/CPI so active bets +
                     # latest open render the same way. Enrich with the

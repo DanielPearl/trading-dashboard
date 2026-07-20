@@ -1002,17 +1002,22 @@ def _render_watchlist(out: List[str], watchlist: List[dict],
             # One cached best-effort Kalshi lookup per held ticker
             # fills the real market title and the current quote.
             _mkt_title = ""
-            _mkt_yes_ask = _mkt_no_ask = None
+            _mkt_yes_ask = _mkt_no_ask = _mkt_oi = None
             try:
                 from .kalshi_client import get_client
                 _mkt = get_client().get_market(_t) or {}
                 _mkt_title = _mkt.get("title") or ""
                 _ya = _mkt.get("yes_ask")
-                _nb = _mkt.get("no_bid")
+                if _ya in (None, 0):
+                    # Closed/halted market: the last trade is the best
+                    # remaining "Kalshi %" (no live book exists).
+                    _ya = _mkt.get("last_price")
                 if _ya not in (None, 0):
                     _mkt_yes_ask = int(_ya)
                     _mkt_no_ask = int(_mkt.get("no_ask")
                                        or (100 - int(_ya)))
+                if _mkt_oi is None:
+                    _mkt_oi = _mkt.get("open_interest")
             except Exception:  # noqa: BLE001 — display-only enrichment
                 pass
             _held_rows.append({
@@ -1028,7 +1033,12 @@ def _render_watchlist(out: List[str], watchlist: List[dict],
                 "no_ask_cents": _mkt_no_ask,
                 "spread_cents": None,
                 "volume": None,
-                "open_interest": None,
+                # Open interest when the market still reports it, else
+                # the contracts WE hold — "total contracts" must not
+                # render an em-dash on a bought row (user 2026-07-20).
+                "open_interest": (_mkt_oi if _mkt_oi is not None
+                                   else _ab.get("contracts")),
+                "_artist": _ab.get("_artist") or "",
                 "model_prob_yes": _ab.get("model_yes_prob_at_entry"),
                 "raw_model_prob_yes": None,
                 "pinnacle_prob_yes": None,
