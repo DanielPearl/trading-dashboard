@@ -1008,15 +1008,19 @@ def _render_watchlist(out: List[str], watchlist: List[dict],
                                              market_count)
                 _mkt = get_client().get_market(_t) or {}
                 _mkt_title = _mkt.get("title") or ""
-                _ya = market_cents(_mkt, "yes_ask")
-                if _ya is None:
-                    # Closed/halted market: the last trade is the best
-                    # remaining "Kalshi %" (no live book exists).
+                _status = (_mkt.get("status") or "").lower()
+                if _status in ("active", "open"):
+                    _ya = market_cents(_mkt, "yes_ask")
+                    _na = market_cents(_mkt, "no_ask")
+                else:
+                    # Closed/halted market: Kalshi reports sentinel
+                    # $1.00 on both empty ask sides, so the last trade
+                    # is the only honest "Kalshi %" left.
                     _ya = market_cents(_mkt, "last_price")
+                    _na = None
                 if _ya is not None:
                     _mkt_yes_ask = _ya
-                    _mkt_no_ask = (market_cents(_mkt, "no_ask")
-                                    or (100 - _ya))
+                    _mkt_no_ask = _na if _na is not None else (100 - _ya)
                 _mkt_oi = market_count(_mkt, "open_interest")
             except Exception:  # noqa: BLE001 — display-only enrichment
                 pass
