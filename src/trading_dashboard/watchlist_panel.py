@@ -919,10 +919,18 @@ def _render_watchlist(out: List[str], watchlist: List[dict],
         # ~1-2h before tip, MLB the day before). table-tennis stays
         # exempt: its rows display the upstream Elo model's odds, so
         # the "no odds shown" concern doesn't apply.
+        # HELD rows are exempt from every Model-vs-market filter
+        # below (user 2026-07-20: "all of the rows that were bought on
+        # kalshi should be highlighted in the model vs market table")
+        # — a bought contract must stay visible+highlighted even when
+        # its game's benchmark line isn't posted yet (the series guard
+        # blanks lines for tomorrow's games) or nobody else has
+        # traded the market.
         if current_bot in {"tennis", "darts",
                             "wnba", "world-cup", "mlb", "nba"}:
             _open_rows = [r for r in _open_rows
-                           if r.get("pinnacle_prob_yes") is not None]
+                           if r.get("pinnacle_prob_yes") is not None
+                           or r.get("ticker") in held_by_ticker]
         # Reality-leaks Model-vs-market: ONLY contracts with an actual
         # matched leak — source AND statement — render (user
         # 2026-07-17, repeated). Held rows without a live leak stay in
@@ -939,7 +947,8 @@ def _render_watchlist(out: List[str], watchlist: List[dict],
         # is not zero.
         _open_rows = [r for r in _open_rows
                        if r.get("volume") is None
-                       or (r.get("volume") or 0) > 0]
+                       or (r.get("volume") or 0) > 0
+                       or r.get("ticker") in held_by_ticker]
         # Settled-row filter on both panes — a resolved match
         # shouldn't sit in Active bets either (the position is
         # already locked in, the buy/sell watch state is stale).

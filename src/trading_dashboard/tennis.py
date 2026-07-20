@@ -524,6 +524,7 @@ def kalshi_positions_to_active_bets(kalshi_positions: List[Dict[str, Any]],
                                     watchlist_payload: Dict[str, Any] | None,
                                     series_prefixes,
                                     exclude_tickers=(),
+                                    sim_state_path: str | None = None,
                                     ) -> List[Dict[str, Any]]:
     """Project REAL Kalshi portfolio positions in a bot's series into
     the same active-bets row shape ``active_bets_for_rollup`` emits,
@@ -547,6 +548,26 @@ def kalshi_positions_to_active_bets(kalshi_positions: List[Dict[str, Any]],
             by_ticker[r["ticker_b"]] = (r, "b")
 
     excluded = {t for t in (exclude_tickers or ()) if t}
+    # Paper-twin lookup: the sim process usually paper-buys the same
+    # rows the live executor evaluates, and its position records carry
+    # the model prob at open. For a manual/external Kalshi position
+    # (which has no executor record of its own) the twin's
+    # entry_model_prob is the best honest "Model entry %" available —
+    # e.g. the 2026-07-20 HIRYOM manual buy, where the paper twin
+    # opened the same contract on a Pinnacle 59.4% line.
+    twin_model_by_ticker: Dict[str, float] = {}
+    if sim_state_path and "outputs-live" in str(sim_state_path):
+        twin = load_sim_state(
+            str(sim_state_path).replace("outputs-live", "outputs"))
+        for tp in ((twin.get("open_positions") or [])
+                   + (twin.get("closed_positions") or [])[-50:]):
+            tt = tp.get("ticker")
+            emp = tp.get("entry_model_prob")
+            if tt and emp is not None and tt not in twin_model_by_ticker:
+                try:
+                    twin_model_by_ticker[tt] = float(emp)
+                except (TypeError, ValueError):
+                    pass
     out: List[Dict[str, Any]] = []
     for p in kalshi_positions or []:
         ticker = str(p.get("ticker") or "")
@@ -633,13 +654,13 @@ def kalshi_positions_to_active_bets(kalshi_positions: List[Dict[str, Any]],
             "reason_at_open": ("held on Kalshi (manual or external "
                                "order — not opened by this bot's "
                                "executor)"),
-            # External position (not in any bot's book): the model
-            # prob at ENTRY time is genuinely unknown — no executor
-            # recorded it. None renders as an em-dash in the "Model
-            # entry %" cell. Stamping today's line here instead made
+            # External position: no executor record of its own — use
+            # the paper twin's model-at-open for the same ticker when
+            # the sim bought it too, else honestly unknown (em-dash).
+            # Never today's line: stamping the live number here made
             # a manual 51c buy look like a zero-edge bot buy
             # (2026-07-20 HIRYOM report).
-            "model_yes_prob_at_entry": None,
+            "model_yes_prob_at_entry": twin_model_by_ticker.get(ticker),
             # Today's model prob on the held side — feeds the "Model
             # live %" cell, same contract as the bot-book branch.
             "current_model_prob_yes": (model_p

@@ -217,6 +217,7 @@ def _compute_cross_bot_rollup(bots: List[dict], *, period_days: int | None,
                             _tennis.kalshi_positions_to_active_bets(
                                 _kpos, _wl_payload, _prefixes,
                                 exclude_tickers=_covered,
+                                sim_state_path=b.get("sim_state_path"),
                             )):
                             ab["_bot_name"] = b["name"]
                             ab["_bot_key"] = b["key"]
@@ -569,6 +570,7 @@ class Handler(BaseHTTPRequestHandler):
                                 _tennis.kalshi_positions_to_active_bets(
                                     kalshi_pos, payload_wl, prefixes,
                                     exclude_tickers=covered,
+                                    sim_state_path=bot.get("sim_state_path"),
                                 ))
                     for ab in bot_active_bets:
                         ab.setdefault("_display", bot.get("display") or {})
