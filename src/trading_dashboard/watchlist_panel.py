@@ -1045,6 +1045,23 @@ def _render_watchlist(out: List[str], watchlist: List[dict],
                 "rules_primary": "",
                 "tournament": _ab.get("_tournament") or "",
             })
+        # Every REAL Kalshi holding also gets a Model-vs-market row
+        # (user 2026-07-20: "if a bought contract is in active bets
+        # and bought on kalshi, show it highlighted in the model vs
+        # market table"). Watchlist-backed holdings are already there
+        # via the held-row filter exemptions; synthesized holdings
+        # (market left the watchlist — e.g. last week's Billboard
+        # chart) get their synth row mirrored in, where the
+        # kalshi_held join paints the bought highlight.
+        _mvm_tickers = {r.get("ticker") for r in _open_rows}
+        for _sr in _held_rows:
+            _srt = _sr.get("ticker") or ""
+            _srb = _srt.rsplit("-", 1)[0] if "-" in _srt else _srt
+            if (_srt in kalshi_held_by_ticker
+                    and _srt not in _mvm_tickers
+                    and _srb not in _mvm_tickers):
+                _open_rows.append(_sr)
+                _mvm_tickers.add(_srt)
         section_ctxs = [
             {
                 "kind": "active",
