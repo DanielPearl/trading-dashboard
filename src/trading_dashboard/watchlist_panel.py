@@ -446,6 +446,17 @@ def _render_watchlist(out: List[str], watchlist: List[dict],
     if not bets and latest_active:
         bets = [latest_active]
     held_by_ticker = {b.get("ticker"): b for b in bets if b.get("ticker")}
+    # Alias each bet under its BASE event ticker too. Sport watchlist
+    # rows carry the base ticker (side markets live in ticker_a/_b), so
+    # a bet keyed only by its full side ticker (e.g. a real Kalshi
+    # position ...HIRYOM-HIR) would miss the row-membership check, fall
+    # to the synthesized-row path, and render entry-time numbers in the
+    # live columns (2026-07-20). First bet wins on alias collisions —
+    # one position per event is enforced upstream.
+    for _b in bets:
+        _t = str(_b.get("ticker") or "")
+        if "-" in _t:
+            held_by_ticker.setdefault(_t.rsplit("-", 1)[0], _b)
     n_bets = len(bets)
 
     # ── Kalshi-truth held tickers ─────────────────────────────────────
