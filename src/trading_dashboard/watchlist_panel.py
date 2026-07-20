@@ -1017,7 +1017,9 @@ def _render_watchlist(out: List[str], watchlist: List[dict],
                 pass
             _held_rows.append({
                 "ticker": _t,
-                "direction": "yes",
+                # Billboard's Title column renders ``direction`` (the
+                # song); "yes" is only the generic fallback.
+                "direction": _ab.get("_song") or "yes",
                 "strike_low": None,
                 "strike_high": None,
                 "yes_ask_cents": (_mkt_yes_ask if _mkt_yes_ask is not None
@@ -1033,7 +1035,9 @@ def _render_watchlist(out: List[str], watchlist: List[dict],
                 "_skip_oi_filter": True,
                 "bot_verdict": "HOLDING",
                 "rejection_reason": "",
-                "title": (_ab.get("_title") or _mkt_title
+                # Kalshi's own market title first — it matches what
+                # the Model-vs-market rows show for the same market.
+                "title": (_mkt_title or _ab.get("_title")
                            or _ab.get("_match") or _t),
                 "minutes_to_close": _ab.get("minutes_to_close"),
                 "_yes_label": _ab.get("_side_player") or "",
