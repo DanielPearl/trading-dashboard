@@ -636,7 +636,11 @@ def _render_watchlist(out: List[str], watchlist: List[dict],
     # ── Pre-pass: enrich each row with EV/BE numbers, then sort by best
     # EV. Sorting by EV (not by gap or by alphabetical ticker) puts the
     # genuinely-actionable opportunities at the top of the table.
-    for v in watchlist:
+    def _stamp_row_ev(v: dict) -> None:
+        """Compute the net-of-fee EV fields for ONE row. Split out so
+        synthesized held rows (built after the main loop) get the same
+        EV treatment — without this a bought contract whose market
+        left the watchlist rendered EV 0 (2026-07-20 Janice report)."""
         ya = v.get("yes_ask_cents")
         na = v.get("no_ask_cents")
         spread = v.get("spread_cents") or 0
@@ -675,6 +679,9 @@ def _render_watchlist(out: List[str], watchlist: List[dict],
         v["_be_no"] = be_no
         v["_best_side"] = best_side
         v["_best_ev"] = best_ev
+
+    for v in watchlist:
+        _stamp_row_ev(v)
     # Filter to rows that have at least 1 open contract — markets with
     # zero open interest aren't tradeable and clutter the table. Rows
     # that set ``_skip_oi_filter`` (e.g. billboard markets that may
@@ -1059,6 +1066,7 @@ def _render_watchlist(out: List[str], watchlist: List[dict],
                 "rules_primary": "",
                 "tournament": _ab.get("_tournament") or "",
             })
+            _stamp_row_ev(_held_rows[-1])
         # Every REAL Kalshi holding also gets a Model-vs-market row
         # (user 2026-07-20: "if a bought contract is in active bets
         # and bought on kalshi, show it highlighted in the model vs
