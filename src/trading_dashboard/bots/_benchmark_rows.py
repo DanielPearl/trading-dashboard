@@ -187,8 +187,11 @@ def apply_benchmark(rows: List[Dict[str, Any]],
 
         edge_a = (p_a - ask_a) if (p_a is not None and ask_a) else None
         edge_b = (p_b - ask_b) if (p_b is not None and ask_b) else None
-        ev_a = (edge_a - cfg["slippage"]) if edge_a is not None else None
-        ev_b = (edge_b - cfg["slippage"]) if edge_b is not None else None
+        from kalshi_sdk.validators import kalshi_entry_fee
+        ev_a = ((edge_a - cfg["slippage"] - kalshi_entry_fee(ask_a))
+                if edge_a is not None else None)
+        ev_b = ((edge_b - cfg["slippage"] - kalshi_entry_fee(ask_b))
+                if edge_b is not None else None)
         row["edge_a"], row["edge_b"] = edge_a, edge_b
         row["ev_a"], row["ev_b"] = ev_a, ev_b
 
