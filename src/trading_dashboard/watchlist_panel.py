@@ -995,14 +995,35 @@ def _render_watchlist(out: List[str], watchlist: List[dict],
             _covered_held.add(_t)
             _covered_held.add(_t_base)
             _mark = _ab.get("mark_mid")
+            # Live-market enrichment (2026-07-20): a synthesized row
+            # has no watchlist row behind it, so without this the
+            # Kalshi live % renders an em-dash and the title falls
+            # back to junk ledger fields ("yes") or the raw ticker.
+            # One cached best-effort Kalshi lookup per held ticker
+            # fills the real market title and the current quote.
+            _mkt_title = ""
+            _mkt_yes_ask = _mkt_no_ask = None
+            try:
+                from .kalshi_client import get_client
+                _mkt = get_client().get_market(_t) or {}
+                _mkt_title = _mkt.get("title") or ""
+                _ya = _mkt.get("yes_ask")
+                _nb = _mkt.get("no_bid")
+                if _ya not in (None, 0):
+                    _mkt_yes_ask = int(_ya)
+                    _mkt_no_ask = int(_mkt.get("no_ask")
+                                       or (100 - int(_ya)))
+            except Exception:  # noqa: BLE001 — display-only enrichment
+                pass
             _held_rows.append({
                 "ticker": _t,
                 "direction": "yes",
                 "strike_low": None,
                 "strike_high": None,
-                "yes_ask_cents": (int(round(_mark))
+                "yes_ask_cents": (_mkt_yes_ask if _mkt_yes_ask is not None
+                                   else int(round(_mark))
                                    if _mark is not None else None),
-                "no_ask_cents": None,
+                "no_ask_cents": _mkt_no_ask,
                 "spread_cents": None,
                 "volume": None,
                 "open_interest": None,
@@ -1012,7 +1033,7 @@ def _render_watchlist(out: List[str], watchlist: List[dict],
                 "_skip_oi_filter": True,
                 "bot_verdict": "HOLDING",
                 "rejection_reason": "",
-                "title": (_ab.get("_title") or _ab.get("title")
+                "title": (_ab.get("_title") or _mkt_title
                            or _ab.get("_match") or _t),
                 "minutes_to_close": _ab.get("minutes_to_close"),
                 "_yes_label": _ab.get("_side_player") or "",

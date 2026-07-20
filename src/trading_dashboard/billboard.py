@@ -146,8 +146,55 @@ def summary_for_rollup(sim_state_path: str | None) -> Dict[str, Any]:
 def active_bets_for_rollup(sim_state_path: str | None,
                              watchlist_path: str | None = None
                              ) -> List[Dict[str, Any]]:
-    """Billboard is advisory-only — no positions ever — so return []."""
+    """Legacy hook from the advisory-only era (pre-2026-07-16). The
+    live trader writes a standard sim.db, so positions flow through
+    ``fetch_active_bets_with_marks`` + ``enrich_active_bets`` instead;
+    nothing calls this for real data any more."""
     return []
+
+
+def enrich_active_bets(bets: List[Dict[str, Any]],
+                        db_path: str | None) -> None:
+    """Stamp display + at-entry fields onto ledger-sourced active
+    bets from each position's ``decision_json`` (the trader records
+    song / artist / model_prob / market_prob at open). Without this
+    the Active-bets table renders the raw ticker and em-dashes
+    (2026-07-20 report: title showed "yes", no Model %, wrong song).
+    Best-effort: bets without a parsable decision_json are left as-is.
+    """
+    if not bets or not db_path:
+        return
+    import json as _json
+    import sqlite3
+    try:
+        con = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
+        rows = con.execute(
+            "SELECT ticker, decision_json FROM positions "
+            "WHERE status = 'open' AND decision_json IS NOT NULL"
+        ).fetchall()
+        con.close()
+    except sqlite3.Error:
+        return
+    dj_by_ticker = {}
+    for t, dj in rows:
+        try:
+            dj_by_ticker[t] = _json.loads(dj)
+        except (TypeError, ValueError):
+            continue
+    for ab in bets:
+        dj = dj_by_ticker.get(str(ab.get("ticker") or ""))
+        if not dj:
+            continue
+        song = dj.get("song") or ""
+        artist = dj.get("artist") or ""
+        if song:
+            ab.setdefault("_song", song)
+            ab.setdefault("_side_player", song)
+            ab["_title"] = (f"{song} — {artist}" if artist else song)
+        if dj.get("model_prob") is not None:
+            ab.setdefault("model_yes_prob_at_entry", dj["model_prob"])
+        if dj.get("market_prob") is not None:
+            ab.setdefault("kalshi_yes_prob_at_entry", dj["market_prob"])
 
 
 def closed_positions_for_rollup(sim_state_path: str | None,

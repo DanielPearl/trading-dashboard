@@ -227,7 +227,11 @@ def _compute_cross_bot_rollup(bots: List[dict], *, period_days: int | None,
             elif b.get("dashboard_type") in ("billboard", "reality"):
                 # Billboard + reality-leaks write a real sim.db —
                 # same readers as the standard bots below.
-                for ab in fetch_active_bets_with_marks(b["db_path"]):
+                _bb_bets = fetch_active_bets_with_marks(b["db_path"])
+                if b.get("dashboard_type") == "billboard":
+                    from . import billboard as _bb
+                    _bb.enrich_active_bets(_bb_bets, b["db_path"])
+                for ab in _bb_bets:
                     if not _keep_on_kalshi(ab):
                         continue
                     ab["_bot_name"] = b["name"]
@@ -597,8 +601,12 @@ class Handler(BaseHTTPRequestHandler):
                         payload_wl)
                     # Live trader writes a standard sim.db; share the
                     # readers used by gas/claims/CPI so active bets +
-                    # latest open render the same way.
+                    # latest open render the same way. Enrich with the
+                    # ledger's decision_json (song / artist / model %
+                    # at entry) so the Active table shows real display
+                    # fields instead of the raw ticker.
                     bot_active_bets = fetch_active_bets_with_marks(db_path)
+                    _billboard.enrich_active_bets(bot_active_bets, db_path)
                     for ab in bot_active_bets:
                         ab.setdefault("_display", bot.get("display") or {})
                     latest_active = fetch_latest_open_position(db_path)
