@@ -115,7 +115,6 @@ def _render_home_summary_cards(out: List[str], rollup: dict) -> None:
     def _dollars(c) -> str:
         return f"${c/100:,.2f}" if c is not None else "—"
 
-    money_spent = rollup.get("active_money_spent_cents", 0)
     potential = rollup.get("potential_gain_cents", 0)
     chg = ov.get("change_24h_cents")
     chg_cls = ("green" if (chg or 0) > 0
@@ -138,12 +137,23 @@ def _render_home_summary_cards(out: List[str], rollup: dict) -> None:
                f"Predictions</div>"
                f"<div class='value' id='card-portfolio'>"
                f"{_dollars(ov.get('portfolio_cents'))}</div></div>")
+    chg_tip = ("Portfolio value now vs ~24 hours ago (from the "
+               "rolling snapshot log)." if not ov.get("change_24h_estimated")
+               else "Net realized P&amp;L settled in the last 24 hours "
+                    "(snapshot baseline still accumulating; switches to "
+                    "full portfolio change after a day).")
     out.append(f"<div class='card'><div class='label' "
-               f"title='Portfolio value now vs ~24 hours ago. Shows "
-               f"an em-dash until a day of snapshots exists.'>"
+               f"title='{chg_tip}'>"
                f"Change (24h)</div>"
                f"<div class='value {chg_cls}' id='card-change-24h'>"
                f"{chg_txt}</div></div>")
+    out.append(f"<div class='card'><div class='label' "
+               f"title='Kalshi&apos;s own valuation of every open "
+               f"position (the portfolio_value field on "
+               f"/portfolio/balance) — Predictions minus Cash.'>"
+               f"Position</div>"
+               f"<div class='value' id='card-position'>"
+               f"{_dollars(ov.get('positions_value_cents'))}</div></div>")
     out.append(f"<div class='card'><div class='label' "
                f"title='Open positions marked to market minus their "
                f"cost basis — profit that exists on paper but has not "
@@ -152,13 +162,6 @@ def _render_home_summary_cards(out: List[str], rollup: dict) -> None:
                f"<div class='value {unreal_cls}' id='card-unrealized'>"
                f"{fmt_signed_cents(unreal) if unreal is not None else chr(8212)}"
                f"</div></div>")
-    out.append(f"<div class='card'><div class='label' "
-               f"title='Sum of the Entry cost column across the "
-               f"Active bets table (entry price x contracts + Kalshi "
-               f"entry fee).'>"
-               f"Money spent</div>"
-               f"<div class='value' id='card-money-spent'>"
-               f"{fmt_signed_cents(-money_spent)}</div></div>")
     out.append(f"<div class='card'><div class='label' "
                f"title='Sum of the Potential gain column across the "
                f"Active bets table ((100 - entry) x contracts - "

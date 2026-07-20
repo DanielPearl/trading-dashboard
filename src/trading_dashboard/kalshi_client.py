@@ -249,6 +249,42 @@ def _position_mark_cents(ticker: str) -> Optional[int]:
     return mark
 
 
+def _settled_pnl_cents_24h() -> Optional[int]:
+    """Net realized P&L (cents) from settlements in the last 24h:
+    payout − cost − fee per market, using the ``value`` /
+    ``*_total_cost_dollars`` fields (``revenue`` is dead in this
+    endpoint)."""
+    from datetime import datetime, timezone, timedelta
+    client = get_client()
+    if not client.available:
+        return None
+    cutoff = datetime.now(timezone.utc) - timedelta(hours=24)
+    total = 0.0
+    cursor = None
+    for _ in range(3):
+        resp = client._sdk.get_settlements(limit=200, cursor=cursor)
+        batch = resp.get("settlements") or []
+        for st in batch:
+            try:
+                ts = datetime.fromisoformat(
+                    str(st.get("settled_time")).replace("Z", "+00:00"))
+            except (TypeError, ValueError):
+                continue
+            if ts < cutoff:
+                return int(round(total * 100))
+            yc = float(st.get("yes_count_fp") or 0)
+            nc = float(st.get("no_count_fp") or 0)
+            v = float(st.get("value") or 0) / 100.0
+            payout = yc * v + nc * (1.0 - v)
+            cost = (float(st.get("yes_total_cost_dollars") or 0)
+                    + float(st.get("no_total_cost_dollars") or 0))
+            total += payout - cost - float(st.get("fee_cost") or 0)
+        cursor = resp.get("cursor")
+        if not cursor or not batch:
+            break
+    return int(round(total * 100))
+
+
 def get_portfolio_overview() -> dict:
     """Account headline numbers for the Home/History summary cards:
 
@@ -268,24 +304,21 @@ def get_portfolio_overview() -> dict:
     now = time.time()
     if _OVERVIEW_CACHE[1] is not None and now - _OVERVIEW_CACHE[0] < 60:
         return _OVERVIEW_CACHE[1]
-    cash, _balance_err = get_balance_cents()
-    value = cost = 0
+    # Cash AND position value come straight from Kalshi's
+    # /portfolio/balance payload (user 2026-07-20: "it should be the
+    # position value from kalshi") — ``portfolio_value`` is Kalshi's
+    # own mark on every open position, the same number its app shows.
+    cash = value = None
+    try:
+        resp = get_client().get_balance() or {}
+        cash = int(resp.get("balance"))
+        value = int(resp.get("portfolio_value") or 0)
+    except (TypeError, ValueError, Exception):  # noqa: B014,BLE001
+        cash, _balance_err = get_balance_cents()
+        value = 0
+    cost = 0
     positions, _err = get_open_positions()
     for pos in positions or []:
-        t = pos.get("ticker") or ""
-        try:
-            fp = float(pos.get("position_fp") or 0)
-        except (TypeError, ValueError):
-            continue
-        if not t or not fp:
-            continue
-        mark = _position_mark_cents(t)
-        if mark is None:
-            continue
-        n = abs(fp)
-        # NO positions (fp < 0) are worth (100 − yes mark).
-        per = mark if fp > 0 else (100 - mark)
-        value += int(round(n * per))
         try:
             cost += int(round(
                 float(pos.get("market_exposure_dollars") or 0) * 100))
@@ -295,8 +328,9 @@ def get_portfolio_overview() -> dict:
         "cash_cents": cash,
         "positions_value_cents": value,
         "portfolio_cents": (cash + value) if cash is not None else None,
-        "unrealized_cents": value - cost,
+        "unrealized_cents": (value - cost) if value is not None else None,
         "change_24h_cents": None,
+        "change_24h_estimated": False,
     }
     # Snapshot + 24h baseline (best-effort; file I/O never breaks a render)
     try:
@@ -323,6 +357,16 @@ def get_portfolio_overview() -> dict:
                                         - base.get("portfolio", 0))
     except OSError:
         pass
+    if out["change_24h_cents"] is None:
+        # No day-old snapshot yet (recorder started 2026-07-20):
+        # fall back to net realized P&L from settlements in the last
+        # 24h — the portion of the day's change Kalshi can tell us
+        # directly. Marked estimated so the tooltip can say so.
+        try:
+            out["change_24h_cents"] = _settled_pnl_cents_24h()
+            out["change_24h_estimated"] = out["change_24h_cents"] is not None
+        except Exception:  # noqa: BLE001
+            pass
     _OVERVIEW_CACHE[0] = now
     _OVERVIEW_CACHE[1] = out
     return out
