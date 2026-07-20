@@ -47,7 +47,8 @@ TRADEABLE_LABELS = {"STRONG_EDGE", "SMALL_EDGE"}
 
 
 def match_pair_probs(lookup: Dict[frozenset, Dict[str, float]],
-                     name_a: str, name_b: str):
+                     name_a: str, name_b: str,
+                     near_iso: str | None = None):
     """(prob_a, prob_b) from a benchmark lookup, tolerant of casing and
     alias drift between Kalshi titles and Pinnacle participant names
     (e.g. "L. Littler" vs "Luke Littler")."""
@@ -62,6 +63,14 @@ def match_pair_probs(lookup: Dict[frozenset, Dict[str, float]],
                    for w in (want_a, want_b)):
                 probs = p
                 break
+    if not probs:
+        return None, None
+    # Same-pair repeat guard (2026-07-20): TT Elite runs the same two
+    # players several times a day and darts pairs can repeat across
+    # sessions — pick the entry nearest this market's close time and
+    # refuse one that belongs to a different meeting of the pair.
+    from kalshi_sdk.pinnacle import pick_pair_entry
+    probs = pick_pair_entry(probs, near_iso, max_delta_hours=24.0)
     if not probs:
         return None, None
 
@@ -143,8 +152,11 @@ def apply_benchmark(rows: List[Dict[str, Any]],
 
         p_a = p_b = None
         if is_h2h:
+            _near = (rec.get("expected_expiration_time")
+                     or row.get("expected_expiration_time"))
             p_a, p_b = match_pair_probs(
-                lookup, row.get("player_a") or "", row.get("player_b") or "")
+                lookup, row.get("player_a") or "",
+                row.get("player_b") or "", near_iso=_near)
             # Stamp the benchmark's scheduled start onto rows that
             # don't carry one (darts / TT exporters have no kickoff
             # field) so the live executor's prematch check can block
