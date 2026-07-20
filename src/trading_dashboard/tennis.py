@@ -633,7 +633,17 @@ def kalshi_positions_to_active_bets(kalshi_positions: List[Dict[str, Any]],
             "reason_at_open": ("held on Kalshi (manual or external "
                                "order — not opened by this bot's "
                                "executor)"),
-            "model_yes_prob_at_entry": model_p,
+            # External position (not in any bot's book): the model
+            # prob at ENTRY time is genuinely unknown — no executor
+            # recorded it. None renders as an em-dash in the "Model
+            # entry %" cell. Stamping today's line here instead made
+            # a manual 51c buy look like a zero-edge bot buy
+            # (2026-07-20 HIRYOM report).
+            "model_yes_prob_at_entry": None,
+            # Today's model prob on the held side — feeds the "Model
+            # live %" cell, same contract as the bot-book branch.
+            "current_model_prob_yes": (model_p
+                                        if model_p != entry else None),
             "kalshi_yes_prob_at_entry": entry,
             "expected_ev_at_entry": (
                 model_p - entry
