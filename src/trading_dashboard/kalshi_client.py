@@ -266,7 +266,7 @@ def get_portfolio_overview() -> dict:
     now = time.time()
     if _OVERVIEW_CACHE[1] is not None and now - _OVERVIEW_CACHE[0] < 60:
         return _OVERVIEW_CACHE[1]
-    cash = get_balance_cents()
+    cash, _balance_err = get_balance_cents()
     value = cost = 0
     positions, _err = get_open_positions()
     for pos in positions or []:
