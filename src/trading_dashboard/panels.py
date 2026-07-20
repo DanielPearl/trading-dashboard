@@ -100,137 +100,142 @@ def _week_change_pct(rollup: dict) -> Tuple[str, str]:
 
 
 def _render_home_summary_cards(out: List[str], rollup: dict) -> None:
-    """Emit the Home tab's 6 headline cards: Active bets, Active
-    contracts, Active bots, Money spent (active bets only), Potential
-    earnings, Week change %. All values are always-current — the Home
-    tab has no period filter, and every dollar/contract card mirrors
-    a column total in the Active bets table directly below.
+    """Home tab headline cards (user spec 2026-07-20, left→right):
+    Cash · Predictions (portfolio incl. positions) · Change (24h) ·
+    Unrealized return · Money spent · Potential gain. The first four
+    come straight from the Kalshi account (same numbers the Kalshi
+    app shows); the last two mirror the Active-bets column totals.
     """
-    active_bets = rollup.get("active_bets", 0)
-    active_contracts = rollup.get("active_contracts", 0)
-    active_bots = rollup.get("active_bots", 0)
+    from .kalshi_client import get_portfolio_overview
+    try:
+        ov = get_portfolio_overview()
+    except Exception:  # noqa: BLE001 — cards degrade to em-dashes
+        ov = {}
+
+    def _dollars(c) -> str:
+        return f"${c/100:,.2f}" if c is not None else "—"
+
     money_spent = rollup.get("active_money_spent_cents", 0)
     potential = rollup.get("potential_gain_cents", 0)
-    week_text, week_cls = _week_change_pct(rollup)
+    chg = ov.get("change_24h_cents")
+    chg_cls = ("green" if (chg or 0) > 0
+               else ("red" if (chg or 0) < 0 else "gray"))
+    chg_txt = fmt_signed_cents(chg) if chg is not None else "—"
+    unreal = ov.get("unrealized_cents")
+    unreal_cls = ("green" if (unreal or 0) > 0
+                  else ("red" if (unreal or 0) < 0 else "gray"))
     out.append("<div class='row'>")
     out.append(f"<div class='card'><div class='label' "
-               f"title='Live count of currently-open positions across "
-               f"all bots.'>"
-               f"Active bets</div>"
-               f"<div class='value' id='card-active-bets'>"
-               f"{active_bets}</div></div>")
+               f"title='Kalshi account cash balance — money not "
+               f"currently riding on any position.'>"
+               f"Cash</div>"
+               f"<div class='value' id='card-cash'>"
+               f"{_dollars(ov.get('cash_cents'))}</div></div>")
     out.append(f"<div class='card'><div class='label' "
-               f"title='Total number of contracts held across "
-               f"currently-open positions.'>"
-               f"Active contracts</div>"
-               f"<div class='value' id='card-active-contracts'>"
-               f"{active_contracts}</div></div>")
+               f"title='Total portfolio value: cash + every open "
+               f"position at its current market price. Matches the "
+               f"Kalshi app.'>"
+               f"Predictions</div>"
+               f"<div class='value' id='card-portfolio'>"
+               f"{_dollars(ov.get('portfolio_cents'))}</div></div>")
     out.append(f"<div class='card'><div class='label' "
-               f"title='Distinct bots that have at least one bet in "
-               f"the Active bets table below.'>"
-               f"Active bots</div>"
-               f"<div class='value' id='card-active-bots'>"
-               f"{active_bots}</div></div>")
+               f"title='Portfolio value now vs ~24 hours ago. Shows "
+               f"an em-dash until a day of snapshots exists.'>"
+               f"Change (24h)</div>"
+               f"<div class='value {chg_cls}' id='card-change-24h'>"
+               f"{chg_txt}</div></div>")
+    out.append(f"<div class='card'><div class='label' "
+               f"title='Open positions marked to market minus their "
+               f"cost basis — profit that exists on paper but has not "
+               f"settled.'>"
+               f"Unrealized return</div>"
+               f"<div class='value {unreal_cls}' id='card-unrealized'>"
+               f"{fmt_signed_cents(unreal) if unreal is not None else chr(8212)}"
+               f"</div></div>")
     out.append(f"<div class='card'><div class='label' "
                f"title='Sum of the Entry cost column across the "
-               f"Active bets table (entry × contracts + Kalshi entry "
-               f"fee).'>"
+               f"Active bets table (entry price x contracts + Kalshi "
+               f"entry fee).'>"
                f"Money spent</div>"
                f"<div class='value' id='card-money-spent'>"
                f"{fmt_signed_cents(-money_spent)}</div></div>")
     out.append(f"<div class='card'><div class='label' "
                f"title='Sum of the Potential gain column across the "
-               f"Active bets table ((100 − entry) × contracts − "
-               f"entry fee).'>"
+               f"Active bets table ((100 - entry) x contracts - "
+               f"entry fee) — what settles if every open position "
+               f"wins.'>"
                f"Potential gain</div>"
                f"<div class='value green' id='card-potential-earnings'>"
                f"+{fmt_signed_cents(potential).lstrip('+')}</div></div>")
-    out.append(f"<div class='card'><div class='label' "
-               f"title='Change in lifetime net P&amp;L over the last "
-               f"7 days, expressed as a percent of what it was a "
-               f"week ago.'>"
-               f"Week change</div>"
-               f"<div class='value {week_cls}' id='card-week-change'>"
-               f"{week_text}</div></div>")
     out.append("</div>")
 
 
 def _render_summary_cards(out: List[str], rollup: dict,
                            id_suffix: str = "",
                            show_closed_contracts: bool = False) -> None:
-    """Emit the 6-card headline row used on Home and History tabs.
+    """History headline cards (user spec 2026-07-20, left→right):
+    Cash · Predictions · Total bets · Money spent · P&L · Win %.
 
-    All values come from ``rollup`` (period-scoped) except
-    ``active_bets``, which is always the live cross-bot open count.
-
-    ``id_suffix`` is appended to each card's DOM id so the same row
-    can render twice on one page without colliding. The empty default
-    matches the existing snapshot-poller selectors on Home; the
-    History instance uses ``"-history"`` so the poller skips it and
-    the cards refresh only on full-page reload (which is fine since
-    closed-bet rollups change rarely).
-
-    ``show_closed_contracts`` swaps the first card from the live
-    "Active bets" count to "Closed contracts" — total contracts
-    bought across positions closed in the period. Used on the History
-    tab where past activity matters more than the current open count.
+    The first two are the live Kalshi account (identical to the Home
+    cards, never affected by the period filter). The last four are
+    computed from the period-filtered ledger the caller passes in
+    ``rollup`` — the filter above these cards drives them.
     """
-    net = rollup.get("period_net_pnl_cents", 0)
-    pnl_cls = "green" if net > 0 else ("red" if net < 0 else "gray")
-    win_pct = rollup.get("period_win_pct", 0.0)
-    has_closed = (rollup.get("period_wins", 0)
-                  + rollup.get("period_losses", 0)) > 0
-    win_cls = ("green" if win_pct > 0.5
-               else ("red" if has_closed and win_pct < 0.5 else "gray"))
-    win_pct_str = f"{win_pct*100:.0f}%" if has_closed else "—"
-    closed_bets = (rollup.get("period_wins", 0)
-                   + rollup.get("period_losses", 0))
-    money_spent = rollup.get("period_money_spent_cents", 0)
-    money_gained = rollup.get("period_money_gained_cents", 0)
-    closed_contracts = rollup.get("period_contracts_bought", 0)
+    from .kalshi_client import get_portfolio_overview
+    try:
+        ov = get_portfolio_overview()
+    except Exception:  # noqa: BLE001
+        ov = {}
+
+    def _dollars(c) -> str:
+        return f"${c/100:,.2f}" if c is not None else "—"
+
+    total_bets = rollup.get("total_closed", 0)
+    money_spent_c = int(round((rollup.get("total_staked") or 0) * 100))
+    net_c = int(round((rollup.get("total_realized_pnl") or 0) * 100))
+    pnl_cls = "green" if net_c > 0 else ("red" if net_c < 0 else "gray")
+    win_rate = rollup.get("win_rate")
+    win_cls = ("green" if (win_rate or 0) > 0.5
+               else ("red" if win_rate is not None and total_bets
+                     and win_rate < 0.5 else "gray"))
+    win_str = (f"{win_rate*100:.0f}%"
+               if win_rate is not None and total_bets else "—")
     out.append("<div class='row compact'>")
-    if show_closed_contracts:
-        out.append(f"<div class='card'><div class='label' "
-                   f"title='Total number of contracts bought across "
-                   f"positions closed in the selected period.'>"
-                   f"Closed contracts</div>"
-                   f"<div class='value' "
-                   f"id='card-closed-contracts{id_suffix}'>"
-                   f"{closed_contracts}</div></div>")
-    else:
-        out.append(f"<div class='card'><div class='label' "
-                   f"title='Live count of currently-open positions across "
-                   f"all bots. Not affected by the period filter.'>"
-                   f"Active bets</div>"
-                   f"<div class='value' id='card-active-bets{id_suffix}'>"
-                   f"{rollup['active_bets']}</div></div>")
-    out.append(f"<div class='card'><div class='label'>"
-               f"Closed bets</div>"
-               f"<div class='value' id='card-closed-bets{id_suffix}'>"
-               f"{closed_bets}</div></div>")
     out.append(f"<div class='card'><div class='label' "
-               f"title='Total cost basis of every position opened in "
-               f"the period (entry × contracts).'>"
+               f"title='Kalshi account cash balance right now — not "
+               f"affected by the period filter.'>"
+               f"Cash</div>"
+               f"<div class='value' id='card-cash{id_suffix}'>"
+               f"{_dollars(ov.get('cash_cents'))}</div></div>")
+    out.append(f"<div class='card'><div class='label' "
+               f"title='Total portfolio value: cash + open positions "
+               f"at market. Not affected by the period filter.'>"
+               f"Predictions</div>"
+               f"<div class='value' id='card-portfolio{id_suffix}'>"
+               f"{_dollars(ov.get('portfolio_cents'))}</div></div>")
+    out.append(f"<div class='card'><div class='label' "
+               f"title='Settled bets in the selected period.'>"
+               f"Total bets</div>"
+               f"<div class='value' id='card-closed-bets{id_suffix}'>"
+               f"{total_bets}</div></div>")
+    out.append(f"<div class='card'><div class='label' "
+               f"title='Total cost basis of the period&apos;s settled "
+               f"bets (entry price x contracts).'>"
                f"Money spent</div>"
                f"<div class='value' id='card-money-spent{id_suffix}'>"
-               f"{fmt_signed_cents(-money_spent)}</div></div>")
+               f"{fmt_signed_cents(-money_spent_c)}</div></div>")
     out.append(f"<div class='card'><div class='label' "
-               f"title='Total payout received from positions closed in "
-               f"the period (entry × contracts + realized P&amp;L).'>"
-               f"Money gained</div>"
-               f"<div class='value green' id='card-money-gained{id_suffix}'>"
-               f"+{fmt_signed_cents(money_gained).lstrip('+')}</div></div>")
-    out.append(f"<div class='card'><div class='label'>"
+               f"title='Net realized profit and loss on the "
+               f"period&apos;s settled bets, after fees.'>"
                f"P&amp;L</div>"
                f"<div class='value {pnl_cls}' id='card-net-pnl{id_suffix}'>"
-               f"{fmt_signed_cents(net)}</div></div>")
+               f"{fmt_signed_cents(net_c)}</div></div>")
     out.append(f"<div class='card'><div class='label' "
-               f"title='Wins divided by closed bets in the selected "
-               f"period. 0-100%; above 50% means winning more than "
-               f"losing.'>"
-               f"Total win %</div>"
+               f"title='Wins divided by settled bets in the selected "
+               f"period.'>"
+               f"Win %</div>"
                f"<div class='value {win_cls}' id='card-win-pct{id_suffix}'>"
-               f"{win_pct_str}</div></div>")
+               f"{win_str}</div></div>")
     out.append("</div>")
 
 
@@ -1356,8 +1361,6 @@ def _render_history_chart(out: List[str], history: List[dict],
     # right — visually anchors the filter to the chart it controls.
     out.append("<div class='history-chart-toolbar'>")
     out.append("<div class='history-chart-title'>Daily net P&amp;L</div>")
-    _render_period_filter(out, period_key, current_bot=current_bot,
-                            tab_key="history")
     out.append("</div>")
     out.append(
         "<div class='history-chart-wrap'>"

@@ -22,6 +22,7 @@ from .panels import (
     _render_notifications_panel,
     _render_seasons_panel,
     _render_summary,
+    _render_period_filter,
     _render_summary_cards,
 )
 from .watchlist_panel import _render_watchlist
@@ -384,6 +385,11 @@ def render_page(
         "active_bets": (global_summary.get("active_bets", 0)
                          if global_summary else 0),
     }
+    # Period filter sits ABOVE the cards (user 2026-07-20) — it
+    # scopes the last four cards (Total bets / Money spent / P&L /
+    # Win %) plus the chart; Cash and Predictions are always current.
+    _render_period_filter(out, period_key, current_bot=current_bot,
+                            tab_key="history")
     _render_summary_cards(out, kalshi_rollup or global_summary,
                            id_suffix="-history",
                            show_closed_contracts=True)
@@ -704,17 +710,21 @@ _HISTORY_CHART_JS = """<script>
     // never a fractional position that rounds to a duplicate date.
     // When the series is long, downsample to ~6 labels by even-stride
     // selection over the real day epochs.
+    // Evenly spaced ticks (user 2026-07-20): subdivide the full time
+    // range into equal steps and snap each to a UTC day, instead of
+    // striding over traded days (which bunches labels wherever
+    // settlements cluster). Equal time steps = equal pixel gaps,
+    // since x() is linear in time.
     const MAX_TICKS = 6;
     const dayEpochs = series.map(function (s) { return s[0]; });
-    const stride = Math.max(1, Math.ceil(dayEpochs.length / MAX_TICKS));
+    const nTicks = Math.min(MAX_TICKS, Math.max(2, dayEpochs.length));
     const tickEpochs = [];
-    for (let i = 0; i < dayEpochs.length; i += stride) {
-      tickEpochs.push(dayEpochs[i]);
-    }
-    // Always include the rightmost (today) so the user sees today's
-    // label even if the stride skipped it.
-    if (tickEpochs[tickEpochs.length - 1] !== dayEpochs[dayEpochs.length - 1]) {
-      tickEpochs.push(dayEpochs[dayEpochs.length - 1]);
+    for (let i = 0; i < nTicks; i++) {
+      const t = tMin + (i / (nTicks - 1)) * (tMax - tMin);
+      const snapped = Math.round(t / 86400) * 86400;
+      if (tickEpochs.indexOf(snapped) === -1) {
+        tickEpochs.push(snapped);
+      }
     }
     tickEpochs.forEach(function (t, i) {
       const px = x(t);

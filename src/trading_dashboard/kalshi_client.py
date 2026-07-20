@@ -222,6 +222,110 @@ class KalshiClient:
             return None
 
 
+_MARK_CACHE: dict = {}
+_OVERVIEW_CACHE: list = [0.0, None]
+_SNAPSHOT_PATH = os.environ.get(
+    "KALSHI_PORTFOLIO_SNAPSHOTS",
+    str(Path(__file__).resolve().parents[2] / "data"
+        / "portfolio_snapshots.jsonl"))
+
+
+def _position_mark_cents(ticker: str) -> Optional[int]:
+    """Current value of one contract: last trade, else yes bid.
+    Cached 60s per ticker — the overview recomputes on every page
+    render and a dozen live GET /markets calls per render would be
+    wasteful."""
+    now = time.time()
+    hit = _MARK_CACHE.get(ticker)
+    if hit and now - hit[0] < 60:
+        return hit[1]
+    m = get_client().get_market(ticker) or {}
+    mark = market_cents(m, "last_price")
+    if mark is None:
+        mark = market_cents(m, "yes_bid")
+    _MARK_CACHE[ticker] = (now, mark)
+    return mark
+
+
+def get_portfolio_overview() -> dict:
+    """Account headline numbers for the Home/History summary cards:
+
+      cash_cents             — Kalshi cash balance
+      positions_value_cents  — open YES/NO positions at last price
+      portfolio_cents        — cash + positions value ("Predictions"
+                               total, matching the Kalshi app)
+      unrealized_cents       — positions value − their cost basis
+      change_24h_cents       — portfolio vs the snapshot nearest 24h
+                               ago (None until a day of snapshots
+                               exists)
+
+    Appends a throttled snapshot line to data/portfolio_snapshots.jsonl
+    so the 24h delta has a baseline. Cached 60s.
+    """
+    import json as _json
+    now = time.time()
+    if _OVERVIEW_CACHE[1] is not None and now - _OVERVIEW_CACHE[0] < 60:
+        return _OVERVIEW_CACHE[1]
+    cash = get_balance_cents()
+    value = cost = 0
+    positions, _err = get_open_positions()
+    for pos in positions or []:
+        t = pos.get("ticker") or ""
+        try:
+            fp = float(pos.get("position_fp") or 0)
+        except (TypeError, ValueError):
+            continue
+        if not t or not fp:
+            continue
+        mark = _position_mark_cents(t)
+        if mark is None:
+            continue
+        n = abs(fp)
+        # NO positions (fp < 0) are worth (100 − yes mark).
+        per = mark if fp > 0 else (100 - mark)
+        value += int(round(n * per))
+        try:
+            cost += int(round(
+                float(pos.get("market_exposure_dollars") or 0) * 100))
+        except (TypeError, ValueError):
+            pass
+    out = {
+        "cash_cents": cash,
+        "positions_value_cents": value,
+        "portfolio_cents": (cash + value) if cash is not None else None,
+        "unrealized_cents": value - cost,
+        "change_24h_cents": None,
+    }
+    # Snapshot + 24h baseline (best-effort; file I/O never breaks a render)
+    try:
+        snap_p = Path(_SNAPSHOT_PATH)
+        snaps = []
+        if snap_p.exists():
+            for line in snap_p.read_text().splitlines()[-2000:]:
+                try:
+                    snaps.append(_json.loads(line))
+                except ValueError:
+                    continue
+        if out["portfolio_cents"] is not None and (
+                not snaps or now - snaps[-1].get("ts", 0) >= 600):
+            snap_p.parent.mkdir(parents=True, exist_ok=True)
+            with open(snap_p, "a") as fh:
+                fh.write(_json.dumps(
+                    {"ts": int(now), "cash": cash,
+                     "portfolio": out["portfolio_cents"]}) + "\n")
+        target = now - 86400
+        older = [sn for sn in snaps if sn.get("ts", 0) <= now - 72000]
+        if older and out["portfolio_cents"] is not None:
+            base = min(older, key=lambda sn: abs(sn.get("ts", 0) - target))
+            out["change_24h_cents"] = (out["portfolio_cents"]
+                                        - base.get("portfolio", 0))
+    except OSError:
+        pass
+    _OVERVIEW_CACHE[0] = now
+    _OVERVIEW_CACHE[1] = out
+    return out
+
+
 def market_cents(m: dict, name: str) -> Optional[int]:
     """Price field in cents, tolerant of the API's migration from int
     cents (``yes_ask``) to dollar strings (``yes_ask_dollars``)."""
