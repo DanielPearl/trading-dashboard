@@ -1725,10 +1725,16 @@ def _render_bet_history_block(out: List[str], history: List[dict],
         # long name pairs stop stretching the Title column (user
         # 2026-07-21). Non-matchup titles pass through unchanged.
         if " vs " in title_text:
+            # Each line STARTS with its flag (user 2026-07-21); the
+            # "vs" hangs off the first line in muted small type so the
+            # stacked names stay the visual anchor.
             _ta, _, _tb = title_text.partition(" vs ")
             _title_cell = (
-                f"{_flag_for(_ta, _tk)}{html.escape(_ta)}<br>"
-                f"vs {_flag_for(_tb, _tk)}{html.escape(_tb)}")
+                f"<span style='white-space:nowrap'>"
+                f"{_flag_for(_ta, _tk)}{html.escape(_ta)}"
+                f" <span class='small gray'>vs</span></span><br>"
+                f"<span style='white-space:nowrap'>"
+                f"{_flag_for(_tb, _tk)}{html.escape(_tb)}</span>")
         else:
             _title_cell = _flag_matchup(html.escape(title_text), _tk)
         winner_str = "—"
