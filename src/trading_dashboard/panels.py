@@ -1593,8 +1593,13 @@ def _render_bet_history_block(out: List[str], history: List[dict],
         "<th title='Player / team that actually won the match. Derived from settlement outcome + which side we bet on.'>Winner</th>"
         "<th>Side</th>"
         "<th class='num' title='Model % for the side we bet on at the moment the contract was bought — static once opened, same definition as the Active bets Model entry % column.'>Model entry %</th>"
-        "<th class='num'>Entry</th><th class='num'>Exit</th>"
+        "<th class='num' title='Implied probability at the price we "
+        "paid — static once opened, same definition as the Active "
+        "bets Kalshi entry % column.'>Kalshi entry %</th>"
+        "<th class='num'>Exit</th>"
         "<th class='num'>Contracts</th>"
+        "<th class='num' title='Entry price x contracts, before "
+        "fees.'>Entry cost</th>"
         "<th class='num' title='Net EV per contract at entry: (model_p − entry_price) − half-spread. "
         "Positive = +EV trade.'>Entry EV</th>"
         "<th class='num'>P&amp;L</th>"
@@ -1647,6 +1652,14 @@ def _render_bet_history_block(out: List[str], history: List[dict],
             mp_str = f"{p_sel*100:.0f}%"
         else:
             mp_str = "—"
+        # Kalshi entry % (implied prob at fill) + Entry cost (price x
+        # contracts, dollars) — user 2026-07-20 column spec.
+        if entry is not None:
+            kalshi_entry_pct_str = f"{int(entry)}%"
+            entry_cost_str = f"−${int(entry) * contracts / 100:.2f}"
+        else:
+            kalshi_entry_pct_str = "—"
+            entry_cost_str = "—"
         ev = b.get("expected_ev_at_entry")
         if ev is None or round(float(ev), 2) == 0:
             ev_str = "0"
@@ -1726,9 +1739,10 @@ def _render_bet_history_block(out: List[str], history: List[dict],
                 f"<td>{html.escape(winner_str)}</td>"
                 f"<td><span class='badge {badge_cls}'>{side}</span></td>"
                 f"<td class='num'>{mp_str}</td>"
-                f"<td class='num'>{entry}c</td>"
+                f"<td class='num'>{kalshi_entry_pct_str}</td>"
                 f"<td class='num'>{cents_or_dash(exit_c)}</td>"
                 f"<td class='num'>{contracts}</td>"
+                f"<td class='num'>{entry_cost_str}</td>"
                 f"<td class='num {ev_cls}'>{ev_str}</td>"
                 f"<td class='num {pnl_cls_}'>{fmt_signed_cents(pnl)}</td>"
                 f"<td class='{pnl_cls_}'>{outcome}</td></tr>")
