@@ -213,17 +213,9 @@ def apply_benchmark(rows: List[Dict[str, Any]],
                 # Fake-edge guard: beyond max_edge the benchmark is
                 # almost certainly stale or mispaired — WATCH, never buy.
                 "edge_sane": (side_edge or 0) <= cfg["max_edge"],
-                "ev": (side_ev or 0) > 0,
                 "price_band": (side_price is not None
                                and cfg["min_entry_price"] <= side_price
                                <= cfg["max_entry_price"]),
-                "open_interest": (oi or 0) >= cfg["min_open_interest"],
-                # Spread gate disabled when max_spread_cents is None
-                # (default since 2026-07-15). Treat the gate as passed
-                # so the row's other gates decide eligibility.
-                "spread": (cfg["max_spread_cents"] is None
-                           or (spread is not None
-                               and spread <= cfg["max_spread_cents"])),
             }
             eligible = all(gates.values())
             if (side_edge or 0) >= cfg["strong_edge"]:
