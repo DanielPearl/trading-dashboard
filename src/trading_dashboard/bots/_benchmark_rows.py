@@ -29,19 +29,10 @@ log = logging.getLogger("dashboard.benchmark-rows")
 
 # Uniform gates — keep in lockstep with the MLB exporter's DEFAULTS
 # (Baseball Forecast src/dashboard/export_watchlist.py).
-DEFAULTS = {
-    "slippage": 0.02,
-    "min_edge": 0.09,   # raised 0.05 → 0.09 (2026-07-13 real-money audit: −15% ROI; 5pp gross barely cleared spread+fee)
-    "strong_edge": 0.10,
-    "max_edge": 0.15,   # suspect-benchmark ceiling — see edge_sane gate
-    "min_entry_price": 0.30,  # 30–60¢ band (audit: 20-29¢ ran −43%, 60-69¢ −41%)
-    "max_entry_price": 0.60,
-    # None = spread gate disabled (2026-07-15: user retired the 6¢
-    # cap across every bot — wide books get filtered by the true-edge
-    # gate instead, which is spread-aware).
-    "max_spread_cents": None,
-    "min_open_interest": 1,
-}
+from kalshi_sdk.buy_criteria import exporter_defaults as _shared_defaults
+
+# Shared buy gates (kalshi_sdk.buy_criteria) — user 2026-07-21.
+DEFAULTS = _shared_defaults()
 
 TRADEABLE_LABELS = {"STRONG_EDGE", "SMALL_EDGE"}
 

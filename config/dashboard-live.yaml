@@ -452,9 +452,9 @@ tennis_trader:
     #   * require_pinnacle kept — sharp-book anchoring is the single
     #     most load-bearing gate (Portland Fire / Bueno-Marcondes
     #     class of bug).
-    min_edge_pp: 0.05
+    min_edge_pp: 0.09
     max_entry_price_cents: 70
-    min_entry_price_cents: 15
+    min_entry_price_cents: 30
     price_deviation_cents: 3
     require_pinnacle: true
     # Pre-match window: how many hours before close the bot is

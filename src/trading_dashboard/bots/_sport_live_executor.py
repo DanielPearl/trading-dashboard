@@ -39,9 +39,9 @@ HARD_CAPS = {
     # daily counter exists only as a runaway backstop (a bug rapidly
     # opening/closing positions burns out here instead of at Kalshi).
     "max_orders_per_day": 100,
-    "min_edge_pp": 0.05,
+    "min_edge_pp": 0.09,
     "max_entry_price_cents": 70,
-    "min_entry_price_cents": 15,
+    "min_entry_price_cents": 30,
     "price_deviation_cents": 3,
     "min_profit_lock_bid": 90,
     # Tennis / darts extras — enforced whenever the subclass exposes them.
@@ -52,12 +52,12 @@ HARD_CAPS = {
 }
 
 DEFAULTS = {
-    "max_open_positions": 6,
+    "max_open_positions": 10,
     "max_orders_per_day": 50,
     "contracts_per_order": 1,
-    "min_edge_pp": 0.05,
+    "min_edge_pp": 0.09,
     "max_entry_price_cents": 70,
-    "min_entry_price_cents": 15,
+    "min_entry_price_cents": 30,
     "price_deviation_cents": 3,
     "prematch_buffer_minutes": 10,
     "profit_lock_yes_bid_cents": 95,
@@ -141,6 +141,20 @@ class SportLiveExecutor:
             floor=True)
         self.price_deviation_cents = capped(
             "price_deviation_cents", h["price_deviation_cents"])
+        # Shared-criteria clamp (kalshi_sdk.buy_criteria, user
+        # 2026-07-21): per-bot YAML may only TIGHTEN the canonical
+        # gates, never loosen them — a parallel-session config rewrite
+        # ran the tennis executor at 5pp / 15-70c for a morning and
+        # bought a 17c contract on an 18pp phantom edge.
+        try:
+            from kalshi_sdk.buy_criteria import clamp_executor_cfg
+            (self.min_edge, self.min_entry_price_cents,
+             self.max_entry_price_cents) = clamp_executor_cfg(
+                min_edge=self.min_edge,
+                min_entry_price_cents=self.min_entry_price_cents,
+                max_entry_price_cents=self.max_entry_price_cents)
+        except ImportError:
+            pass
         self.prematch_buffer_minutes = float(
             cfg.get("prematch_buffer_minutes",
                     d["prematch_buffer_minutes"])
