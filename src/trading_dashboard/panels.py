@@ -1732,10 +1732,11 @@ def _render_bet_history_block(out: List[str], history: List[dict],
             # Drop the legacy "— bet on X" suffix: the Projected
             # winner column says it now.
             _tb = _tb.split(" — bet on ")[0].strip()
+            # Two stacked lines, each STARTING with its flag — no
+            # "vs" text at all (user 2026-07-21).
             _title_cell = (
                 f"<span style='white-space:nowrap'>"
-                f"{_flag_for(_ta, _tk)}{html.escape(_ta)}"
-                f" <span class='small gray'>vs</span></span><br>"
+                f"{_flag_for(_ta, _tk)}{html.escape(_ta)}</span><br>"
                 f"<span style='white-space:nowrap'>"
                 f"{_flag_for(_tb, _tk)}{html.escape(_tb)}</span>")
         else:
