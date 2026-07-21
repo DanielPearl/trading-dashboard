@@ -346,12 +346,17 @@ def render_page(
 
     # ── HISTORY tab — closed-bet history across all bots ──────────────
     _open_panel("history")
+    # Section header row: title left, period filter right — same
+    # line, no extra padding (user 2026-07-22).
+    out.append("<div class='section'><div class='hdr-flex'>")
     out.append(
-        f"<div class='section'><h2>Contract history "
+        f"<h2>Contract history "
         f"<span class='small gray'>({html.escape(period_label)})"
         f"</span></h2>"
-        f"<div class='body'>"
     )
+    _render_period_filter(out, period_key, current_bot=current_bot,
+                            tab_key="history")
+    out.append("</div><div class='body'>")
     # 2026-07-11 (updated): History tab sources every row from Kalshi's
     # real ``/portfolio/settlements`` + ``/portfolio/fills`` endpoints
     # on BOTH LIVE and SIM. Per user 2026-07-11 "only show actual closed
@@ -385,15 +390,6 @@ def render_page(
         "active_bets": (global_summary.get("active_bets", 0)
                          if global_summary else 0),
     }
-    # Period filter sits ABOVE the cards, pinned to the section's
-    # top-right (user 2026-07-20) — it scopes the last four cards
-    # (Total bets / Money spent / P&L / Win %) plus the chart; Cash
-    # and Predictions are always current.
-    out.append("<div style='display:flex;justify-content:flex-end;"
-               "margin-bottom:8px'>")
-    _render_period_filter(out, period_key, current_bot=current_bot,
-                            tab_key="history")
-    out.append("</div>")
     _render_summary_cards(out, kalshi_rollup or global_summary,
                            id_suffix="-history",
                            show_closed_contracts=True)

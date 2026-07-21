@@ -226,6 +226,12 @@ code { background: #161b22; padding: 1px 6px; border-radius: 3px; color: #c9d1d9
 .bot-filter-bar { display: flex; align-items: center; gap: 10px;
     padding: 4px 0 18px 0; margin-bottom: 8px; flex-wrap: wrap;
     border-bottom: 1px solid #21262d; margin-top: -8px; }
+.section .hdr-flex { display: flex; align-items: center;
+    justify-content: space-between; gap: 12px;
+    padding: 14px 22px 10px; }
+.section .hdr-flex h2 { padding: 0; margin: 0; }
+.section .hdr-flex .bot-filter-bar { padding: 0; margin: 0;
+    border-bottom: none; }
 .bot-filter-bar .filter-label {
     color: #8b949e; font-size: 11px; text-transform: uppercase;
     letter-spacing: 0.06em; font-weight: 600; margin-right: 4px;
