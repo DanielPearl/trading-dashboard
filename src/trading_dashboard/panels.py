@@ -1598,8 +1598,6 @@ def _render_bet_history_block(out: List[str], history: List[dict],
         "bets Kalshi entry % column.'>Kalshi entry %</th>"
         "<th class='num'>Exit</th>"
         "<th class='num'>Contracts</th>"
-        "<th class='num' title='Entry price x contracts, before "
-        "fees.'>Entry cost</th>"
         "<th class='num' title='Net EV per contract at entry: (model_p − entry_price) − half-spread. "
         "Positive = +EV trade.'>Entry EV</th>"
         "<th class='num'>P&amp;L</th>"
@@ -1654,12 +1652,13 @@ def _render_bet_history_block(out: List[str], history: List[dict],
             mp_str = "—"
         # Kalshi entry % (implied prob at fill) + Entry cost (price x
         # contracts, dollars) — user 2026-07-20 column spec.
-        if entry is not None:
-            kalshi_entry_pct_str = f"{int(entry)}%"
-            entry_cost_str = f"−${int(entry) * contracts / 100:.2f}"
-        else:
-            kalshi_entry_pct_str = "—"
-            entry_cost_str = "—"
+        kalshi_entry_pct_str = (f"{int(entry)}%" if entry is not None
+                                 else "—")
+        # Country flags (user 2026-07-21) — resolved from the ticker's
+        # league or the tennis nationality map; '' when unknown.
+        from .flags import flag_for as _flag_for
+        from .flags import flag_matchup as _flag_matchup
+        _tk = b.get("ticker") or ""
         ev = b.get("expected_ev_at_entry")
         if ev is None or round(float(ev), 2) == 0:
             ev_str = "0"
@@ -1735,15 +1734,15 @@ def _render_bet_history_block(out: List[str], history: List[dict],
         return (f"<tr><td>{html.escape(opened)}</td>"
                 f"<td>{html.escape(closed)}</td>"
                 f"{bot_cell}"
-                f"<td>{html.escape(title_text)}{merged_badge}</td>"
-                f"<td>{html.escape(winner_str)}</td>"
+                f"<td>{_flag_matchup(html.escape(title_text), _tk)}"
+                f"{merged_badge}</td>"
+                f"<td>{_flag_for(winner_str, _tk)}"
+                f"{html.escape(winner_str)}</td>"
                 f"<td><span class='badge {badge_cls}'>{side}</span></td>"
                 f"<td class='num'>{mp_str}</td>"
                 f"<td class='num'>{kalshi_entry_pct_str}</td>"
                 f"<td class='num'>{cents_or_dash(exit_c)}</td>"
                 f"<td class='num'>{contracts}</td>"
-                f"<td class='num red' "
-                f"style='white-space:nowrap'>{entry_cost_str}</td>"
                 f"<td class='num {ev_cls}'>{ev_str}</td>"
                 f"<td class='num {pnl_cls_}'>{fmt_signed_cents(pnl)}</td>"
                 f"<td class='{pnl_cls_}'>{outcome}</td></tr>")
