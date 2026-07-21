@@ -1742,7 +1742,8 @@ def _render_bet_history_block(out: List[str], history: List[dict],
                 f"<td class='num'>{kalshi_entry_pct_str}</td>"
                 f"<td class='num'>{cents_or_dash(exit_c)}</td>"
                 f"<td class='num'>{contracts}</td>"
-                f"<td class='num'>{entry_cost_str}</td>"
+                f"<td class='num red' "
+                f"style='white-space:nowrap'>{entry_cost_str}</td>"
                 f"<td class='num {ev_cls}'>{ev_str}</td>"
                 f"<td class='num {pnl_cls_}'>{fmt_signed_cents(pnl)}</td>"
                 f"<td class='{pnl_cls_}'>{outcome}</td></tr>")
