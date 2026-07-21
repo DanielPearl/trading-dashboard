@@ -1732,13 +1732,17 @@ def _render_bet_history_block(out: List[str], history: List[dict],
             # Drop the legacy "— bet on X" suffix: the Projected
             # winner column says it now.
             _tb = _tb.split(" — bet on ")[0].strip()
-            # Two stacked lines, each STARTING with its flag — no
-            # "vs" text at all (user 2026-07-21).
+            # Two stacked lines, each STARTING with its flag; "vs"
+            # rides muted at the end of the TOP line (user
+            # 2026-07-21). ``_match_text`` carries the FULL names, so
+            # last-name title lines still resolve nationalities.
             _title_cell = (
                 f"<span style='white-space:nowrap'>"
-                f"{_flag_for(_ta, _tk)}{html.escape(_ta)}</span><br>"
+                f"{_flag_for(_ta, _tk, _match_text)}{html.escape(_ta)}"
+                f" <span class='small gray'>vs</span></span><br>"
                 f"<span style='white-space:nowrap'>"
-                f"{_flag_for(_tb, _tk)}{html.escape(_tb)}</span>")
+                f"{_flag_for(_tb, _tk, _match_text)}"
+                f"{html.escape(_tb)}</span>")
         else:
             _title_cell = _flag_matchup(html.escape(title_text), _tk)
         winner_str = "—"
@@ -1755,9 +1759,9 @@ def _render_bet_history_block(out: List[str], history: List[dict],
                 f"<td>{html.escape(closed)}</td>"
                 f"{bot_cell}"
                 f"<td>{_title_cell}{merged_badge}</td>"
-                f"<td>{_flag_for(_side_player, _tk)}"
+                f"<td>{_flag_for(_side_player, _tk, _match_text)}"
                 f"{html.escape(_side_player or chr(8212))}</td>"
-                f"<td>{_flag_for(winner_str, _tk)}"
+                f"<td>{_flag_for(winner_str, _tk, _match_text)}"
                 f"{html.escape(winner_str)}</td>"
                 f"<td><span class='badge {badge_cls}'>{side}</span></td>"
                 f"<td class='num'>{mp_str}</td>"

@@ -118,7 +118,113 @@ def _load_player_map() -> dict:
     return out
 
 
-def flag_for(name: str | None, ticker: str | None) -> str:
+_WIKI_CACHE_PATH = Path(__file__).resolve().parents[2] / "data" \
+    / "player_countries.json"
+_WIKI_CACHE: dict | None = None
+_WIKI_RECENT: list = []          # timestamps of live lookups (budget)
+_WIKI_BUDGET_PER_MIN = 2         # never let flag lookups slow a render
+
+
+def _wiki_cache() -> dict:
+    global _WIKI_CACHE
+    if _WIKI_CACHE is None:
+        try:
+            import json
+            _WIKI_CACHE = json.loads(_WIKI_CACHE_PATH.read_text())
+        except (OSError, ValueError):
+            _WIKI_CACHE = {}
+    return _WIKI_CACHE
+
+
+def _wiki_cache_put(name: str, iso2: str | None) -> None:
+    cache = _wiki_cache()
+    cache[name] = iso2
+    try:
+        import json
+        _WIKI_CACHE_PATH.parent.mkdir(parents=True, exist_ok=True)
+        _WIKI_CACHE_PATH.write_text(json.dumps(cache, indent=0,
+                                                sort_keys=True))
+    except OSError:
+        pass
+
+
+def _wikidata_iso2(full_name: str, sport_hint: str) -> str | None:
+    """Country of citizenship via Wikidata (free, no key). Cached
+    forever (misses too); at most _WIKI_BUDGET_PER_MIN live lookups a
+    minute so a page render can never stall on the network."""
+    import time as _time
+    key = full_name.lower()
+    cache = _wiki_cache()
+    if key in cache:
+        return cache[key]
+    now = _time.time()
+    while _WIKI_RECENT and now - _WIKI_RECENT[0] > 60:
+        _WIKI_RECENT.pop(0)
+    if len(_WIKI_RECENT) >= _WIKI_BUDGET_PER_MIN:
+        return None            # over budget — try again a later render
+    _WIKI_RECENT.append(now)
+    try:
+        import requests
+        r = requests.get(
+            "https://www.wikidata.org/w/api.php",
+            params={"action": "wbsearchentities", "search": full_name,
+                    "language": "en", "type": "item", "limit": 5,
+                    "format": "json"},
+            timeout=4, headers={"User-Agent": "kalshi-dashboard/1.0"})
+        hits = (r.json().get("search") or [])
+        qid = None
+        for h in hits:
+            desc = (h.get("description") or "").lower()
+            if sport_hint in desc and "player" in desc:
+                qid = h.get("id")
+                break
+        if qid is None:
+            _wiki_cache_put(key, None)
+            return None
+        r = requests.get(
+            "https://www.wikidata.org/w/api.php",
+            params={"action": "wbgetclaims", "entity": qid,
+                    "property": "P27", "format": "json"},
+            timeout=4, headers={"User-Agent": "kalshi-dashboard/1.0"})
+        claims = (r.json().get("claims") or {}).get("P27") or []
+        country_qid = (claims[0]["mainsnak"]["datavalue"]["value"]["id"]
+                        if claims else None)
+        if not country_qid:
+            _wiki_cache_put(key, None)
+            return None
+        r = requests.get(
+            "https://www.wikidata.org/w/api.php",
+            params={"action": "wbgetclaims", "entity": country_qid,
+                    "property": "P297", "format": "json"},
+            timeout=4, headers={"User-Agent": "kalshi-dashboard/1.0"})
+        p297 = (r.json().get("claims") or {}).get("P297") or []
+        iso2 = (p297[0]["mainsnak"]["datavalue"]["value"]
+                 if p297 else None)
+        _wiki_cache_put(key, iso2)
+        return iso2
+    except Exception:  # noqa: BLE001 — flags are cosmetic
+        return None
+
+
+def _expand_from_context(name: str, context: str | None) -> str:
+    """Titles carry LAST names ("Samson") while position records carry
+    full names ("Laura Samson vs Maya Joint") — expand through the
+    matchup context so the nationality lookup sees the full name."""
+    if not context:
+        return name
+    low = name.lower()
+    for part in context.split(" vs "):
+        part = part.strip()
+        pl = part.lower()
+        if pl == low:
+            return part
+        if pl.endswith(" " + low) or low in pl.split():
+            return part
+    return name
+
+
+def flag_for(name: str | None, ticker: str | None,
+             context: str | None = None) -> str:
     """Flag emoji + trailing space for this name, or ''."""
     name = (name or "").strip()
     t = (ticker or "").upper()
@@ -138,8 +244,11 @@ def flag_for(name: str | None, ticker: str | None) -> str:
     if t.startswith(("KXWCGAME", "KXWCADVANCE")):
         iso = _COUNTRY_NAME_TO_ISO2.get(low)
         return (_iso2_flag(iso) + " ") if iso else ""
-    # Tennis: Sackmann name lookup (full name, then last-name match)
+    # Tennis: expand last names through the matchup context, then
+    # Sackmann lookup, then unique-last-name, then Wikidata fallback.
     if t.startswith(("KXATPMATCH", "KXWTAMATCH", "KXITFMATCH")):
+        full = _expand_from_context(name, context)
+        low = full.lower()
         pm = _load_player_map()
         iso = pm.get(low)
         if iso is None and " " in low:
@@ -147,15 +256,26 @@ def flag_for(name: str | None, ticker: str | None) -> str:
             hits = {v for k, v in pm.items()
                     if k.rsplit(" ", 1)[-1] == last}
             iso = hits.pop() if len(hits) == 1 else None
+        if iso is None and " " in low:
+            iso = _wikidata_iso2(full, "tennis")
         return (_iso2_flag(iso) + " ") if iso else ""
+    # Darts / table tennis: no nationality in our data — Wikidata only.
+    if t.startswith(("KXDARTS", "KXPDC", "KXPREMDARTS")):
+        full = _expand_from_context(name, context)
+        if " " in full:
+            iso = _wikidata_iso2(full, "darts")
+            return (_iso2_flag(iso) + " ") if iso else ""
+        return ""
     return ""
 
 
-def flag_matchup(title: str | None, ticker: str | None) -> str:
+def flag_matchup(title: str | None, ticker: str | None,
+                 context: str | None = None) -> str:
     """Prepend flags to both sides of an 'A vs B' matchup title."""
     title = title or ""
     if " vs " not in title:
         return title
     a, _, b = title.partition(" vs ")
-    fa, fb = flag_for(a, ticker), flag_for(b, ticker)
+    fa = flag_for(a, ticker, context)
+    fb = flag_for(b, ticker, context)
     return f"{fa}{a} vs {fb}{b}"
