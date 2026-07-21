@@ -1592,7 +1592,7 @@ def _render_bet_history_block(out: List[str], history: List[dict],
         "<th>Title</th>"
         "<th title='Player / team that actually won the match. Derived from settlement outcome + which side we bet on.'>Winner</th>"
         "<th>Side</th>"
-        "<th class='num' title='Model probability for the side we bet on, recorded at entry.'>Model p</th>"
+        "<th class='num' title='Model % for the side we bet on at the moment the contract was bought — static once opened, same definition as the Active bets Model entry % column.'>Model entry %</th>"
         "<th class='num'>Entry</th><th class='num'>Exit</th>"
         "<th class='num'>Contracts</th>"
         "<th class='num' title='Net EV per contract at entry: (model_p − entry_price) − half-spread. "
