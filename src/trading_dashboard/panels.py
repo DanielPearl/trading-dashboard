@@ -1590,6 +1590,7 @@ def _render_bet_history_block(out: List[str], history: List[dict],
         "<th title='Date the contract was closed (UTC).'>Closed</th>"
         "<th>Bot</th>"
         "<th>Title</th>"
+        "<th title='Who the bot bet on — the side this position pays out for.'>Projected winner</th>"
         "<th title='Player / team that actually won the match. Derived from settlement outcome + which side we bet on.'>Winner</th>"
         "<th>Side</th>"
         "<th class='num' title='Model % for the side we bet on at the moment the contract was bought — static once opened, same definition as the Active bets Model entry % column.'>Model entry %</th>"
@@ -1721,6 +1722,16 @@ def _render_bet_history_block(out: List[str], history: List[dict],
         # don't have a "match winner" concept — they render "—".
         _match_text = b.get("_match") or ""
         _side_player = b.get("_side_player") or ""
+        # Matchup titles render on TWO lines — "X" over "vs Y" — so
+        # long name pairs stop stretching the Title column (user
+        # 2026-07-21). Non-matchup titles pass through unchanged.
+        if " vs " in title_text:
+            _ta, _, _tb = title_text.partition(" vs ")
+            _title_cell = (
+                f"{_flag_for(_ta, _tk)}{html.escape(_ta)}<br>"
+                f"vs {_flag_for(_tb, _tk)}{html.escape(_tb)}")
+        else:
+            _title_cell = _flag_matchup(html.escape(title_text), _tk)
         winner_str = "—"
         if _side_player and _match_text and pnl != 0:
             if pnl > 0:
@@ -1734,8 +1745,9 @@ def _render_bet_history_block(out: List[str], history: List[dict],
         return (f"<tr><td>{html.escape(opened)}</td>"
                 f"<td>{html.escape(closed)}</td>"
                 f"{bot_cell}"
-                f"<td>{_flag_matchup(html.escape(title_text), _tk)}"
-                f"{merged_badge}</td>"
+                f"<td>{_title_cell}{merged_badge}</td>"
+                f"<td>{_flag_for(_side_player, _tk)}"
+                f"{html.escape(_side_player or chr(8212))}</td>"
                 f"<td>{_flag_for(winner_str, _tk)}"
                 f"{html.escape(winner_str)}</td>"
                 f"<td><span class='badge {badge_cls}'>{side}</span></td>"
