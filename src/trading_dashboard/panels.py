@@ -1729,6 +1729,9 @@ def _render_bet_history_block(out: List[str], history: List[dict],
             # "vs" hangs off the first line in muted small type so the
             # stacked names stay the visual anchor.
             _ta, _, _tb = title_text.partition(" vs ")
+            # Drop the legacy "— bet on X" suffix: the Projected
+            # winner column says it now.
+            _tb = _tb.split(" — bet on ")[0].strip()
             _title_cell = (
                 f"<span style='white-space:nowrap'>"
                 f"{_flag_for(_ta, _tk)}{html.escape(_ta)}"
