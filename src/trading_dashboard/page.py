@@ -327,6 +327,19 @@ def render_page(
                 current_tab="training",
                 period_key=period_key,
             ))
+        elif current_bot == "hormuz":
+            # Hormuz ships its own training panel — the weekly PortWatch
+            # feature grain with the `peak` dependent variable, paged
+            # from training_data.csv.
+            from . import hormuz as _hz_mod
+            out.append(_hz_mod.render_training_data_panel(
+                bot=current_bot_dict or {},
+                current_bot=current_bot,
+                page=_page,
+                page_size=25,
+                current_tab="training",
+                period_key=period_key,
+            ))
         else:
             out.append(_tennis_mod.render_training_data_panel(
                 current_bot=current_bot,

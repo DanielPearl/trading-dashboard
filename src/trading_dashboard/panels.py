@@ -1796,7 +1796,7 @@ def _render_bet_history_block(out: List[str], history: List[dict],
 # paper-only, but its watchlist / model / training pages are live.
 BOT_FILTER_KEYS = {
     "mlb", "nba", "wnba", "tennis", "table-tennis", "darts",
-    "world-cup", "billboard", "reality-leaks",
+    "world-cup", "billboard", "reality-leaks", "hormuz",
 }
 
 

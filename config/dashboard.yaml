@@ -437,6 +437,33 @@ bots:
         start: "2026-03-25T00:00:00Z"
         end:   "2026-11-08T05:00:00Z"
 
+  - key: hormuz
+    name: Hormuz Forecast
+    # Weekly peak-traffic forecaster for the Strait of Hormuz
+    # (KXHORMUZPEAK). Standard sim.db macro bot: recency-weighted Ridge
+    # trend model over IMF PortWatch daily transit calls + Brent (FRED)
+    # + GDELT tension; per-strike P(peak >= X) is saved as the watchlist
+    # model %. SIM ONLY — paper-trades via the shared select_side_by_ev
+    # criteria (see hormuz_trader below). Models tab reads the committed
+    # model_card.json (bake-off + Ridge coefficients + feature values);
+    # Training Data tab pages training_data.csv (weekly feature grain +
+    # the `peak` dependent variable).
+    db_path: /root/port-forecast/data/sim.db
+    decisions_path: /root/port-forecast/data/decisions.jsonl
+    series_ticker: KXHORMUZPEAK
+    series_prefixes: [KXHORMUZPEAK]
+    data_source: "IMF PortWatch daily transit calls (chokepoint6) + FRED Brent + GDELT"
+    model_report_path: /root/port-forecast/data/model_card.json
+    training_data_path: /root/port-forecast/data/training_data.csv
+    display:
+      underlying_label: Predicted weekly peak
+      underlying_unit: ""
+      underlying_decimals: 0
+      unit_position: none
+      chart_period_minutes: 1440
+      prediction_period_label: this week
+      # Default idiom renders "above 20" (matches Kalshi's "Above 20").
+
 # ---------------------------------------------------------------------------
 # Display thresholds. Mirror the gas-bot's gates so the buy-criteria panel
 # shows the actual bar each market must clear.
@@ -640,3 +667,13 @@ reality_leaks_trader:
   enabled: true
   repo_path: /root/reality-leaks
   interval_seconds: 300
+
+hormuz_trader:
+  # Hormuz Forecast PAPER trader (2026-07-22). Standard Shape-A macro
+  # bot: upstream Bot.run() owns the tick loop. SIM ONLY — dry_run is
+  # true in its config and it only ever writes sim.db. Reads
+  # FRED_API_KEY (optional) / Kalshi creds from the shared env like the
+  # other macro bots.
+  enabled: true
+  repo_path: /root/port-forecast
+  config_path: /root/port-forecast/config/config.yaml

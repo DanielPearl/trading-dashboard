@@ -1049,6 +1049,7 @@ def serve(host: str, port: int, bots: List[dict], risk_caps: dict,
           world_cup_trader_cfg: dict | None = None,
           mlb_trader_cfg: dict | None = None,
           reality_leaks_trader_cfg: dict | None = None,
+          hormuz_trader_cfg: dict | None = None,
           mode: str = "sim",
           live_state_paths: List[str] | None = None) -> None:
     Handler.bots = bots
@@ -1172,6 +1173,11 @@ def serve(host: str, port: int, bots: List[dict], risk_caps: dict,
     if reality_leaks_trader_cfg:
         from .bots import reality_leaks as reality_leaks_bot
         reality_leaks_bot.start_daemon(reality_leaks_trader_cfg)
+    # Hormuz Forecast paper trader — standard sim.db macro bot,
+    # permanently sim-side (dry_run true upstream).
+    if hormuz_trader_cfg:
+        from .bots import hormuz as hormuz_bot
+        hormuz_bot.start_daemon(hormuz_trader_cfg)
     server = ThreadingHTTPServer((host, port), Handler)
     log.info("dashboard listening on http://%s:%d", host, port)
     log.info("registered bots: %s",
@@ -1357,6 +1363,7 @@ def main(argv: list[str] | None = None) -> int:
     world_cup_trader_cfg = cfg.raw.get("world_cup_trader") or {}
     mlb_trader_cfg = cfg.raw.get("mlb_trader") or {}
     reality_leaks_trader_cfg = cfg.raw.get("reality_leaks_trader") or {}
+    hormuz_trader_cfg = cfg.raw.get("hormuz_trader") or {}
 
     host = args.host or cfg.host
     port = args.port or cfg.port
@@ -1397,6 +1404,7 @@ def main(argv: list[str] | None = None) -> int:
           world_cup_trader_cfg=world_cup_trader_cfg,
           mlb_trader_cfg=mlb_trader_cfg,
           reality_leaks_trader_cfg=reality_leaks_trader_cfg,
+          hormuz_trader_cfg=hormuz_trader_cfg,
           mode=cfg.mode,
           live_state_paths=live_state_paths)
     return 0

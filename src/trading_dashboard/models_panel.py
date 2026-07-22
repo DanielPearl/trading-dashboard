@@ -2721,6 +2721,14 @@ def _render_models_panel(out: List[str], bot: dict, model: dict | None,
         out.append(_world_cup.render_models_panel(bot))
         out.append("</div></div>")
         return
+    # Hormuz Forecast — standard sim.db bot, but a bespoke Models tab
+    # (bake-off + Ridge coefficients + per-feature current-value bars)
+    # read from the committed model_card.json artifact.
+    if bot_key == "hormuz":
+        from . import hormuz as _hormuz
+        _hormuz.render_models_panel(out, bot)
+        out.append("</div></div>")
+        return
     # Tennis-shape bots (tennis / table-tennis / darts) don't have a
     # sim.db — they keep their model artifacts in metrics.json +
     # coefficients.json. Delegate to the tennis renderer; Phase 2b
