@@ -422,7 +422,7 @@ def _render_bot_cards(out: List[str], rollup: dict,
         # line up apples-to-apples with the live actual-win-%, so the
         # drift badge fires spuriously on every load.
         _drift_exempt = b.get("dashboard_type") in ("sport", "survivor", "billboard", "reality") \
-            or bot_key == "natural-gas"
+            or bot_key in ("natural-gas", "hormuz")
         if m and not _drift_exempt:
             a_wins_pre = int(m.get("actual_wins") or 0)
             a_losses_pre = int(m.get("actual_losses") or 0)
@@ -472,8 +472,14 @@ def _render_bot_cards(out: List[str], rollup: dict,
         # Only applies to sim.db-style bots that record a scalar
         # underlying — same exclusion as the regime pill above.
         staleness_html = ""
+        # Hormuz is exempt: its stored current_gas_price is a *forecast*
+        # (the predicted weekly peak), not a current observed level, so
+        # the "forecast vs market-implied" gap the badge measures is the
+        # bot's intended edge — not a stale upstream feed. (Same spirit
+        # as the natural-gas drift-badge exemption above.)
         if (b.get("dashboard_type") not in
                 ("sport", "survivor", "billboard", "reality", "whale", "rules-parser")
+                and bot_key != "hormuz"
                 and m and m.get("current_gas_price") is not None
                 and b.get("series_ticker")):
             try:
