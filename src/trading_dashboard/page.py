@@ -810,6 +810,14 @@ def _live_update_script(current_bot: str, period_key: str = "all") -> str:
   const BOT = "{bot_param}";
   const PERIOD = "{period_param}";
   const POLL_MS = 5000;
+  // Bots whose OWN model is the Model-live-% reference on every pane
+  // (no external benchmark book). For these the poller keeps the
+  // Model live % cell pinned to the latest tick's model_prob_yes so
+  // the cell never lags Edge / EV (which already use the fresh value).
+  // Sport bots are excluded on purpose: their Model % is Pinnacle,
+  // and their active-pane rows can render side-flipped, which a
+  // YES-axis patch would silently un-flip.
+  const MODEL_IS_REF = ["hormuz", "billboard", "reality-leaks"].indexOf(BOT) !== -1;
 
   // Format helpers — must mirror the server-side rendering in render_page.
   function fmtSignedCents(c) {{
@@ -1007,6 +1015,21 @@ def _live_update_script(current_bot: str, period_key: str = "all") -> str:
         // Patch EVERY row carrying this ticker — a held contract has
         // one row in each pane and both must stay in sync.
         trs.forEach(function (tr) {{
+          if (MODEL_IS_REF) {{
+            // Model live % — pin to the latest tick's model prob so
+            // the cell always shows the most recent model tick
+            // without a page reload (user 2026-07-23). Reality's
+            // Model-vs-market pane renders a single-number cell with
+            // no side spans; patchSide no-ops there by design.
+            const mp = (r.pinnacle_prob_yes !== null
+                        && r.pinnacle_prob_yes !== undefined)
+              ? r.pinnacle_prob_yes : r.model_prob_yes;
+            if (mp !== null && mp !== undefined) {{
+              const pinnCell = tr.querySelector("[data-field='pinnacle']");
+              patchSide(pinnCell, 'yes', Math.round(mp * 100) + "%");
+              patchSide(pinnCell, 'no',  Math.round((1 - mp) * 100) + "%");
+            }}
+          }}
           patchCell(tr.querySelector("[data-field='oi']"),
                     r.open_interest !== null && r.open_interest !== undefined
                       ? Math.round(Number(r.open_interest)).toLocaleString() : "—");
