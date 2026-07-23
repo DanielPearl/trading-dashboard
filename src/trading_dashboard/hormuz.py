@@ -310,11 +310,14 @@ def render_training_data_panel(*, bot: dict, current_bot: str | None,
 
     out.append(
         f"<p class='small gray'>One row per Mon–Sun week of IMF PortWatch "
-        f"Strait-of-Hormuz history — <b>{total:,}</b> weeks. <b>Peak ships</b> "
+        f"Strait-of-Hormuz history — <b>{total:,}</b> weeks, historical data "
+        f"and the current snapshot combined in one table. <b>Peak ships</b> "
         f"is the dependent variable (the week's highest daily transit count); "
-        f"every other column is an independent feature, all computed strictly "
-        f"from data <i>before</i> the row's week so nothing leaks the outcome. "
-        f"Sorted newest first. Click a column header for its definition.</p>"
+        f"the top row is the open contract week the model is forecasting, so "
+        f"its peak is still blank. Every other column is an independent "
+        f"feature, all computed strictly from data <i>before</i> the row's "
+        f"week so nothing leaks the outcome. Sorted newest first. Click a "
+        f"column header for its definition.</p>"
     )
 
     defs: Dict[str, Dict[str, str]] = {}

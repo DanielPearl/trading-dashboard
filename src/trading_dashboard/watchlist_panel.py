@@ -418,13 +418,19 @@ def _render_watchlist(out: List[str], watchlist: List[dict],
                                     "darts", "world-cup", "mlb"}
     is_billboard_bot = current_bot == "billboard"
     is_reality_bot = current_bot == "reality-leaks"
+    # Hormuz (user 2026-07-22): same two-section layout as the sport
+    # bots — Active bets · Model vs market, NO hero chart / prediction
+    # cards — with the generic Title | Question columns instead of the
+    # sport Side/player cell (it's a strike ladder, not a matchup).
+    is_hormuz_bot = current_bot == "hormuz"
     # Billboard uses the sport-style two-section layout (Active bets ·
     # Model vs market, no hero chart, no position columns on the
     # Model-vs-market table) but keeps its own columns / sort — user
     # 2026-07-16: "design should be similar to tennis". Reality-leaks
     # follows the same layout with its own Show / Contestant / Leak
     # columns.
-    use_sections = is_sport_bot or is_billboard_bot or is_reality_bot
+    use_sections = (is_sport_bot or is_billboard_bot or is_reality_bot
+                    or is_hormuz_bot)
     if not use_sections:
         out.append("<div class='section'><h2>"
                    "Watchlist — model vs market</h2>"
@@ -1382,6 +1388,29 @@ def _render_watchlist(out: List[str], watchlist: List[dict],
             # section above; they just don't paint the model-vs-market
             # row as though it were a real trade.
             held_bet = kalshi_held_by_ticker.get(ticker)
+            # Hormuz is sim-only — no live executor exists, so the paper
+            # position IS the bot's ledger. Fall back to the sim position
+            # so the Active-bets cells (contracts / cost / payout /
+            # entry %s) and the HOLDING badge populate; real-money bots
+            # keep the Kalshi-truth-only rule above. model_prob_at_entry
+            # is passed on the YES axis (no flip_active reorientation
+            # happens for strike-ladder rows).
+            if held_bet is None and is_hormuz_bot:
+                _pb = held_by_ticker.get(ticker)
+                if _pb:
+                    _pb_mp = _pb.get("model_yes_prob_at_entry")
+                    try:
+                        _pb_mp = float(_pb_mp) if _pb_mp is not None else None
+                    except (TypeError, ValueError):
+                        _pb_mp = None
+                    held_bet = {
+                        "ticker": _pb.get("ticker"),
+                        "side": (_pb.get("side") or "").upper(),
+                        "contracts": _pb.get("contracts"),
+                        "entry_price_cents": _pb.get("entry_price_cents"),
+                        "model_prob_at_entry": _pb_mp,
+                        "current_model_prob": None,
+                    }
             is_bought = held_bet is not None
             bought_side = ((held_bet.get("side") or "").upper()
                            if held_bet else "")
@@ -1761,11 +1790,12 @@ def _render_watchlist(out: List[str], watchlist: List[dict],
             # ``live_prob_a`` / ``live_prob_b`` when Pinnacle doesn't
             # list the match.
             pinn_p = v.get("pinnacle_prob_yes")
-            if (is_active or is_billboard_bot or is_reality_bot) \
-                    and pinn_p is None:
+            if (is_active or is_billboard_bot or is_reality_bot
+                    or is_hormuz_bot) and pinn_p is None:
                 # Billboard has no external benchmark book — the bot's
                 # own P(#1) is the Model % on every pane. Reality-leaks
                 # likewise: Model % is the leak-implied probability.
+                # Hormuz: the bot's own P(peak ≥ strike) is the model.
                 pinn_p = v.get("model_prob_yes")
             if pinn_p is not None:
                 if flip_active:
