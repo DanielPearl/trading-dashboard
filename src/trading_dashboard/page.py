@@ -909,10 +909,16 @@ def _live_update_script(current_bot: str, period_key: str = "all") -> str:
       .map(function (id) {{ return document.getElementById(id); }})
       .filter(Boolean);
     if (tbodies.length && snap.watchlist) {{
+      // A held contract renders in BOTH tables (Active bets + Model vs
+      // market) with the same data-ticker, so this map holds a LIST of
+      // rows per ticker — patching only one of the two left the other
+      // pane's live cells frozen at page-load values and the panes
+      // visibly disagreed (2026-07-23, hormuz T15).
       const rowsByTicker = {{}};
       tbodies.forEach(function (tb) {{
         tb.querySelectorAll("tr[data-ticker]").forEach(function (tr) {{
-          rowsByTicker[tr.getAttribute("data-ticker")] = tr;
+          const key = tr.getAttribute("data-ticker");
+          (rowsByTicker[key] = rowsByTicker[key] || []).push(tr);
         }});
       }});
       // Keep the "row-bought" highlight in sync with the active-bets
@@ -976,8 +982,8 @@ def _live_update_script(current_bot: str, period_key: str = "all") -> str:
         return "gray";
       }}
       snap.watchlist.forEach(function (r) {{
-        const tr = rowsByTicker[r.ticker];
-        if (!tr) return;  // server added a new row — page reload would catch
+        const trs = rowsByTicker[r.ticker];
+        if (!trs || !trs.length) return;  // new row — page reload catches it
         const ya = r.kalshi_yes, na = r.kalshi_no;
         const kyes = (ya !== null && ya !== undefined) ? (ya + "%")
                    : (na !== null && na !== undefined) ? ((100 - na) + "%")
@@ -998,21 +1004,25 @@ def _live_update_script(current_bot: str, period_key: str = "all") -> str:
         const edgeNo = (refProb !== null && refProb !== undefined
                          && na !== null && na !== undefined)
           ? ((1 - refProb) - na / 100) : null;
-        patchCell(tr.querySelector("[data-field='oi']"),
-                  r.open_interest !== null && r.open_interest !== undefined
-                    ? Math.round(Number(r.open_interest)).toLocaleString() : "—");
-        // "kalshi" is the live-Kalshi column; My % / Kalshi-entry %
-        // columns were dropped from the visual set (model_prob_yes
-        // stays on the payload for JSON consumers).
-        const kalshiCell = tr.querySelector("[data-field='kalshi']");
-        patchSide(kalshiCell, 'yes', kyes);
-        patchSide(kalshiCell, 'no',  kno);
-        const edgeCell = tr.querySelector("[data-field='edge']");
-        patchSide(edgeCell, 'yes', fmtPctEdge(edgeYes), edgeClass(edgeYes));
-        patchSide(edgeCell, 'no',  fmtPctEdge(edgeNo),  edgeClass(edgeNo));
-        const evCell = tr.querySelector("[data-field='ev']");
-        patchSide(evCell, 'yes', fmtEv(r.ev_yes), evClass(r.ev_yes, minEv));
-        patchSide(evCell, 'no',  fmtEv(r.ev_no),  evClass(r.ev_no, minEv));
+        // Patch EVERY row carrying this ticker — a held contract has
+        // one row in each pane and both must stay in sync.
+        trs.forEach(function (tr) {{
+          patchCell(tr.querySelector("[data-field='oi']"),
+                    r.open_interest !== null && r.open_interest !== undefined
+                      ? Math.round(Number(r.open_interest)).toLocaleString() : "—");
+          // "kalshi" is the live-Kalshi column; My % / Kalshi-entry %
+          // columns were dropped from the visual set (model_prob_yes
+          // stays on the payload for JSON consumers).
+          const kalshiCell = tr.querySelector("[data-field='kalshi']");
+          patchSide(kalshiCell, 'yes', kyes);
+          patchSide(kalshiCell, 'no',  kno);
+          const edgeCell = tr.querySelector("[data-field='edge']");
+          patchSide(edgeCell, 'yes', fmtPctEdge(edgeYes), edgeClass(edgeYes));
+          patchSide(edgeCell, 'no',  fmtPctEdge(edgeNo),  edgeClass(edgeNo));
+          const evCell = tr.querySelector("[data-field='ev']");
+          patchSide(evCell, 'yes', fmtEv(r.ev_yes), evClass(r.ev_yes, minEv));
+          patchSide(evCell, 'no',  fmtEv(r.ev_no),  evClass(r.ev_no, minEv));
+        }});
       }});
     }}
   }}
