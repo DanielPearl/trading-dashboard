@@ -334,6 +334,29 @@ bots:
         start: "2026-03-25T00:00:00Z"
         end:   "2026-11-08T05:00:00Z"
 
+  - key: hormuz
+    name: Hormuz Forecast
+    # KXHORMUZPEAK weekly peak-traffic bot. LIVE trading armed
+    # 2026-07-23 per user: the hormuz_trader daemon below runs the
+    # upstream bot with config-live.yaml (execution.dry_run false) —
+    # real 1-contract marketable-limit IOC orders on YES entries,
+    # hold-to-settlement, ledger live.db. Same shared buy criteria
+    # (validate_market + select_side_by_ev) as every other bot.
+    db_path: /root/port-forecast/data/live.db
+    decisions_path: /root/port-forecast/data/decisions-live.jsonl
+    series_ticker: KXHORMUZPEAK
+    series_prefixes: [KXHORMUZPEAK]
+    data_source: "IMF PortWatch daily transit calls (chokepoint6) + FRED Brent + GDELT"
+    model_report_path: /root/port-forecast/data/model_card.json
+    training_data_path: /root/port-forecast/data/training_data.csv
+    display:
+      underlying_label: Predicted weekly peak
+      underlying_unit: ""
+      underlying_decimals: 0
+      unit_position: none
+      chart_period_minutes: 1440
+      prediction_period_label: this week
+
 # Display thresholds — same defaults as sim. Each bot's effective_config
 # would override these once it's actually running, same as the sim side.
 risk:
@@ -682,3 +705,13 @@ billboard_trader:
   enabled: true
   repo_path: /root/billboard-charts
   interval_seconds: 300
+
+hormuz_trader:
+  # 2026-07-23: LIVE trading armed per user sign-off. Runs the upstream
+  # Bot with config-live.yaml — execution.dry_run false places real
+  # 1-contract IOC orders (YES entries only, hold to settlement, max 5
+  # bets/day) and records them in live.db. The SIM service keeps its
+  # own paper instance (config.yaml → sim.db) independently.
+  enabled: true
+  repo_path: /root/port-forecast
+  config_path: /root/port-forecast/config/config-live.yaml
