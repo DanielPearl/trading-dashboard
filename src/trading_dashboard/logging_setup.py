@@ -2,7 +2,22 @@
 from __future__ import annotations
 
 import logging
+import warnings
 from pathlib import Path
+
+# Kill the sklearn-1.8 joblib deprecation flood at the source: pickled
+# models trained under older sklearn emit
+#   "`sklearn.utils.parallel.delayed` should be used with
+#    `sklearn.utils.parallel.Parallel` ..."
+# on EVERY predict call, and the sport bots predict every tick — the
+# warning alone wrote ~9GB/day of syslog and filled the droplet's disk
+# twice (2026-07-22 and 2026-07-27, blanking dashboard pages and
+# blocking live-executor state writes both times). Message-targeted so
+# genuinely new warnings still surface.
+warnings.filterwarnings(
+    "ignore",
+    message=r".*sklearn\.utils\.parallel\.delayed.*",
+)
 
 
 def setup_logging(log_path: str | None = None, level: int = logging.INFO) -> None:

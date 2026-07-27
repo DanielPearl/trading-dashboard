@@ -610,9 +610,36 @@ class Handler(BaseHTTPRequestHandler):
                     # fields instead of the raw ticker.
                     bot_active_bets = fetch_active_bets_with_marks(db_path)
                     _billboard.enrich_active_bets(bot_active_bets, db_path)
+                    # LIVE truth filter: Active bets shows only
+                    # positions Kalshi's real portfolio actually holds.
+                    # An IOC order that never filled used to leave a
+                    # phantom open row in the ledger (2026-07-24:
+                    # ...26AUG01-RIS showed as active with no Kalshi
+                    # position behind it) — the trader now records
+                    # fills only, and this filter guarantees the page
+                    # can't drift from the account even if the ledger
+                    # does. None (fetch failed / no creds) keeps rows:
+                    # a transient API error shouldn't blank the pane.
+                    if self.mode == "live":
+                        _held = _live_kalshi_held_tickers()
+                        if _held is not None:
+                            def _bb_on_kalshi(t: str) -> bool:
+                                t = str(t or "")
+                                return (t in _held
+                                        or any(h.startswith(t + "-")
+                                               for h in _held))
+                            bot_active_bets = [
+                                ab for ab in bot_active_bets
+                                if _bb_on_kalshi(ab.get("ticker"))]
                     for ab in bot_active_bets:
                         ab.setdefault("_display", bot.get("display") or {})
                     latest_active = fetch_latest_open_position(db_path)
+                    if (self.mode == "live" and latest_active
+                            and not any(
+                                str(latest_active.get("ticker") or "")
+                                == str(ab.get("ticker") or "")
+                                for ab in bot_active_bets)):
+                        latest_active = None
                     model = None
                 elif bot.get("dashboard_type") == "reality":
                     # Reality-leaks mirrors the billboard pattern:
