@@ -612,7 +612,17 @@ def _render_watchlist(out: List[str], watchlist: List[dict],
                                event_title=event_title)
 
     if not watchlist:
-        if use_sections:
+        if use_sections and bets:
+            # Watchlist empty but positions are still open — do NOT
+            # bail. Fall through so the synth-held-row path below
+            # builds Active-bets rows straight from the ledger. This
+            # is exactly the state this series sits in between the
+            # measurement week ending and Tuesday settlement (books
+            # empty → fetch_watchlist returns nothing, but the
+            # positions are very much alive; 2026-07-27 the early
+            # return here hid a REAL held Hormuz bet).
+            pass
+        elif use_sections:
             # No section wrapper is open yet for sport bots — emit both
             # sections with empty states so the page still looks like
             # the three-section layout.
@@ -634,10 +644,11 @@ def _render_watchlist(out: List[str], watchlist: List[dict],
                 "<div class='empty'>No open markets right now.</div>"
                 "</div></div>"
             )
+            return
         else:
             out.append("<div class='empty'>No open markets right now.</div>")
             out.append("</div></div>")
-        return
+            return
 
     # ── Pre-pass: enrich each row with EV/BE numbers, then sort by best
     # EV. Sorting by EV (not by gap or by alphabetical ticker) puts the
@@ -1040,10 +1051,14 @@ def _render_watchlist(out: List[str], watchlist: List[dict],
             _held_rows.append({
                 "ticker": _t,
                 # Billboard's Title column renders ``direction`` (the
-                # song); "yes" is only the generic fallback.
-                "direction": _ab.get("_song") or "yes",
-                "strike_low": None,
-                "strike_high": None,
+                # song); strike-ladder bots (hormuz) carry a real
+                # floor_strike on the bet row, so their Question cell
+                # can render "above N"; "yes" is the generic fallback.
+                "direction": (_ab.get("_song")
+                              or ("above" if _ab.get("floor_strike")
+                                  is not None else "yes")),
+                "strike_low": _ab.get("floor_strike"),
+                "strike_high": _ab.get("cap_strike"),
                 "yes_ask_cents": (_mkt_yes_ask if _mkt_yes_ask is not None
                                    else int(round(_mark))
                                    if _mark is not None else None),
