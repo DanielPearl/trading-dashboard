@@ -1382,9 +1382,7 @@ def _render_history_chart(out: List[str], history: List[dict],
 
 
 def _render_history_attribution(out: List[str],
-                                  history: List[dict],
-                                  bot_models: List[dict] | None = None,
-                                  ) -> None:
+                                  history: List[dict]) -> None:
     """P&L attribution panels for the History tab — small breakdown
     tables that slice the closed-bet ledger four ways: by bot, by
     month, by side (YES/NO), and by predicted-EV bucket. Each panel
@@ -1395,13 +1393,6 @@ def _render_history_attribution(out: List[str],
     Respects whatever period filter the History tab is currently on
     — ``history`` is already the period-scoped list the caller passes
     into the chart and ledger renderers below.
-
-    ``bot_models`` (the home-card model list) makes the By-bot slice
-    exhaustive: every registered bot appears (user 2026-07-27 "add all
-    bot % wins"). Bots without settled Kalshi bets in the period show
-    their own ledger's lifetime closed-bet win rate — the same number
-    as the home card's "Actual win %" — with P&L rendered "—" so
-    ledger results never mix into the real-money P&L column.
     """
     if not history:
         return  # Empty state already covered by the ledger block.
@@ -1439,20 +1430,13 @@ def _render_history_attribution(out: List[str],
             win_cls = ("green" if win > 0.5
                         else ("red" if r["n"] > 0 and win < 0.5 else "gray"))
             win_str = f"{win*100:.0f}%" if r["n"] > 0 else "—"
-            if r.get("pnl_na"):
-                # Ledger-sourced row — win % is real, but there's no
-                # settled-Kalshi P&L to attribute.
-                pnl_cell = "<td class='num gray'>—</td>"
-            else:
-                dollars = r["total_cents"] / 100.0
-                sign = "+" if r["total_cents"] > 0 else (
-                    "−" if r["total_cents"] < 0 else "")
-                pnl_cell = (f"<td class='num {pnl_cls}'>"
-                            f"{sign}${abs(dollars):.2f}</td>")
+            dollars = r["total_cents"] / 100.0
+            sign = "+" if r["total_cents"] > 0 else (
+                "−" if r["total_cents"] < 0 else "")
             out.append(
                 f"<tr><td>{html.escape(r['label'])}</td>"
                 f"<td class='num'>{r['n']}</td>"
-                f"{pnl_cell}"
+                f"<td class='num {pnl_cls}'>{sign}${abs(dollars):.2f}</td>"
                 f"<td class='num {win_cls}'>{win_str}</td></tr>"
             )
         out.append("</tbody></table></div>")
@@ -1465,32 +1449,6 @@ def _render_history_attribution(out: List[str],
         (_row(name, bets) for name, bets in by_bot.items()),
         key=lambda r: r["total_cents"], reverse=True,
     )
-    # Every OTHER registered bot (no settled Kalshi bets in this
-    # period) still gets a row with its own ledger's lifetime win
-    # rate — the home card's "Actual win %" numbers, so the panel
-    # answers "what's every bot's win rate?" in one place. Sorted
-    # below the real-money rows, best win rate first.
-    seen_names = set(by_bot.keys())
-    ledger_rows: List[dict] = []
-    for entry in (bot_models or []):
-        b = entry.get("bot") or {}
-        m = entry.get("model") or {}
-        name = b.get("name") or ""
-        if not name or name in seen_names:
-            continue
-        seen_names.add(name)
-        wins = int(m.get("actual_wins") or 0)
-        losses = int(m.get("actual_losses") or 0)
-        n = wins + losses
-        ledger_rows.append({
-            "label": f"{name} (ledger)",
-            "n": n,
-            "total_cents": 0,
-            "pnl_na": True,
-            "win_pct": (wins / n) if n else 0.0,
-        })
-    ledger_rows.sort(key=lambda r: (r["win_pct"], r["n"]), reverse=True)
-    bot_rows += ledger_rows
 
     # ── Slice: by month (YYYY-MM) ───────────────────────────────────
     by_month: dict[str, List[dict]] = {}
@@ -1607,10 +1565,7 @@ def _render_history_attribution(out: List[str],
     out.append("<div class='attribution-grid'>")
     # Short titles per user 2026-07-10 — the hint text moved into
     # each table's Bucket-column semantics and is self-evident.
-    _emit_table("By bot",
-                "(ledger) = no settled Kalshi bets in this period; "
-                "win % is the bot's own closed-bet ledger, lifetime",
-                bot_rows)
+    _emit_table("By bot", "", bot_rows)
     _emit_table("By month", "", month_rows)
     _emit_table("By price", "", price_rows)
     _emit_table("By edge", "", edge_rows)
