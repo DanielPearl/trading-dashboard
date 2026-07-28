@@ -65,6 +65,9 @@ DEFAULTS = {
     "profit_lock_gain_cents": 0,
     "stop_loss_cents": 0,
     "max_hours_to_close_for_open": None,
+    # Line-settle gate — 0 disables (default; opt-in per bot via config).
+    "min_line_age_seconds": 0,
+    "min_line_quiet_seconds": 0,
 }
 
 
@@ -196,6 +199,29 @@ class SportLiveExecutor:
         # 30¢ min_entry_price floor). Now that the floor is at 15¢
         # (SDK hard floor), the true-edge gate handles filtering
         # directly — no separate bypass layer needed.
+        #
+        # Line-settle gate (user 2026-07-28). The benchmark line the
+        # edge is measured against is noisiest right when a match first
+        # appears: a single thin book, an unsharpened opening number,
+        # and a 5-20min Odds-API cache mean the "model %" drifts for a
+        # while before it settles. Refuse to open until the line has
+        # (a) been present for ``min_line_age_seconds`` and (b) not
+        # moved for ``min_line_quiet_seconds`` — i.e. it has stopped
+        # settling. 0 disables (default), so other sport bots keep
+        # opening on first sight until their own config opts in.
+        self.min_line_age_seconds = int(
+            cfg.get("min_line_age_seconds",
+                    d["min_line_age_seconds"]) or 0)
+        self.min_line_quiet_seconds = int(
+            cfg.get("min_line_quiet_seconds",
+                    d["min_line_quiet_seconds"]) or 0)
+        # A benchmark move smaller than this (in prob) doesn't reset the
+        # "quiet" timer — rounding chatter, not a real line move.
+        self.line_move_epsilon = 0.005
+        # Per-match benchmark-line history for the gate above:
+        #   match_id -> {first_ts, first_prob, last_ts, last_prob,
+        #                last_move_ts}
+        self._bench_track: dict[str, dict] = {}
         self.state_path = Path(state_path)
         self._config_dry_run = self.dry_run
         self._daily = core.DailyOrderCounter()
@@ -225,6 +251,12 @@ class SportLiveExecutor:
             self.require_pinnacle,
             self.orphan_ticker_prefixes or "off",
             self.state_path)
+        if self.min_line_age_seconds or self.min_line_quiet_seconds:
+            self._log.info(
+                "%s-live-executor line-settle gate ON "
+                "(min_age=%ds, min_quiet=%ds) — no opens until the "
+                "benchmark line has settled", bot_key,
+                self.min_line_age_seconds, self.min_line_quiet_seconds)
         if not self.dry_run:
             self._log.warning(
                 "%s-live-executor is in LIVE mode — real Kalshi orders "
@@ -283,6 +315,10 @@ class SportLiveExecutor:
             self._maybe_stop_loss(state, mkt_by_ticker)
         self._mark_to_market(state, watchlist_rows)
 
+        # Update per-match benchmark-line history BEFORE evaluating
+        # candidates so the line-settle gate sees this tick's value.
+        self._track_lines(watchlist_rows)
+
         candidates = sorted(
             (r for r in watchlist_rows
              if r.get("buy_eligible") and r.get("buy_side") in ("A", "B")),
@@ -295,6 +331,75 @@ class SportLiveExecutor:
         core.atomic_write_json(self.state_path, state)
         self._state_cache = state
         return state
+
+    # ── benchmark-line tracking ─────────────────────────────────────
+    @staticmethod
+    def _benchmark_prob_for_side(row: dict, side: str) -> float | None:
+        """The SHARP-BENCHMARK (Pinnacle / Odds-API) probability for the
+        given side — the number the edge gate actually compares against
+        Kalshi. Tennis keeps its in-house model in ``live_prob_*`` and
+        the benchmark separately in ``pinnacle_prob_*``; the other sport
+        bots set the two equal. Prefer the explicit benchmark field and
+        fall back to ``live_prob_*`` so bots that don't split them are
+        completely unaffected. Returns None only when neither is present.
+        """
+        s = (side or "").lower()
+        pa = row.get("pinnacle_prob_a")
+        pb = row.get("pinnacle_prob_b")
+        py = row.get("pinnacle_prob_yes")
+        if s == "a":
+            if pa is not None:
+                return float(pa)
+            if pb is not None:
+                return 1.0 - float(pb)
+            if py is not None:
+                return float(py)
+            lp = row.get("live_prob_a")
+            return float(lp) if lp is not None else None
+        if pb is not None:
+            return float(pb)
+        if pa is not None:
+            return 1.0 - float(pa)
+        if py is not None:
+            return 1.0 - float(py)
+        lp = row.get("live_prob_b")
+        return float(lp) if lp is not None else None
+
+    def _track_lines(self, rows: list[dict]) -> None:
+        """Record this tick's benchmark line for every match so the
+        line-settle gate can ask "how long has this line been up, and
+        when did it last move?". Keyed on match_id; the per-match line
+        is tracked via side A (side B is just its complement). Cheap
+        dict bookkeeping — runs for every bot but only matters when the
+        gate thresholds are set."""
+        if not (self.min_line_age_seconds or self.min_line_quiet_seconds):
+            return
+        now = datetime.now(timezone.utc).timestamp()
+        seen: set[str] = set()
+        for r in rows:
+            mid = str(r.get("match_id") or "")
+            if not mid:
+                continue
+            bench = self._benchmark_prob_for_side(r, "a")
+            if bench is None:
+                continue
+            seen.add(mid)
+            t = self._bench_track.get(mid)
+            if t is None:
+                self._bench_track[mid] = {
+                    "first_ts": now, "first_prob": bench,
+                    "last_ts": now, "last_prob": bench,
+                    "last_move_ts": now,
+                }
+            else:
+                if abs(bench - t["last_prob"]) > self.line_move_epsilon:
+                    t["last_move_ts"] = now
+                    t["last_prob"] = bench
+                t["last_ts"] = now
+        # Bound memory: drop matches not seen for 6h (settled / delisted).
+        for mid in [m for m, t in self._bench_track.items()
+                    if now - t["last_ts"] > 21600]:
+            del self._bench_track[mid]
 
     # ── order placement ─────────────────────────────────────────────
 
@@ -358,6 +463,36 @@ class SportLiveExecutor:
             return
         if edge < self.min_edge:
             return
+        # Line-settle gate — refuse to trade a benchmark line that just
+        # appeared or is still moving. The edge above is measured against
+        # this line, so entering while it's still settling means betting
+        # on a number that hasn't finished forming (2026-07-28: matches
+        # opened seconds after the sharp line first posted, on the
+        # unsharpened opening quote). Uses the per-match history that
+        # _track_lines() refreshed at the top of this tick. Off unless
+        # min_line_age_seconds / min_line_quiet_seconds are configured.
+        if self.min_line_age_seconds or self.min_line_quiet_seconds:
+            _now = datetime.now(timezone.utc).timestamp()
+            _t = self._bench_track.get(match_id)
+            if _t is None:
+                self._log.info("%s-live skip %s: no benchmark-line "
+                               "history yet", self.bot_key, ticker)
+                return
+            _age = _now - _t["first_ts"]
+            _quiet = _now - _t["last_move_ts"]
+            if _age < self.min_line_age_seconds:
+                self._log.info(
+                    "%s-live skip %s: benchmark line only %.0fs old "
+                    "(< %ds maturity) — still settling", self.bot_key,
+                    ticker, _age, self.min_line_age_seconds)
+                return
+            if _quiet < self.min_line_quiet_seconds:
+                self._log.info(
+                    "%s-live skip %s: benchmark moved %.0fs ago "
+                    "(< %ds quiet window) — still settling",
+                    self.bot_key, ticker, _quiet,
+                    self.min_line_quiet_seconds)
+                return
         # No favorites-only gate here (the model-driven executors keep
         # theirs): the probability IS the sharp line, so buying an
         # underdog below its fair value — e.g. a 45% team at 40¢ — is
@@ -434,6 +569,17 @@ class SportLiveExecutor:
         self._daily.increment()
         side_team = (row.get("player_a") if side == "A"
                      else row.get("player_b"))
+        # The prob the edge gate actually used is the sharp BENCHMARK
+        # (Pinnacle / Odds-API) line, not the in-house model. Record the
+        # benchmark as this position's model prob so the dashboard shows
+        # the number that drove the trade — otherwise a benchmark-driven
+        # buy looks like it was placed on a sub-threshold, or even
+        # negative, internal-model edge (2026-07-28 McFadzean/Ferguson:
+        # internal 49% vs Kalshi 57%, but the Pinnacle line the bot
+        # bought on was ~68%). Keep the internal model in its own field.
+        bench_side = self._benchmark_prob_for_side(row, side)
+        model_for_record = (bench_side if bench_side is not None
+                            else float(model_p))
         if self.dry_run:
             order_id = (f"DRY-RUN-"
                         f"{int(datetime.now(timezone.utc).timestamp())}"
@@ -461,9 +607,10 @@ class SportLiveExecutor:
             "side": "PLAYER_A" if side == "A" else "PLAYER_B",
             "side_player": side_team or "?",
             "entry_market_prob": current_ask / 100.0,
-            "entry_model_prob": float(model_p),
+            "entry_model_prob": model_for_record,
+            "entry_internal_model_prob": float(model_p),
             "current_market_prob": current_ask / 100.0,
-            "current_model_prob": float(model_p),
+            "current_model_prob": model_for_record,
             "stake": cost / 100.0,
             "contracts": self.contracts_per_order,
             "slippage": 0.0,
@@ -475,10 +622,24 @@ class SportLiveExecutor:
         }
         state.setdefault("open_positions", []).append(position)
         self._log.info("%s-live %s %s — BUY %d YES on %s (%s %s) at "
-                       "%d¢ edge=%.3f", self.bot_key,
+                       "%d¢ edge=%.3f benchmark=%.1f%% (internal=%.1f%%)",
+                       self.bot_key,
                        "DRY-RUN OPENED" if self.dry_run else "PLACED order",
                        order_id, self.contracts_per_order, ticker,
-                       side_team, self.win_verb, current_ask, edge)
+                       side_team, self.win_verb, current_ask, edge,
+                       model_for_record * 100.0, float(model_p) * 100.0)
+        # Line-settle telemetry: how old/settled was the benchmark line
+        # at the moment we opened, and how far it drifted since it first
+        # posted? Feeds tuning of min_line_age_seconds / _quiet_seconds.
+        _t = self._bench_track.get(match_id)
+        if _t is not None:
+            _now = datetime.now(timezone.utc).timestamp()
+            _drift = ((bench_side - _t["first_prob"]) * 100.0
+                      if bench_side is not None else 0.0)
+            self._log.info(
+                "%s-live line at open %s: age=%.0fs quiet=%.0fs "
+                "drift_since_first=%+.1fpp", self.bot_key, ticker,
+                _now - _t["first_ts"], _now - _t["last_move_ts"], _drift)
 
     # ── settlement / exits ──────────────────────────────────────────
 
@@ -585,8 +746,14 @@ class SportLiveExecutor:
             row, side = entry
             price = (row.get("market_prob_a") if side == "a"
                      else row.get("market_prob_b"))
-            model_p = (row.get("live_prob_a") if side == "a"
-                       else row.get("live_prob_b"))
+            # Track the benchmark line (what the edge is measured
+            # against), falling back to the in-house model only when no
+            # benchmark is present — same rule as at entry, so the
+            # position's model% stays on one consistent reference.
+            bench_p = self._benchmark_prob_for_side(row, side)
+            model_p = (bench_p if bench_p is not None
+                       else (row.get("live_prob_a") if side == "a"
+                             else row.get("live_prob_b")))
             if price is not None:
                 contracts = int(pos.get("contracts") or 1)
                 pos["current_market_prob"] = float(price)

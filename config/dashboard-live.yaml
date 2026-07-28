@@ -480,6 +480,18 @@ tennis_trader:
     min_entry_price_cents: 30
     price_deviation_cents: 3
     require_pinnacle: true
+    # Line-settle gate (user 2026-07-28). The edge is measured against
+    # the devigged sharp benchmark, and that line is noisiest right when
+    # a match first appears: a single thin book, an unsharpened opening
+    # number, and the 5-20min Odds-API cache mean the "model %" drifts
+    # before it settles. Don't open until the benchmark line has been
+    # present >= min_line_age_seconds AND has not moved for
+    # min_line_quiet_seconds. Every skip logs the age/quiet, and every
+    # open logs age/quiet/drift-since-first, so these can be tuned from
+    # the journal (grep "line-settle" / "line at open"). Set to 0/0 to
+    # disable. Starting conservative; widen if it's blocking good fills.
+    min_line_age_seconds: 600      # benchmark line must be >= 10 min old
+    min_line_quiet_seconds: 180    # and unchanged for >= 3 min
     # Pre-match window: how many hours before close the bot is
     # willing to open. Raised 12h → 24h after the Platt calibration
     # layer landed — the original 12h cutoff was zeroing out the
