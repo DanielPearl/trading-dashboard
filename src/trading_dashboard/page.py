@@ -409,7 +409,8 @@ def render_page(
     _render_history_chart(out, kalshi_history,
                             period_key=period_key,
                             current_bot=current_bot)
-    _render_history_attribution(out, kalshi_history)
+    _render_history_attribution(out, kalshi_history,
+                                bot_models=bot_models)
     _ledger_hint = (
         "(from Kalshi /portfolio/settlements + /portfolio/fills "
         "— every bot, every settled contract)" if is_live else
