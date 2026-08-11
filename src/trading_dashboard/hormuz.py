@@ -146,13 +146,17 @@ def render_models_panel(out: List[str], bot: dict) -> None:
     def _stat(k, v):
         out.append(f"<div class='hz-stat'><div class='k'>{html.escape(k)}</div>"
                    f"<div class='v'>{v}</div></div>")
+    def _pct(key):
+        v = metrics.get(key)
+        return "—" if v is None else f"{float(v)*100:.0f}%"
     _stat("Forecast peak", _fnum(forecast, 1))
     _stat("Peak so far", _fnum(psf, 0))
     _stat("Residual σ", _fnum(card.get("residual_std"), 1))
     _stat("Walk-fwd MAE", _fnum(metrics.get("mae"), 1))
-    _stat("Dir. accuracy",
-          "—" if metrics.get("directional_accuracy") is None
-          else f"{float(metrics['directional_accuracy'])*100:.0f}%")
+    _stat("Accuracy", _pct("directional_accuracy"))
+    _stat("Precision", _pct("training_precision"))
+    _stat("Recall", _pct("training_recall"))
+    _stat("F1", _pct("training_f1"))
     if sib is not None:
         _stat("Market-implied", _fnum(sib, 0))
     out.append("</div>")
@@ -167,7 +171,13 @@ def render_models_panel(out: List[str], bot: dict) -> None:
     # ── Part 1a: model bake-off ─────────────────────────────────────
     out.append("<div class='hz-sec-title'>Models — walk-forward bake-off</div>")
     out.append("<table class='hz-table'><thead><tr>"
-               "<th>Model</th><th class='num'>MAE (ships)</th>"
+               "<th>Model</th>"
+               "<th class='num' title='Mean absolute error over the most "
+               "recent 26 walk-forward weeks — the current-regime window "
+               "deployment selects on.'>MAE 26w</th>"
+               "<th class='num' title='Mean absolute error over the full "
+               "walk-forward span (includes the Mar-2026 collapse).'>"
+               "MAE full</th>"
                "<th class='num'>RMSE</th><th class='num'>Dir. acc</th>"
                "<th class='num'>Weeks</th></tr></thead><tbody>")
     _deployed = (metrics.get("deployed") or "ridge")
@@ -180,6 +190,7 @@ def render_models_panel(out: List[str], bot: dict) -> None:
         dacc = b.get("dir_acc")
         out.append(
             f"<tr{cls}><td>{html.escape(label)}</td>"
+            f"<td class='num'>{_fnum(b.get('mae_recent'),2)}</td>"
             f"<td class='num'>{_fnum(b.get('mae'),2)}</td>"
             f"<td class='num'>{_fnum(b.get('rmse'),2)}</td>"
             f"<td class='num'>"
