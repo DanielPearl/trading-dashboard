@@ -114,7 +114,8 @@ _CSS = (
 # --------------------------------------------------------------------------- #
 
 _BAKEOFF_LABELS = {
-    "ridge": "Ridge regression (deployed) ★",
+    "ridge": "Ridge regression (Hormuz-only)",
+    "pooled": "Pooled 28-chokepoint GBM",
     "trend_extrap": "Trend extrapolation",
     "ma4": "4-week moving average",
     "persistence": "Persistence (last week)",
@@ -169,10 +170,13 @@ def render_models_panel(out: List[str], bot: dict) -> None:
                "<th>Model</th><th class='num'>MAE (ships)</th>"
                "<th class='num'>RMSE</th><th class='num'>Dir. acc</th>"
                "<th class='num'>Weeks</th></tr></thead><tbody>")
+    _deployed = (metrics.get("deployed") or "ridge")
     for b in card.get("bakeoff") or []:
         key = b.get("model")
         label = _BAKEOFF_LABELS.get(key, key or "—")
-        cls = " class='best'" if key == "ridge" else ""
+        if key == _deployed:
+            label += " (deployed) ★"
+        cls = " class='best'" if key == _deployed else ""
         dacc = b.get("dir_acc")
         out.append(
             f"<tr{cls}><td>{html.escape(label)}</td>"
@@ -189,11 +193,20 @@ def render_models_panel(out: List[str], bot: dict) -> None:
     coefs = [(f.get("name") or f.get("key"), f.get("key"),
               float(f.get("coefficient") or 0.0)) for f in feats]
     max_c = max((abs(c) for _, _, c in coefs), default=1.0) or 1.0
-    out.append("<div class='hz-sec-title'>Deployed model — Ridge coefficients"
-               f" <span style='color:#8b949e;font-weight:400;'>(standardized; "
-               f"intercept {_fnum(card.get('intercept'),2)})</span></div>")
+    if _deployed == "pooled":
+        _coef_title = ("Deployed model — pooled GBM feature importances"
+                       " <span style='color:#8b949e;font-weight:400;'>"
+                       "(split-gain share; trained on every chokepoint)</span>")
+        _coef_col = "Importance"
+    else:
+        _coef_title = ("Deployed model — Ridge coefficients"
+                       " <span style='color:#8b949e;font-weight:400;'>"
+                       f"(standardized; intercept "
+                       f"{_fnum(card.get('intercept'),2)})</span>")
+        _coef_col = "Coefficient"
+    out.append(f"<div class='hz-sec-title'>{_coef_title}</div>")
     out.append("<table class='hz-table'><thead><tr><th>Feature</th>"
-               "<th class='num'>Coefficient</th><th>Relative influence</th>"
+               f"<th class='num'>{_coef_col}</th><th>Relative influence</th>"
                "</tr></thead><tbody>")
     for name, key, c in sorted(coefs, key=lambda t: -abs(t[2])):
         pct = abs(c) / max_c * 100.0
@@ -274,6 +287,24 @@ _TD_COLUMNS: List[tuple] = [
     ("gdelt_lag1", "Tension −1wk",
      "Prior-week GDELT article volume for 'Strait of Hormuz' (geopolitical "
      "tension)."),
+    # Scale-free features used by the pooled 28-chokepoint model.
+    ("trailing_med13", "Med13",
+     "Trailing 13-week median peak — the level everything below is "
+     "normalised by."),
+    ("r1", "Ratio −1wk", "Last week's peak ÷ trailing 13-week median."),
+    ("r2", "Ratio −2wk", "Peak two weeks back ÷ trailing median."),
+    ("r4", "Ratio −4wk", "Peak four weeks back ÷ trailing median."),
+    ("ratio_ma4", "Ratio MA4", "4-week average of the level ratio."),
+    ("trend_r4", "Ratio trend", "4-week slope of the level ratio."),
+    ("mom_r4", "Ratio mom", "Level ratio 1wk back minus 4wks back."),
+    ("disruption_depth", "Disrupt depth",
+     "13-week ÷ 52-week median — how suppressed traffic is vs the long "
+     "run."),
+    ("recovery_ratio", "Recovery",
+     "4-week ÷ 13-week median — recovering when above 1."),
+    ("vol_r4", "Ratio vol", "4-week std of the level ratio."),
+    ("peakiness_lag1", "Peakiness",
+     "Prior-week peak ÷ mean daily transits — burstiness."),
 ]
 _TEXT_COLS = {"week_start"}
 
