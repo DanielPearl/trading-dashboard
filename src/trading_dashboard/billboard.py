@@ -169,27 +169,37 @@ def enrich_active_bets(bets: List[Dict[str, Any]],
     try:
         con = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
         rows = con.execute(
-            "SELECT ticker, decision_json FROM positions "
+            "SELECT ticker, side, decision_json FROM positions "
             "WHERE status = 'open' AND decision_json IS NOT NULL"
         ).fetchall()
         con.close()
     except sqlite3.Error:
         return
     dj_by_ticker = {}
-    for t, dj in rows:
+    for t, side, dj in rows:
         try:
-            dj_by_ticker[t] = _json.loads(dj)
+            parsed = _json.loads(dj)
         except (TypeError, ValueError):
             continue
+        parsed["_ledger_side"] = (side or "").upper()
+        dj_by_ticker[t] = parsed
     for ab in bets:
         dj = dj_by_ticker.get(str(ab.get("ticker") or ""))
         if not dj:
             continue
         song = dj.get("song") or ""
         artist = dj.get("artist") or ""
+        side = dj.get("_ledger_side") or (ab.get("side") or "").upper()
         if song:
             ab.setdefault("_song", song)
-            ab.setdefault("_side_player", song)
+            # Side cell must carry the BET side, not just the song —
+            # a NO bet displaying only the song title made the
+            # side-oriented Model % (93% NO) look like it contradicted
+            # the watchlist's YES-axis 7% for the same song
+            # (user report 2026-07-28: "watchlist says 9%, homepage
+            # says 93%").
+            ab.setdefault("_side_player",
+                          f"NO — {song}" if side == "NO" else song)
             ab.setdefault("_artist", artist)
             ab["_title"] = (f"{song} — {artist}" if artist else song)
         if dj.get("model_prob") is not None:
