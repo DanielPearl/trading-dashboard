@@ -1090,8 +1090,14 @@ def _render_active_bets_table(out: List[str], bets: List[dict],
                 b.get("rules_primary"), title_text,
                 b.get("_tournament"))
             # Side cell mirrors the sport pages: the team/player we
-            # hold on top, opponent beneath.
+            # hold on top, opponent beneath. NON-SPORT bots always
+            # show the plain bet side (user 2026-08-13: "the value in
+            # side for all non sports bots should be yes or no") —
+            # a billboard NO position labelled with the song title
+            # made the side-oriented Model % read as a contradiction.
             sp = b.get("_side_player") or ""
+            if (b.get("_dashboard_type") or "standard") != "sport":
+                sp = ""
             if sp:
                 match_txt = b.get("_match") or ""
                 opp = ""

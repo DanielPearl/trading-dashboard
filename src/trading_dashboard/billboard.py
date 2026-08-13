@@ -189,17 +189,12 @@ def enrich_active_bets(bets: List[Dict[str, Any]],
             continue
         song = dj.get("song") or ""
         artist = dj.get("artist") or ""
-        side = dj.get("_ledger_side") or (ab.get("side") or "").upper()
         if song:
             ab.setdefault("_song", song)
-            # Side cell must carry the BET side, not just the song —
-            # a NO bet displaying only the song title made the
-            # side-oriented Model % (93% NO) look like it contradicted
-            # the watchlist's YES-axis 7% for the same song
-            # (user report 2026-07-28: "watchlist says 9%, homepage
-            # says 93%").
-            ab.setdefault("_side_player",
-                          f"NO — {song}" if side == "NO" else song)
+            # NOTE: _side_player is deliberately NOT set — the Side
+            # cell for non-sport bots renders the plain bet side
+            # (YES/NO) per user 2026-08-13; the song already shows in
+            # the Title cell.
             ab.setdefault("_artist", artist)
             ab["_title"] = (f"{song} — {artist}" if artist else song)
         if dj.get("model_prob") is not None:

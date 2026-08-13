@@ -510,6 +510,13 @@ def _render_watchlist(out: List[str], watchlist: List[dict],
                                          or 0)
                         if _traded > 0 and _pos_fp:
                             _avg = round(_traded / abs(_pos_fp) * 100)
+                            # Kalshi reports exposure on the YES axis;
+                            # a NO position's entry price is the
+                            # complement (2026-08-13: a 65¢ NO fill
+                            # rendered as a 35¢ entry, disagreeing
+                            # with the ledger's side-axis price).
+                            if _side == "NO":
+                                _avg = 100 - _avg
                     except (TypeError, ValueError):
                         _avg = None
                 # ``held_by_ticker`` keys on the SIM state's ticker,
