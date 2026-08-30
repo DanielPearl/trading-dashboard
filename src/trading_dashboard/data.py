@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import os
 import sqlite3
 from contextlib import closing
 from datetime import datetime
@@ -660,6 +661,84 @@ def _load_sim_state_enrichment(bots: List[dict]) -> Dict[str, dict]:
                 if prev is None or (prev.get("entry_model_prob") is None
                                      and entry_mp is not None):
                     idx[key] = payload
+
+    # ── Sqlite-ledger pass ───────────────────────────────────────────
+    # Bots whose trader writes a positions table (billboard's live.db,
+    # the standard macro bots' sim.db/live.db) record the model prob
+    # at entry in decision_json, not in a sim_state.json — without
+    # this pass their History rows rendered Model entry % as an
+    # em-dash (user 2026-08-14: "model entry % should always show…
+    # for all bots"). Model/market probs are stored on the YES axis,
+    # matching the sim-state records above.
+    import sqlite3 as _sq
+    seen_dbs: set = set()
+    for b in bots:
+        db = str(b.get("db_path") or "")
+        if not db.endswith(".db"):
+            continue
+        cands = {db, db.replace("sim.db", "live.db"),
+                 db.replace("live.db", "sim.db")}
+        cands |= {p.replace("/outputs/", "/outputs-live/")
+                  for p in list(cands) if "/outputs/" in p}
+        cands |= {p.replace("/outputs-live/", "/outputs/")
+                  for p in list(cands) if "/outputs-live/" in p}
+        for path in sorted(cands):
+            if path in seen_dbs or not os.path.exists(path):
+                continue
+            seen_dbs.add(path)
+            try:
+                con = _sq.connect(f"file:{path}?mode=ro", uri=True)
+                cols = {r[1] for r in con.execute(
+                    "PRAGMA table_info(positions)").fetchall()}
+                if "ticker" not in cols:
+                    con.close()
+                    continue
+                sel = ["ticker"]
+                for c_ in ("model_yes_prob_at_entry",
+                           "kalshi_yes_prob_at_entry", "decision_json"):
+                    sel.append(c_ if c_ in cols else f"NULL AS {c_}")
+                rows = con.execute(
+                    f"SELECT {', '.join(sel)} FROM positions").fetchall()
+                con.close()
+            except _sq.Error:
+                continue
+            for ticker, mp_col, kp_col, dj_raw in rows:
+                if not ticker:
+                    continue
+                dj = {}
+                if dj_raw:
+                    try:
+                        dj = json.loads(dj_raw) or {}
+                    except (TypeError, ValueError):
+                        dj = {}
+                entry_mp = mp_col
+                if entry_mp is None:
+                    entry_mp = (dj.get("model_prob")
+                                or dj.get("model_yes_prob")
+                                or dj.get("model_p"))
+                entry_kp = kp_col
+                if entry_kp is None:
+                    entry_kp = (dj.get("market_prob")
+                                or dj.get("kalshi_implied_prob"))
+                song = dj.get("song") or ""
+                artist = dj.get("artist") or ""
+                title = (f"{song} — {artist}" if song and artist
+                         else song or "")
+                payload = {
+                    "_title": title,
+                    "_match": "",
+                    "_side_player": "",
+                    "entry_model_prob": entry_mp,
+                    "entry_market_prob": entry_kp,
+                }
+                base = (ticker.rsplit("-", 1)[0]
+                        if "-" in ticker else ticker)
+                for key in {ticker, base}:
+                    prev = idx.get(key)
+                    if prev is None or (
+                            prev.get("entry_model_prob") is None
+                            and entry_mp is not None):
+                        idx[key] = payload
     return idx
 
 
