@@ -922,6 +922,11 @@ def build_kalshi_cross_bot_history(bots: List[dict]) -> List[dict]:
             "_side_player": enrich.get("_side_player") or "",
             "_bot_key": bot.get("key") if bot else "unknown",
             "_bot_name": bot.get("name") if bot else "Unknown bot",
+            # Hormuz History cells (contract-style Title / projected
+            # "above N" / realized-peak Winner) read the bot's
+            # committed weekly panel at render time.
+            "_training_data_path": (bot.get("training_data_path")
+                                     if bot else None),
             "_dashboard_type": (bot.get("dashboard_type")
                                  if bot else "standard") or "standard",
             "_display": (bot.get("display") if bot else {}) or {},

@@ -283,6 +283,7 @@ def _compute_cross_bot_rollup(bots: List[dict], *, period_days: int | None,
                 h["_bot_key"] = b["key"]
                 h["_dashboard_type"] = b.get("dashboard_type") or "standard"
                 h["_display"] = b.get("display") or {}
+                h["_training_data_path"] = b.get("training_data_path")
                 global_history.append(h)
             continue
         if b.get("dashboard_type") and b["dashboard_type"] != "standard":
@@ -329,6 +330,7 @@ def _compute_cross_bot_rollup(bots: List[dict], *, period_days: int | None,
             h["_bot_key"] = b["key"]
             h["_dashboard_type"] = b.get("dashboard_type") or "standard"
             h["_display"] = b.get("display") or {}
+            h["_training_data_path"] = b.get("training_data_path")
             global_history.append(h)
         m = fetch_latest_model(b["db_path"])
         # Pull contract rules from the bot's watchlist —

@@ -1767,6 +1767,26 @@ def _render_bet_history_block(out: List[str], history: List[dict],
                        .replace(" vs ", " ")
                        .strip(" -"))
                 winner_str = opp or "—"
+        # Hormuz rows (user 2026-08-12): threshold contracts, not
+        # matchups. Title = the contract-style strike ("Above 10"),
+        # Projected winner = the outcome the bet pays on ("above 10"
+        # for YES, "10 or less" for NO), Winner = the ACTUAL weekly
+        # peak through the strait, looked up in the bot's committed
+        # weekly panel by the ticker's contract week.
+        if _tk.startswith("KXHORMUZPEAK"):
+            from . import hormuz as _hz
+            _strike = strike_low
+            if _strike is None:
+                _strike = _hz.strike_from_ticker(_tk)
+            if _strike is not None:
+                _n = int(round(float(_strike)))
+                _title_cell = html.escape(f"Above {_n}")
+                _side_player = (f"above {_n}" if side == "YES"
+                                else f"{_n} or less")
+            _rp = _hz.realized_peak_for_ticker(
+                b.get("_training_data_path"), _tk)
+            winner_str = (f"{int(round(_rp))} ships"
+                          if _rp is not None else "—")
         return (f"<tr><td>{html.escape(opened)}</td>"
                 f"<td>{html.escape(closed)}</td>"
                 f"{bot_cell}"

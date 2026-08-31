@@ -110,6 +110,74 @@ _CSS = (
 
 
 # --------------------------------------------------------------------------- #
+# History helpers — contract-week parsing + realized weekly peak
+# --------------------------------------------------------------------------- #
+
+import re as _re
+from datetime import date as _date, timedelta as _timedelta
+
+# KXHORMUZPEAK-26AUG16-T10 → event date tail names the week-ENDING Sunday.
+_EVT_DATE_RE = _re.compile(r"-(\d{2})([A-Z]{3})(\d{2})-T?\d+$")
+_STRIKE_RE = _re.compile(r"-T(\d+)$")
+_MONTHS = {m: i + 1 for i, m in enumerate(
+    ["JAN", "FEB", "MAR", "APR", "MAY", "JUN",
+     "JUL", "AUG", "SEP", "OCT", "NOV", "DEC"])}
+
+# mtime-keyed cache of {week_start_iso: peak} from training_data.csv.
+_PEAK_CACHE: Dict[str, Any] = {"path": None, "mtime": None, "by_week": {}}
+
+
+def strike_from_ticker(ticker: str) -> float | None:
+    m = _STRIKE_RE.search(ticker or "")
+    return float(m.group(1)) if m else None
+
+
+def week_start_from_ticker(ticker: str) -> _date | None:
+    m = _EVT_DATE_RE.search(ticker or "")
+    if not m:
+        return None
+    yy, mon, dd = m.group(1), m.group(2).upper(), m.group(3)
+    if mon not in _MONTHS:
+        return None
+    try:
+        end = _date(2000 + int(yy), _MONTHS[mon], int(dd))
+    except ValueError:
+        return None
+    return end - _timedelta(days=end.isoweekday() - 1)
+
+
+def realized_peak_for_ticker(training_data_path: str | None,
+                             ticker: str) -> float | None:
+    """The ACTUAL weekly peak (PortWatch) for the ticker's contract
+    week, from the bot's committed weekly panel. None while the week is
+    still open (the panel's snapshot row carries a blank peak) or when
+    the file/row is missing."""
+    ws = week_start_from_ticker(ticker)
+    if ws is None or not training_data_path:
+        return None
+    p = Path(training_data_path)
+    if not p.exists():
+        return None
+    try:
+        mtime = p.stat().st_mtime
+        if (_PEAK_CACHE["path"] != str(p)
+                or _PEAK_CACHE["mtime"] != mtime):
+            by_week: Dict[str, float] = {}
+            with p.open("r", encoding="utf-8", newline="") as f:
+                for row in csv.DictReader(f):
+                    pk = row.get("peak")
+                    if pk not in (None, ""):
+                        try:
+                            by_week[str(row.get("week_start"))[:10]] = float(pk)
+                        except (TypeError, ValueError):
+                            pass
+            _PEAK_CACHE.update(path=str(p), mtime=mtime, by_week=by_week)
+        return _PEAK_CACHE["by_week"].get(ws.isoformat())
+    except OSError:
+        return None
+
+
+# --------------------------------------------------------------------------- #
 # Models tab
 # --------------------------------------------------------------------------- #
 
