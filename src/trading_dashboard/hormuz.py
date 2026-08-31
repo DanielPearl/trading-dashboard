@@ -277,6 +277,12 @@ def render_models_panel(out: List[str], bot: dict) -> None:
                        " <span style='color:#8b949e;font-weight:400;'>"
                        "(split-gain share; trained on every chokepoint)</span>")
         _coef_col = "Importance"
+    elif _deployed == "persistence":
+        _coef_title = ("Deployed model — persistence"
+                       " <span style='color:#8b949e;font-weight:400;'>"
+                       "(last week's peak, verbatim — nothing learned "
+                       "beat it on the recent walk-forward)</span>")
+        _coef_col = "Weight"
     else:
         _coef_title = ("Deployed model — Ridge coefficients"
                        " <span style='color:#8b949e;font-weight:400;'>"
