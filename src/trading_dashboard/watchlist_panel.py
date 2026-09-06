@@ -1893,11 +1893,15 @@ def _render_watchlist(out: List[str], watchlist: List[dict],
             # internal 0.5833 default read as a wrong "58%").
             _no_benchmark_feed = current_bot in {"darts", "table-tennis"}
             if (is_active or is_billboard_bot or is_reality_bot
-                    or is_hormuz_bot or _no_benchmark_feed) and pinn_p is None:
+                    or is_hormuz_bot or is_weather_bot
+                    or _no_benchmark_feed) and pinn_p is None:
                 # Billboard has no external benchmark book — the bot's
                 # own P(#1) is the Model % on every pane. Reality-leaks
                 # likewise: Model % is the leak-implied probability.
                 # Hormuz: the bot's own P(peak ≥ strike) is the model.
+                # Weather: the NWS PoP / temperature-model probability
+                # IS the model — there is no external book (user
+                # 2026-09-06: the column dashed out on every row).
                 pinn_p = v.get("model_prob_yes")
                 _model_is_internal = pinn_p is not None \
                     and _no_benchmark_feed and not is_active
