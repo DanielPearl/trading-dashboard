@@ -994,15 +994,21 @@ def _render_watchlist(out: List[str], watchlist: List[dict],
         # its game's benchmark line isn't posted yet (the series guard
         # blanks lines for tomorrow's games) or nobody else has
         # traded the market.
-        # 2026-08-31 (user): "make sure it's showing all the contracts"
-        # — supersedes the 2026-07-13 hide-when-no-odds directive above.
-        # Un-benchmarked rows now RENDER (sorted after benchmarked ones
-        # below) instead of vanishing; they cannot trade regardless,
-        # since the buy gates require a benchmark edge. This also un-
-        # blanks darts permanently: The Odds API carries no darts key
-        # at all, so its pane could never populate under the old rule.
-        if current_bot in {"tennis", "darts",
-                            "wnba", "world-cup", "mlb", "nba"}:
+        # 2026-09-06 (user): a game with no sharp-book line must NOT be
+        # listed in Model-vs-market — without a benchmark the Model %
+        # is the bot's internal fallback (0.5833 default for players
+        # missing from Elo state), which read as a wrong "58%" on most
+        # ITF matches. Restores the hide-when-no-odds rule for every
+        # sport the Odds API actually covers; this narrows 2026-08-31's
+        # "showing all the contracts" to darts (the Odds API carries no
+        # darts key at all, so hiding would blank that pane forever —
+        # its un-benchmarked rows render, sorted last). Held rows stay
+        # visible everywhere, per 2026-07-20.
+        if current_bot in {"tennis", "wnba", "world-cup", "mlb", "nba"}:
+            _open_rows = [r for r in _open_rows
+                           if r.get("pinnacle_prob_yes") is not None
+                           or r.get("ticker") in held_by_ticker]
+        elif current_bot == "darts":
             _open_rows.sort(
                 key=lambda r: r.get("pinnacle_prob_yes") is None)
         # Reality-leaks Model-vs-market: ONLY contracts with an actual
@@ -1878,21 +1884,23 @@ def _render_watchlist(out: List[str], watchlist: List[dict],
             # list the match.
             pinn_p = v.get("pinnacle_prob_yes")
             _model_is_internal = False
+            # Sports with NO benchmark feed at all — the internal model
+            # is the only probability there is, so Model-vs-market
+            # shows it (flagged via tooltip). Benchmarked sports
+            # (tennis, nba, wnba, world-cup, mlb) never reach this
+            # fallback on Model-vs-market: rows without a Pinnacle
+            # line are filtered out above (user 2026-09-06 — the
+            # internal 0.5833 default read as a wrong "58%").
+            _no_benchmark_feed = current_bot in {"darts", "table-tennis"}
             if (is_active or is_billboard_bot or is_reality_bot
-                    or is_hormuz_bot or is_sport_bot) and pinn_p is None:
+                    or is_hormuz_bot or _no_benchmark_feed) and pinn_p is None:
                 # Billboard has no external benchmark book — the bot's
                 # own P(#1) is the Model % on every pane. Reality-leaks
                 # likewise: Model % is the leak-implied probability.
                 # Hormuz: the bot's own P(peak ≥ strike) is the model.
-                # Sport Model-vs-market (user 2026-09-06: "a lot of
-                # games aren't showing model %"): most ITF / lower-tier
-                # matches have no Pinnacle line, so the column dashed
-                # out on the majority of rows — fall back to the bot's
-                # internal model there too, flagged via tooltip so the
-                # sharp-benchmark rows stay distinguishable.
                 pinn_p = v.get("model_prob_yes")
-                _model_is_internal = pinn_p is not None and is_sport_bot \
-                    and not is_active
+                _model_is_internal = pinn_p is not None \
+                    and _no_benchmark_feed and not is_active
             if pinn_p is not None:
                 if flip_active:
                     pinn_yes_str = f"{int(round((1-float(pinn_p))*100))}%"
