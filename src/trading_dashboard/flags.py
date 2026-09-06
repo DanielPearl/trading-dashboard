@@ -77,6 +77,18 @@ _SPECIAL_FLAGS = {
 
 # Lazily-built tennis player name → ISO2 (from Sackmann CSVs).
 _PLAYER_ISO2: dict | None = None
+# Companion index: last name → ISO2, or None when several players
+# share the last name (ambiguous). Built once with the map above —
+# the old code re-scanned the whole ~40k-name map per lookup, which
+# py-spy showed as the single hottest frame of a page render (every
+# history row does up to five flag lookups).
+_PLAYER_LAST_ISO2: dict | None = None
+# Result memo — flags are stable for the life of the process, and the
+# History table asks for the same few thousand (name, ticker, context)
+# triples on every render. Only NON-EMPTY results are memoized: an
+# empty result can be transient (the Wikidata budget gate), and the
+# "" paths are all O(1) dict probes now anyway.
+_FLAG_MEMO: dict = {}
 
 _TENNIS_DATA_GLOBS = (
     "/root/tennis-forecast/data/raw/{tour}/{tour}_matches_202[2-9].csv",
@@ -113,9 +125,27 @@ def _load_player_map() -> dict:
             except OSError:
                 continue
     _PLAYER_ISO2 = out
+    # Build the last-name index in the same pass: unique last name →
+    # its ISO2; last names shared across countries → None (ambiguous,
+    # same semantics as the old per-lookup set comprehension).
+    global _PLAYER_LAST_ISO2
+    last_map: dict = {}
+    for full, iso in out.items():
+        last = full.rsplit(" ", 1)[-1]
+        if last not in last_map:
+            last_map[last] = iso
+        elif last_map[last] != iso:
+            last_map[last] = None
+    _PLAYER_LAST_ISO2 = last_map
     if out:
         log.info("flags: player map loaded (%d names)", len(out))
     return out
+
+
+def _load_last_map() -> dict:
+    if _PLAYER_LAST_ISO2 is None:
+        _load_player_map()
+    return _PLAYER_LAST_ISO2 or {}
 
 
 _WIKI_CACHE_PATH = Path(__file__).resolve().parents[2] / "data" \
@@ -230,6 +260,17 @@ def flag_for(name: str | None, ticker: str | None,
     t = (ticker or "").upper()
     if not name:
         return ""
+    memo_key = (name, t[:14], context or "")
+    hit = _FLAG_MEMO.get(memo_key)
+    if hit is not None:
+        return hit
+    flag = _flag_for_uncached(name, t, context)
+    if flag:
+        _FLAG_MEMO[memo_key] = flag
+    return flag
+
+
+def _flag_for_uncached(name: str, t: str, context: str | None) -> str:
     low = name.lower()
     if low in _SPECIAL_FLAGS:
         return _SPECIAL_FLAGS[low] + " "
@@ -252,10 +293,7 @@ def flag_for(name: str | None, ticker: str | None,
         pm = _load_player_map()
         iso = pm.get(low)
         if iso is None and " " in low:
-            last = low.rsplit(" ", 1)[-1]
-            hits = {v for k, v in pm.items()
-                    if k.rsplit(" ", 1)[-1] == last}
-            iso = hits.pop() if len(hits) == 1 else None
+            iso = _load_last_map().get(low.rsplit(" ", 1)[-1])
         if iso is None and " " in low:
             iso = _wikidata_iso2(full, "tennis")
         return (_iso2_flag(iso) + " ") if iso else ""

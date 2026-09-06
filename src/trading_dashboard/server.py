@@ -53,6 +53,37 @@ log = logging.getLogger("dashboard")
 _ROLLUP_TTL_S = 10.0
 _ROLLUP_CACHE: dict = {}
 _ROLLUP_LOCK = threading.Lock()
+# Keys currently being recomputed in a background thread — guards
+# against a stampede of refresh threads when several requests land on
+# the same stale key at once.
+_ROLLUP_REFRESHING: set = set()
+
+
+def _rollup_refresh_async(bots: List[dict], key: tuple,
+                           period_days: int | None, mode: str) -> None:
+    """Recompute one rollup key on a background thread. The request
+    that noticed the staleness serves the stale copy immediately —
+    on the droplet a recompute is ~1s of sqlite scans, and blocking
+    every page load on it was most of the perceived slowness."""
+    with _ROLLUP_LOCK:
+        if key in _ROLLUP_REFRESHING:
+            return
+        _ROLLUP_REFRESHING.add(key)
+
+    def _work() -> None:
+        try:
+            fresh = _compute_cross_bot_rollup(
+                bots, period_days=period_days, mode=mode)
+            with _ROLLUP_LOCK:
+                _ROLLUP_CACHE[key] = (time.time(), fresh)
+        except Exception:  # noqa: BLE001 — keep serving the stale copy
+            log.exception("background rollup refresh failed")
+        finally:
+            with _ROLLUP_LOCK:
+                _ROLLUP_REFRESHING.discard(key)
+
+    threading.Thread(target=_work, name="rollup-refresh",
+                     daemon=True).start()
 
 
 def _cross_bot_rollup(bots: List[dict], *, period_days: int | None,
@@ -61,7 +92,13 @@ def _cross_bot_rollup(bots: List[dict], *, period_days: int | None,
     now = time.time()
     with _ROLLUP_LOCK:
         hit = _ROLLUP_CACHE.get(key)
-    if hit is not None and now - hit[0] < _ROLLUP_TTL_S:
+    if hit is not None:
+        # Serve whatever we have instantly; kick a background refresh
+        # when it's past TTL (stale-while-revalidate). Staleness is
+        # bounded by request cadence + one recompute, and the page's
+        # own 5s /api/snapshot poller keeps live cells current anyway.
+        if now - hit[0] >= _ROLLUP_TTL_S:
+            _rollup_refresh_async(bots, key, period_days, mode)
         gs, gab, gh, bm = hit[1]
     else:
         gs, gab, gh, bm = _compute_cross_bot_rollup(
