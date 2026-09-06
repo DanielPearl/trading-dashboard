@@ -875,6 +875,17 @@ def _render_watchlist(out: List[str], watchlist: List[dict],
             "source post. Fact check % is the likelihood the leaked "
             "information is valid.'>Statement</th>"
         )
+    elif is_weather_bot:
+        # Weather (user 2026-09-06): a Location column so the 25-city
+        # slate scans by place — the city was only findable inside the
+        # Title sentence before.
+        head_cols = (
+            "<th title='Settlement city — the NWS station whose "
+            "official reading resolves this contract.'>Location</th>"
+            "<th title='Kalshi-published contract title — the "
+            "YES question shown on the market page.'>Title</th>"
+            "<th>Question</th>"
+        )
     else:
         head_cols = (
             "<th title='Kalshi-published contract title — the "
@@ -1842,6 +1853,14 @@ def _render_watchlist(out: List[str], watchlist: List[dict],
                     f"{pred_cell}"
                     f"{source_cell}"
                     f"{statement_cell}"
+                )
+            elif is_weather_bot:
+                middle_cells = (
+                    f"<td><strong>"
+                    f"{html.escape(str(v.get('_city') or ''))}"
+                    f"</strong></td>"
+                    f"<td>{title_link}</td>"
+                    f"<td>{html.escape(qstr)}</td>"
                 )
             else:
                 middle_cells = (
