@@ -1877,13 +1877,22 @@ def _render_watchlist(out: List[str], watchlist: List[dict],
             # ``live_prob_a`` / ``live_prob_b`` when Pinnacle doesn't
             # list the match.
             pinn_p = v.get("pinnacle_prob_yes")
+            _model_is_internal = False
             if (is_active or is_billboard_bot or is_reality_bot
-                    or is_hormuz_bot) and pinn_p is None:
+                    or is_hormuz_bot or is_sport_bot) and pinn_p is None:
                 # Billboard has no external benchmark book — the bot's
                 # own P(#1) is the Model % on every pane. Reality-leaks
                 # likewise: Model % is the leak-implied probability.
                 # Hormuz: the bot's own P(peak ≥ strike) is the model.
+                # Sport Model-vs-market (user 2026-09-06: "a lot of
+                # games aren't showing model %"): most ITF / lower-tier
+                # matches have no Pinnacle line, so the column dashed
+                # out on the majority of rows — fall back to the bot's
+                # internal model there too, flagged via tooltip so the
+                # sharp-benchmark rows stay distinguishable.
                 pinn_p = v.get("model_prob_yes")
+                _model_is_internal = pinn_p is not None and is_sport_bot \
+                    and not is_active
             if pinn_p is not None:
                 if flip_active:
                     pinn_yes_str = f"{int(round((1-float(pinn_p))*100))}%"
@@ -1911,8 +1920,11 @@ def _render_watchlist(out: List[str], watchlist: List[dict],
                     pinnacle_cell = ("<td class='num gray' "
                                      "data-field='pinnacle'>—</td>")
             else:
-                pinnacle_cell = _stacked(pinn_yes_str, pinn_no_str,
-                                          "pinnacle")
+                pinnacle_cell = _stacked(
+                    pinn_yes_str, pinn_no_str, "pinnacle",
+                    (" title='Bot internal model — Pinnacle has no "
+                     "line for this match'" if _model_is_internal
+                     else ""))
             edge_cell   = _stacked(edge_yes_str, edge_no_str, "edge")
             ev_cell     = _stacked(ev_yes_str, ev_no_str, "ev")
 
