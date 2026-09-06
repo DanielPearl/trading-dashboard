@@ -790,4 +790,8 @@ weather_trader:
   repo_path: /root/weather-forecast
   interval_seconds: 900
   live:
-    dry_run: true
+    # ARMED 2026-09-06 (user): rain trades real $1 orders through the
+    # shared kalshi_sdk gates (9pp edge, 30-70c band, max 10 open,
+    # 50 orders/day, 1 contract per bet). Temperature stays WATCH-only
+    # via the upstream temp_enabled flag until stations are calibrated.
+    dry_run: false
