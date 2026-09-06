@@ -464,6 +464,39 @@ bots:
       prediction_period_label: this week
       # Default idiom renders "above 20" (matches Kalshi's "Above 20").
 
+  - key: weather
+    name: Weather Forecast
+    # Daily Kalshi weather contracts across 25 NWS settlement
+    # stations: KXRAIN (one binary per city) plus the KXHIGH*
+    # temperature ladders (one "<K", four 2F buckets, one ">K" —
+    # a clean partition per city per day).
+    #
+    # No trained model. Rain probability IS the NWS
+    # probabilityOfPrecipitation, whose definition (>=0.01in at a
+    # point, trace counted as zero) matches the contract exactly.
+    # Temperature takes its centre from the NWS official daily high
+    # and its width from the median of per-model ensemble spreads —
+    # and stays WATCH-only until a station has fitted bias /
+    # dispersion constants.
+    #
+    # Buys go through the shared kalshi_sdk gates (9pp edge, 30-70c
+    # entry band) at 1 contract = $1 per bet. Routes through
+    # dashboard_type: weather — sport-style two-section layout with
+    # City / Question / Forecast columns.
+    dashboard_type: weather
+    db_path: /root/weather-forecast/data/outputs/sim.db
+    decisions_path: /root/weather-forecast/data/decisions.jsonl
+    watchlist_json_path: /root/weather-forecast/data/outputs/watchlist.json
+    series_ticker: KXRAIN
+    series_prefixes: [KXRAIN, KXHIGH]
+    data_source: "NWS api.weather.gov (forecast + PoP) + Open-Meteo ensembles"
+    display:
+      underlying_label: Forecast high
+      underlying_unit: "F"
+      underlying_decimals: 0
+      unit_position: suffix
+      chart_period_minutes: 1440
+
 # ---------------------------------------------------------------------------
 # Display thresholds. Mirror the gas-bot's gates so the buy-criteria panel
 # shows the actual bar each market must clear.
@@ -677,3 +710,21 @@ hormuz_trader:
   enabled: true
   repo_path: /root/port-forecast
   config_path: /root/port-forecast/config/config.yaml
+
+weather_trader:
+  # Weather bot (2026-08-31). Daily rain + temperature ladders,
+  # 25 settlement stations, ~350 contracts per tick.
+  #
+  # PAPER by default — the upstream config ships dry_run: true, like
+  # every bot in the fleet except billboard. Flip dry_run in
+  # /root/weather-forecast/config/config.yaml to arm real $1 orders.
+  #
+  # Temperature is WATCH-only until per-station calibration constants
+  # exist (temp_enabled: false upstream); rain trades on the NWS PoP,
+  # which is already a calibrated probability.
+  #
+  # Public NWS + Open-Meteo data needs no key. Kalshi creds come from
+  # the shared env like the other bots.
+  enabled: true
+  repo_path: /root/weather-forecast
+  interval_seconds: 900

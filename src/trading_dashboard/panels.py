@@ -402,7 +402,8 @@ def _render_bot_cards(out: List[str], rollup: dict,
         # through its own page since its model has its own renderer.
         if not bot_key:
             href = "#"
-        elif b.get("dashboard_type") in ("sport", "survivor", "billboard", "reality"):
+        elif b.get("dashboard_type") in ("sport", "survivor", "billboard",
+                                        "reality", "weather"):
             href = f"?bot={html.escape(bot_key)}&tab=models"
         else:
             href = f"?tab=models&bot={html.escape(bot_key)}"
@@ -421,7 +422,8 @@ def _render_bot_cards(out: List[str], rollup: dict,
         # "training accuracy" is a per-strike grid average that doesn't
         # line up apples-to-apples with the live actual-win-%, so the
         # drift badge fires spuriously on every load.
-        _drift_exempt = b.get("dashboard_type") in ("sport", "survivor", "billboard", "reality") \
+        _drift_exempt = b.get("dashboard_type") in ("sport", "survivor", "billboard",
+                                                    "reality", "weather") \
             or bot_key in ("natural-gas", "hormuz")
         if m and not _drift_exempt:
             a_wins_pre = int(m.get("actual_wins") or 0)
@@ -450,7 +452,8 @@ def _render_bot_cards(out: List[str], rollup: dict,
         # the schema we need, so they get no pill (rather than a
         # misleading "no data" badge on every load).
         regime_html = ""
-        if b.get("dashboard_type") not in ("sport", "survivor", "billboard", "reality"):
+        if b.get("dashboard_type") not in ("sport", "survivor", "billboard",
+                                           "reality", "weather"):
             regime = bot_regime_status(b.get("db_path") or "")
             if regime.get("status") and regime["status"] != "gray":
                 regime_html = (
@@ -478,7 +481,8 @@ def _render_bot_cards(out: List[str], rollup: dict,
         # bot's intended edge — not a stale upstream feed. (Same spirit
         # as the natural-gas drift-badge exemption above.)
         if (b.get("dashboard_type") not in
-                ("sport", "survivor", "billboard", "reality", "whale", "rules-parser")
+                ("sport", "survivor", "billboard", "reality", "weather",
+                 "whale", "rules-parser")
                 and bot_key != "hormuz"
                 and m and m.get("current_gas_price") is not None
                 and b.get("series_ticker")):
@@ -1826,9 +1830,12 @@ def _render_bet_history_block(out: List[str], history: List[dict],
 # real money via the armed live executor, same as NBA / WNBA.
 # Billboard added 2026-07-15 per user after the KXTOPSONG retarget —
 # paper-only, but its watchlist / model / training pages are live.
+# Weather added 2026-08-31 per user ("the weather bots should be added
+# to the contracts filter") — paper-only at launch, with rain armed
+# and the temperature ladders WATCH-only pending station calibration.
 BOT_FILTER_KEYS = {
     "mlb", "nba", "wnba", "tennis", "table-tennis", "darts",
-    "world-cup", "billboard", "reality-leaks", "hormuz",
+    "world-cup", "billboard", "reality-leaks", "hormuz", "weather",
 }
 
 

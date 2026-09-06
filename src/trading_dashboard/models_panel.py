@@ -2762,6 +2762,14 @@ def _render_models_panel(out: List[str], bot: dict, model: dict | None,
         _reality.render_models_panel(out, bot)
         out.append("</div></div>")
         return
+    # Weather has no trained model either — its Models tab documents
+    # the published forecast each contract family is priced off,
+    # plus the ladder-partition and station-calibration health checks.
+    if bot.get("dashboard_type") == "weather":
+        from . import weather as _weather
+        _weather.render_models_panel(out, bot)
+        out.append("</div></div>")
+        return
     db_path = bot.get("db_path") or ""
     if not db_path or not Path(db_path).exists():
         _render_bot_unavailable(out, bot.get("key", ""))

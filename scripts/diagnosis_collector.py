@@ -426,6 +426,35 @@ def collect_service(name: str) -> tuple[dict, list[dict], list[dict]]:
                      if last_start and last_start > h24_ago_iso
                      else h24_ago_iso)
     window_lines = _journal_since(name, window_since)
+    return _analyse_window(name, window_lines, active,
+                            crash_restarts, manual_restarts)
+
+
+def collect_logfile(name: str, log_path: Path) -> tuple[dict, list[dict], list[dict]]:
+    """Local (non-systemd) variant of ``collect_service``: audit a
+    plain log file written by ``run-dashboard.py`` instead of
+    journalctl. Used on a laptop where there is no systemd — the
+    droplet keeps the service path. The journal-prefix strippers are
+    no-ops on plain log lines, and the ERROR/WARNING/traceback regexes
+    match the app's own format, so the same analysis applies. A
+    missing or empty file classifies as failing (the dashboard isn't
+    writing logs where we expect).
+    """
+    try:
+        lines = log_path.read_text(errors="replace").splitlines()[-5000:]
+    except OSError:
+        lines = []
+    active = "active" if lines else "inactive"
+    return _analyse_window(name, lines, active,
+                            crash_restarts=0, manual_restarts=0)
+
+
+def _analyse_window(name: str, window_lines: list[str], active: str,
+                     crash_restarts: int, manual_restarts: int,
+                     ) -> tuple[dict, list[dict], list[dict]]:
+    """Shared log-window analysis behind both collectors: error /
+    warning counts, traceback grouping, and the three report lists.
+    """
     errors = [ln for ln in window_lines if _is_real_error(ln)]
     warns = [ln for ln in window_lines if WARN_RE.search(ln)]
     raw_tracebacks = _extract_tracebacks(window_lines)
@@ -616,6 +645,17 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
               "The live timer should point this at "
               "/root/trading-dashboard/diagnosis-live/."),
     )
+    p.add_argument(
+        "--log-file", type=Path, default=None,
+        help=("Local mode: audit this plain log file instead of "
+              "journalctl (there is no systemd on a laptop). "
+              "``--services`` is ignored; the report covers the one "
+              "log under the name given by ``--service-name``."),
+    )
+    p.add_argument(
+        "--service-name", default="trading-dashboard (local)",
+        help="Display name for the audited service in --log-file mode.",
+    )
     return p.parse_args(argv)
 
 
@@ -633,9 +673,14 @@ def main(argv: list[str] | None = None) -> int:
     services: list[dict] = []
     bugs: list[dict] = []
     streamlining: list[dict] = []
-    for name in args.services:
+    if args.log_file is not None:
+        targets = [(args.service_name,
+                     lambda n: collect_logfile(n, args.log_file))]
+    else:
+        targets = [(name, collect_service) for name in args.services]
+    for name, collect in targets:
         try:
-            srv, srv_bugs, srv_stream = collect_service(name)
+            srv, srv_bugs, srv_stream = collect(name)
         except Exception as e:  # noqa: BLE001 — never let one service abort the run
             srv = {
                 "name": name,
@@ -660,7 +705,8 @@ def main(argv: list[str] | None = None) -> int:
         # No GitHub issue from the fallback — the cron is local-only.
         # The Claude agent will populate this when it takes over.
         "github_issue_url": None,
-        "generator": "fallback-cron",
+        "generator": ("local-logfile" if args.log_file is not None
+                       else "fallback-cron"),
         "services": services,
         "bugs": bugs,
         "recommended_changes": [],

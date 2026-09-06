@@ -357,6 +357,31 @@ bots:
       chart_period_minutes: 1440
       prediction_period_label: this week
 
+  - key: weather
+    name: Weather Forecast
+    # Daily Kalshi weather contracts across 25 NWS settlement stations:
+    # KXRAIN (one binary per city) plus the KXHIGH* temperature ladders.
+    # No trained model — probabilities are read off published NWS /
+    # ensemble forecasts each tick.
+    #
+    # LIVE ledger is outputs-live/, fully isolated from the sim
+    # service's outputs/. Both services can run the same repo
+    # simultaneously: the sim daemon has no ``live:`` block, which
+    # forces paper mode upstream regardless of the repo's own config.
+    dashboard_type: weather
+    db_path: /root/weather-forecast/data/outputs-live/sim.db
+    decisions_path: /root/weather-forecast/data/decisions-live.jsonl
+    watchlist_json_path: /root/weather-forecast/data/outputs-live/watchlist.json
+    series_ticker: KXRAIN
+    series_prefixes: [KXRAIN, KXHIGH]
+    data_source: "NWS api.weather.gov (forecast + PoP) + Open-Meteo ensembles"
+    display:
+      underlying_label: Forecast high
+      underlying_unit: "F"
+      underlying_decimals: 0
+      unit_position: suffix
+      chart_period_minutes: 1440
+
 # Display thresholds — same defaults as sim. Each bot's effective_config
 # would override these once it's actually running, same as the sim side.
 risk:
@@ -727,3 +752,42 @@ hormuz_trader:
   enabled: true
   repo_path: /root/port-forecast
   config_path: /root/port-forecast/config/config-live.yaml
+
+weather_trader:
+  # Weather bot on the LIVE service (2026-08-31). Daily rain +
+  # temperature ladders, 25 settlement stations, ~350 contracts/tick.
+  #
+  # NOT ARMED. Three gates must align before a real order goes out:
+  #   1. enabled: true here                     (daemon runs)      [ON]
+  #   2. weather toggle ON in this dashboard's Home tab
+  #   3. live.dry_run: false below              (real money)      [OFF]
+  # While dry_run is true the daemon prices every contract, applies
+  # the shared gates, and records paper entries in outputs-live/ —
+  # it just never calls Kalshi's order endpoint. Watch that output
+  # for at least a full day before flipping #3.
+  #
+  # Position size is NOT configurable here. The upstream trader takes
+  # it from kalshi_sdk.buy_criteria.CONTRACTS_PER_ORDER (1 contract =
+  # $1 per bet), along with every gate (9pp edge, 30-70c band,
+  # max 10 open, 50 orders/day). YAML cannot widen any of them.
+  #
+  # WHAT IS AND ISN'T READY, if you are considering flipping #3:
+  #   * KXRAIN trades on the NWS PoP, an officially calibrated
+  #     probability whose definition matches the contract. The one
+  #     unfitted parameter is pop_blend (0.5 = a neutral prior, not a
+  #     measured value) for collapsing the day's two 12-hour periods.
+  #   * KXHIGH* is WATCH-only upstream (temp_enabled: false) and will
+  #     not trade in either service until per-station bias/dispersion
+  #     constants exist. Do not flip that on from here; it is an
+  #     upstream config flag for exactly this reason.
+  #
+  # NOTE on the Home toggle: bootstrap_disabled() only writes the
+  # all-OFF state file if it does not already exist. bot_states_live.json
+  # predates this bot, so "weather" is absent from it and
+  # is_bot_enabled() defaults unlisted bots to True — meaning gate 2
+  # is effectively already ON. Gate 3 is what is holding real orders.
+  enabled: true
+  repo_path: /root/weather-forecast
+  interval_seconds: 900
+  live:
+    dry_run: true

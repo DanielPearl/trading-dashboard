@@ -387,7 +387,8 @@ def _render_watchlist(out: List[str], watchlist: List[dict],
                       extra_cfg: dict | None = None,
                       available_bots: List[dict] | None = None,
                       current_bot: str = "",
-                      period_key: str = "all") -> None:
+                      period_key: str = "all",
+                      mode: str = "sim") -> None:
     # Buy-criteria reference button — a small circle-i info icon that
     # opens the shared rules modal. Built up-front so the sport-bot
     # header can pin it to the top-right of the h2 row; non-sport bots
@@ -418,6 +419,11 @@ def _render_watchlist(out: List[str], watchlist: List[dict],
                                     "darts", "world-cup", "mlb"}
     is_billboard_bot = current_bot == "billboard"
     is_reality_bot = current_bot == "reality-leaks"
+    # Weather: a per-city strike ladder (rain binaries + 2F
+    # temperature buckets). Same two-section layout as hormuz — it is
+    # a ladder, not a matchup — with City / Question / Forecast
+    # columns instead of the sport Side cell.
+    is_weather_bot = current_bot == "weather"
     # Hormuz (user 2026-07-22): same two-section layout as the sport
     # bots — Active bets · Model vs market, NO hero chart / prediction
     # cards — with the generic Title | Question columns instead of the
@@ -430,7 +436,7 @@ def _render_watchlist(out: List[str], watchlist: List[dict],
     # follows the same layout with its own Show / Contestant / Leak
     # columns.
     use_sections = (is_sport_bot or is_billboard_bot or is_reality_bot
-                    or is_hormuz_bot)
+                    or is_hormuz_bot or is_weather_bot)
     if not use_sections:
         out.append("<div class='section'><h2>"
                    "Watchlist — model vs market</h2>"
@@ -784,6 +790,26 @@ def _render_watchlist(out: List[str], watchlist: List[dict],
              if r.get("ticker") in held_by_ticker
              or (r.get("_leak_source") and r.get("_leak_title"))],
             key=_reality_sort_key)
+    elif is_weather_bot:
+        # 300+ contracts across 25 cities is too many to scan, and the
+        # ladder order that helps a single-underlying bot (strike
+        # ascending) is meaningless when 25 unrelated cities are
+        # interleaved. Surface what is actionable: held first, then
+        # BUY verdicts, then tradeable rows, then group by city so a
+        # ladder reads together, then strike within the ladder.
+        def _weather_sort_key(r: dict) -> Tuple[int, int, int, str, float]:
+            is_held = 0 if r.get("ticker") in held_by_ticker else 1
+            v = (r.get("bot_verdict") or "SKIP").upper()
+            actionable = 0 if v.startswith("BUY") else 1
+            watch_only = 1 if "WATCH-only" in (
+                r.get("rejection_reason") or "") else 0
+            city = str(r.get("_city") or "")
+            try:
+                strike = float(r.get("strike_low"))
+            except (TypeError, ValueError):
+                strike = 9_999.0
+            return (is_held, actionable, watch_only, city, strike)
+        watchlist = sorted(watchlist, key=_weather_sort_key)
     else:
         watchlist = sorted(
             watchlist,
@@ -968,11 +994,17 @@ def _render_watchlist(out: List[str], watchlist: List[dict],
         # its game's benchmark line isn't posted yet (the series guard
         # blanks lines for tomorrow's games) or nobody else has
         # traded the market.
+        # 2026-08-31 (user): "make sure it's showing all the contracts"
+        # — supersedes the 2026-07-13 hide-when-no-odds directive above.
+        # Un-benchmarked rows now RENDER (sorted after benchmarked ones
+        # below) instead of vanishing; they cannot trade regardless,
+        # since the buy gates require a benchmark edge. This also un-
+        # blanks darts permanently: The Odds API carries no darts key
+        # at all, so its pane could never populate under the old rule.
         if current_bot in {"tennis", "darts",
                             "wnba", "world-cup", "mlb", "nba"}:
-            _open_rows = [r for r in _open_rows
-                           if r.get("pinnacle_prob_yes") is not None
-                           or r.get("ticker") in held_by_ticker]
+            _open_rows.sort(
+                key=lambda r: r.get("pinnacle_prob_yes") is None)
         # Reality-leaks Model-vs-market: ONLY contracts with an actual
         # matched leak — source AND statement — render (user
         # 2026-07-17, repeated). Held rows without a live leak stay in
@@ -987,10 +1019,13 @@ def _render_watchlist(out: List[str], watchlist: List[dict],
         # the no-benchmark exemption above doesn't carry over). Rows
         # with volume=None (bot doesn't stamp it) stay visible: unknown
         # is not zero.
-        _open_rows = [r for r in _open_rows
-                       if r.get("volume") is None
-                       or (r.get("volume") or 0) > 0
-                       or r.get("ticker") in held_by_ticker]
+        # 2026-08-31 (user): "showing all the contracts" also supersedes
+        # the zero-volume hide — table-tennis's entire live series
+        # (KXTTELITEMATCH, 140 open markets) had zero traded volume and
+        # rendered 3 rows of 70. Untraded rows now sort after traded
+        # ones instead of vanishing.
+        _open_rows.sort(key=lambda r: (r.get("volume") is not None
+                                        and (r.get("volume") or 0) <= 0))
         # Settled-row filter on both panes — a resolved match
         # shouldn't sit in Active bets either (the position is
         # already locked in, the buy/sell watch state is stale).
@@ -1318,6 +1353,20 @@ def _render_watchlist(out: List[str], watchlist: List[dict],
                 and (_held_probe.get("ticker") or "")
                     == (v.get("_no_ticker") or "")
             )
+            # Sim dashboard: there is no real Kalshi position to probe,
+            # but the paper ledger IS the bot's record — orient the
+            # Active-bets row to the player the paper position holds.
+            # Paper bets carry the event ticker (no -SIDE suffix), so
+            # the ticker comparison above can never fire; match on the
+            # held player's name against the row's underdog label
+            # instead (2026-09-06: Bertrand/Perot rendered favoured
+            # Bertrand on the Active-bets row while the paper position
+            # was on Perot). Model-vs-market keeps its Kalshi-truth-only
+            # rule — this only re-orients the Active-bets table.
+            if _held_probe is None and is_active and mode != "live":
+                _pb_probe = held_by_ticker.get(ticker) or {}
+                _sp = _pb_probe.get("_side_player") or ""
+                flip_active = bool(_sp and _sp == (v.get("_no_label") or ""))
             ya_c = v.get("yes_ask_cents"); na_c = v.get("no_ask_cents")
             spread_cents = v.get("spread_cents")
             # Volume still drives the "thin volume" row-suspect flag below
@@ -1417,7 +1466,19 @@ def _render_watchlist(out: List[str], watchlist: List[dict],
             # keep the Kalshi-truth-only rule above. model_prob_at_entry
             # is passed on the YES axis (no flip_active reorientation
             # happens for strike-ladder rows).
-            if held_bet is None and is_hormuz_bot:
+            # Weather ships dry_run: true like hormuz, so the paper
+            # ledger IS the bot's position record and the Active-bets
+            # cells would otherwise render empty. When it is armed live
+            # the Kalshi-truth lookup above wins, so this fallback only
+            # engages for paper positions in both bots.
+            # On the SIM dashboard the same logic holds for every bot:
+            # nothing is ever bought on real Kalshi, so without the
+            # paper fallback the Active-bets rows render with empty
+            # contracts / cost / payout / entry-% cells (2026-09-06:
+            # tennis). Scoped to is_active so Model-vs-market keeps its
+            # Kalshi-truth-only HOLDING rule on sim.
+            if held_bet is None and (is_hormuz_bot or is_weather_bot
+                                      or (is_active and mode != "live")):
                 _pb = held_by_ticker.get(ticker)
                 if _pb:
                     _pb_mp = _pb.get("model_yes_prob_at_entry")
@@ -1431,7 +1492,11 @@ def _render_watchlist(out: List[str], watchlist: List[dict],
                         "contracts": _pb.get("contracts"),
                         "entry_price_cents": _pb.get("entry_price_cents"),
                         "model_prob_at_entry": _pb_mp,
-                        "current_model_prob": None,
+                        # Sport paper bets carry today's Pinnacle prob
+                        # on the held side; hormuz/weather bets don't
+                        # have the field and fall back to None as before.
+                        "current_model_prob": _pb.get(
+                            "current_model_prob_yes"),
                     }
             is_bought = held_bet is not None
             bought_side = ((held_bet.get("side") or "").upper()

@@ -200,13 +200,11 @@ def build_standard_watchlist_rows(
         if not match_id:
             continue
         oi = r.get("open_interest")
-        try:
-            if ((oi is None or float(oi) <= 0)
-                    and not r.get("_skip_oi_filter")):
-                continue
-        except (TypeError, ValueError):
-            if not r.get("_skip_oi_filter"):
-                continue
+        # 2026-08-31 (user): "showing all the contracts" — the zero-OI
+        # drop hid every fresh, untraded book (all 70 KXTTELITEMATCH
+        # matches had OI 0 and the TT pane rendered 2 rows). Rows are
+        # now kept; the renderer sorts untraded rows after traded ones,
+        # and the buy gates (min OI 50) still block entries on them.
         # Prefer the live (in-play adjusted) probability since that's what
         # the bot actually trades on; fall back to the pre-match prior.
         p_a = r.get("live_prob_a")

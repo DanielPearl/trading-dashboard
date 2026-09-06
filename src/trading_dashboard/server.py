@@ -117,7 +117,7 @@ def _compute_cross_bot_rollup(bots: List[dict], *, period_days: int | None,
         # dict for the card grid so the tennis bot shows up
         # alongside the Kalshi bots on the home page.
         if b.get("dashboard_type") in ("sport", "survivor", "billboard",
-                                        "reality"):
+                                        "reality", "weather"):
             # Tennis, survivor, and billboard share the
             # sim_state.json shape — the survivor and
             # billboard adapters delegate
@@ -130,12 +130,15 @@ def _compute_cross_bot_rollup(bots: List[dict], *, period_days: int | None,
             from . import survivor as _survivor
             from . import billboard as _billboard
             from . import reality_leaks as _reality
+            from . import weather as _weather
             if b.get("dashboard_type") == "survivor":
                 adapter = _survivor
             elif b.get("dashboard_type") == "billboard":
                 adapter = _billboard
             elif b.get("dashboard_type") == "reality":
                 adapter = _reality
+            elif b.get("dashboard_type") == "weather":
+                adapter = _weather
             else:
                 adapter = _tennis
             if b.get("key") == "world-cup":
@@ -224,9 +227,10 @@ def _compute_cross_bot_rollup(bots: List[dict], *, period_days: int | None,
                             ab["_dashboard_type"] = "sport"
                             ab["_display"] = b.get("display") or {}
                             global_active_bets.append(ab)
-            elif b.get("dashboard_type") in ("billboard", "reality"):
-                # Billboard + reality-leaks write a real sim.db —
-                # same readers as the standard bots below.
+            elif b.get("dashboard_type") in ("billboard", "reality",
+                                              "weather"):
+                # Billboard + reality-leaks + weather write a real
+                # sim.db — same readers as the standard bots below.
                 _bb_bets = fetch_active_bets_with_marks(b["db_path"])
                 if b.get("dashboard_type") == "billboard":
                     from . import billboard as _bb
@@ -264,7 +268,8 @@ def _compute_cross_bot_rollup(bots: List[dict], *, period_days: int | None,
             # never traded real money now simply shows
             # empty on the LIVE ledger, and the sport
             # rollup drops dry-run evaluations too.
-            if b.get("dashboard_type") in ("billboard", "reality"):
+            if b.get("dashboard_type") in ("billboard", "reality",
+                                            "weather"):
                 closed_iter = fetch_bet_history(
                     b["db_path"], limit=10_000)
             elif b.get("dashboard_type") == "sport":
@@ -643,6 +648,36 @@ class Handler(BaseHTTPRequestHandler):
                                 for ab in bot_active_bets)):
                         latest_active = None
                     model = None
+                elif bot.get("dashboard_type") == "weather":
+                    # Weather mirrors the reality-leaks pattern: rows
+                    # synthesised from watchlist.json (city / forecast
+                    # columns on _-prefixed keys), paper positions from
+                    # the standard sim.db readers, model None.
+                    from . import weather as _weather
+                    payload_wl = _weather.load_watchlist(
+                        bot.get("watchlist_json_path"))
+                    watchlist = _weather.build_standard_watchlist_rows(
+                        payload_wl)
+                    bot_active_bets = fetch_active_bets_with_marks(db_path)
+                    for ab in bot_active_bets:
+                        ab.setdefault("_display", bot.get("display") or {})
+                        # The weather positions table has no
+                        # model-prob column; the entry-time
+                        # probability rides in decision_json, same as
+                        # billboard. Surface it so the Active-bets
+                        # "Model entry %" cell populates.
+                        try:
+                            _dj = json.loads(ab.get("decision_json") or "{}")
+                        except (TypeError, ValueError):
+                            _dj = {}
+                        if _dj.get("model_prob") is not None:
+                            ab.setdefault("model_yes_prob_at_entry",
+                                          _dj["model_prob"])
+                        if _dj.get("market_prob") is not None:
+                            ab.setdefault("kalshi_yes_prob_at_entry",
+                                          _dj["market_prob"])
+                    latest_active = fetch_latest_open_position(db_path)
+                    model = None
                 elif bot.get("dashboard_type") == "reality":
                     # Reality-leaks mirrors the billboard pattern:
                     # watchlist rows synthesised from watchlist.json
@@ -713,7 +748,8 @@ class Handler(BaseHTTPRequestHandler):
                 if (series_ticker
                         and bot.get("dashboard_type") not in ("sport",
                                                               "billboard",
-                                                              "reality")):
+                                                              "reality",
+                                                              "weather")):
                     from . import kalshi_client
                     # Sport series like KXNBAGAME have many concurrent
                     # open events (one per game on the slate). Narrowing
@@ -945,6 +981,17 @@ class Handler(BaseHTTPRequestHandler):
                     )
                     payload_dict["bot"] = bot["key"]
                     payload_dict["type"] = "billboard"
+                elif bot.get("dashboard_type") == "weather":
+                    # Same reasoning as billboard/reality above — feed
+                    # the cross-bot summary so the Home cards stay live.
+                    payload_dict = _tennis_like_snapshot(
+                        [], [], self.bots,
+                        edge_cfg=self.edge_cfg,
+                        period_days=snap_period_days,
+                        mode=self.mode,
+                    )
+                    payload_dict["bot"] = bot["key"]
+                    payload_dict["type"] = "weather"
                 elif bot.get("dashboard_type") == "reality":
                     # Same reasoning as billboard above — feed the
                     # cross-bot summary so the Home cards stay live.
@@ -1078,6 +1125,7 @@ def serve(host: str, port: int, bots: List[dict], risk_caps: dict,
           world_cup_trader_cfg: dict | None = None,
           mlb_trader_cfg: dict | None = None,
           reality_leaks_trader_cfg: dict | None = None,
+          weather_trader_cfg: dict | None = None,
           hormuz_trader_cfg: dict | None = None,
           mode: str = "sim",
           live_state_paths: List[str] | None = None) -> None:
@@ -1202,6 +1250,12 @@ def serve(host: str, port: int, bots: List[dict], risk_caps: dict,
     if reality_leaks_trader_cfg:
         from .bots import reality_leaks as reality_leaks_bot
         reality_leaks_bot.start_daemon(reality_leaks_trader_cfg)
+    # Weather trader — daily rain + temperature ladders across 25
+    # settlement stations. No model artifact: probabilities are read
+    # off published NWS / ensemble forecasts each tick.
+    if weather_trader_cfg:
+        from .bots import weather as weather_bot
+        weather_bot.start_daemon(weather_trader_cfg)
     # Hormuz Forecast paper trader — standard sim.db macro bot,
     # permanently sim-side (dry_run true upstream).
     if hormuz_trader_cfg:
@@ -1335,7 +1389,7 @@ def main(argv: list[str] | None = None) -> int:
             # empty-state placeholder when rows is empty.
             available = bool(b.metrics_path
                              and Path(b.metrics_path).exists())
-        elif b.dashboard_type == "reality":
+        elif b.dashboard_type in ("reality", "weather"):
             # No trained model / metrics.json — the bot is available
             # once its exporter has written a watchlist snapshot.
             available = bool(b.watchlist_json_path
@@ -1392,6 +1446,7 @@ def main(argv: list[str] | None = None) -> int:
     world_cup_trader_cfg = cfg.raw.get("world_cup_trader") or {}
     mlb_trader_cfg = cfg.raw.get("mlb_trader") or {}
     reality_leaks_trader_cfg = cfg.raw.get("reality_leaks_trader") or {}
+    weather_trader_cfg = cfg.raw.get("weather_trader") or {}
     hormuz_trader_cfg = cfg.raw.get("hormuz_trader") or {}
 
     host = args.host or cfg.host
@@ -1433,6 +1488,7 @@ def main(argv: list[str] | None = None) -> int:
           world_cup_trader_cfg=world_cup_trader_cfg,
           mlb_trader_cfg=mlb_trader_cfg,
           reality_leaks_trader_cfg=reality_leaks_trader_cfg,
+          weather_trader_cfg=weather_trader_cfg,
           hormuz_trader_cfg=hormuz_trader_cfg,
           mode=cfg.mode,
           live_state_paths=live_state_paths)

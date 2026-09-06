@@ -257,7 +257,8 @@ def render_page(
                           threshold_source=threshold_source,
                           available_bots=available_bots,
                           current_bot=current_bot,
-                          period_key=period_key)
+                          period_key=period_key,
+                          mode=mode)
         # Standalone Kalshi-rules section retired 2026-07-08 — every
         # watchlist row now carries its own Rules ``i`` button in the
         # Rules column that opens a popover with that ticker's
@@ -817,7 +818,8 @@ def _live_update_script(current_bot: str, period_key: str = "all") -> str:
   // Sport bots are excluded on purpose: their Model % is Pinnacle,
   // and their active-pane rows can render side-flipped, which a
   // YES-axis patch would silently un-flip.
-  const MODEL_IS_REF = ["hormuz", "billboard", "reality-leaks"].indexOf(BOT) !== -1;
+  const MODEL_IS_REF = ["hormuz", "billboard", "reality-leaks",
+                        "weather"].indexOf(BOT) !== -1;
 
   // Format helpers — must mirror the server-side rendering in render_page.
   function fmtSignedCents(c) {{

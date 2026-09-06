@@ -16,6 +16,9 @@ dist/
 # --- runtime data (dashboard reads sibling bots' DBs; never owns one) ---
 data/
 logs/
+# generated locally by scripts/diagnosis_collector.py --log-file
+diagnosis/
+diagnosis-live/
 *.log
 *.db
 *.sqlite

@@ -1214,8 +1214,8 @@ def fetch_global_summary(bots: List[dict],
         elif b.get("dashboard_type") == "survivor":
             from . import survivor as _survivor
             s = _survivor.summary_for_rollup(b.get("sim_state_path"))
-        elif b.get("dashboard_type") in ("billboard", "reality"):
-            # Billboard + reality-leaks write a real sim.db (standard
+        elif b.get("dashboard_type") in ("billboard", "reality", "weather"):
+            # Billboard + reality-leaks + weather write a real sim.db (standard
             # schema) so the same summary reader the gas / claims
             # bots use works here too. The legacy
             # `_billboard.summary_for_rollup` always returned zeros
