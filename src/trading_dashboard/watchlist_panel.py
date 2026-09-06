@@ -1015,11 +1015,28 @@ def _render_watchlist(out: List[str], watchlist: List[dict],
         # darts key at all, so hiding would blank that pane forever —
         # its un-benchmarked rows render, sorted last). Held rows stay
         # visible everywhere, per 2026-07-20.
-        if current_bot in {"tennis", "wnba", "world-cup", "mlb", "nba"}:
-            _open_rows = [r for r in _open_rows
-                           if r.get("pinnacle_prob_yes") is not None
-                           or r.get("ticker") in held_by_ticker]
-        elif current_bot == "darts":
+        # 2026-09-06 (user): "do not show rows in model vs market for
+        # any bot if there is no model % available for it" — a row
+        # whose Model % cell would render "—" carries no
+        # model-vs-market comparison and is noise. Resolve the same
+        # source the cell renderer uses below: the sharp benchmark for
+        # Odds-API sports; the bot's own model for bots with no
+        # benchmark feed (darts, table-tennis, billboard, reality,
+        # hormuz, weather). Held rows stay visible, per 2026-07-20.
+        _model_from_internal = (
+            is_billboard_bot or is_reality_bot or is_hormuz_bot
+            or is_weather_bot
+            or current_bot in {"darts", "table-tennis"})
+
+        def _has_model_pct(r: dict) -> bool:
+            if r.get("pinnacle_prob_yes") is not None:
+                return True
+            return (_model_from_internal
+                    and r.get("model_prob_yes") is not None)
+        _open_rows = [r for r in _open_rows
+                       if _has_model_pct(r)
+                       or r.get("ticker") in held_by_ticker]
+        if current_bot == "darts":
             _open_rows.sort(
                 key=lambda r: r.get("pinnacle_prob_yes") is None)
         # Reality-leaks Model-vs-market: ONLY contracts with an actual
@@ -1186,9 +1203,15 @@ def _render_watchlist(out: List[str], watchlist: List[dict],
         # watchlist — the settlement price has already been decided,
         # the row can't be traded, and leaving it in place shifts the
         # user's eye away from the actionable strikes.
+        # 2026-09-06 (user): same no-model-%-no-row rule as the sport
+        # panes — a strike the model hasn't scored shows "—" in My %
+        # and offers nothing to compare. Held rows stay visible.
         section_ctxs = [{
             "kind": "single",
-            "rows": [r for r in watchlist if not _is_settled(r)],
+            "rows": [r for r in watchlist
+                     if not _is_settled(r)
+                     and (r.get("model_prob_yes") is not None
+                          or r.get("ticker") in held_by_ticker)],
             "include_position_cols": True,
             "tbody_id": "watchlist-tbody",
             "empty_msg": "No open markets right now.",
