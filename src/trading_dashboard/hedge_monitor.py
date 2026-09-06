@@ -186,6 +186,13 @@ def _check_db(db_path: str, bot: Dict[str, Any],
         # PRAGMA probe so older sim.dbs still work.
         col_names = {r["name"] for r in
                       c.execute("PRAGMA table_info(positions)").fetchall()}
+        # A sim.db that exists but has no positions table yet (a bot
+        # whose repo isn't deployed, or a ledger the schema bootstrap
+        # hasn't touched) has nothing to hedge — skip it instead of
+        # erroring every tick (2026-09-06: weather's empty live db
+        # logged "no such table: positions" every cycle).
+        if not col_names:
+            return []
         prior_col = ("model_yes_prob_at_entry"
                       if "model_yes_prob_at_entry" in col_names else "NULL")
         rows = c.execute(
