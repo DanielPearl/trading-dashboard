@@ -1057,6 +1057,18 @@ def _render_watchlist(out: List[str], watchlist: List[dict],
         _open_rows = [r for r in _open_rows
                        if _has_model_pct(r)
                        or r.get("ticker") in held_by_ticker]
+        # 2026-09-07 (user): "don't show anything in model vs market
+        # when there are 0 contracts" — a market with zero open
+        # interest has nobody on either side; hide it until someone
+        # trades. Supersedes 2026-08-31's show-everything for this
+        # pane. Held rows stay; _skip_oi_filter rows stay (billboard /
+        # reality set it where Kalshi's OI field is legitimately null
+        # early in a chart week but the row is still the right
+        # surface to show).
+        _open_rows = [r for r in _open_rows
+                       if r.get("_skip_oi_filter")
+                       or (r.get("open_interest") or 0) > 0
+                       or r.get("ticker") in held_by_ticker]
         if current_bot == "darts":
             _open_rows.sort(
                 key=lambda r: r.get("pinnacle_prob_yes") is None)
@@ -1232,6 +1244,9 @@ def _render_watchlist(out: List[str], watchlist: List[dict],
             "rows": [r for r in watchlist
                      if not _is_settled(r)
                      and (r.get("model_prob_yes") is not None
+                          or r.get("ticker") in held_by_ticker)
+                     and (r.get("_skip_oi_filter")
+                          or (r.get("open_interest") or 0) > 0
                           or r.get("ticker") in held_by_ticker)],
             "include_position_cols": True,
             "tbody_id": "watchlist-tbody",
