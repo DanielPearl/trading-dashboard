@@ -946,10 +946,12 @@ def _render_watchlist(out: List[str], watchlist: List[dict],
         # finished events whose quote never pinned and whose
         # completed / expiration fields the adapter doesn't carry
         # (user 2026-09-06: "don't show contracts that have already
-        # been settled ... for any bot"). One hour of grace so an
-        # event running past midnight UTC isn't retired mid-play.
+        # been settled ... for any bot"). Eight hours of grace: a
+        # 10pm-ET West-coast game crosses its ticker's 23:59 UTC
+        # anchor while still in play — same-day events must survive
+        # the night, yesterday's must not survive the morning.
         _tmtc = minutes_to_close_from_ticker(r.get("ticker"))
-        if _tmtc is not None and _tmtc <= -60:
+        if _tmtc is not None and _tmtc <= -480:
             return True
         ask_fields = (
             "yes_ask_cents", "no_ask_cents",
