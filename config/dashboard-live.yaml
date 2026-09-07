@@ -722,7 +722,12 @@ mlb_trader:
   repo_path: /root/baseball
   interval_seconds: 120
   live:
-    dry_run: true
+    # 2026-09-07 (user): armed at the config level with the Home-tab
+    # toggle switched OFF — flipping the toggle ON in the live
+    # dashboard is what starts real orders. Pregame only (the
+    # prematch gate refuses anything past first pitch); shared
+    # kalshi_sdk caps bound size and price band.
+    dry_run: false
     sim_state_path: /root/baseball/data/outputs-live/sim_state.json
     max_open_positions: 10   # raised 6 → 10 (hard cap) for $1-stake testing
     # Backstop only — the real limit is max_open_positions
