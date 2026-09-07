@@ -950,9 +950,14 @@ def _render_watchlist(out: List[str], watchlist: List[dict],
         # 10pm-ET West-coast game crosses its ticker's 23:59 UTC
         # anchor while still in play — same-day events must survive
         # the night, yesterday's must not survive the morning.
-        _tmtc = minutes_to_close_from_ticker(r.get("ticker"))
-        if _tmtc is not None and _tmtc <= -480:
-            return True
+        # ONLY where the ticker date IS the event day (game sports,
+        # daily weather). Hormuz-style series encode a different date
+        # in the ticker and kept live books past it — the heuristic
+        # blanked a pane full of tradeable markets (2026-09-07).
+        if is_sport_bot or is_weather_bot:
+            _tmtc = minutes_to_close_from_ticker(r.get("ticker"))
+            if _tmtc is not None and _tmtc <= -480:
+                return True
         ask_fields = (
             "yes_ask_cents", "no_ask_cents",
             "yes_ask_cents_a", "yes_ask_cents_b",
