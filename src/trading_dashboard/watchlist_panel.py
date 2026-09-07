@@ -934,6 +934,23 @@ def _render_watchlist(out: List[str], watchlist: List[dict],
                     return True
             except (TypeError, ValueError):
                 pass
+        # Row's own countdown, when the bot stamps one — 15-minute
+        # grace matches the expiration check above.
+        mtc = r.get("minutes_to_close")
+        try:
+            if mtc is not None and float(mtc) <= -15:
+                return True
+        except (TypeError, ValueError):
+            pass
+        # Ticker-encoded settlement day (23:59 UTC anchor) — catches
+        # finished events whose quote never pinned and whose
+        # completed / expiration fields the adapter doesn't carry
+        # (user 2026-09-06: "don't show contracts that have already
+        # been settled ... for any bot"). One hour of grace so an
+        # event running past midnight UTC isn't retired mid-play.
+        _tmtc = minutes_to_close_from_ticker(r.get("ticker"))
+        if _tmtc is not None and _tmtc <= -60:
+            return True
         ask_fields = (
             "yes_ask_cents", "no_ask_cents",
             "yes_ask_cents_a", "yes_ask_cents_b",
