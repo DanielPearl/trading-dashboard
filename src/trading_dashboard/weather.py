@@ -139,6 +139,27 @@ def build_standard_watchlist_rows(payload: Dict[str, Any]
     return out
 
 
+def enrich_active_bets(bets: List[Dict[str, Any]]) -> None:
+    """In-place: surface entry-time probabilities from decision_json.
+
+    The weather positions table has no model-prob column — the entry
+    snapshot (model_prob / market_prob, both YES-axis) rides in
+    decision_json, same as billboard. Parsing it here, once, feeds the
+    "Model entry %" / "Kalshi entry %" cells on BOTH the per-bot page
+    and the Home rollup (2026-09-06: the Home table's Model entry %
+    rendered blank because only the page path did this parse).
+    """
+    for ab in bets:
+        try:
+            dj = json.loads(ab.get("decision_json") or "{}")
+        except (TypeError, ValueError):
+            dj = {}
+        if dj.get("model_prob") is not None:
+            ab.setdefault("model_yes_prob_at_entry", dj["model_prob"])
+        if dj.get("market_prob") is not None:
+            ab.setdefault("kalshi_yes_prob_at_entry", dj["market_prob"])
+
+
 def render_models_panel(out: List[str], bot: Dict[str, Any]) -> None:
     payload = load_watchlist(bot.get("watchlist_json_path"))
     rows = payload.get("rows") or []

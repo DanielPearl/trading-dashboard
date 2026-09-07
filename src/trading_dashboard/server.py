@@ -272,6 +272,12 @@ def _compute_cross_bot_rollup(bots: List[dict], *, period_days: int | None,
                 if b.get("dashboard_type") == "billboard":
                     from . import billboard as _bb
                     _bb.enrich_active_bets(_bb_bets, b["db_path"])
+                elif b.get("dashboard_type") == "weather":
+                    # Entry-time model/market probs ride in
+                    # decision_json — without this the Home table's
+                    # Model entry % rendered blank (2026-09-06).
+                    from . import weather as _weather
+                    _weather.enrich_active_bets(_bb_bets)
                 for ab in _bb_bets:
                     if not _keep_on_kalshi(ab):
                         continue
@@ -696,23 +702,9 @@ class Handler(BaseHTTPRequestHandler):
                     watchlist = _weather.build_standard_watchlist_rows(
                         payload_wl)
                     bot_active_bets = fetch_active_bets_with_marks(db_path)
+                    _weather.enrich_active_bets(bot_active_bets)
                     for ab in bot_active_bets:
                         ab.setdefault("_display", bot.get("display") or {})
-                        # The weather positions table has no
-                        # model-prob column; the entry-time
-                        # probability rides in decision_json, same as
-                        # billboard. Surface it so the Active-bets
-                        # "Model entry %" cell populates.
-                        try:
-                            _dj = json.loads(ab.get("decision_json") or "{}")
-                        except (TypeError, ValueError):
-                            _dj = {}
-                        if _dj.get("model_prob") is not None:
-                            ab.setdefault("model_yes_prob_at_entry",
-                                          _dj["model_prob"])
-                        if _dj.get("market_prob") is not None:
-                            ab.setdefault("kalshi_yes_prob_at_entry",
-                                          _dj["market_prob"])
                     latest_active = fetch_latest_open_position(db_path)
                     model = None
                 elif bot.get("dashboard_type") == "reality":
