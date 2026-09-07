@@ -633,15 +633,21 @@ survivor_trader:
   repo_path: /root/survivor-elimination
   interval_seconds: 300
 
-# Table-tennis real-money executor — benchmark-gated: while Pinnacle
-# isn't quoting TT (true 2026-07-09) no row is ever buy-eligible, so
-# the executor evaluates and does nothing. Same arming model as MLB.
+# Table-tennis real-money executor — benchmark-gated, tennis parity
+# (user 2026-09-07): the exporter now stamps Pinnacle's devigged TT
+# line (guest feed) on every row and the buy gate uses it as the edge
+# reference with the Elo model as disagreement veto — same cascade as
+# tennis. ARMED with require_pinnacle so real orders only ever fire on
+# a professional line; while Pinnacle lists no TT (true 2026-09-07,
+# 0 guest matchups) the executor evaluates and does nothing, and the
+# moment they resume coverage the pane benchmarks + trades itself.
 table_tennis_trader:
   enabled: true
   repo_path: /root/table-tennis-forecast
   interval_seconds: 60
   live:
-    dry_run: true
+    dry_run: false
+    require_pinnacle: true
     sim_state_path: /root/table-tennis-forecast/data/outputs-live/sim_state.json
     max_open_positions: 10   # raised 6 → 10 (hard cap) for $1-stake testing
     # Backstop only — the real limit is max_open_positions

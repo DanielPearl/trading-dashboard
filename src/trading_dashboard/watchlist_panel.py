@@ -1042,10 +1042,12 @@ def _render_watchlist(out: List[str], watchlist: List[dict],
         # Odds-API sports; the bot's own model for bots with no
         # benchmark feed (darts, table-tennis, billboard, reality,
         # hormuz, weather). Held rows stay visible, per 2026-07-20.
+        # table-tennis moved to the benchmark side 2026-09-07 (user:
+        # "use professional model probabilities" — its exporter now
+        # stamps Pinnacle's TT line, tennis-style cascade).
         _model_from_internal = (
             is_billboard_bot or is_reality_bot or is_hormuz_bot
-            or is_weather_bot
-            or current_bot in {"darts", "table-tennis"})
+            or is_weather_bot or current_bot == "darts")
 
         def _has_model_pct(r: dict) -> bool:
             if r.get("pinnacle_prob_yes") is not None:
@@ -1952,7 +1954,7 @@ def _render_watchlist(out: List[str], watchlist: List[dict],
             # fallback on Model-vs-market: rows without a Pinnacle
             # line are filtered out above (user 2026-09-06 — the
             # internal 0.5833 default read as a wrong "58%").
-            _no_benchmark_feed = current_bot in {"darts", "table-tennis"}
+            _no_benchmark_feed = current_bot == "darts"
             if (is_active or is_billboard_bot or is_reality_bot
                     or is_hormuz_bot or is_weather_bot
                     or _no_benchmark_feed) and pinn_p is None:
