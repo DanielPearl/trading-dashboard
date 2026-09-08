@@ -1076,6 +1076,16 @@ def _render_watchlist(out: List[str], watchlist: List[dict],
         def _has_model_pct(r: dict) -> bool:
             if r.get("pinnacle_prob_yes") is not None:
                 return True
+            # hormuz publish gap (2026-09-08): every Mon→Tue the bot
+            # refuses to forecast until PortWatch publishes last week's
+            # transit data (fabricating a number caused the 44-ship
+            # blowup, 2026-08-28). Those ticks stamp this exact reason;
+            # the ladder stays visible with a blank Model % rather than
+            # blanking the whole pane for a day ("hormuz bot and model
+            # vs market page is again not working").
+            if (is_hormuz_bot and "awaiting PortWatch"
+                    in (r.get("rejection_reason") or "")):
+                return True
             return (_model_from_internal
                     and r.get("model_prob_yes") is not None)
         _open_rows = [r for r in _open_rows
