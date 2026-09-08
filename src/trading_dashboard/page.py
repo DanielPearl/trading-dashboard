@@ -663,9 +663,19 @@ _HISTORY_CHART_JS = """<script>
         d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate()) / 1000);
       daily.set(dayEpoch, (daily.get(dayEpoch) || 0) + p[1]);
     });
-    // Ensure today is always the rightmost point. If no trades
-    // settled today, the bucket is 0 — same daily-delta semantics
-    // (today made $0 of new realized P&L).
+    // Every calendar day gets a point (user 2026-09-08: "show the
+    // value for every day, not extrapolate when there are no
+    // trades"). A day with no settlements really did net $0, and
+    // leaving it out made the line slope straight from one trade day
+    // to the next — reading as fake intermediate P&L. Fill the whole
+    // range, first traded day → today, with 0-valued buckets.
+    if (daily.size > 0) {
+      const firstDay = Math.min.apply(null,
+        Array.from(daily.keys()));
+      for (let t = firstDay; t <= todayMidnight; t += 86400) {
+        if (!daily.has(t)) daily.set(t, 0);
+      }
+    }
     if (!daily.has(todayMidnight)) {
       daily.set(todayMidnight, 0);
     }
