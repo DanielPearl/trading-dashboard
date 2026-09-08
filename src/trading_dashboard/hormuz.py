@@ -270,19 +270,34 @@ def render_models_panel(out: List[str], bot: dict) -> None:
     # ── Part 1b: deployed model coefficients ────────────────────────
     feats = card.get("features") or []
     coefs = [(f.get("name") or f.get("key"), f.get("key"),
-              float(f.get("coefficient") or 0.0)) for f in feats]
-    max_c = max((abs(c) for _, _, c in coefs), default=1.0) or 1.0
+              float(f.get("coefficient") or 0.0),
+              bool(f.get("deployed", True))) for f in feats]
+    max_c = max((abs(t[2]) for t in coefs), default=1.0) or 1.0
     if _deployed == "pooled":
         _coef_title = ("Deployed model — pooled GBM feature importances"
                        " <span style='color:#8b949e;font-weight:400;'>"
                        "(split-gain share; trained on every chokepoint)</span>")
         _coef_col = "Importance"
     elif _deployed == "persistence":
-        _coef_title = ("Deployed model — persistence"
-                       " <span style='color:#8b949e;font-weight:400;'>"
-                       "(last week's peak, verbatim — nothing learned "
-                       "beat it on the recent walk-forward)</span>")
-        _coef_col = "Weight"
+        # The card carries the learned ridge candidate's full
+        # standardized coefficients even when persistence deploys
+        # (strengths section, user 2026-09-08) — say whose numbers
+        # these are so the one-input deployed model isn't
+        # misrepresented as a 12-feature regression.
+        if len(coefs) > 1:
+            _coef_title = ("Feature strengths — learned ridge candidate"
+                           " <span style='color:#8b949e;font-weight:400;'>"
+                           "(standardized coefficients; the DEPLOYED "
+                           "forecast is persistence — last week's peak, "
+                           "verbatim — nothing learned beat it on the "
+                           "recent walk-forward)</span>")
+            _coef_col = "Strength"
+        else:
+            _coef_title = ("Deployed model — persistence"
+                           " <span style='color:#8b949e;font-weight:400;'>"
+                           "(last week's peak, verbatim — nothing learned "
+                           "beat it on the recent walk-forward)</span>")
+            _coef_col = "Weight"
     else:
         _coef_title = ("Deployed model — Ridge coefficients"
                        " <span style='color:#8b949e;font-weight:400;'>"
@@ -293,11 +308,14 @@ def render_models_panel(out: List[str], bot: dict) -> None:
     out.append("<table class='hz-table'><thead><tr><th>Feature</th>"
                f"<th class='num'>{_coef_col}</th><th>Relative influence</th>"
                "</tr></thead><tbody>")
-    for name, key, c in sorted(coefs, key=lambda t: -abs(t[2])):
+    for name, key, c, is_deployed in sorted(coefs, key=lambda t: -abs(t[2])):
         pct = abs(c) / max_c * 100.0
         cls = "hz-pos" if c >= 0 else "hz-neg"
+        label = str(name)
+        if is_deployed and len(coefs) > 1 and _deployed == "persistence":
+            label += " ★ (the deployed persistence input)"
         out.append(
-            f"<tr><td>{html.escape(str(name))}</td>"
+            f"<tr><td>{html.escape(label)}</td>"
             f"<td class='num'>{c:+.3f}</td>"
             f"<td><div class='hz-bar-wrap'><div class='hz-bar-track'>"
             f"<div class='hz-bar-fill {cls}' style='width:{pct:.1f}%;'></div>"
