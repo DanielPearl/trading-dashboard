@@ -341,12 +341,36 @@ def _compute_cross_bot_rollup(bots: List[dict], *, period_days: int | None,
             continue
         if b.get("dashboard_type") and b["dashboard_type"] != "standard":
             continue
+        # Watchlist join for the Home Active-bets cells (user
+        # 2026-09-08: CPI rows need the contract title and date). The
+        # positions table stores neither; the Kalshi title rides in
+        # decision_json, and close-time + rules live on the market's
+        # watchlist row.
+        try:
+            _wl_by_tk = {r.get("ticker"): r
+                          for r in fetch_watchlist(b["db_path"])}
+        except Exception:  # noqa: BLE001
+            _wl_by_tk = {}
         for ab in fetch_active_bets_with_marks(b["db_path"]):
             if not _keep_on_kalshi(ab):
                 continue
             ab["_bot_name"] = b["name"]
             ab["_bot_key"] = b["key"]
             ab["_dashboard_type"] = b.get("dashboard_type") or "standard"
+            _wl = _wl_by_tk.get(str(ab.get("ticker") or ""))
+            if not ab.get("title") and not ab.get("_title"):
+                try:
+                    _dj = json.loads(ab.get("decision_json") or "{}")
+                except (TypeError, ValueError):
+                    _dj = {}
+                _t = ((_wl or {}).get("title") or _dj.get("title"))
+                if _t:
+                    ab["title"] = _t
+                    ab["_title"] = _t
+            if _wl:
+                if ab.get("minutes_to_close") is None:
+                    ab["minutes_to_close"] = _wl.get("minutes_to_close")
+                ab.setdefault("rules_primary", _wl.get("rules_primary"))
             # Attach the bot's display config so the
             # question column can be formatted in the bot's
             # native units (K claims vs $ vs ...).

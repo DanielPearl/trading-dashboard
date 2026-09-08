@@ -1087,12 +1087,21 @@ def _render_active_bets_table(out: List[str], bets: List[dict],
         if ig_pill:
             side_cell = side_cell.replace("</td>", f" {ig_pill}</td>", 1)
 
+        # Date for EVERY row — previously assigned only under
+        # sport_style, so a non-sport row silently reused the previous
+        # sport row's date (and CPI's month-only tickers rendered
+        # nothing at all). The countdown fallback covers macro tickers
+        # (user 2026-09-08).
+        date_label = _market_date_label(
+            b.get("ticker"), b.get("rules_primary"),
+            minutes_to_close=b.get("minutes_to_close"))
+        # Same every-row treatment for Event (it had the identical
+        # leak: only assigned under sport_style, so non-sport rows
+        # showed the previous sport row's competition).
+        event_label = _sport_event_label(
+            b.get("rules_primary"), title_text,
+            b.get("_tournament"))
         if sport_style:
-            date_label = _market_date_label(b.get("ticker"),
-                                            b.get("rules_primary"))
-            event_label = _sport_event_label(
-                b.get("rules_primary"), title_text,
-                b.get("_tournament"))
             # Side cell mirrors the sport pages: the team/player we
             # hold on top, opponent beneath. NON-SPORT bots always
             # show the plain bet side (user 2026-08-13: "the value in
