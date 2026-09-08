@@ -464,32 +464,39 @@ bots:
       prediction_period_label: this week
       # Default idiom renders "above 20" (matches Kalshi's "Above 20").
 
-  - key: weather
-    name: Weather Forecast
-    # Daily Kalshi weather contracts across 25 NWS settlement
-    # stations: KXRAIN (one binary per city) plus the KXHIGH*
-    # temperature ladders (one "<K", four 2F buckets, one ">K" —
-    # a clean partition per city per day).
-    #
-    # No trained model. Rain probability IS the NWS
-    # probabilityOfPrecipitation, whose definition (>=0.01in at a
-    # point, trace counted as zero) matches the contract exactly.
-    # Temperature takes its centre from the NWS official daily high
-    # and its width from the median of per-model ensemble spreads —
-    # and stays WATCH-only until a station has fitted bias /
-    # dispersion constants.
-    #
-    # Buys go through the shared kalshi_sdk gates (9pp edge, 30-70c
-    # entry band) at 1 contract = $1 per bet. Routes through
-    # dashboard_type: weather — sport-style two-section layout with
-    # City / Question / Forecast columns.
+  # 2026-09-08 (user): weather split into Rain Forecast + Temperature
+  # Forecast — two cards, one upstream daemon. See dashboard-live.yaml
+  # for the full rationale; each card's ``weather_kind`` scopes the
+  # shared watchlist.json + sim.db to its own ticker family.
+  - key: rain
+    name: Rain Forecast
+    # KXRAIN daily rain binaries. Probability IS the NWS
+    # probabilityOfPrecipitation (>=0.01in at a point, trace = zero —
+    # the contract's own definition).
     dashboard_type: weather
+    weather_kind: rain
     db_path: /root/weather-forecast/data/outputs/sim.db
     decisions_path: /root/weather-forecast/data/decisions.jsonl
     watchlist_json_path: /root/weather-forecast/data/outputs/watchlist.json
     series_ticker: KXRAIN
-    series_prefixes: [KXRAIN, KXHIGH]
-    data_source: "NWS api.weather.gov (forecast + PoP) + Open-Meteo ensembles"
+    series_prefixes: [KXRAIN]
+    data_source: "NWS api.weather.gov probabilityOfPrecipitation"
+    display:
+      chart_period_minutes: 1440
+  - key: temp
+    name: Temperature Forecast
+    # KXHIGH* daily-high ladders (one "<K", four 2F buckets, one ">K").
+    # Centre from the NWS official daily high, width from the median
+    # of per-model ensemble spreads; WATCH-only until a station has
+    # fitted bias / dispersion constants.
+    dashboard_type: weather
+    weather_kind: temp
+    db_path: /root/weather-forecast/data/outputs/sim.db
+    decisions_path: /root/weather-forecast/data/decisions.jsonl
+    watchlist_json_path: /root/weather-forecast/data/outputs/watchlist.json
+    series_ticker: KXHIGHNY
+    series_prefixes: [KXHIGH]
+    data_source: "NWS official daily high + Open-Meteo ensembles"
     display:
       underlying_label: Forecast high
       underlying_unit: "F"

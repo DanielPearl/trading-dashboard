@@ -1844,10 +1844,13 @@ def _render_bet_history_block(out: List[str], history: List[dict],
 # and the temperature ladders WATCH-only pending station calibration.
 # CPI added 2026-09-08 (user) — it now runs on the Cleveland Fed
 # nowcast as its professional reference, same bar as the sport bots.
+# 2026-09-08 (user): the weather card split into two bots — "rain"
+# and "temp" — each with its own watchlist page, filter entry, and
+# Home model card. "weather" kept for back-compat with old URLs.
 BOT_FILTER_KEYS = {
     "mlb", "nba", "wnba", "tennis", "table-tennis", "darts",
-    "world-cup", "billboard", "reality-leaks", "hormuz", "weather",
-    "cpi",
+    "world-cup", "billboard", "reality-leaks", "hormuz",
+    "rain", "temp", "weather", "cpi",
 }
 
 

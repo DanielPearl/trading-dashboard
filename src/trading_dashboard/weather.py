@@ -24,6 +24,23 @@ from typing import Any, Dict, List
 log = logging.getLogger("dashboard.weather")
 
 
+def kind_of(ticker: str | None) -> str:
+    """Contract family for a weather ticker: KXRAIN* → rain, else temp."""
+    return "rain" if str(ticker or "").startswith("KXRAIN") else "temp"
+
+
+def filter_bets_by_kind(bets: List[Dict[str, Any]],
+                         kind: str | None) -> List[Dict[str, Any]]:
+    """Rows from the SHARED weather sim.db scoped to one card's family.
+
+    The rain and temp cards read the same ledger (one upstream daemon);
+    without this each card would show — and the cross-bot rollup would
+    double-count — the other card's positions."""
+    if not kind:
+        return bets
+    return [b for b in bets if kind_of(b.get("ticker")) == kind]
+
+
 def load_watchlist(path: str | None) -> Dict[str, Any]:
     if not path:
         return {"generated_at": None, "rows": []}
@@ -85,9 +102,13 @@ def closed_positions_for_rollup(sim_state_path: str | None,
     return []
 
 
-def build_standard_watchlist_rows(payload: Dict[str, Any]
+def build_standard_watchlist_rows(payload: Dict[str, Any],
+                                    kind: str | None = None
                                     ) -> List[Dict[str, Any]]:
     """Translate weather rows into the shared watchlist schema.
+
+    ``kind`` ("rain" | "temp") scopes the shared watchlist.json to one
+    card's contract family — the rain / temp split (user 2026-09-08).
 
     Weather-specific fields ride along under ``_``-prefixed keys:
 
@@ -104,6 +125,8 @@ def build_standard_watchlist_rows(payload: Dict[str, Any]
     out: List[Dict[str, Any]] = []
     for r in raw:
         is_rain = r.get("series") == "KXRAIN"
+        if kind and ("rain" if is_rain else "temp") != kind:
+            continue
         out.append({
             "ticker": r.get("ticker") or "",
             "title": r.get("title") or "",
@@ -191,12 +214,20 @@ def enrich_active_bets(bets: List[Dict[str, Any]],
 
 
 def render_models_panel(out: List[str], bot: Dict[str, Any]) -> None:
+    """Models tab body. ``bot["weather_kind"]`` scopes the page to the
+    rain or temperature card (the 2026-09-08 split); None renders the
+    legacy combined page."""
     payload = load_watchlist(bot.get("watchlist_json_path"))
-    rows = payload.get("rows") or []
+    kind = bot.get("weather_kind")
+    rows = [r for r in (payload.get("rows") or [])
+            if not kind
+            or ("rain" if r.get("series") == "KXRAIN" else "temp") == kind]
     temp_on = payload.get("temp_enabled")
     rain_on = payload.get("rain_enabled")
     calibrated = payload.get("calibrated_stations") or []
     sums = payload.get("ladder_sums") or {}
+    show_rain = kind in (None, "rain")
+    show_temp = kind in (None, "temp")
 
     if payload.get("slate_guard_tripped"):
         out.append(
@@ -206,7 +237,7 @@ def render_models_panel(out: List[str], bot: Dict[str, Any]) -> None:
             "the whole slate, which is the signature of an estimator "
             "offset rather than many independent edges. All entries were "
             "suppressed.</p>")
-    if not temp_on:
+    if show_temp and not temp_on:
         out.append(
             "<p style='color:#8b949e;border:1px solid #30363d;"
             "border-radius:6px;padding:10px 12px;'>Temperature ladders are "
@@ -218,7 +249,7 @@ def render_models_panel(out: List[str], bot: Dict[str, Any]) -> None:
     out.append(
         "<h3 class='subhead' style='margin-top:18px;'>Probability "
         "sources</h3>"
-        "<p class='small gray'>The weather bot has no trained model. "
+        "<p class='small gray'>There is no trained model. "
         "Each contract's probability is read off a published forecast."
         "</p>"
         "<div style='overflow-x:auto;'><table style='width:100%;"
@@ -227,64 +258,69 @@ def render_models_panel(out: List[str], bot: Dict[str, Any]) -> None:
         "<th style='text-align:left;padding:4px 10px;'>Source</th>"
         "<th style='text-align:left;padding:4px 10px;'>How it maps</th>"
         "<th style='text-align:left;padding:4px 0 4px 10px;'>Trading</th>"
-        "</tr></thead><tbody>"
-        "<tr style='border-top:1px solid #21262d;'>"
-        "<td style='padding:5px 10px 5px 0;'><b>KXRAIN</b></td>"
-        "<td class='small' style='padding:5px 10px;'>NWS "
-        "<code>probabilityOfPrecipitation</code></td>"
-        "<td class='small' style='padding:5px 10px;'>Officially "
-        "calibrated P(&ge;0.01in at a point) — the same definition the "
-        "contract settles on, trace counted as zero. The day's two "
-        "12-hour periods are blended into one calendar-day "
-        f"probability (blend={payload.get('pop_blend')}).</td>"
-        f"<td style='padding:5px 0 5px 10px;color:"
-        f"{'#3fb950' if rain_on else '#8b949e'};'>"
-        f"{'ARMED' if rain_on else 'off'}</td></tr>"
-        "<tr style='border-top:1px solid #21262d;'>"
-        "<td style='padding:5px 10px 5px 0;'><b>KXHIGH*</b></td>"
-        "<td class='small' style='padding:5px 10px;'>NWS official daily "
-        "high + Open-Meteo ensemble spread</td>"
-        "<td class='small' style='padding:5px 10px;'>Centre from the "
-        "NWS forecast, width from the <i>median of per-model</i> member "
-        "spreads (never pooled — pooling four models inflates sigma "
-        "~1.5&times; because inter-model bias is not forecast "
-        "uncertainty). Integer-rounded strikes.</td>"
-        f"<td style='padding:5px 0 5px 10px;color:"
-        f"{'#3fb950' if temp_on else '#8b949e'};'>"
-        f"{'ARMED' if temp_on else 'WATCH-only'}</td></tr>"
-        "</tbody></table></div>")
+        "</tr></thead><tbody>")
+    if show_rain:
+        out.append(
+            "<tr style='border-top:1px solid #21262d;'>"
+            "<td style='padding:5px 10px 5px 0;'><b>KXRAIN</b></td>"
+            "<td class='small' style='padding:5px 10px;'>NWS "
+            "<code>probabilityOfPrecipitation</code></td>"
+            "<td class='small' style='padding:5px 10px;'>Officially "
+            "calibrated P(&ge;0.01in at a point) — the same definition the "
+            "contract settles on, trace counted as zero. The day's two "
+            "12-hour periods are blended into one calendar-day "
+            f"probability (blend={payload.get('pop_blend')}).</td>"
+            f"<td style='padding:5px 0 5px 10px;color:"
+            f"{'#3fb950' if rain_on else '#8b949e'};'>"
+            f"{'ARMED' if rain_on else 'off'}</td></tr>")
+    if show_temp:
+        out.append(
+            "<tr style='border-top:1px solid #21262d;'>"
+            "<td style='padding:5px 10px 5px 0;'><b>KXHIGH*</b></td>"
+            "<td class='small' style='padding:5px 10px;'>NWS official daily "
+            "high + Open-Meteo ensemble spread</td>"
+            "<td class='small' style='padding:5px 10px;'>Centre from the "
+            "NWS forecast, width from the <i>median of per-model</i> member "
+            "spreads (never pooled — pooling four models inflates sigma "
+            "~1.5&times; because inter-model bias is not forecast "
+            "uncertainty). Integer-rounded strikes.</td>"
+            f"<td style='padding:5px 0 5px 10px;color:"
+            f"{'#3fb950' if temp_on else '#8b949e'};'>"
+            f"{'ARMED' if temp_on else 'WATCH-only'}</td></tr>")
+    out.append("</tbody></table></div>")
 
-    off = {k: v for k, v in sums.items() if abs(float(v) - 1.0) > 0.02}
-    out.append(
-        "<h3 class='subhead' style='margin-top:18px;'>Ladder partition "
-        "check</h3>"
-        "<p class='small gray'>Each temperature ladder is a clean "
-        "partition (one &lt;K, four 2&deg;F buckets, one &gt;K). Model "
-        "probabilities across a ladder must sum to 1.00 — a ladder that "
-        "doesn't is mis-parsed or missing a leg and its rows should not "
-        f"be trusted. <b>{len(sums)}</b> ladders checked, "
-        f"<b style='color:{'#3fb950' if not off else '#f85149'};'>"
-        f"{len(off)}</b> off-partition.</p>")
-    if off:
-        out.append("<p class='small' style='color:#f85149;'>" +
-                   html.escape(", ".join(f"{k}={v:.3f}"
-                                          for k, v in list(off.items())[:8]))
-                   + "</p>")
+    if show_temp:
+        off = {k: v for k, v in sums.items() if abs(float(v) - 1.0) > 0.02}
+        out.append(
+            "<h3 class='subhead' style='margin-top:18px;'>Ladder partition "
+            "check</h3>"
+            "<p class='small gray'>Each temperature ladder is a clean "
+            "partition (one &lt;K, four 2&deg;F buckets, one &gt;K). Model "
+            "probabilities across a ladder must sum to 1.00 — a ladder that "
+            "doesn't is mis-parsed or missing a leg and its rows should not "
+            f"be trusted. <b>{len(sums)}</b> ladders checked, "
+            f"<b style='color:{'#3fb950' if not off else '#f85149'};'>"
+            f"{len(off)}</b> off-partition.</p>")
+        if off:
+            out.append("<p class='small' style='color:#f85149;'>" +
+                       html.escape(", ".join(f"{k}={v:.3f}"
+                                              for k, v in list(off.items())[:8]))
+                       + "</p>")
 
-    out.append(
-        "<h3 class='subhead' style='margin-top:18px;'>Station "
-        "calibration</h3>"
-        f"<p class='small gray'><b>{len(calibrated)}</b> of "
-        f"<b>{payload.get('stations', 0)}</b> settlement stations have "
-        "fitted bias / dispersion constants (30 observed settlements "
-        "required). Until a station is calibrated its temperature "
-        "contracts stay WATCH-only. Kalshi settles on The Weather "
-        "Company's published value, which nobody archives — the bot "
-        "logs every station-day so the constants can be fitted from "
-        "data that would otherwise be lost.</p>")
-    if calibrated:
-        out.append("<p class='small gray'>Calibrated: " +
-                   html.escape(", ".join(calibrated)) + "</p>")
+        out.append(
+            "<h3 class='subhead' style='margin-top:18px;'>Station "
+            "calibration</h3>"
+            f"<p class='small gray'><b>{len(calibrated)}</b> of "
+            f"<b>{payload.get('stations', 0)}</b> settlement stations have "
+            "fitted bias / dispersion constants (30 observed settlements "
+            "required). Until a station is calibrated its temperature "
+            "contracts stay WATCH-only. Kalshi settles on The Weather "
+            "Company's published value, which nobody archives — the bot "
+            "logs every station-day so the constants can be fitted from "
+            "data that would otherwise be lost.</p>")
+        if calibrated:
+            out.append("<p class='small gray'>Calibrated: " +
+                       html.escape(", ".join(calibrated)) + "</p>")
 
     gen = payload.get("generated_at")
     if gen:

@@ -280,7 +280,11 @@ def _compute_cross_bot_rollup(bots: List[dict], *, period_days: int | None,
                     # Entry-time model/market probs ride in
                     # decision_json — without this the Home table's
                     # Model entry % rendered blank (2026-09-06).
+                    # Rain / temp cards share one sim.db — scope to the
+                    # card's family (2026-09-08 split).
                     from . import weather as _weather
+                    _bb_bets = _weather.filter_bets_by_kind(
+                        _bb_bets, b.get("weather_kind"))
                     _weather.enrich_active_bets(
                         _bb_bets, b.get("watchlist_json_path"))
                 for ab in _bb_bets:
@@ -320,6 +324,10 @@ def _compute_cross_bot_rollup(bots: List[dict], *, period_days: int | None,
                                             "weather"):
                 closed_iter = fetch_bet_history(
                     b["db_path"], limit=10_000)
+                if b.get("weather_kind"):
+                    from . import weather as _weather
+                    closed_iter = _weather.filter_bets_by_kind(
+                        list(closed_iter), b.get("weather_kind"))
             elif b.get("dashboard_type") == "sport":
                 closed_iter = list(
                     adapter.closed_positions_for_rollup(
@@ -732,16 +740,22 @@ class Handler(BaseHTTPRequestHandler):
                     # columns on _-prefixed keys), paper positions from
                     # the standard sim.db readers, model None.
                     from . import weather as _weather
+                    _wk = bot.get("weather_kind")
                     payload_wl = _weather.load_watchlist(
                         bot.get("watchlist_json_path"))
                     watchlist = _weather.build_standard_watchlist_rows(
-                        payload_wl)
-                    bot_active_bets = fetch_active_bets_with_marks(db_path)
+                        payload_wl, kind=_wk)
+                    bot_active_bets = _weather.filter_bets_by_kind(
+                        fetch_active_bets_with_marks(db_path), _wk)
                     _weather.enrich_active_bets(
                         bot_active_bets, bot.get("watchlist_json_path"))
                     for ab in bot_active_bets:
                         ab.setdefault("_display", bot.get("display") or {})
                     latest_active = fetch_latest_open_position(db_path)
+                    if (_wk and latest_active
+                            and _weather.kind_of(
+                                latest_active.get("ticker")) != _wk):
+                        latest_active = None
                     model = None
                 elif bot.get("dashboard_type") == "reality":
                     # Reality-leaks mirrors the billboard pattern:
@@ -1476,6 +1490,7 @@ def main(argv: list[str] | None = None) -> int:
             "training_db_path": b.training_db_path,
             "series_ticker": b.series_ticker,
             "series_prefixes": list(b.series_prefixes or []),
+            "weather_kind": b.weather_kind,
             "seasons": [
                 {"name": s.name, "start": s.start, "end": s.end}
                 for s in (b.seasons or [])

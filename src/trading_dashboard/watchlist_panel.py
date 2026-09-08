@@ -423,7 +423,9 @@ def _render_watchlist(out: List[str], watchlist: List[dict],
     # temperature buckets). Same two-section layout as hormuz — it is
     # a ladder, not a matchup — with City / Question / Forecast
     # columns instead of the sport Side cell.
-    is_weather_bot = current_bot == "weather"
+    # "rain" / "temp" are the 2026-09-08 split of the single weather
+    # card — same adapter, same layout, kind-scoped rows.
+    is_weather_bot = current_bot in ("weather", "rain", "temp")
     # Hormuz (user 2026-07-22): same two-section layout as the sport
     # bots — Active bets · Model vs market, NO hero chart / prediction
     # cards — with the generic Title | Question columns instead of the
@@ -1461,12 +1463,25 @@ def _render_watchlist(out: List[str], watchlist: List[dict],
                 "<th>Verdict</th>"
                 f"{pos_head}"
             )
+        # Weather Active bets (user 2026-09-08: "more like the active
+        # bets in tennis — for side, it should be yes or no"): the
+        # Question column becomes a Side column carrying the held
+        # YES / NO, mirroring the tennis Title+Side layout.
+        _head_cols_eff = head_cols
+        if is_weather_bot and is_active:
+            _head_cols_eff = (
+                "<th title='Settlement city — the NWS station whose "
+                "official reading resolves this contract.'>Location</th>"
+                "<th title='Kalshi-published contract title — the "
+                "YES question shown on the market page.'>Title</th>"
+                "<th title='Which side of the contract we hold.'>Side</th>"
+            )
         out.append("<div class='watchlist-scroll'>"
                    "<table><thead><tr>"
                    "<th title='Kalshi resolution rule for this contract — click to read.'>Rules</th>"
                    f"{date_head}"
                    f"{event_head}"
-                   f"{head_cols}"
+                   f"{_head_cols_eff}"
                    f"{header_middle}"
                    f"</tr></thead><tbody id='{html.escape(_tbody_id)}'>")
         for v in _rows_to_emit:
@@ -1974,13 +1989,34 @@ def _render_watchlist(out: List[str], watchlist: List[dict],
                     f"{statement_cell}"
                 )
             elif is_weather_bot:
-                middle_cells = (
-                    f"<td><strong>"
-                    f"{html.escape(str(v.get('_city') or ''))}"
-                    f"</strong></td>"
-                    f"<td>{title_link}</td>"
-                    f"<td>{html.escape(qstr)}</td>"
-                )
+                if is_active:
+                    # Side = the held YES / NO, tennis-style (user
+                    # 2026-09-08). The ledger row's ``side`` field is
+                    # the source of truth.
+                    _hb = held_by_ticker.get(ticker) or {}
+                    _side = str(_hb.get("side") or "").upper()
+                    _side_color = ("#3fb950" if _side == "YES"
+                                    else "#f85149" if _side == "NO"
+                                    else "#8b949e")
+                    _side_cell = (
+                        f"<td style='color:{_side_color};font-weight:600;"
+                        f"white-space:nowrap;'>"
+                        f"{html.escape(_side or '—')}</td>")
+                    middle_cells = (
+                        f"<td><strong>"
+                        f"{html.escape(str(v.get('_city') or ''))}"
+                        f"</strong></td>"
+                        f"<td>{title_link}</td>"
+                        f"{_side_cell}"
+                    )
+                else:
+                    middle_cells = (
+                        f"<td><strong>"
+                        f"{html.escape(str(v.get('_city') or ''))}"
+                        f"</strong></td>"
+                        f"<td>{title_link}</td>"
+                        f"<td>{html.escape(qstr)}</td>"
+                    )
             else:
                 middle_cells = (
                     f"<td>{title_link}</td>"

@@ -357,24 +357,42 @@ bots:
       chart_period_minutes: 1440
       prediction_period_label: this week
 
-  - key: weather
-    name: Weather Forecast
-    # Daily Kalshi weather contracts across 25 NWS settlement stations:
-    # KXRAIN (one binary per city) plus the KXHIGH* temperature ladders.
-    # No trained model — probabilities are read off published NWS /
-    # ensemble forecasts each tick.
-    #
-    # LIVE ledger is outputs-live/, fully isolated from the sim
-    # service's outputs/. Both services can run the same repo
-    # simultaneously: the sim daemon has no ``live:`` block, which
-    # forces paper mode upstream regardless of the repo's own config.
+  # 2026-09-08 (user): the single Weather Forecast card split into two
+  # bots — Rain Forecast + Temperature Forecast — each with its own
+  # watchlist page, contracts-filter entry, and Home model card /
+  # toggle. ONE upstream daemon still runs both families (see
+  # weather_trader below); each card's ``weather_kind`` scopes the
+  # shared watchlist.json + sim.db to its own tickers, and its Home
+  # toggle gates only its own family's entries.
+  - key: rain
+    name: Rain Forecast
+    # KXRAIN daily rain binaries across 25 NWS settlement stations.
+    # No trained model — the probability IS the NWS PoP (officially
+    # calibrated, same definition the contract settles on).
+    # LIVE ledger is outputs-live/, isolated from the sim service's.
     dashboard_type: weather
+    weather_kind: rain
     db_path: /root/weather-forecast/data/outputs-live/sim.db
     decisions_path: /root/weather-forecast/data/decisions-live.jsonl
     watchlist_json_path: /root/weather-forecast/data/outputs-live/watchlist.json
     series_ticker: KXRAIN
-    series_prefixes: [KXRAIN, KXHIGH]
-    data_source: "NWS api.weather.gov (forecast + PoP) + Open-Meteo ensembles"
+    series_prefixes: [KXRAIN]
+    data_source: "NWS api.weather.gov probabilityOfPrecipitation"
+    display:
+      chart_period_minutes: 1440
+  - key: temp
+    name: Temperature Forecast
+    # KXHIGH* daily-high temperature ladders. Probability = NWS
+    # official high + Open-Meteo ensemble spread; WATCH-only until a
+    # station has fitted calibration constants (30 observed settles).
+    dashboard_type: weather
+    weather_kind: temp
+    db_path: /root/weather-forecast/data/outputs-live/sim.db
+    decisions_path: /root/weather-forecast/data/decisions-live.jsonl
+    watchlist_json_path: /root/weather-forecast/data/outputs-live/watchlist.json
+    series_ticker: KXHIGHNY
+    series_prefixes: [KXHIGH]
+    data_source: "NWS official daily high + Open-Meteo ensembles"
     display:
       underlying_label: Forecast high
       underlying_unit: "F"

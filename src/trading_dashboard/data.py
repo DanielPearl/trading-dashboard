@@ -229,13 +229,22 @@ def resolve_bot_thresholds(
     )
 
 
-def fetch_summary(db_path: str, period_days: int | None = None) -> dict:
+def fetch_summary(db_path: str, period_days: int | None = None,
+                   ticker_prefix: str | None = None,
+                   exclude_ticker_prefix: str | None = None) -> dict:
     """Lifetime + recent stats used by the Summary section.
 
     ``period_days`` filters the period-scoped fields (period_bets_made,
     period_net_pnl_cents, period_wins, period_losses) to bets that
     opened (for bets_made) or closed (for P&L/wins/losses) within the
     last N days. None → lifetime.
+
+    ``ticker_prefix`` / ``exclude_ticker_prefix`` scope every stat to a
+    ticker family — used by the rain / temp cards, which share one
+    weather sim.db (2026-09-08 split). Implemented by shadowing the
+    ``positions`` and ``trades`` table names with filtered CTEs so the
+    query bodies below stay untouched. Internal constants only, never
+    user input.
     """
     empty = {
         "total_bets": 0, "open_count": 0, "exposure_cents": 0,
@@ -255,8 +264,27 @@ def fetch_summary(db_path: str, period_days: int | None = None) -> dict:
     }
     if not Path(db_path).exists():
         return empty
+    _cte = ""
+    if ticker_prefix or exclude_ticker_prefix:
+        _pfx = "".join(ch for ch in (ticker_prefix or exclude_ticker_prefix)
+                        if ch.isalnum())
+        _op = "LIKE" if ticker_prefix else "NOT LIKE"
+        _cte = (f"WITH positions AS (SELECT * FROM main.positions "
+                f"WHERE ticker {_op} '{_pfx}%'), "
+                f"trades AS (SELECT * FROM main.trades "
+                f"WHERE ticker {_op} '{_pfx}%') ")
+
+    class _ScopedConn:
+        """Prefixes every query with the shadowing CTE."""
+        def __init__(self, conn):
+            self._conn = conn
+        def execute(self, sql, params=()):
+            return self._conn.execute(_cte + sql, params)
+        def close(self):
+            self._conn.close()
+
     try:
-        with closing(_conn(db_path)) as c:
+        with closing(_ScopedConn(_conn(db_path))) as c:
             total = c.execute(
                 "SELECT COUNT(*) n FROM positions"
             ).fetchone()
@@ -1220,7 +1248,15 @@ def fetch_global_summary(bots: List[dict],
             # bots use works here too. The legacy
             # `_billboard.summary_for_rollup` always returned zeros
             # (advisory-only era).
-            s = fetch_summary(b["db_path"], period_days=period_days)
+            # The rain and temp cards share one weather sim.db — scope
+            # each to its ticker family or the rollup double-counts
+            # (2026-09-08 split).
+            _wk = b.get("weather_kind")
+            s = fetch_summary(
+                b["db_path"], period_days=period_days,
+                ticker_prefix=("KXRAIN" if _wk == "rain" else None),
+                exclude_ticker_prefix=("KXRAIN" if _wk == "temp" else None),
+            )
         elif b.get("dashboard_type") and b["dashboard_type"] != "standard":
             continue
         else:

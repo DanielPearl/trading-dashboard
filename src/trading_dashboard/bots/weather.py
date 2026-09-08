@@ -21,7 +21,14 @@ from .. import bot_state
 
 log = logging.getLogger("dashboard.weather-bot")
 
-BOT_KEY = "weather"
+# 2026-09-08 (user): the dashboard shows weather as TWO bots — "rain"
+# and "temp" — each with its own Home-tab toggle. One upstream daemon
+# still runs everything; each tick ANDs the per-kind toggle into the
+# upstream's own rain_enabled / temp_enabled trading flags, so pausing
+# the rain card stops rain entries without touching temperature (and
+# vice versa). Both toggles off → the tick is skipped entirely.
+RAIN_KEY = "rain"
+TEMP_KEY = "temp"
 
 
 def _load_upstream(repo_path: str):
@@ -86,13 +93,27 @@ def start_daemon(cfg: dict) -> Any:
                         "when the Home toggle is on (ledger: %s)",
                         bot_cfg.paths.sim_db)
         log.info("weather-bot upstream loaded; entering tick loop")
+        # The upstream config's own flags are the CEILING — a Home
+        # toggle can pause a family but never arm one the repo config
+        # keeps off (temp stays WATCH-only until calibration).
+        base_rain = bool(bot_cfg.trading.rain_enabled)
+        base_temp = bool(bot_cfg.trading.temp_enabled)
         while True:
             try:
-                if bot_state.is_bot_enabled(BOT_KEY):
+                rain_on = bot_state.is_bot_enabled(RAIN_KEY)
+                temp_on = bot_state.is_bot_enabled(TEMP_KEY)
+                if rain_on or temp_on:
+                    bot_cfg.trading.rain_enabled = base_rain and rain_on
+                    bot_cfg.trading.temp_enabled = base_temp and temp_on
                     json_path, _db_path = export(bot_cfg)
-                    log.info("weather tick (%s) — wrote %s", mode, json_path)
+                    log.info("weather tick (%s, rain=%s temp=%s) — wrote %s",
+                             mode,
+                             "on" if bot_cfg.trading.rain_enabled else "off",
+                             "on" if bot_cfg.trading.temp_enabled else "off",
+                             json_path)
                 else:
-                    log.info("weather tick skipped — paused on dashboard")
+                    log.info("weather tick skipped — both rain and temp "
+                             "paused on dashboard")
             except Exception:  # noqa: BLE001
                 log.exception("weather-bot tick failed")
             time.sleep(max(60, interval))

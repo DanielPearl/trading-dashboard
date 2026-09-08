@@ -126,6 +126,11 @@ class BotEntry:
     # Hot 100 weekly chart"). Falls through from config; render code
     # reads it via ``bot.get("data_source")``.
     data_source: str | None = None
+    # Weather split (user 2026-09-08): the weather repo is one daemon
+    # but two dashboard bots — "rain" and "temp". Each card sets this
+    # to filter the shared watchlist.json / sim.db down to its own
+    # contract family. None → the card shows everything (legacy).
+    weather_kind: str | None = None
     display: DisplayCfg = field(default_factory=DisplayCfg)
     # Zero or more season / tournament windows. Empty list → bot is
     # omitted from the Seasons tab. Sport bots typically list multiple

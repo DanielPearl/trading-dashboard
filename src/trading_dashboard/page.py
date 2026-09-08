@@ -819,7 +819,7 @@ def _live_update_script(current_bot: str, period_key: str = "all") -> str:
   // and their active-pane rows can render side-flipped, which a
   // YES-axis patch would silently un-flip.
   const MODEL_IS_REF = ["hormuz", "billboard", "reality-leaks",
-                        "weather"].indexOf(BOT) !== -1;
+                        "weather", "rain", "temp"].indexOf(BOT) !== -1;
 
   // Format helpers — must mirror the server-side rendering in render_page.
   function fmtSignedCents(c) {{
