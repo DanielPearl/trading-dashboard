@@ -603,7 +603,10 @@ nba_trader:
   repo_path: /root/nba
   interval_seconds: 120
   live:
-    dry_run: true
+    # ARMED 2026-09-08 per user ("make it live trade") — real $1 IOC
+    # orders across every basketball series when the Home toggle is on
+    # and a row clears the shared gates (9pp edge, 30-70c band).
+    dry_run: false
     sim_state_path: /root/nba/data/outputs-live/sim_state.json
     max_open_positions: 10   # raised 6 → 10 (hard cap) for $1-stake testing
     # Backstop only — the real limit is max_open_positions
