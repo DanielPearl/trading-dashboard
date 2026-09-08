@@ -353,6 +353,35 @@ def gate_bot_tick(bot: object, bot_key: str, log: logging.Logger) -> None:
     _orig_tick = bot.tick  # type: ignore[attr-defined]
 
     def _gated_tick(*args, **kwargs):
+        # Paused + the bot exposes a dry_run switch → run the tick in
+        # forced-paper mode instead of skipping it entirely. The
+        # watchlist / Model-vs-market pane then fills with priced rows
+        # while the toggle stays the ONLY thing standing between the
+        # bot and real orders (2026-09-08: the PCE pane rendered
+        # nothing at all until armed, which read as a broken bot).
+        _exec_cfg = getattr(getattr(bot, "cfg", None), "execution", None)
+        if (not bot_state.is_bot_enabled(bot_key)
+                and _exec_cfg is not None
+                and hasattr(_exec_cfg, "dry_run")):
+            _was = _exec_cfg.dry_run
+            _exec_cfg.dry_run = True
+            # No NEW ledger entries while paused either — a paused
+            # tick prices the board (market_views → the pane) but a
+            # paper position written into the LIVE ledger would sit
+            # beside real fills and lie. Existing positions still
+            # mark/settle.
+            _sim = getattr(bot, "simulator", None)
+            _orig_open = getattr(_sim, "open_position", None)
+            if _sim is not None and _orig_open is not None:
+                _sim.open_position = lambda *a, **k: None
+            try:
+                log.info("%s tick in PAPER mode — paused on dashboard, "
+                         "pricing only (no orders, no entries)", bot_key)
+                return _orig_tick(*args, **kwargs)
+            finally:
+                _exec_cfg.dry_run = _was
+                if _sim is not None and _orig_open is not None:
+                    _sim.open_position = _orig_open
         if not bot_state.is_bot_enabled(bot_key):
             log.info("%s tick skipped — bot paused on dashboard", bot_key)
             return None
