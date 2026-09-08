@@ -1398,8 +1398,12 @@ def fetch_watchlist(db_path: str) -> List[dict]:
                 ") "
                 "SELECT mv.* FROM market_views mv "
                 "JOIN latest l ON mv.id = l.id "
-                "WHERE mv.model_prob_yes IS NOT NULL "
-                "  AND (mv.yes_ask_cents IS NOT NULL OR mv.no_ask_cents IS NOT NULL) "
+                # NULL model_prob_yes rows pass through: the watchlist
+                # panel's _has_model_pct rule decides visibility (it
+                # hides no-model rows for every bot, except hormuz's
+                # explicit "awaiting PortWatch" publish-gap state, which
+                # must render as a ladder with a blank Model %).
+                "WHERE (mv.yes_ask_cents IS NOT NULL OR mv.no_ask_cents IS NOT NULL) "
                 # Drop rows whose market has already closed in real time.
                 # Project minutes_to_close forward by the elapsed time
                 # since this row was recorded; positive => still open.
