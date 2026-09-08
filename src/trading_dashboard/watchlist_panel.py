@@ -714,6 +714,17 @@ def _render_watchlist(out: List[str], watchlist: List[dict],
         v["_be_no"] = be_no
         v["_best_side"] = best_side
         v["_best_ev"] = best_ev
+        # Raw reference-vs-price edge on the better side (before
+        # spread/fee) — drives the Model-vs-market row ordering
+        # (user 2026-09-08: "order model vs market based on the edge").
+        _edge_yes = (p_yes_blend - be_yes
+                     if p_yes_blend is not None and be_yes is not None
+                     else None)
+        _edge_no = ((1.0 - p_yes_blend) - be_no
+                    if p_yes_blend is not None and be_no is not None
+                    else None)
+        _edges = [e for e in (_edge_yes, _edge_no) if e is not None]
+        v["_best_edge"] = max(_edges) if _edges else None
 
     for v in watchlist:
         _stamp_row_ev(v)
@@ -1228,6 +1239,13 @@ def _render_watchlist(out: List[str], watchlist: List[dict],
                     and _srb not in _mvm_tickers):
                 _open_rows.append(_sr)
                 _mvm_tickers.add(_srt)
+        # Final Model-vs-market ordering (user 2026-09-08): bought
+        # rows first, then best edge descending — supersedes the
+        # per-bot pre-sorts above for this pane.
+        _open_rows.sort(key=lambda r: (
+            0 if r.get("ticker") in held_by_ticker else 1,
+            -(r.get("_best_edge") if r.get("_best_edge") is not None
+              else -9.9)))
         section_ctxs = [
             {
                 "kind": "active",
@@ -1255,13 +1273,20 @@ def _render_watchlist(out: List[str], watchlist: List[dict],
         # and offers nothing to compare. Held rows stay visible.
         section_ctxs = [{
             "kind": "single",
-            "rows": [r for r in watchlist
-                     if not _is_settled(r)
-                     and (r.get("model_prob_yes") is not None
-                          or r.get("ticker") in held_by_ticker)
-                     and (r.get("_skip_oi_filter")
-                          or (r.get("open_interest") or 0) > 0
-                          or r.get("ticker") in held_by_ticker)],
+            "rows": sorted(
+                [r for r in watchlist
+                 if not _is_settled(r)
+                 and (r.get("model_prob_yes") is not None
+                      or r.get("ticker") in held_by_ticker)
+                 and (r.get("_skip_oi_filter")
+                      or (r.get("open_interest") or 0) > 0
+                      or r.get("ticker") in held_by_ticker)],
+                # Bought first, then best edge descending (user
+                # 2026-09-08) — same ordering as the sectioned panes.
+                key=lambda r: (
+                    0 if r.get("ticker") in held_by_ticker else 1,
+                    -(r.get("_best_edge")
+                      if r.get("_best_edge") is not None else -9.9))),
             "include_position_cols": True,
             "tbody_id": "watchlist-tbody",
             "empty_msg": "No open markets right now.",
