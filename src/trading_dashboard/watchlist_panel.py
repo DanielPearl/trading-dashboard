@@ -429,6 +429,11 @@ def _render_watchlist(out: List[str], watchlist: List[dict],
     # cards — with the generic Title | Question columns instead of the
     # sport Side/player cell (it's a strike ladder, not a matchup).
     is_hormuz_bot = current_bot == "hormuz"
+    # CPI (user 2026-09-08: "we don't want the line graphic or the
+    # summary blocks") — hormuz-style two-section layout, no hero
+    # chart / prediction cards. Model % is the Cleveland Fed nowcast
+    # probability the bot exports as model_prob_yes.
+    is_cpi_bot = current_bot == "cpi"
     # Billboard uses the sport-style two-section layout (Active bets ·
     # Model vs market, no hero chart, no position columns on the
     # Model-vs-market table) but keeps its own columns / sort — user
@@ -436,7 +441,7 @@ def _render_watchlist(out: List[str], watchlist: List[dict],
     # follows the same layout with its own Show / Contestant / Leak
     # columns.
     use_sections = (is_sport_bot or is_billboard_bot or is_reality_bot
-                    or is_hormuz_bot or is_weather_bot)
+                    or is_hormuz_bot or is_weather_bot or is_cpi_bot)
     if not use_sections:
         out.append("<div class='section'><h2>"
                    "Watchlist — model vs market</h2>"
@@ -1055,7 +1060,7 @@ def _render_watchlist(out: List[str], watchlist: List[dict],
         # until a sharp line exists.
         _model_from_internal = (
             is_billboard_bot or is_reality_bot or is_hormuz_bot
-            or is_weather_bot
+            or is_weather_bot or is_cpi_bot
             or current_bot in {"darts", "table-tennis"})
 
         def _has_model_pct(r: dict) -> bool:
@@ -1563,6 +1568,7 @@ def _render_watchlist(out: List[str], watchlist: List[dict],
             # tennis). Scoped to is_active so Model-vs-market keeps its
             # Kalshi-truth-only HOLDING rule on sim.
             if held_bet is None and (is_hormuz_bot or is_weather_bot
+                                      or is_cpi_bot
                                       or (is_active and mode != "live")):
                 _pb = held_by_ticker.get(ticker)
                 if _pb:
@@ -1980,7 +1986,7 @@ def _render_watchlist(out: List[str], watchlist: List[dict],
             # internal 0.5833 default read as a wrong "58%").
             _no_benchmark_feed = current_bot in {"darts", "table-tennis"}
             if (is_active or is_billboard_bot or is_reality_bot
-                    or is_hormuz_bot or is_weather_bot
+                    or is_hormuz_bot or is_weather_bot or is_cpi_bot
                     or _no_benchmark_feed) and pinn_p is None:
                 # Billboard has no external benchmark book — the bot's
                 # own P(#1) is the Model % on every pane. Reality-leaks
