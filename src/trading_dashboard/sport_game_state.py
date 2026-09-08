@@ -41,7 +41,7 @@ log = logging.getLogger("dashboard.sport_game_state")
 # are 12 game-minutes (~30 wall-minutes); tennis sets take longer to
 # settle into "predictive" patterns, so we wait further into a set.
 DEFAULT_BUFFER_MINUTES: Dict[str, int] = {
-    "nba": 10,
+    "basketball": 10,
     "tennis": 15,
     "table-tennis": 8,
     "darts": 10,
@@ -130,7 +130,10 @@ def _nba_game_state(ticker: str) -> Tuple[bool, str]:
     teams = _nba_team_codes_from_ticker(ticker)
     if not teams:
         return (False, "could not parse team codes from ticker")
-    data = _fetch_espn("basketball/nba")
+    # Merged basketball bot: the ticker names the league.
+    _espn_path = ("basketball/wnba" if ticker.startswith("KXWNBAGAME")
+                   else "basketball/nba")
+    data = _fetch_espn(_espn_path)
     if not data:
         return (False, "ESPN unreachable; defaulting to not-live")
     a_upper = teams[0].upper()
@@ -198,7 +201,7 @@ def is_hedge_allowed(bot: Dict[str, Any], ticker: Optional[str],
         return (True, "non-sport bot")
     if not ticker:
         return (True, "no ticker; default-allow")
-    if bot_key == "nba":
+    if bot_key == "basketball":
         live, reason = _nba_game_state(ticker)
     elif dashboard_type == "tennis":
         live, reason = _tennis_match_state(

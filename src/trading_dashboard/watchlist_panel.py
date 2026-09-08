@@ -415,7 +415,7 @@ def _render_watchlist(out: List[str], watchlist: List[dict],
     # Model vs market · Kalshi rules — the third comes from
     # ``_render_contract_rules`` after this function returns). Non-
     # sport bots keep the legacy single-section layout.
-    is_sport_bot = current_bot in {"nba", "wnba", "tennis", "table-tennis",
+    is_sport_bot = current_bot in {"basketball", "tennis", "table-tennis",
                                     "darts", "world-cup", "mlb"}
     is_billboard_bot = current_bot == "billboard"
     is_reality_bot = current_bot == "reality-leaks"

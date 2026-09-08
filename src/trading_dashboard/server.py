@@ -836,7 +836,7 @@ class Handler(BaseHTTPRequestHandler):
                     # slate from the watchlist; flag those bots so the
                     # client returns every market with a future close.
                     all_open_events = bot.get("key") in {
-                        "nba", "wnba", "tennis", "table-tennis", "darts",
+                        "basketball", "tennis", "table-tennis", "darts",
                         "world-cup", "mlb",
                     }
                     try:

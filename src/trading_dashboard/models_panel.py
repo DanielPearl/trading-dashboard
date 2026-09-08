@@ -1858,7 +1858,7 @@ def _render_ingame_model_view(out: List[str], bot: dict,
     bot_key = bot.get("key", "")
     name = bot.get("name", bot_key)
     SPORT_DESC = {
-        "nba": (
+        "basketball": (
             "Live game state pulled from ESPN's public scoreboard "
             "every 30 seconds. Win probability derived from the "
             "canonical basketball logistic on lead / √(seconds "
@@ -2044,7 +2044,7 @@ def _render_ingame_model_view(out: List[str], bot: dict,
 
     # ── Section 3: features the model uses ──────────────────────────
     SPORT_FEATURES = {
-        "nba": [
+        "basketball": [
             ("Score differential", "Live", "ESPN scoreboard"),
             ("Time remaining", "Live", "ESPN scoreboard (period + clock)"),
             ("Market velocity", "Live", "market_views history (cents/min)"),
@@ -2176,7 +2176,7 @@ def _render_ingame_model_view(out: List[str], bot: dict,
 #                  hand-set as a placeholder
 # ──────────────────────────────────────────────────────────────────
 _INGAME_COEFFICIENTS: Dict[str, List[tuple]] = {
-    "nba": [
+    "basketball": [
         ("Lead / √(sec remaining) coefficient", 0.045,
          "Logistic weight in win_prob = σ(c · lead / √(time)). "
          "Canonical basketball value (Brian Burke).", "tuned"),
@@ -2679,7 +2679,7 @@ def _render_models_panel(out: List[str], bot: dict, model: dict | None,
     populations.
     """
     bot_key = (bot or {}).get("key", "")
-    is_sport_bot = bot_key in {"nba", "wnba", "tennis", "table-tennis", "darts"}
+    is_sport_bot = bot_key in {"basketball", "tennis", "table-tennis", "darts"}
     # Every model page uses the same section-header layout so the
     # "Model" title and the body content sit at the same vertical
     # position regardless of bot. Sport bots fill the right-hand

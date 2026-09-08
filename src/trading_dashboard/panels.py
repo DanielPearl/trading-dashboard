@@ -1865,7 +1865,7 @@ def _render_bet_history_block(out: List[str], history: List[dict],
 # and "temp" — each with its own watchlist page, filter entry, and
 # Home model card. "weather" kept for back-compat with old URLs.
 BOT_FILTER_KEYS = {
-    "mlb", "nba", "wnba", "tennis", "table-tennis", "darts",
+    "mlb", "basketball", "tennis", "table-tennis", "darts",
     "world-cup", "billboard", "reality-leaks", "hormuz",
     "rain", "temp", "weather", "cpi",
 }
