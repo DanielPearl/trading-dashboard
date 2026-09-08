@@ -281,7 +281,8 @@ def _compute_cross_bot_rollup(bots: List[dict], *, period_days: int | None,
                     # decision_json — without this the Home table's
                     # Model entry % rendered blank (2026-09-06).
                     from . import weather as _weather
-                    _weather.enrich_active_bets(_bb_bets)
+                    _weather.enrich_active_bets(
+                        _bb_bets, b.get("watchlist_json_path"))
                 for ab in _bb_bets:
                     if not _keep_on_kalshi(ab):
                         continue
@@ -706,7 +707,8 @@ class Handler(BaseHTTPRequestHandler):
                     watchlist = _weather.build_standard_watchlist_rows(
                         payload_wl)
                     bot_active_bets = fetch_active_bets_with_marks(db_path)
-                    _weather.enrich_active_bets(bot_active_bets)
+                    _weather.enrich_active_bets(
+                        bot_active_bets, bot.get("watchlist_json_path"))
                     for ab in bot_active_bets:
                         ab.setdefault("_display", bot.get("display") or {})
                     latest_active = fetch_latest_open_position(db_path)

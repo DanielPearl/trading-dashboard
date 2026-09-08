@@ -139,7 +139,8 @@ def build_standard_watchlist_rows(payload: Dict[str, Any]
     return out
 
 
-def enrich_active_bets(bets: List[Dict[str, Any]]) -> None:
+def enrich_active_bets(bets: List[Dict[str, Any]],
+                        watchlist_json_path: str | None = None) -> None:
     """In-place: surface entry-time probabilities from decision_json.
 
     The weather positions table has no model-prob column — the entry
@@ -148,7 +149,19 @@ def enrich_active_bets(bets: List[Dict[str, Any]]) -> None:
     "Model entry %" / "Kalshi entry %" cells on BOTH the per-bot page
     and the Home rollup (2026-09-06: the Home table's Model entry %
     rendered blank because only the page path did this parse).
+
+    When ``watchlist_json_path`` is given, each position also joins its
+    live watchlist row so the Home table's Event cell describes what
+    the contract determines — "Minneapolis · Rain ≥ 0.01″" — and the
+    Title cell carries Kalshi's full question instead of the terse
+    strike fragment the positions table stores (user 2026-09-07).
     """
+    by_ticker: Dict[str, Dict[str, Any]] = {}
+    if watchlist_json_path:
+        for r in (load_watchlist(watchlist_json_path).get("rows") or []):
+            t = r.get("ticker")
+            if t:
+                by_ticker[t] = r
     for ab in bets:
         try:
             dj = json.loads(ab.get("decision_json") or "{}")
@@ -158,6 +171,23 @@ def enrich_active_bets(bets: List[Dict[str, Any]]) -> None:
             ab.setdefault("model_yes_prob_at_entry", dj["model_prob"])
         if dj.get("market_prob") is not None:
             ab.setdefault("kalshi_yes_prob_at_entry", dj["market_prob"])
+        wl = by_ticker.get(str(ab.get("ticker") or ""))
+        tk = str(ab.get("ticker") or "")
+        kind = ("Rain ≥ 0.01″" if tk.startswith("KXRAIN")
+                 else "Daily high temp" if tk.startswith("KXHIGH")
+                 else "")
+        if wl:
+            city = str(wl.get("city") or "").split(",")[0].strip()
+            q = str(wl.get("question") or "") or kind
+            if city:
+                ab["_tournament"] = f"{city} · {q}" if q else city
+            if wl.get("title"):
+                ab["title"] = wl["title"]
+                ab["_title"] = wl["title"]
+        elif kind:
+            # Market already rotated off the watchlist — fall back to
+            # what the ticker itself encodes.
+            ab.setdefault("_tournament", kind)
 
 
 def render_models_panel(out: List[str], bot: Dict[str, Any]) -> None:
