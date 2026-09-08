@@ -1063,16 +1063,15 @@ def _render_watchlist(out: List[str], watchlist: List[dict],
         # Odds-API sports; the bot's own model for bots with no
         # benchmark feed (darts, table-tennis, billboard, reality,
         # hormuz, weather). Held rows stay visible, per 2026-07-20.
-        # table-tennis: benchmark-preferred but NOT benchmark-required
-        # for DISPLAY (user 2026-09-07: "the contracts should be
-        # showing up") — no professional TT source currently quotes,
-        # so rows render the upstream Elo % (tooltip-flagged) and the
-        # live executor's require_pinnacle still blocks real orders
-        # until a sharp line exists.
+        # table-tennis back to benchmark-only 2026-09-08: its internal
+        # Elo model tests at 52.7% accuracy / 0.54 AUC / 0.248 Brier
+        # (a coin scores 50 / 0.50 / 0.250) on data trained through
+        # 2024-12 — user: "if not valid don't show it". Rows render
+        # only when a professional line exists; held rows always stay.
         _model_from_internal = (
             is_billboard_bot or is_reality_bot or is_hormuz_bot
             or is_weather_bot or is_cpi_bot
-            or current_bot in {"darts", "table-tennis"})
+            or current_bot == "darts")
 
         def _has_model_pct(r: dict) -> bool:
             if r.get("pinnacle_prob_yes") is not None:
@@ -2009,7 +2008,7 @@ def _render_watchlist(out: List[str], watchlist: List[dict],
             # fallback on Model-vs-market: rows without a Pinnacle
             # line are filtered out above (user 2026-09-06 — the
             # internal 0.5833 default read as a wrong "58%").
-            _no_benchmark_feed = current_bot in {"darts", "table-tennis"}
+            _no_benchmark_feed = current_bot == "darts"
             if (is_active or is_billboard_bot or is_reality_bot
                     or is_hormuz_bot or is_weather_bot or is_cpi_bot
                     or _no_benchmark_feed) and pinn_p is None:
