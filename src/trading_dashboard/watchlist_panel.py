@@ -2198,7 +2198,9 @@ def _render_watchlist(out: List[str], watchlist: List[dict],
             # single table. Parsed from the ticker's encoded date
             # (rules text as fallback).
             if _show_date_col:
-                _dt = _market_date_label(ticker, v.get("rules_primary"))
+                _dt = _market_date_label(
+                    ticker, v.get("rules_primary"),
+                    minutes_to_close=v.get("minutes_to_close"))
                 date_cell = (
                     f"<td data-field='date'>{html.escape(_dt)}</td>"
                     if _dt else "<td data-field='date'></td>"

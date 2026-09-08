@@ -7,6 +7,7 @@ import math
 import re
 import time
 from datetime import datetime
+from datetime import timedelta
 from datetime import timezone
 from typing import List
 from typing import Tuple
@@ -764,7 +765,8 @@ _RULES_DATE_RE = re.compile(
 )
 
 
-def _market_date_label(ticker: str | None, rules: str | None = None) -> str:
+def _market_date_label(ticker: str | None, rules: str | None = None,
+                        minutes_to_close: float | None = None) -> str:
     """Human date ("Jul 9, 2026") for the watchlist Date column.
     Prefers the ticker's encoded YYMMMDD (parsed with the module's
     ``_TICKER_DATE_RE`` — the same regex the "Closes in" column uses);
@@ -781,6 +783,17 @@ def _market_date_label(ticker: str | None, rules: str | None = None) -> str:
         m = _RULES_DATE_RE.search(rules)
         if m:
             return f"{m.group(1)} {int(m.group(2))}, {m.group(3)}"
+    # Macro tickers (KXCPICORE-26AUG) carry only a month, and their
+    # rules say "in Sep 2026" without a day — but the row's own
+    # countdown lands exactly on the settlement/release date
+    # (user 2026-09-08: "put the date in there").
+    if minutes_to_close is not None:
+        try:
+            close = (datetime.now(timezone.utc)
+                     + timedelta(minutes=float(minutes_to_close)))
+            return f"{close.strftime('%b')} {close.day}, {close.year}"
+        except (TypeError, ValueError, OverflowError):
+            pass
     return ""
 
 
