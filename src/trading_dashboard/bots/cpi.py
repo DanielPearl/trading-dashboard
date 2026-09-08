@@ -48,7 +48,6 @@ def start_daemon(cfg: dict) -> Any:
         _base.resolve_cfg_paths(
             upstream_cfg, repo_path,
             "env.log_path",
-            "model.artifact_path",
             "execution.sim_db_path",
             "execution.decisions_log_path",
         )
