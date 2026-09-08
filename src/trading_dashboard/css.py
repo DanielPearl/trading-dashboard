@@ -1109,7 +1109,7 @@ tr.row-bought td.num.green { color: #56d364 !important; }
     border: 1px solid #21262d; border-radius: 6px;
     padding: 10px 14px; }
 .attribution-panel h3.subhead { margin-top: 0; margin-bottom: 6px; }
-.attribution-panel table { font-size: 12px; }
+.attribution-panel table { font-size: 12px; width: 100%; }
 .attribution-panel th, .attribution-panel td { padding: 6px 8px; }
 /* History tab P&L line chart — sits between the headline cards and
    the ledger table. The wrap is `position: relative` so the empty-

@@ -1475,6 +1475,23 @@ def _render_history_attribution(out: List[str],
         ts = (h.get("exited_at") or "")[:7]  # YYYY-MM
         if ts:
             by_month.setdefault(ts, []).append(h)
+    # Every month from the first trade through the current month
+    # renders, zero-trade months included (user 2026-09-08: "show all
+    # months back when trades started") — same no-gap rule as the
+    # daily chart. A quiet month shows 0 bets / $0.00 rather than
+    # silently vanishing from the table.
+    if by_month:
+        try:
+            first = min(by_month)
+            y, m = int(first[:4]), int(first[5:7])
+            now = datetime.now(timezone.utc)
+            while (y, m) <= (now.year, now.month):
+                by_month.setdefault(f"{y:04d}-{m:02d}", [])
+                m += 1
+                if m > 12:
+                    y, m = y + 1, 1
+        except ValueError:
+            pass
     month_rows = [_row(m, bets) for m, bets in
                   sorted(by_month.items(), reverse=True)]
 
