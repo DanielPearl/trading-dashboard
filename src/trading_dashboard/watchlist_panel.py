@@ -987,7 +987,18 @@ def _render_watchlist(out: List[str], watchlist: List[dict],
         # locked-in favourites pin at 99¢ days before settlement),
         # so the extreme-ask heuristic would blank most of the slate —
         # the completed/expiration checks above still retire rows.
-        if not (is_billboard_bot or is_reality_bot):
+        # …and only within 6 hours of close: a quote pinned at an
+        # extreme with days still to run is a live longshot, not a
+        # settled market (hormuz's weekly T25/T30 tail strikes sit at
+        # no_ask 99-100¢ from Monday on and were vanishing, 2026-09-08).
+        # Settled game/weather rows always have small-or-negative mtc,
+        # so the heuristic still retires them.
+        _mtc_far = False
+        try:
+            _mtc_far = mtc is not None and float(mtc) > 360
+        except (TypeError, ValueError):
+            pass
+        if not (is_billboard_bot or is_reality_bot or _mtc_far):
             # Reality-leaks exempt too: a leaked longshot sitting at a
             # 1–2¢ ask is exactly the row the user needs to see.
             for a in asks:
