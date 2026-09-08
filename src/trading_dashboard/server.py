@@ -363,7 +363,13 @@ def _compute_cross_bot_rollup(bots: List[dict], *, period_days: int | None,
                     _dj = json.loads(ab.get("decision_json") or "{}")
                 except (TypeError, ValueError):
                     _dj = {}
-                _t = ((_wl or {}).get("title") or _dj.get("title"))
+                # Event question first, strike title appended — "CPI
+                # month-over-month in Aug 2026? — Exactly 0.4%" reads
+                # as the full contract; either half alone doesn't.
+                _ev = _dj.get("title") or ""
+                _st = (_wl or {}).get("title") or ""
+                _t = (f"{_ev} — {_st}" if _ev and _st and _st not in _ev
+                       else (_ev or _st))
                 if _t:
                     ab["title"] = _t
                     ab["_title"] = _t
