@@ -278,25 +278,38 @@ def render_models_panel(out: List[str], bot: dict) -> None:
                        " <span style='color:#8b949e;font-weight:400;'>"
                        "(split-gain share; trained on every chokepoint)</span>")
         _coef_col = "Importance"
-    elif _deployed == "persistence":
+    elif _deployed == "blend":
+        _coef_title = ("Deployed model — blend"
+                       " <span style='color:#8b949e;font-weight:400;'>"
+                       "(uniform mean of ridge + persistence + trend "
+                       "extrapolation + pooled GBM; strengths below are "
+                       "the ridge component's standardized "
+                       "coefficients)</span>")
+        _coef_col = "Strength"
+    elif _deployed in ("persistence", "trend_extrap", "ma4"):
         # The card carries the learned ridge candidate's full
-        # standardized coefficients even when persistence deploys
-        # (strengths section, user 2026-09-08) — say whose numbers
-        # these are so the one-input deployed model isn't
+        # standardized coefficients even when a few-input candidate
+        # deploys (strengths section, user 2026-09-08) — say whose
+        # numbers these are so the deployed model isn't
         # misrepresented as a 12-feature regression.
+        _kind_desc = {
+            "persistence": "persistence — last week's peak, verbatim",
+            "trend_extrap": "trend extrapolation — last week's peak "
+                             "plus the 4-week trend",
+            "ma4": "the 4-week moving average of the peak",
+        }[_deployed]
         if len(coefs) > 1:
             _coef_title = ("Feature strengths — learned ridge candidate"
                            " <span style='color:#8b949e;font-weight:400;'>"
-                           "(standardized coefficients; the DEPLOYED "
-                           "forecast is persistence — last week's peak, "
-                           "verbatim — nothing learned beat it on the "
-                           "recent walk-forward)</span>")
+                           f"(standardized coefficients; the DEPLOYED "
+                           f"forecast is {_kind_desc} — it won the recent "
+                           "walk-forward bake-off)</span>")
             _coef_col = "Strength"
         else:
-            _coef_title = ("Deployed model — persistence"
+            _coef_title = (f"Deployed model — {_deployed}"
                            " <span style='color:#8b949e;font-weight:400;'>"
-                           "(last week's peak, verbatim — nothing learned "
-                           "beat it on the recent walk-forward)</span>")
+                           f"({_kind_desc} — won the recent "
+                           "walk-forward)</span>")
             _coef_col = "Weight"
     else:
         _coef_title = ("Deployed model — Ridge coefficients"
@@ -312,8 +325,9 @@ def render_models_panel(out: List[str], bot: dict) -> None:
         pct = abs(c) / max_c * 100.0
         cls = "hz-pos" if c >= 0 else "hz-neg"
         label = str(name)
-        if is_deployed and len(coefs) > 1 and _deployed == "persistence":
-            label += " ★ (the deployed persistence input)"
+        if (is_deployed and len(coefs) > 1
+                and _deployed in ("persistence", "trend_extrap", "ma4")):
+            label += " ★ (a deployed input)"
         out.append(
             f"<tr><td>{html.escape(label)}</td>"
             f"<td class='num'>{c:+.3f}</td>"
