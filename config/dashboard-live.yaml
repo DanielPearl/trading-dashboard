@@ -557,10 +557,17 @@ unemployment_trader:
   repo_path: /root/unemployment-claims
   config_path: /root/unemployment-claims/config/config.yaml
 
+# CPI real-money trader (2026-09-08): the bot now runs on the
+# Cleveland Fed nowcast as its professional reference and gained a
+# live order path (1-contract IOC via kalshi_sdk, bot cap 1 open).
+# Config-armed with the cpi Home-tab toggle OFF — flipping the toggle
+# is what starts real orders, same pattern as MLB. Economics markets
+# are not in Kalshi's Washington-restricted category list, so fills
+# are expected to work like weather's.
 cpi_trader:
-  enabled: false
+  enabled: true
   repo_path: /root/cpi
-  config_path: /root/cpi/config/config.yaml
+  config_path: /root/cpi/config/config-live.yaml
 
 # NBA real-money executor — same three-gate arming model as MLB /
 # world-cup: daemon enabled here, dry_run: true, and the live page's

@@ -1833,9 +1833,12 @@ def _render_bet_history_block(out: List[str], history: List[dict],
 # Weather added 2026-08-31 per user ("the weather bots should be added
 # to the contracts filter") — paper-only at launch, with rain armed
 # and the temperature ladders WATCH-only pending station calibration.
+# CPI added 2026-09-08 (user) — it now runs on the Cleveland Fed
+# nowcast as its professional reference, same bar as the sport bots.
 BOT_FILTER_KEYS = {
     "mlb", "nba", "wnba", "tennis", "table-tennis", "darts",
     "world-cup", "billboard", "reality-leaks", "hormuz", "weather",
+    "cpi",
 }
 
 
