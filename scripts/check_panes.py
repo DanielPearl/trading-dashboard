@@ -27,7 +27,8 @@ import sys
 import urllib.request
 
 BOTS = ["mlb", "nba", "wnba", "tennis", "table-tennis", "darts",
-        "world-cup", "billboard", "reality-leaks", "hormuz", "weather"]
+        "world-cup", "billboard", "reality-leaks", "hormuz", "weather",
+        "cpi"]
 
 
 def _get(url: str) -> str:
