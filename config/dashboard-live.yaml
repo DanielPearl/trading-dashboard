@@ -111,6 +111,20 @@ bots:
       unit_position: suffix
       chart_period_minutes: 1440
       prediction_period_label: next month
+  - key: pce
+    name: PCE Forecast
+    db_path: /root/cpi/data/pce-live.db
+    decisions_path: /root/cpi/data/decisions-pce-live.jsonl
+    series_ticker: KXPCECORE
+    series_prefixes: [KXPCECORE, KXPCE, KXECONSTATPCECORE, KXECONSTATPCE]
+    data_source: "FRED PCEPILFE + Cleveland Fed nowcast"
+    display:
+      underlying_label: Last realized Core PCE MoM
+      underlying_unit: "pp"
+      underlying_decimals: 2
+      unit_position: suffix
+      chart_period_minutes: 1440
+      prediction_period_label: next month
   - key: natural-gas
     name: Natural Gas Prices
     db_path: /root/peak-load/data/live.db
@@ -563,6 +577,14 @@ cpi_trader:
   enabled: true
   repo_path: /root/cpi
   config_path: /root/cpi/config/config-live.yaml
+
+pce_trader:
+  # PCE bot — the cpi_bot package with run.reference: pce
+  # (Cleveland Fed PCE / Core PCE nowcast columns). Toggle-gated
+  # on the Home tab like every bot; flip the PCE toggle to arm.
+  enabled: true
+  repo_path: /root/cpi
+  config_path: /root/cpi/config/config-pce-live.yaml
 
 # NBA real-money executor — same three-gate arming model as MLB /
 # world-cup: daemon enabled here, dry_run: true, and the live page's
