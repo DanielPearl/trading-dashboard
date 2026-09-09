@@ -131,6 +131,10 @@ bots:
     # the watchlist anchor — see Consumer Price Index/config/config.yaml
     # for why we excluded it.
     series_ticker: KXCPICORE
+    # All four CPI families — real fills on the ECONSTAT / headline
+    # series were unattributed in the live History without these
+    # (2026-09-09 audit).
+    series_prefixes: [KXCPICORE, KXCPI, KXECONSTATCPICORE, KXECONSTATCPI]
     data_source: "FRED CPILFESL + Cleveland Fed nowcast"
     display:
       underlying_label: Last realized Core CPI MoM
