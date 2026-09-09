@@ -52,7 +52,7 @@ bots:
     db_path: /root/unemployment-claims/data/live.db
     decisions_path: /root/unemployment-claims/data/decisions-live.jsonl
     series_ticker: KXJOBLESSCLAIMS
-    data_source: "FRED ICSA"
+    data_source: "Analyst consensus (ForexFactory) + FRED ICSA"
     display:
       underlying_label: Initial jobless claims
       underlying_unit: "K"
@@ -569,9 +569,12 @@ tennis_trader:
     stop_loss_cents: 0  # OFF per 2026-07-13 audit (was 25)
 
 unemployment_trader:
-  enabled: false
+  # Revived 2026-09-08: consensus-reference bot (ForexFactory analyst
+  # consensus + FRED ICSA). Toggle-gated on Home; paused = paper
+  # pricing only. config-live has dry_run: false — the toggle arms it.
+  enabled: true
   repo_path: /root/unemployment-claims
-  config_path: /root/unemployment-claims/config/config.yaml
+  config_path: /root/unemployment-claims/config/config-live.yaml
 
 # CPI real-money trader (2026-09-08): the bot now runs on the
 # Cleveland Fed nowcast as its professional reference and gained a

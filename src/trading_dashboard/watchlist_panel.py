@@ -435,7 +435,7 @@ def _render_watchlist(out: List[str], watchlist: List[dict],
     # summary blocks") — hormuz-style two-section layout, no hero
     # chart / prediction cards. Model % is the Cleveland Fed nowcast
     # probability the bot exports as model_prob_yes.
-    is_cpi_bot = current_bot in ("cpi", "pce")
+    is_cpi_bot = current_bot in ("cpi", "pce", "unemployment-claims")
     # Billboard uses the sport-style two-section layout (Active bets ·
     # Model vs market, no hero chart, no position columns on the
     # Model-vs-market table) but keeps its own columns / sort — user
