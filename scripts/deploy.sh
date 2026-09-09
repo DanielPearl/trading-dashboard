@@ -30,8 +30,19 @@ for r in "${REPOS[@]}"; do
 done
 
 systemctl restart trading-dashboard-live trading-dashboard-sim
-sleep 4
 systemctl is-active trading-dashboard-live trading-dashboard-sim
+
+# Wait for both HTTP servers to actually listen (up to 90s) — the
+# services report active before the socket binds, and check_panes
+# against a half-started server flags every pane as broken.
+for port in 8081 8080; do
+  for _ in $(seq 1 45); do
+    if curl -s --max-time 2 -o /dev/null "http://127.0.0.1:$port/"; then
+      echo "port $port up"; break
+    fi
+    sleep 2
+  done
+done
 
 # Post-deploy regression check — flags any bot pane that renders
 # empty while its data says it shouldn't.
