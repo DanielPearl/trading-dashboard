@@ -97,14 +97,17 @@ def _atomic_write(payload: Dict[str, Any]) -> None:
 def is_bot_enabled(bot_key: str) -> bool:
     """Public read API the individual bot services use.
 
-    Defaults to True when the state file is missing OR the bot is not
-    listed — keeps fresh-clone bot deployments running without the
-    user having to touch the toggle first.
+    Defaults to FALSE when the bot has no entry (2026-09-09 audit):
+    the old default-True meant a freshly deployed live bot with
+    dry_run: false was ARMED before anyone touched its toggle. Every
+    existing bot was grandfathered with an explicit entry at the flip;
+    a new bot stays paused (paper-pricing its pane via the paused-tick
+    path) until the user turns it on.
     """
     data = _read()
     entry = data["states"].get(bot_key)
     if not entry:
-        return True
+        return False
     return bool(entry.get("enabled", True))
 
 
