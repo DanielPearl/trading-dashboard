@@ -1194,6 +1194,7 @@ def serve(host: str, port: int, bots: List[dict], risk_caps: dict,
           unemployment_trader_cfg: dict | None = None,
           cpi_trader_cfg: dict | None = None,
           pce_trader_cfg: dict | None = None,
+          gdp_trader_cfg: dict | None = None,
           nba_trader_cfg: dict | None = None,
           wnba_trader_cfg: dict | None = None,
           gas_trader_cfg: dict | None = None,
@@ -1271,6 +1272,9 @@ def serve(host: str, port: int, bots: List[dict], risk_caps: dict,
         from .bots import unemployment_claims as unemployment_bot
         unemployment_bot.start_daemon(unemployment_trader_cfg)
     # CPI trader. Shape A — same structure as unemployment-claims.
+    if gdp_trader_cfg:
+        from .bots import gdp as gdp_bot
+        gdp_bot.start_daemon(gdp_trader_cfg)
     if pce_trader_cfg:
         from .bots import pce as pce_bot
         pce_bot.start_daemon(pce_trader_cfg)
@@ -1520,6 +1524,7 @@ def main(argv: list[str] | None = None) -> int:
     unemployment_trader_cfg = cfg.raw.get("unemployment_trader") or {}
     cpi_trader_cfg = cfg.raw.get("cpi_trader") or {}
     pce_trader_cfg = cfg.raw.get("pce_trader") or {}
+    gdp_trader_cfg = cfg.raw.get("gdp_trader") or {}
     nba_trader_cfg = cfg.raw.get("nba_trader") or {}
     wnba_trader_cfg = cfg.raw.get("wnba_trader") or {}
     gas_trader_cfg = cfg.raw.get("gas_trader") or {}
@@ -1563,6 +1568,7 @@ def main(argv: list[str] | None = None) -> int:
           unemployment_trader_cfg=unemployment_trader_cfg,
           cpi_trader_cfg=cpi_trader_cfg,
           pce_trader_cfg=pce_trader_cfg,
+          gdp_trader_cfg=gdp_trader_cfg,
           nba_trader_cfg=nba_trader_cfg,
           wnba_trader_cfg=wnba_trader_cfg,
           gas_trader_cfg=gas_trader_cfg,

@@ -132,6 +132,20 @@ bots:
       unit_position: suffix
       chart_period_minutes: 1440
       prediction_period_label: next month
+  - key: gdp
+    name: GDP Forecast
+    db_path: /root/cpi/data/gdp-live.db
+    decisions_path: /root/cpi/data/decisions-gdp-live.jsonl
+    series_ticker: KXGDP
+    series_prefixes: [KXGDP]
+    data_source: "Atlanta Fed GDPNow (FRED) + BEA advance estimate"
+    display:
+      underlying_label: Last realized real GDP growth (SAAR)
+      underlying_unit: "pp"
+      underlying_decimals: 2
+      unit_position: suffix
+      chart_period_minutes: 1440
+      prediction_period_label: this quarter
   - key: natural-gas
     name: Natural Gas Prices
     db_path: /root/peak-load/data/live.db
@@ -595,6 +609,13 @@ pce_trader:
   enabled: true
   repo_path: /root/cpi
   config_path: /root/cpi/config/config-pce-live.yaml
+
+gdp_trader:
+  # GDP bot — the cpi_bot package with run.reference: gdp
+  # (Atlanta Fed GDPNow). Toggle-gated on Home; flip to arm.
+  enabled: true
+  repo_path: /root/cpi
+  config_path: /root/cpi/config/config-gdp-live.yaml
 
 # NBA real-money executor — same three-gate arming model as MLB /
 # world-cup: daemon enabled here, dry_run: true, and the live page's

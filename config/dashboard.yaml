@@ -167,6 +167,30 @@ bots:
       # Override the default "next week" so the watchlist's
       # "Predicted ___" card reads correctly for a monthly print.
       prediction_period_label: next month
+  - key: gdp
+    name: GDP Forecast
+    db_path: /root/cpi/data/gdp-sim.db
+    decisions_path: /root/cpi/data/decisions-gdp.jsonl
+    # KXPCECORE is the **above-style** Core PCE MoM series ("Above
+    # X.X%"). The bot trades these because they have wider winning
+    # ranges and are a clean fit for the per-threshold classifiers.
+    # The exact-bucket KXECONSTATCPICORE series is intentionally NOT
+    # the watchlist anchor — see Consumer Price Index/config/config.yaml
+    # for why we excluded it.
+    series_ticker: KXGDP
+    series_prefixes: [KXGDP]
+    data_source: "Atlanta Fed GDPNow (FRED) + BEA advance estimate"
+    display:
+      underlying_label: Last realized real GDP growth (SAAR)
+      underlying_unit: "pp"
+      underlying_decimals: 2
+      unit_position: suffix
+      # MoM percent points are already small numbers — no divisor.
+      # Monthly print → daily candle resolution is plenty.
+      chart_period_minutes: 1440
+      # Override the default "next week" so the watchlist's
+      # "Predicted ___" card reads correctly for a monthly print.
+      prediction_period_label: this quarter
   - key: natural-gas
     name: Natural Gas Prices
     # Lives at /root/peak-load/ on the droplet — directory keeps its old
@@ -605,6 +629,13 @@ pce_trader:
   enabled: true
   repo_path: /root/cpi
   config_path: /root/cpi/config/config-pce.yaml
+
+gdp_trader:
+  # GDP bot — the cpi_bot package with run.reference: gdp
+  # (Atlanta Fed GDPNow). Toggle-gated on Home; flip to arm.
+  enabled: true
+  repo_path: /root/cpi
+  config_path: /root/cpi/config/config-gdp.yaml
 
 nba_trader:
   enabled: true
