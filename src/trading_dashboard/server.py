@@ -1244,8 +1244,18 @@ def serve(host: str, port: int, bots: List[dict], risk_caps: dict,
     # 30s interval and closes any position whose unrealized P&L per
     # contract has crossed the configured profit-lock or stop-loss
     # thresholds. No-op when hedge.enabled is false in config.
-    from . import hedge_monitor
-    hedge_monitor.start_daemon(bots, hedge_cfg)
+    # SIM ONLY (2026-09-09 audit): on the live service every ledger
+    # row is a REAL Kalshi position and this daemon has no sell path —
+    # its "closes" were pure ledger fiction (weather's Sep-7/8 rows
+    # were swept closed at their entry price). Real positions settle
+    # via each bot's result-based close; real history comes from the
+    # Kalshi settlements API.
+    if mode != "live":
+        from . import hedge_monitor
+        hedge_monitor.start_daemon(bots, hedge_cfg)
+    else:
+        log.info("hedge monitor NOT started — live mode holds real "
+                 "positions; ledger-only closes are sim-only")
     # Auto-pause daemon. Six-hourly walk of the bot list — bots with
     # three consecutive 30-day windows of negative realized P&L get
     # their on/off toggle flipped to OFF, with the action recorded
