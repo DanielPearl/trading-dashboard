@@ -665,6 +665,29 @@ class SportLiveExecutor:
                                "WON" if closed["won"] else "LOST",
                                closed["realized_pnl"])
                 continue
+            # Voided / scalar settlement (2026-09-09 audit): a
+            # walkover-voided market finalizes with result="scalar"
+            # and Kalshi REFUNDS the position — market_result only
+            # recognizes yes/no, so three July refunds sat "open" for
+            # six weeks eating position slots. Close at the entry
+            # price (refund semantics, P&L ~0).
+            _mkt = (mkt_by_ticker.get(ticker)
+                     or self._session.market(ticker) or {})
+            _status = (_mkt.get("status") or "").lower()
+            _res = (_mkt.get("result") or "").lower()
+            if _status in ("finalized", "settled") and _res and \
+                    _res not in ("yes", "no"):
+                _refund = float(pos.get("entry_market_prob") or 0.5)
+                closed = core.build_closed_record(
+                    pos, settle_prob=_refund,
+                    reason=f"voided ({_res}) — refunded",
+                    result="VOIDED")
+                state.setdefault("closed_positions", []).append(closed)
+                self._log.info("%s-live VOIDED %s — refunded at "
+                               "%.0f%%, P&L %+.3f", self.bot_key,
+                               ticker, _refund * 100.0,
+                               closed["realized_pnl"])
+                continue
             still_open.append(pos)
         state["open_positions"] = still_open
 
