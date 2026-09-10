@@ -1295,6 +1295,14 @@ def serve(host: str, port: int, bots: List[dict], risk_caps: dict,
     # in data/regime_notifications.jsonl for the Home-tab panel.
     from . import regime_monitor
     regime_monitor.start_daemon(bots)
+    # CLV + calibration analytics. Snapshots each sport bot's
+    # benchmark line every 5 min (the raw material for closing-line
+    # value) and recomputes data/analytics/analytics.json daily —
+    # the Home tab's "Model quality" panel and the Kelly sizing gate
+    # both read that artifact. Live-mode only: one writer, real
+    # fills only. Read-only against everything the bots produce.
+    from . import analytics
+    analytics.start_daemon(bots, mode)
     # (Tennis odds snapshotter removed 2026-07-08 alongside the whole
     # in-game adjustment layer; the pre-match model is now the only
     # forecast we run so there's no velocity / volatility / divergence

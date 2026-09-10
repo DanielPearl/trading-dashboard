@@ -341,6 +341,73 @@ def _render_notifications_panel(out: List[str],
     out.append("</ul></div>")
 
 
+def _render_analytics_panel(out: List[str]) -> None:
+    """Model quality panel — CLV + calibration from the nightly
+    analytics artifact (``analytics.py``). Silent when the artifact
+    hasn't been produced yet (fresh deploy, sim dashboard).
+
+    Reading guide baked into the header because the numbers are
+    professional jargon: Brier = mean squared error of the
+    probability (lower is better; the model must BEAT the market's
+    Brier or its edges are noise), CLV = entry price vs the closing
+    benchmark line (positive average = beating the close, the
+    fastest-converging evidence a strategy is real).
+    """
+    from . import analytics
+    art = analytics.read_artifact()
+    if not art or not art.get("bots"):
+        return
+    gen = (art.get("generated_at") or "")[:16].replace("T", " ")
+    out.append("<div class='notifications-panel'>")
+    out.append(
+        "<div class='notifications-head'>"
+        "<span class='notifications-title'>Model quality — "
+        "calibration &amp; closing-line value</span>"
+        f"<span class='small gray'>nightly analytics · {html.escape(gen)}Z"
+        " · Brier: lower is better, model must beat market · CLV&gt;0:"
+        " entries beat the closing line · sizing unlocks at "
+        f"{analytics.SIZING_MIN_CLV_N}+ CLV trades with positive avg"
+        "</span></div>"
+    )
+    out.append(
+        "<table><thead><tr><th>Bot</th><th>n</th><th>Win rate</th>"
+        "<th>Avg model %</th><th>Brier (model)</th>"
+        "<th>Brier (market)</th><th>Verdict</th>"
+        "<th>CLV avg (n)</th><th>Realized P&amp;L</th>"
+        "<th>Sizing</th></tr></thead><tbody>")
+    for key, s in sorted((art.get("bots") or {}).items()):
+        bm, bk = s.get("brier_model"), s.get("brier_market")
+        if bm is None or bk is None:
+            verdict = "<span class='gray'>—</span>"
+        elif bm < bk - 0.002:
+            verdict = "<span style='color:var(--pos,#2e7d32)'>model beats market</span>"
+        elif bm > bk + 0.002:
+            verdict = "<span style='color:var(--neg,#c62828)'>market beats model</span>"
+        else:
+            verdict = "<span class='gray'>even</span>"
+        clv = s.get("clv") or {}
+        clv_cell = ("—" if not clv.get("n")
+                    else f"{clv.get('avg'):+.3f} ({clv.get('n')})")
+        pnl = s.get("realized_pnl")
+        pnl_cell = ("—" if pnl is None else f"{pnl:+.2f}")
+        sizing = ("Kelly-eligible" if s.get("sizing_eligible")
+                  else "flat 1")
+        out.append(
+            "<tr>"
+            f"<td>{html.escape(str(s.get('name', key)))}</td>"
+            f"<td>{s.get('n', 0)}</td>"
+            f"<td>{s.get('win_rate', 0):.0%}</td>"
+            f"<td>{s.get('avg_model_prob', 0):.0%}</td>"
+            f"<td>{'—' if bm is None else f'{bm:.3f}'}</td>"
+            f"<td>{'—' if bk is None else f'{bk:.3f}'}</td>"
+            f"<td>{verdict}</td>"
+            f"<td>{html.escape(clv_cell)}</td>"
+            f"<td>{pnl_cell}</td>"
+            f"<td>{sizing}</td>"
+            "</tr>")
+    out.append("</tbody></table></div>")
+
+
 def _render_bot_cards(out: List[str], rollup: dict,
                         bot_models: List[dict] | None,
                         period_label: str) -> None:

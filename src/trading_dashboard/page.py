@@ -19,6 +19,7 @@ from .panels import (
     _render_bot_unavailable,
     _render_history_attribution,
     _render_history_chart,
+    _render_analytics_panel,
     _render_notifications_panel,
     _render_seasons_panel,
     _render_summary,
@@ -198,6 +199,7 @@ def render_page(
     out.append("<div class='section'><h2>Model performance</h2>"
                "<div class='body'>")
     _render_notifications_panel(out)
+    _render_analytics_panel(out)
     _render_bot_cards(out, global_summary, bot_models, period_label)
     out.append("</div></div>")
     out.append("</div>")  # /home panel
