@@ -41,12 +41,13 @@ def _get(url: str) -> str:
 def page_rows(base: str, bot: str) -> int:
     raw = _get(f"{base}/?bot={bot}&tab=watchlist")
     body = re.sub(r"<script.*?</script>", "", raw, flags=re.S)
-    i = body.rfind("Model vs market")
-    seg = body[i:] if i >= 0 else body
-    j = seg.find("How EV is calculated")
-    if j > 0:
-        seg = seg[:j]
-    return len(re.findall(r"data-field='verdict'", seg))
+    # Count verdict cells page-wide: Active-bets rows don't carry a
+    # verdict cell, so this is exactly the Model-vs-market row count.
+    # (The old "segment after the LAST 'Model vs market' heading"
+    # approach returned 0 on sport panes whose EV-help footer also
+    # says the phrase — 2026-09-10 false alarm on a healthy tennis
+    # pane with 48 rendered rows.)
+    return len(re.findall(r"data-field='verdict'", body))
 
 
 def eligible_rows(base: str, bot: str) -> int:
