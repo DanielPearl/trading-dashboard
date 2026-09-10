@@ -338,12 +338,20 @@ def _db_bot_stats(bot: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         with closing(sqlite3.connect(dbp)) as c:
             c.row_factory = sqlite3.Row
             rows = c.execute(
-                "SELECT side, entry_price_cents, realized_pnl_cents, "
-                "decision_json FROM positions "
+                "SELECT ticker, side, entry_price_cents, "
+                "realized_pnl_cents, decision_json FROM positions "
                 "WHERE status = 'closed' "
                 "AND realized_pnl_cents IS NOT NULL").fetchall()
     except sqlite3.Error:
         return None
+    # Bots that share one ledger (rain + temp both live in the
+    # weather sim.db) are told apart by their card's series prefixes
+    # — without this both cards would report the union of the file
+    # (2026-09-10: rain and temp rendered identical stats).
+    prefixes = tuple(bot.get("series_prefixes") or ())
+    if prefixes:
+        rows = [r for r in rows
+                if str(r["ticker"] or "").startswith(prefixes)]
     for r in rows:
         won = (r["realized_pnl_cents"] or 0) > 0
         pnl_cents += int(r["realized_pnl_cents"] or 0)
