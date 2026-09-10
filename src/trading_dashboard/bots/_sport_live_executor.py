@@ -500,21 +500,44 @@ class SportLiveExecutor:
         # Removed 2026-07-09 after it blocked COL@SF while the sim
         # bought it; sim and live must evaluate the same gates. The
         # entry-price floor (≥15¢) still keeps longshot tails out.
+        # Prematch-only rule (user 2026-09-10): sports bots never enter
+        # after the game has started — an in-play Kalshi price against
+        # a frozen pre-match benchmark is the market pricing the score,
+        # not an edge (tennis lost this way for weeks). FAIL-CLOSED:
+        # a row with no kickoff, an unparseable kickoff, or an explicit
+        # match_started flag is refused, not waved through — the old
+        # ``if kickoff:`` guard silently skipped the check for every
+        # exporter that didn't stamp one, which is exactly how tennis
+        # traded in-play.
+        if row.get("match_started"):
+            self._log.info("%s-live skip %s: match already started "
+                           "(live score on the board)",
+                           self.bot_key, ticker)
+            return
         kickoff = row.get("kickoff")
-        if kickoff:
-            try:
-                k = datetime.fromisoformat(
-                    str(kickoff).replace("Z", "+00:00"))
-                mins = (k - datetime.now(timezone.utc)
-                        ).total_seconds() / 60.0
-                if mins <= self.prematch_buffer_minutes:
-                    self._log.info("%s-live skip %s: %.0f min to start "
-                                   "(≤ %.0f buffer)", self.bot_key,
-                                   ticker, mins,
-                                   self.prematch_buffer_minutes)
-                    return
-            except ValueError:
-                pass
+        if not kickoff:
+            self._log.info("%s-live skip %s: no kickoff on row — "
+                           "prematch-only rule requires a start time",
+                           self.bot_key, ticker)
+            return
+        try:
+            k = datetime.fromisoformat(
+                str(kickoff).replace("Z", "+00:00"))
+            if k.tzinfo is None:
+                k = k.replace(tzinfo=timezone.utc)
+            mins = (k - datetime.now(timezone.utc)
+                    ).total_seconds() / 60.0
+            if mins <= self.prematch_buffer_minutes:
+                self._log.info("%s-live skip %s: %.0f min to start "
+                               "(≤ %.0f buffer)", self.bot_key,
+                               ticker, mins,
+                               self.prematch_buffer_minutes)
+                return
+        except ValueError:
+            self._log.info("%s-live skip %s: unparseable kickoff %r — "
+                           "prematch-only rule", self.bot_key, ticker,
+                           kickoff)
+            return
         # Hours-to-close gate — tennis wants to skip overnight bets on
         # tomorrow's match where a full day of injury / withdrawal news
         # has room to move the line. Off by default (None) so bots that

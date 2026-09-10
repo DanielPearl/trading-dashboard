@@ -208,6 +208,22 @@ def apply_benchmark(rows: List[Dict[str, Any]],
             eligible = False
         else:
             matched += 1
+            # Prematch-only rule (user 2026-09-10): a started match's
+            # benchmark line is frozen at cutoff while the exchange
+            # prices the live score — never eligible, sim and live
+            # alike (the live executor independently enforces the same
+            # rule fail-closed).
+            _started = bool(row.get("match_started"))
+            _k = row.get("kickoff")
+            if not _started and _k:
+                try:
+                    _kdt = datetime.fromisoformat(
+                        str(_k).replace("Z", "+00:00"))
+                    if _kdt.tzinfo is None:
+                        _kdt = _kdt.replace(tzinfo=timezone.utc)
+                    _started = _kdt <= datetime.now(timezone.utc)
+                except (ValueError, TypeError):
+                    pass
             gates = {
                 "edge": (side_edge or 0) >= cfg["min_edge"],
                 # Fake-edge guard: beyond max_edge the benchmark is
@@ -216,6 +232,7 @@ def apply_benchmark(rows: List[Dict[str, Any]],
                 "price_band": (side_price is not None
                                and cfg["min_entry_price"] <= side_price
                                <= cfg["max_entry_price"]),
+                "prematch": not _started,
             }
             eligible = all(gates.values())
             if (side_edge or 0) >= cfg["strong_edge"]:
