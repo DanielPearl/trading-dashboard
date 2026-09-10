@@ -44,6 +44,12 @@ for port in 8081 8080; do
   done
 done
 
+# Let every bot daemon complete its first tick before judging panes —
+# checking too early flags sport panes whose watchlist.json hasn't
+# been rewritten yet (first tennis export lands ~3-5 min after start).
+echo "settling 5 min before pane check..."
+sleep 300
+
 # Post-deploy regression check — flags any bot pane that renders
 # empty while its data says it shouldn't.
 if [ -f /root/trading-dashboard/scripts/check_panes.py ]; then
