@@ -731,6 +731,11 @@ darts_trader:
   repo_path: /root/darts-forecast
   interval_seconds: 60
   live:
+    # 2026-09-10 audit: darts has NO professional benchmark feed and
+    # its internal Elo is invalid (perfect AUC on 37 rows from 2022).
+    # Structurally unable to trade until a sharp line exists — same
+    # rule as table-tennis.
+    require_pinnacle: true
     dry_run: true
     sim_state_path: /root/darts-forecast/data/outputs-live/sim_state.json
     max_open_positions: 10   # raised 6 → 10 (hard cap) for $1-stake testing
