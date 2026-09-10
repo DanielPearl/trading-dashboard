@@ -33,6 +33,7 @@ import logging
 import os
 import sys
 import threading
+import time
 from pathlib import Path
 from typing import Any, Callable, Iterable
 
@@ -275,14 +276,24 @@ def spawn_daemon(name: str,
     log = logging.getLogger(f"dashboard.{name}")
 
     def _wrapped() -> None:
-        try:
-            target()
-        except Exception:  # noqa: BLE001
-            # ``target`` is normally a long-lived loop; if it returns
-            # at all, it's because of an unrecoverable startup error
-            # (bad creds, missing repo). Log and let the thread exit;
-            # operator will see the error.
-            log.exception("%s daemon failed", name)
+        # Auto-respawn with backoff (2026-09-10 audit round 13): a
+        # crashed bot thread used to die PERMANENTLY while the service
+        # stayed "active" — the claims daemon did exactly that on
+        # 2026-09-09 and the bot was silently dead until a manual
+        # restart. A transient failure (network blip, API 5xx during
+        # startup) now retries; a persistent one retries at a slow,
+        # log-visible cadence instead of going quiet forever.
+        delay = 30.0
+        while True:
+            try:
+                target()
+                # A clean return = one-shot setup routine; done.
+                return
+            except Exception:  # noqa: BLE001
+                log.exception("%s daemon crashed — respawning in %.0fs",
+                              name, delay)
+                time.sleep(delay)
+                delay = min(delay * 2, 900.0)
 
     t = threading.Thread(target=_wrapped, daemon=True, name=name)
     if enabled:
