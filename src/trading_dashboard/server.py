@@ -1149,9 +1149,29 @@ class Handler(BaseHTTPRequestHandler):
         else:
             self.send_error(404)
 
+    # Control-plane key (2026-09-10 audit): POST endpoints flip
+    # real-money bot state and this server listens on 0.0.0.0 —
+    # without a shared secret, anyone who finds the port can arm a
+    # bot. Read-only GETs stay open; every state-changing POST must
+    # carry the key from data/dashboard_key (X-Dash-Key header — the
+    # page's toggle JS prompts once and remembers it).
+    dash_key: str = ""
+
+    def _post_authorized(self) -> bool:
+        if not self.dash_key:
+            return True   # key file missing — behave as before
+        sent = (self.headers.get("X-Dash-Key") or "").strip()
+        return sent == self.dash_key
+
     def do_POST(self) -> None:  # noqa: N802 (BaseHTTPRequestHandler API)
         from urllib.parse import urlparse, parse_qs
         parsed = urlparse(self.path)
+        if not self._post_authorized():
+            self.send_response(401)
+            self.send_header("Content-Type", "application/json")
+            self.end_headers()
+            self.wfile.write(b'{"error":"missing or wrong control key"}')
+            return
         if parsed.path == "/api/bot/toggle":
             # Flip the bot's enabled flag and return the new state.
             # The page's toggle JS reads the response to update the
@@ -1240,6 +1260,19 @@ def serve(host: str, port: int, bots: List[dict], risk_caps: dict,
             log.info("market_views index skipped for %s (%s)",
                      _b.get("key"), e)
     Handler.live_state_paths = list(live_state_paths or [])
+    # Control-plane key: created on first start, shared by both
+    # services (repo-level data dir). POSTs without it are 401s.
+    try:
+        _key_path = Path(__file__).resolve().parents[2] / "data" / "dashboard_key"
+        if not _key_path.exists():
+            import secrets
+            _key_path.parent.mkdir(parents=True, exist_ok=True)
+            _key_path.write_text(secrets.token_urlsafe(24))
+            _key_path.chmod(0o600)
+        Handler.dash_key = _key_path.read_text().strip()
+        log.info("control-plane key active (data/dashboard_key)")
+    except OSError:
+        log.exception("dashboard key setup failed — POSTs left open")
     # Auto-hedge daemon. Reads each sim.db bot's positions table on a
     # 30s interval and closes any position whose unrealized P&L per
     # contract has crossed the configured profit-lock or stop-loss

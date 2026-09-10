@@ -515,14 +515,35 @@ def render_page(
 # event.preventDefault stops the parent <a class='bot-card'> from
 # following its href when the user clicks the toggle itself.
 _BOT_TOGGLE_JS = """<script>
+function _dashKey() {
+  // Control-plane key (2026-09-10): state-changing POSTs require the
+  // secret from the server's data/dashboard_key file. Asked for once
+  // per browser, remembered in localStorage.
+  let k = null;
+  try { k = localStorage.getItem('dash_key'); } catch (e) {}
+  if (!k) {
+    k = prompt('Control key required to arm/pause bots\\n' +
+               '(on the droplet: cat /root/trading-dashboard/data/dashboard_key)');
+    if (k) { try { localStorage.setItem('dash_key', k.trim()); } catch (e) {} }
+  }
+  return (k || '').trim();
+}
 function toggleBotState(ev, btn) {
   ev.preventDefault();
   ev.stopPropagation();
   const key = btn.dataset.botKey;
   if (!key) return;
   btn.disabled = true;
-  fetch('/api/bot/toggle?bot=' + encodeURIComponent(key), {method: 'POST'})
-    .then(function (r) { return r.json(); })
+  fetch('/api/bot/toggle?bot=' + encodeURIComponent(key),
+        {method: 'POST', headers: {'X-Dash-Key': _dashKey()}})
+    .then(function (r) {
+      if (r.status === 401) {
+        try { localStorage.removeItem('dash_key'); } catch (e) {}
+        alert('Wrong control key — click the toggle again to retry.');
+        throw new Error('unauthorized');
+      }
+      return r.json();
+    })
     .then(function (data) {
       const enabled = !!data.enabled;
       btn.dataset.enabled = enabled ? '1' : '0';
