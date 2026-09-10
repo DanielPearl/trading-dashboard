@@ -124,13 +124,23 @@ class KalshiSession:
 
     def submit_ioc(self, *, ticker: str, action: str, count: int,
                    yes_price_cents: int,
-                   kind: str) -> tuple[Optional[str], str]:
+                   kind: str) -> tuple[Optional[str], str, int]:
         """IOC limit order on the YES side of ``ticker``. ``action`` is
-        "buy" or "sell". Returns (order_id, status); (None, reason) on
-        failure. Kalshi wants lowercase snake_case time_in_force."""
+        "buy" or "sell". Returns (order_id, status, filled_count);
+        (None, reason, 0) on failure. Kalshi wants lowercase
+        snake_case time_in_force.
+
+        ``filled_count`` is what actually executed — an IOC can cancel
+        with zero fills (the ask moved) or partially fill. Callers
+        MUST size their ledger records off the fill count, not the
+        requested count (2026-09-10: the sports buy path recorded the
+        REQUESTED count for any non-None order_id, so a canceled
+        zero-fill IOC became a phantom ledger position; harmless at
+        1 contract per order only by luck, and wrong money the moment
+        Kelly sizing raises the count)."""
         client = self.client()
         if client is None:
-            return None, "no_client"
+            return None, "no_client", 0
         # Kalshi rejects prices outside 1–99¢ ("invalid_price" 400).
         # Profit-lock sells hit this when a decided market's bid pins
         # at 100¢ — clamp so the sell fills at 99¢ instead of
@@ -146,9 +156,18 @@ class KalshiSession:
         except Exception as exc:  # noqa: BLE001
             log.exception("%s place_order(%s %s) failed for %s: %s",
                           self.bot_key, action, kind, ticker, exc)
-            return None, f"error: {exc!r}"
+            return None, f"error: {exc!r}", 0
         order = (resp or {}).get("order") or {}
-        return order.get("order_id"), order.get("status") or "submitted"
+        try:
+            filled = int(float(order.get("taker_fill_count") or 0))
+        except (TypeError, ValueError):
+            filled = 0
+        status = order.get("status") or "submitted"
+        # Executed with an unreadable fill field: trust the status —
+        # a fully-executed IOC filled the requested count.
+        if filled == 0 and status == "executed":
+            filled = int(count)
+        return order.get("order_id"), status, filled
 
     # ── reads ───────────────────────────────────────────────────────
 

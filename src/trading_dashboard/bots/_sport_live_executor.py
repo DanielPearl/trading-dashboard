@@ -135,6 +135,16 @@ class SportLiveExecutor:
                                          h["max_orders_per_day"])
         self.contracts_per_order = capped("contracts_per_order",
                                           h["contracts_per_order"])
+        # Kelly sizing bankroll — 0/unset keeps flat sizing forever.
+        # Even when set, sizing additionally requires the analytics
+        # artifact's sizing_eligible verdict for this bot (>=100
+        # CLV-measured trades, positive average CLV). See the order
+        # path and kalshi_sdk.buy_criteria.kelly_contracts.
+        try:
+            self.kelly_bankroll = float(
+                cfg.get("kelly_bankroll_dollars") or 0.0)
+        except (TypeError, ValueError):
+            self.kelly_bankroll = 0.0
         self.min_edge = capped("min_edge_pp", h["min_edge_pp"],
                                floor=True, cast=float)
         self.max_entry_price_cents = capped(
@@ -582,16 +592,6 @@ class SportLiveExecutor:
                 edge_at_order * 100, current_ask, self.min_edge * 100,
                 edge * 100, ask_cents)
             return
-        balance = self._session.balance_cents()
-        cost = current_ask * self.contracts_per_order
-        if balance is not None and balance < cost:
-            self._log.warning("%s-live skip %s: balance %d¢ < cost %d¢",
-                              self.bot_key, ticker, balance, cost)
-            return
-
-        self._daily.increment()
-        side_team = (row.get("player_a") if side == "A"
-                     else row.get("player_b"))
         # The prob the edge gate actually used is the sharp BENCHMARK
         # (Pinnacle / Odds-API) line, not the in-house model. Record the
         # benchmark as this position's model prob so the dashboard shows
@@ -603,18 +603,71 @@ class SportLiveExecutor:
         bench_side = self._benchmark_prob_for_side(row, side)
         model_for_record = (bench_side if bench_side is not None
                             else float(model_p))
+        # Kelly sizing (pro-practice item 4, 2026-09-10). Dormant by
+        # default: contracts stay at the flat config count unless the
+        # operator set kelly_bankroll_dollars in this bot's config AND
+        # the nightly analytics artifact marks the bot sizing-eligible
+        # (>=100 CLV-measured trades, positive average CLV). Both
+        # checks fail closed to flat sizing.
+        n_contracts = self.contracts_per_order
+        if self.kelly_bankroll > 0:
+            try:
+                from .. import analytics
+                if analytics.sizing_eligibility(self.bot_key):
+                    from kalshi_sdk.buy_criteria import kelly_contracts
+                    n_contracts = kelly_contracts(
+                        model_for_record, current_ask,
+                        self.kelly_bankroll)
+                    if n_contracts != self.contracts_per_order:
+                        self._log.info(
+                            "%s-live kelly sizing %s: %d contracts "
+                            "(p=%.2f ask=%d¢ bank=$%.0f)",
+                            self.bot_key, ticker, n_contracts,
+                            model_for_record, current_ask,
+                            self.kelly_bankroll)
+            except Exception:  # noqa: BLE001 — sizing must never block
+                self._log.exception("%s-live kelly sizing failed — "
+                                    "flat count", self.bot_key)
+                n_contracts = self.contracts_per_order
+        balance = self._session.balance_cents()
+        cost = current_ask * n_contracts
+        if balance is not None and balance < cost:
+            self._log.warning("%s-live skip %s: balance %d¢ < cost %d¢",
+                              self.bot_key, ticker, balance, cost)
+            return
+
+        self._daily.increment()
+        side_team = (row.get("player_a") if side == "A"
+                     else row.get("player_b"))
         if self.dry_run:
             order_id = (f"DRY-RUN-"
                         f"{int(datetime.now(timezone.utc).timestamp())}"
                         f"-{side}")
             status = "dry_run_simulated"
+            filled = n_contracts
         else:
-            order_id, status = self._session.submit_ioc(
+            order_id, status, filled = self._session.submit_ioc(
                 ticker=ticker, action="buy",
-                count=self.contracts_per_order,
+                count=n_contracts,
                 yes_price_cents=current_ask, kind="buy")
             if order_id is None:
                 return
+            # Fill verification (2026-09-10, ported from the macro
+            # bots): a canceled IOC has an order_id but bought
+            # nothing — recording it would create a phantom position
+            # the settle loop later "closes" for fictional P&L.
+            if status not in ("executed", "partially_filled") or filled <= 0:
+                self._log.info(
+                    "%s-live %s IOC not filled (status=%s filled=%d) "
+                    "— nothing recorded", self.bot_key, ticker,
+                    status, filled)
+                return
+            if filled < n_contracts:
+                self._log.info(
+                    "%s-live %s partial fill %d/%d — recording the "
+                    "filled count", self.bot_key, ticker, filled,
+                    n_contracts)
+        cost = current_ask * filled
         position = {
             "position_id": f"{ticker}-{side}-{int(datetime.now(timezone.utc).timestamp())}",
             "order_id": order_id,
@@ -635,7 +688,7 @@ class SportLiveExecutor:
             "current_market_prob": current_ask / 100.0,
             "current_model_prob": model_for_record,
             "stake": cost / 100.0,
-            "contracts": self.contracts_per_order,
+            "contracts": filled,
             "slippage": 0.0,
             "unrealized_pnl": 0.0,
             "label_at_open": row.get("recommended_action") or "",
@@ -648,7 +701,7 @@ class SportLiveExecutor:
                        "%d¢ edge=%.3f benchmark=%.1f%% (internal=%.1f%%)",
                        self.bot_key,
                        "DRY-RUN OPENED" if self.dry_run else "PLACED order",
-                       order_id, self.contracts_per_order, ticker,
+                       order_id, filled, ticker,
                        side_team, self.win_verb, current_ask, edge,
                        model_for_record * 100.0, float(model_p) * 100.0)
         # Line-settle telemetry: how old/settled was the benchmark line
@@ -754,13 +807,15 @@ class SportLiveExecutor:
                         "external close at %d¢ (approx)", self.bot_key,
                         ticker, bid_cents)
                     continue
-                order_id, status = self._session.submit_ioc(
+                order_id, status, _fill = self._session.submit_ioc(
                     ticker=ticker, action="sell",
                     count=min(contracts, held),
                     yes_price_cents=bid_cents, kind="pl")
                 if not order_id or (status or "").lower() != "executed":
-                    # Not filled — keep holding; idempotent coid makes
-                    # the retry next tick safe.
+                    # Not (fully) filled — keep holding; idempotent
+                    # coid makes the retry next tick safe, and a
+                    # partial sell is reconciled by next tick's
+                    # inventory check (held count shrinks).
                     still_open.append(pos)
                     continue
             closed = core.build_closed_record(
@@ -852,7 +907,7 @@ class SportLiveExecutor:
                         "external close at %d¢", self.bot_key,
                         ticker, bid_cents)
                     continue
-                order_id, status = self._session.submit_ioc(
+                order_id, status, _fill = self._session.submit_ioc(
                     ticker=ticker, action="sell",
                     count=min(contracts, held),
                     yes_price_cents=bid_cents, kind=trigger[:2])
