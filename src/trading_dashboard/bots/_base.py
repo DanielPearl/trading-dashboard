@@ -365,6 +365,13 @@ def gate_bot_tick(bot: object, bot_key: str, log: logging.Logger) -> None:
                 and hasattr(_exec_cfg, "dry_run")):
             _was = _exec_cfg.dry_run
             _exec_cfg.dry_run = True
+            # Tell the bot this dry_run is a PAUSE, not a paper
+            # config (2026-09-10 audit): the macro bots gate their
+            # ledger-only interventions (paper hedge / stop-loss /
+            # raw-edge close) on dry_run — without this flag a paused
+            # LIVE bot would paper-close its REAL positions on the
+            # first paused tick.
+            bot._paused_paper = True  # type: ignore[attr-defined]
             # No NEW ledger entries while paused either — a paused
             # tick prices the board (market_views → the pane) but a
             # paper position written into the LIVE ledger would sit
@@ -380,6 +387,7 @@ def gate_bot_tick(bot: object, bot_key: str, log: logging.Logger) -> None:
                 return _orig_tick(*args, **kwargs)
             finally:
                 _exec_cfg.dry_run = _was
+                bot._paused_paper = False  # type: ignore[attr-defined]
                 if _sim is not None and _orig_open is not None:
                     _sim.open_position = _orig_open
         if not bot_state.is_bot_enabled(bot_key):
