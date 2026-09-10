@@ -43,10 +43,14 @@ from typing import Iterable
 # inactive units in /etc/systemd/system/ for rollback, but auditing
 # them surfaces stale traceback noise + always-failing rows because
 # ``systemctl is-active`` returns "inactive" → _classify returns
-# "failing". So the live monitored set is just the dashboard
-# (which now runs all 10 bot threads inside one process).
+# "failing". So the live monitored set is the two dashboard
+# processes (each runs every bot thread in one process). The old
+# single ``trading-dashboard.service`` name was retired at the
+# live/sim split — auditing it reported a permanent false "failing"
+# row (2026-09-10, user: "diagnosis shows issues").
 MONITORED_SERVICES: tuple[str, ...] = (
-    "trading-dashboard.service",
+    "trading-dashboard-live.service",
+    "trading-dashboard-sim.service",
 )
 
 # Disabled-on-purpose units we keep around for rollback. The
