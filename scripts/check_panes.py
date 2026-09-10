@@ -60,6 +60,12 @@ def eligible_rows(base: str, bot: str) -> int:
         model = (r.get("pinnacle_prob_yes")
                  if r.get("pinnacle_prob_yes") is not None
                  else r.get("model_prob_yes"))
+        # Table-tennis is benchmark-only by user rule (its internal
+        # Elo is a coin flip and never renders) — a row without a
+        # professional line is NOT eligible, so don't flag the pane
+        # for correctly hiding it.
+        if bot == "table-tennis" and r.get("pinnacle_prob_yes") is None:
+            continue
         ask = r.get("kalshi_yes")
         live_quote = isinstance(ask, (int, float)) and 1 < ask < 99
         oi_ok = (r.get("open_interest") or 0) > 0
