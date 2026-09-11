@@ -190,6 +190,29 @@ def apply_benchmark(rows: List[Dict[str, Any]],
             ask_b = row["yes_ask_cents_b"] / 100.0
             row["market_prob_b"] = ask_b
 
+        # Benchmark retirement at start (same rule the NBA/MLB
+        # exporters apply upstream): once the match is under way the
+        # pre-match line is frozen while Kalshi prices the live score,
+        # and the screen gap reads as a fake double-digit "edge"
+        # (2026-09-11, Mitas v Jendrzejewski: pre-match 36% vs 76¢
+        # in-play — user: "looks like it shows an edge"). The prematch
+        # gate already refuses these; the display now agrees and the
+        # row retires with its Model %.
+        _started = bool(row.get("match_started"))
+        _k = row.get("kickoff")
+        if not _started and _k:
+            try:
+                _kdt = datetime.fromisoformat(
+                    str(_k).replace("Z", "+00:00"))
+                if _kdt.tzinfo is None:
+                    _kdt = _kdt.replace(tzinfo=timezone.utc)
+                _started = _kdt <= datetime.now(timezone.utc)
+            except (ValueError, TypeError):
+                pass
+        if _started and p_a is not None:
+            p_a = p_b = None
+            row["_benchmark_retired_started"] = True
+
         row["pinnacle_prob_a"] = p_a
         row["pinnacle_prob_b"] = p_b
         if p_a is not None or not keep_model_probs:
@@ -222,7 +245,9 @@ def apply_benchmark(rows: List[Dict[str, Any]],
         gates: Dict[str, bool] = {}
         if p_a is None:
             label = "WATCH"
-            if not is_h2h:
+            if row.get("_benchmark_retired_started"):
+                reason = "match under way — pre-match benchmark retired"
+            elif not is_h2h:
                 reason = "no two-way moneyline to benchmark"
             elif keep_model_probs:
                 reason = ("no Pinnacle line — model view only, "
@@ -232,22 +257,10 @@ def apply_benchmark(rows: List[Dict[str, Any]],
             eligible = False
         else:
             matched += 1
-            # Prematch-only rule (user 2026-09-10): a started match's
-            # benchmark line is frozen at cutoff while the exchange
-            # prices the live score — never eligible, sim and live
-            # alike (the live executor independently enforces the same
-            # rule fail-closed).
-            _started = bool(row.get("match_started"))
-            _k = row.get("kickoff")
-            if not _started and _k:
-                try:
-                    _kdt = datetime.fromisoformat(
-                        str(_k).replace("Z", "+00:00"))
-                    if _kdt.tzinfo is None:
-                        _kdt = _kdt.replace(tzinfo=timezone.utc)
-                    _started = _kdt <= datetime.now(timezone.utc)
-                except (ValueError, TypeError):
-                    pass
+            # Prematch-only rule (user 2026-09-10): kept as a belt on
+            # top of the retirement above — a row whose kickoff only
+            # becomes known between the retirement check and here (or
+            # a match_started flag arriving mid-tick) still fails.
             gates = {
                 "edge": (side_edge or 0) >= cfg["min_edge"],
                 # Fake-edge guard: beyond max_edge the benchmark is
