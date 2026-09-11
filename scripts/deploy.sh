@@ -56,3 +56,13 @@ if [ -f /root/trading-dashboard/scripts/check_panes.py ]; then
   /root/trading-dashboard/.venv/bin/python \
     /root/trading-dashboard/scripts/check_panes.py || true
 fi
+
+# Gate-parity check (user 2026-09-11: same validations and gates for
+# every bot; a new bot must connect to the existing shared gates).
+# Probes kalshi_sdk's canonical gates, verifies each bot's wiring,
+# and FAILS the deploy when a configured bot isn't registered/wired.
+if [ -f /root/trading-dashboard/scripts/check_gates.py ]; then
+  /root/trading-dashboard/.venv/bin/python \
+    /root/trading-dashboard/scripts/check_gates.py \
+    || { echo "GATE PARITY FAILED — see above"; exit 1; }
+fi
