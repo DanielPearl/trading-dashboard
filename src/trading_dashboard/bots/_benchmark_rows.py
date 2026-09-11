@@ -241,6 +241,20 @@ def apply_benchmark(rows: List[Dict[str, Any]],
         oi = row.get("open_interest",
                      (row.get("open_interest_a") or 0)
                      + (row.get("open_interest_b") or 0))
+        # Placeholder-book guard (2026-09-11): overnight TT books show
+        # BOTH sides asking ~94¢ (sum ≈ 188¢) with zero OI — market-
+        # maker parking quotes, not prices anyone pays. Computing an
+        # "edge" against them screamed fake 60pp discounts on screen
+        # while every gate blocked them. Blank the edge/EV instead:
+        # the row stays visible with its benchmark, and real numbers
+        # appear the moment a genuine two-sided market forms.
+        if (p_a is not None and ask_a is not None and ask_b is not None
+                and (ask_a + ask_b) >= 1.10 and (oi or 0) <= 0):
+            edge_a = edge_b = ev_a = ev_b = None
+            row["edge_a"] = row["edge_b"] = None
+            row["ev_a"] = row["ev_b"] = None
+            side_edge = side_ev = None
+            row["_placeholder_book"] = True
 
         gates: Dict[str, bool] = {}
         if p_a is None:
@@ -254,6 +268,13 @@ def apply_benchmark(rows: List[Dict[str, Any]],
                           "not tradeable")
             else:
                 reason = "no Pinnacle line for this match yet"
+            eligible = False
+        elif row.get("_placeholder_book"):
+            matched += 1
+            label = "WATCH"
+            reason = ("no real Kalshi market yet — both sides parked "
+                      "at placeholder asks; edges appear when a "
+                      "genuine book forms")
             eligible = False
         else:
             matched += 1

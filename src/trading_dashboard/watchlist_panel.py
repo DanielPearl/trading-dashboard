@@ -1130,6 +1130,19 @@ def _render_watchlist(out: List[str], watchlist: List[dict],
                        # day or two — the whole point of the gap rows
                        # is showing the ladder exists.
                        or "awaiting" in (r.get("rejection_reason") or "")
+                       # Sport rows with a live benchmark (2026-09-11,
+                       # user: "table tennis games ... why aren't they
+                       # showing"): overnight books are placeholder
+                       # asks with zero OI, but the professional line
+                       # exists and the match hasn't started (started
+                       # matches lose their benchmark via retirement),
+                       # so the comparison the pane exists for is
+                       # available. Restores 2026-08-31's "show all,
+                       # sort untraded last" for benchmarked rows;
+                       # unbenchmarked zero-OI rows stay hidden per
+                       # the 2026-09-07 rule.
+                       or (is_sport_bot
+                           and r.get("pinnacle_prob_yes") is not None)
                        or (r.get("open_interest") or 0) > 0
                        or r.get("ticker") in held_by_ticker]
         if current_bot == "darts":
