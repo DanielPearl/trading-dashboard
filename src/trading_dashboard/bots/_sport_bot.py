@@ -68,6 +68,13 @@ class SportSpec:
     # exporters are already benchmark-driven upstream).
     benchmark_guest_sport: str | None = None
     benchmark_kwargs: dict[str, Any] = field(default_factory=dict)
+    # Secondary benchmark via BetsAPI (2026-09-11: Pinnacle delisted
+    # table tennis feed-wide, blanking the TT pane). A dict like
+    # {"sport_id": 92, "league_substrings": ["tt elite"]} enables the
+    # multi-book consensus lookup for pairs the guest feed doesn't
+    # quote — guest lines keep priority where both exist. None (the
+    # default everywhere but TT) leaves the path fully disabled.
+    benchmark_betsapi: dict[str, Any] | None = None
     # mlb-family: build_watchlist_records(records) + live_state written
     # only in the sim process. darts-family (False): builder takes no
     # args and live_state is written every tick, before rows build.
@@ -90,16 +97,50 @@ def _load_upstream(spec: SportSpec,
     }
 
 
-def _benchmark_lookup(spec: SportSpec, log: logging.Logger) -> dict:
+def _benchmark_lookup(spec: SportSpec, log: logging.Logger,
+                      rows: list[dict] | None = None) -> dict:
+    lookup: dict = {}
     try:
         from kalshi_sdk.pinnacle import pinnacle_guest_probs_by_pair
+        lookup = (pinnacle_guest_probs_by_pair(spec.benchmark_guest_sport)
+                  or {})
     except ImportError:
-        return {}
-    try:
-        return pinnacle_guest_probs_by_pair(spec.benchmark_guest_sport) or {}
+        pass
     except Exception:  # noqa: BLE001
         log.exception("%s benchmark lookup failed", spec.name)
-        return {}
+    # BetsAPI consensus fills pairs the guest feed doesn't quote
+    # (guest wins where both exist — it's the sharper source).
+    # ``rows`` limits odds calls to the matches Kalshi actually
+    # lists; without rows the path stays off rather than burning
+    # quota on a whole slate.
+    if spec.benchmark_betsapi and rows:
+        try:
+            from kalshi_sdk.betsapi import (betsapi_probs_by_pair,
+                                            norm_name_tokens)
+            wanted = set()
+            for r in rows:
+                a, b = r.get("player_a"), r.get("player_b")
+                if a and b:
+                    wanted.add(frozenset({norm_name_tokens(a),
+                                          norm_name_tokens(b)}))
+            extra = betsapi_probs_by_pair(
+                wanted_pairs=wanted, **spec.benchmark_betsapi) or {}
+            added = 0
+            covered = {frozenset(norm_name_tokens(n) for n in k
+                                 if not str(n).startswith("_"))
+                       for k in lookup}
+            for k, v in extra.items():
+                norm_k = frozenset(norm_name_tokens(n) for n in k)
+                if norm_k in covered:
+                    continue
+                lookup[k] = v
+                added += 1
+            if added:
+                log.info("%s benchmark: +%d pair(s) from BetsAPI "
+                         "consensus", spec.name, added)
+        except Exception:  # noqa: BLE001
+            log.exception("%s BetsAPI benchmark failed", spec.name)
+    return lookup
 
 
 def _one_tick(spec: SportSpec, upstream: dict[str, Callable[..., Any]],
@@ -120,7 +161,7 @@ def _one_tick(spec: SportSpec, upstream: dict[str, Callable[..., Any]],
         upstream["write_live_state"](records)
         rows = upstream["build_watchlist_records"]()
         matched = _benchmark_rows.apply_benchmark(
-            rows, records, _benchmark_lookup(spec, log),
+            rows, records, _benchmark_lookup(spec, log, rows=rows),
             **spec.benchmark_kwargs)
 
     enabled = bot_state.is_bot_enabled(spec.bot_key)

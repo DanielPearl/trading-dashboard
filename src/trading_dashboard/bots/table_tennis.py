@@ -22,7 +22,14 @@ SPEC = SportSpec(
     executor_kwargs={"tournament": "TT Elite", "surface": "Indoor",
                      "win_verb": "winning"},
     benchmark_guest_sport="table_tennis",
-    # TT rows without a Pinnacle line keep the upstream
+    # BetsAPI multi-book consensus (user 2026-09-11: "i added bets
+    # api key... it should work for only table tennis") — Pinnacle
+    # delisted TT feed-wide, so the guest lookup returns nothing and
+    # this fills every pair. Guest lines regain priority the moment
+    # Pinnacle relists. TT Elite is the only circuit Kalshi carries.
+    benchmark_betsapi={"sport_id": 92,
+                       "league_substrings": ["tt elite"]},
+    # TT rows without a benchmark line keep the upstream
     # Elo model probs (display-only; never buy-eligible).
     benchmark_kwargs={"win_verb": "winning",
                       "keep_model_probs": True},

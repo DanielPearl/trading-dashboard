@@ -37,6 +37,35 @@ DEFAULTS = _shared_defaults()
 TRADEABLE_LABELS = {"STRONG_EDGE", "SMALL_EDGE"}
 
 
+def _pair_key_match(lookup: Dict[frozenset, Dict[str, float]],
+                    name_a: str, name_b: str):
+    """Resolve a pair entry: exact frozenset, then lowercase-substring
+    (alias drift: "L. Littler" vs "Luke Littler"), then order-free
+    diacritic-free token sets ("Gluszek Michal" vs "Michal Gluszek",
+    "Michał" vs "Michal" — Kalshi and the books disagree on token
+    order and accents constantly; token-SET equality stays strict
+    enough that different players never merge)."""
+    probs = lookup.get(frozenset({name_a, name_b}))
+    if probs is not None:
+        return probs
+    want_a, want_b = name_a.lower(), name_b.lower()
+    for names, p in lookup.items():
+        lowered = {n.lower() for n in names if not n.startswith("_")}
+        if all(any(w in n or n in w for n in lowered)
+               for w in (want_a, want_b)):
+            return p
+    from kalshi_sdk.betsapi import norm_name_tokens
+    want = {norm_name_tokens(name_a), norm_name_tokens(name_b)}
+    if frozenset() in want:
+        return None
+    for names, p in lookup.items():
+        keyed = {norm_name_tokens(n) for n in names
+                 if not str(n).startswith("_")}
+        if keyed == want:
+            return p
+    return None
+
+
 def match_pair_probs(lookup: Dict[frozenset, Dict[str, float]],
                      name_a: str, name_b: str,
                      near_iso: str | None = None):
@@ -45,15 +74,7 @@ def match_pair_probs(lookup: Dict[frozenset, Dict[str, float]],
     (e.g. "L. Littler" vs "Luke Littler")."""
     if not (name_a and name_b):
         return None, None
-    probs = lookup.get(frozenset({name_a, name_b}))
-    if probs is None:
-        want_a, want_b = name_a.lower(), name_b.lower()
-        for names, p in lookup.items():
-            lowered = {n.lower() for n in names if not n.startswith("_")}
-            if all(any(w in n or n in w for n in lowered)
-                   for w in (want_a, want_b)):
-                probs = p
-                break
+    probs = _pair_key_match(lookup, name_a, name_b)
     if not probs:
         return None, None
     # Same-pair repeat guard (2026-07-20): TT Elite runs the same two
@@ -73,6 +94,16 @@ def match_pair_probs(lookup: Dict[frozenset, Dict[str, float]],
             kl = k.lower()
             if kl == t or t in kl or kl in t:
                 return v
+        # Token-set fallback — same rule as pair resolution: order-
+        # free, diacritic-free equality.
+        from kalshi_sdk.betsapi import norm_name_tokens
+        tt = norm_name_tokens(name)
+        if tt:
+            for k, v in probs.items():
+                if k.startswith("_"):
+                    continue
+                if norm_name_tokens(k) == tt:
+                    return v
         return None
 
     pa, pb = _match(name_a), _match(name_b)
@@ -87,19 +118,12 @@ def match_pair_probs(lookup: Dict[frozenset, Dict[str, float]],
 def match_pair_start(lookup: Dict[frozenset, Dict[str, float]],
                      name_a: str, name_b: str):
     """The benchmark feed's scheduled start (ISO string or None) for a
-    pair — Pinnacle guest ``startTime`` / Odds-API ``commence_time``.
-    Same tolerant pair resolution as ``match_pair_probs``."""
+    pair — Pinnacle guest ``startTime`` / Odds-API ``commence_time`` /
+    BetsAPI event time. Same tolerant pair resolution as
+    ``match_pair_probs``."""
     if not (name_a and name_b):
         return None
-    probs = lookup.get(frozenset({name_a, name_b}))
-    if probs is None:
-        want_a, want_b = name_a.lower(), name_b.lower()
-        for names, p in lookup.items():
-            lowered = {n.lower() for n in names if not n.startswith("_")}
-            if all(any(w in n or n in w for n in lowered)
-                   for w in (want_a, want_b)):
-                probs = p
-                break
+    probs = _pair_key_match(lookup, name_a, name_b)
     return (probs or {}).get("_start")
 
 
