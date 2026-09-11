@@ -1099,6 +1099,16 @@ def _render_watchlist(out: List[str], watchlist: List[dict],
             if (is_hormuz_bot and "awaiting PortWatch"
                     in (r.get("rejection_reason") or "")):
                 return True
+            # Claims consensus gap (2026-09-11): between a Thursday
+            # release and ForexFactory publishing next week's
+            # consensus, the bot snapshots the freshly-listed ladder
+            # with this reason — show next release's contracts with a
+            # blank Model % rather than an empty pane ("jobless
+            # claims contracts aren't showing up").
+            if (current_bot == "unemployment-claims"
+                    and "awaiting next-week consensus"
+                    in (r.get("rejection_reason") or "")):
+                return True
             return (_model_from_internal
                     and r.get("model_prob_yes") is not None)
         _open_rows = [r for r in _open_rows
@@ -1114,6 +1124,12 @@ def _render_watchlist(out: List[str], watchlist: List[dict],
         # surface to show).
         _open_rows = [r for r in _open_rows
                        if r.get("_skip_oi_filter")
+                       # Publish-gap ladders (hormuz PortWatch, claims
+                       # consensus): a freshly-listed next-release
+                       # market legitimately has zero OI for its first
+                       # day or two — the whole point of the gap rows
+                       # is showing the ladder exists.
+                       or "awaiting" in (r.get("rejection_reason") or "")
                        or (r.get("open_interest") or 0) > 0
                        or r.get("ticker") in held_by_ticker]
         if current_bot == "darts":
@@ -1898,8 +1914,17 @@ def _render_watchlist(out: List[str], watchlist: List[dict],
                 _p100_html = ""
                 if _p100 is not None:
                     try:
+                        # Label spells out that this is chart-survival
+                        # context, NOT the contract's Model % — a
+                        # near-100% here beside a Top-10 contract read
+                        # as "an edge" (2026-09-11, Risk It All: on-
+                        # chart 100% but Top-10 model 53% vs 70¢ ask).
                         _p100_html = (
-                            "<br><span class='small gray'>Hot 100: "
+                            "<br><span class='small gray' "
+                            "title='Model probability the song stays "
+                            "ON the Hot 100 chart at all — context "
+                            "only. The contract asks a different "
+                            "question (see Model %).'>stays on chart: "
                             f"{float(_p100) * 100:.0f}%</span>")
                     except (TypeError, ValueError):
                         _p100_html = ""
