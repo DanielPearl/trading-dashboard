@@ -799,10 +799,10 @@ def _render_active_bets_table(out: List[str], bets: List[dict],
             "<th class='num' title='Number of contracts in this position.'>My contracts</th>"
             "<th class='num' title='Kalshi total cost — entry price × contracts + Kalshi entry fee.'>Cost</th>"
             "<th class='num' title='Potential earnings if this side wins — $1 × contracts settlement payout minus (entry + fee).'>Payout</th>"
-            "<th class='num' title='Model % at ENTRY — Pinnacle&apos;s prob for our side at the moment we opened. Static once the trade is on.'>Model entry %</th>"
-            "<th class='num' title='Kalshi entry % — the implied probability for our side at the price we paid. Static.'>Kalshi entry %</th>"
-            "<th class='num' title='Model % NOW — today&apos;s Pinnacle prob for our side. Compare to Model entry % to see how the line has moved.'>Model live %</th>"
-            "<th class='num' title='Live Kalshi market price for our side — updates continuously.'>Kalshi live %</th>"
+            "<th class='num' title='Model % at ENTRY — YES on top (green), NO beneath (red), same layout as the watchlist. Static once the trade is on.'>Model entry %</th>"
+            "<th class='num' title='Kalshi implied % at the price we paid — YES on top (green), NO beneath (red). Static.'>Kalshi entry %</th>"
+            "<th class='num' title='Model % NOW — YES on top (green), NO beneath (red). A dash means the model currently declines to price this market.'>Model live %</th>"
+            "<th class='num' title='Live Kalshi market mid — YES on top (green), NO beneath (red); updates continuously.'>Kalshi live %</th>"
             "<th class='num' title='Time until the contract resolves'>Closes in</th>"
             "<th></th>"
             f"</tr></thead><tbody{tbody_attrs}>")
@@ -820,6 +820,26 @@ def _render_active_bets_table(out: List[str], bets: List[dict],
                "<th class='num' title='Time until the contract resolves'>Closes in</th>"
                "<th></th>"
                f"</tr></thead><tbody{tbody_attrs}>")
+    def _stack_cell(yes_pct: float | None, title: str = "") -> str:
+        """Watchlist-style stacked probability cell — YES on top in
+        green, NO beneath in red (user 2026-09-11: summary columns
+        should read exactly like the watchlist's). Input is the
+        YES-axis percentage; the NO line is its complement. None →
+        the gray dash."""
+        if yes_pct is None:
+            return "<td class='num gray'>—</td>"
+        try:
+            y = float(yes_pct)
+        except (TypeError, ValueError):
+            return "<td class='num gray'>—</td>"
+        tt = f" title='{html.escape(title)}'" if title else ""
+        return (
+            f"<td class='num cell-stack'{tt}>"
+            f"<div class='side-yes green'>{y:.0f}%</div>"
+            f"<div class='side-no red'>{100.0 - y:.0f}%</div>"
+            f"</td>"
+        )
+
     for b in bets:
         opened = (b.get("opened_at") or "")[:19].replace("T", " ")
         side = (b.get("side") or "").upper()
@@ -1020,6 +1040,26 @@ def _render_active_bets_table(out: List[str], bets: List[dict],
             (model_p_entry - kalshi_p) * 100.0
             if (model_p_entry is not None and kalshi_p is not None) else None
         )
+        # YES-axis values for the sport-table's stacked probability
+        # cells (YES top / NO bottom, same convention as the
+        # watchlist). ``m_yes`` / ``m_yes_entry`` are already on the
+        # YES axis; the entry price is the HELD side's price, so a NO
+        # position's YES-axis entry is its complement.
+        try:
+            _model_entry_yes = (float(m_yes_entry) * 100.0
+                                if m_yes_entry is not None else None)
+        except (TypeError, ValueError):
+            _model_entry_yes = None
+        try:
+            _model_live_yes = (float(m_yes) * 100.0
+                               if m_yes is not None else None)
+        except (TypeError, ValueError):
+            _model_live_yes = None
+        _kalshi_entry_yes = ((float(entry) if side == "YES"
+                              else 100.0 - float(entry))
+                             if entry else None)
+        _kalshi_live_yes = (float(mid_yes)
+                            if mid_yes is not None else None)
         criteria = {
             "ticker": b.get("ticker"),
             "side": side,
@@ -1243,10 +1283,10 @@ def _render_active_bets_table(out: List[str], bets: List[dict],
                 f"if this side wins — $1 × {contracts} contracts − "
                 f"${total_cost:.2f} paid = net gain.'>"
                 f"{pg_sign}${abs(potential_gain):.2f}</td>"
-                f"{model_entry_cell}"
-                f"{kalshi_entry_cell}"
-                f"{model_prob_cell}"
-                f"{current_prob_cell}"
+                f"{_stack_cell(_model_entry_yes, 'Model % at entry — YES on top, NO beneath')}"
+                f"{_stack_cell(_kalshi_entry_yes, 'Kalshi implied % at the price we paid — YES on top, NO beneath')}"
+                f"{_stack_cell(_model_live_yes, 'Model % now' + (f' — edge {edge_pts:+.1f}pp on our side' if edge_pts is not None else ''))}"
+                f"{_stack_cell(_kalshi_live_yes, 'Live Kalshi market mid — YES on top, NO beneath')}"
                 f"<td class='num'>{time_to_close_str(mtc)}</td>"
                 f"<td><button type='button' class='criteria-btn' "
                 f"title='Why was this bet chosen?' "
