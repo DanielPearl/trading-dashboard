@@ -972,7 +972,13 @@ def _render_active_bets_table(out: List[str], bets: List[dict],
                 _dj = json.loads(b["decision_json"]) if isinstance(
                     b["decision_json"], str) else b["decision_json"]
                 if isinstance(_dj, dict):
-                    if m_yes is None and _dj.get("model_prob") is not None:
+                    # decision_json is the ENTRY-time snapshot — for
+                    # explicit-live rows it must never masquerade as
+                    # the live model value (the guard above chose the
+                    # dash on purpose).
+                    if (m_yes is None
+                            and not b.get("_model_live_explicit")
+                            and _dj.get("model_prob") is not None):
                         m_yes = _dj["model_prob"]
                     if k_yes is None and _dj.get("kalshi_implied_prob") is not None:
                         k_yes = _dj["kalshi_implied_prob"]
