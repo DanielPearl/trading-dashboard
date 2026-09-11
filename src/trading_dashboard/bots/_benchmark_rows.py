@@ -185,10 +185,17 @@ def apply_benchmark(rows: List[Dict[str, Any]],
                     row["kickoff"] = start
 
         ask_a = row.get("market_prob_a")
-        ask_b = row.get("market_prob_b")
-        if ask_b is None and row.get("yes_ask_cents_b") is not None:
+        # The REAL B-side ask, not the exporter's complement fiction:
+        # upstream rows stamp market_prob_b = 1 − market_prob_a, which
+        # on a one-sided book invents a price nobody quotes (TT
+        # overnight: both sides ask 94¢, complement said 6¢ — summed
+        # to a "healthy" 100¢ and hid the placeholder book,
+        # 2026-09-11). yes_ask_cents_b is what side B actually costs.
+        if row.get("yes_ask_cents_b") is not None:
             ask_b = row["yes_ask_cents_b"] / 100.0
             row["market_prob_b"] = ask_b
+        else:
+            ask_b = row.get("market_prob_b")
 
         # Benchmark retirement at start (same rule the NBA/MLB
         # exporters apply upstream): once the match is under way the

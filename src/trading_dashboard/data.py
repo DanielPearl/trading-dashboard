@@ -496,6 +496,31 @@ def fetch_active_bets_with_marks(db_path: str) -> List[dict]:
     market_views) still show a live "Current" cell on the Home tab's
     active-bets table.
     """
+    # The LATEST view's model prob — including NULL when the bot
+    # currently declines to price (weather's day-under-way guard,
+    # macro pre-release gaps). The Home tab's "Model live %" cell
+    # previously fell back to the ENTRY prob for these bots, so a
+    # stale number rendered beside a fresh Kalshi price and looked
+    # like the model's current view (2026-09-11: CPI showed entry
+    # 49% as "live" while the fresh nowcast said 31%). Only selected
+    # when the schema HAS the column — billboard's market_views
+    # doesn't, and an unconditional subquery errored the whole
+    # statement, silently blanking its Active bets (2026-09-11,
+    # BbY WOW held-NO invisible on the Home tab).
+    has_model_col = False
+    try:
+        with closing(_conn(db_path)) as _c:
+            has_model_col = any(
+                r[1] == "model_prob_yes"
+                for r in _c.execute("PRAGMA table_info(market_views)"))
+    except (sqlite3.OperationalError, sqlite3.DatabaseError):
+        pass
+    model_sel = (
+        "       (SELECT mv.model_prob_yes FROM market_views mv "
+        "          WHERE mv.ticker = p.ticker "
+        "          ORDER BY mv.id DESC LIMIT 1) AS current_model_prob_yes "
+        if has_model_col else
+        "       NULL AS _no_model_col ")
     rows = _safe_query(
         db_path,
         "SELECT p.*, "
@@ -518,16 +543,7 @@ def fetch_active_bets_with_marks(db_path: str) -> List[dict]:
         "       (SELECT mv.strike_high FROM market_views mv "
         "          WHERE mv.ticker = p.ticker "
         "          ORDER BY mv.id DESC LIMIT 1) AS cap_strike, "
-        # The LATEST view's model prob — including NULL when the bot
-        # currently declines to price (weather's day-under-way guard,
-        # macro pre-release gaps). The Home tab's "Model live %" cell
-        # previously fell back to the ENTRY prob for these bots, so a
-        # stale number rendered beside a fresh Kalshi price and looked
-        # like the model's current view (2026-09-11: CPI showed entry
-        # 49% as "live" while the fresh nowcast said 31%).
-        "       (SELECT mv.model_prob_yes FROM market_views mv "
-        "          WHERE mv.ticker = p.ticker "
-        "          ORDER BY mv.id DESC LIMIT 1) AS current_model_prob_yes "
+        + model_sel +
         "FROM positions p LEFT JOIN position_marks m ON p.id = m.position_id "
         "WHERE p.status = 'open' ORDER BY p.opened_at DESC")
     # Flag so the renderer knows "None" here means "the model has no
@@ -535,7 +551,7 @@ def fetch_active_bets_with_marks(db_path: str) -> List[dict]:
     # back to the entry-time prob" (the sports adapters attach the
     # field only when a fresh line exists, and keep the fallback).
     for r in rows:
-        r["_model_live_explicit"] = True
+        r["_model_live_explicit"] = has_model_col
     return rows
 
 
