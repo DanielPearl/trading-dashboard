@@ -496,7 +496,7 @@ def fetch_active_bets_with_marks(db_path: str) -> List[dict]:
     market_views) still show a live "Current" cell on the Home tab's
     active-bets table.
     """
-    return _safe_query(
+    rows = _safe_query(
         db_path,
         "SELECT p.*, "
         "       COALESCE(m.yes_ask_cents, "
@@ -517,9 +517,26 @@ def fetch_active_bets_with_marks(db_path: str) -> List[dict]:
         "          ORDER BY mv.id DESC LIMIT 1) AS floor_strike, "
         "       (SELECT mv.strike_high FROM market_views mv "
         "          WHERE mv.ticker = p.ticker "
-        "          ORDER BY mv.id DESC LIMIT 1) AS cap_strike "
+        "          ORDER BY mv.id DESC LIMIT 1) AS cap_strike, "
+        # The LATEST view's model prob — including NULL when the bot
+        # currently declines to price (weather's day-under-way guard,
+        # macro pre-release gaps). The Home tab's "Model live %" cell
+        # previously fell back to the ENTRY prob for these bots, so a
+        # stale number rendered beside a fresh Kalshi price and looked
+        # like the model's current view (2026-09-11: CPI showed entry
+        # 49% as "live" while the fresh nowcast said 31%).
+        "       (SELECT mv.model_prob_yes FROM market_views mv "
+        "          WHERE mv.ticker = p.ticker "
+        "          ORDER BY mv.id DESC LIMIT 1) AS current_model_prob_yes "
         "FROM positions p LEFT JOIN position_marks m ON p.id = m.position_id "
         "WHERE p.status = 'open' ORDER BY p.opened_at DESC")
+    # Flag so the renderer knows "None" here means "the model has no
+    # CURRENT opinion — render a dash", not "column missing — fall
+    # back to the entry-time prob" (the sports adapters attach the
+    # field only when a fresh line exists, and keep the fallback).
+    for r in rows:
+        r["_model_live_explicit"] = True
+    return rows
 
 
 # ── Kalshi portfolio → cross-bot history ────────────────────────────

@@ -890,14 +890,24 @@ def _render_active_bets_table(out: List[str], bets: List[dict],
         # Probability cells — both rendered in the default white text;
         # the user can compare entry vs current at a glance without
         # the color cue (which was tracking direction of market move).
-        entry_prob_cell = f"<td class='num'>{entry_prob_pct}%</td>"
+        # Every probability cell in this table is SIDE-RELATIVE (the
+        # held side's probability / price), while the watchlist pages
+        # quote the YES axis — on a NO row the same contract shows
+        # 100−x% here vs x% there. That axis flip read as "bought NO
+        # with model above Kalshi?!" three separate times (Miami rain
+        # 2026-09-08, Philadelphia/DC + CPI 2026-09-11), so NO rows
+        # now carry an explicit side tag in each probability cell
+        # instead of relying on the header tooltip.
+        _tag = ("<span class='small gray'>NO </span>"
+                if side == "NO" else "")
+        entry_prob_cell = f"<td class='num'>{_tag}{entry_prob_pct}%</td>"
         if current_prob_pct is None:
             current_prob_cell = "<td class='num gray'>—</td>"
         else:
             current_prob_cell = (
                 f"<td class='num' title='Market mid for our side right "
                 f"now. Compare to Entry prob to see how the market has "
-                f"moved.'>{current_prob_pct:.0f}%</td>"
+                f"moved.'>{_tag}{current_prob_pct:.0f}%</td>"
             )
         mtc = b.get("minutes_to_close")
         # Universal fallback: parse the settlement date out of the
@@ -943,7 +953,15 @@ def _render_active_bets_table(out: List[str], bets: List[dict],
         # via ``m_yes_entry`` below.
         m_yes_now = b.get("current_model_prob_yes")
         m_yes_entry = b.get("model_yes_prob_at_entry")
-        m_yes = m_yes_now if m_yes_now is not None else m_yes_entry
+        # Ledger bots (weather / macro) stamp _model_live_explicit:
+        # their current_model_prob_yes is the latest view's value and
+        # None genuinely means "no current model opinion" (day under
+        # way, pre-release gap) — show a dash rather than silently
+        # re-labelling the entry-time prob as live.
+        if b.get("_model_live_explicit") and m_yes_now is None:
+            m_yes = None
+        else:
+            m_yes = m_yes_now if m_yes_now is not None else m_yes_entry
         k_yes = b.get("kalshi_yes_prob_at_entry")
         # Backfill from decision_json for bots whose schema doesn't
         # have dedicated columns (natural-gas stashes both probs
@@ -1072,7 +1090,7 @@ def _render_active_bets_table(out: List[str], bets: List[dict],
                 tip = (f" title='Model edge {edge_pts:+.1f}pp vs entry "
                        f"price'")
             model_prob_cell = (
-                f"<td class='num'{tip}>{model_p*100:.0f}%</td>"
+                f"<td class='num'{tip}>{_tag}{model_p*100:.0f}%</td>"
             )
         # Model ENTRY % cell — Pinnacle's prob for our side at the
         # moment we opened. Static once the trade is on.
@@ -1080,13 +1098,13 @@ def _render_active_bets_table(out: List[str], bets: List[dict],
             model_entry_cell = "<td class='num gray'>—</td>"
         else:
             model_entry_cell = (
-                f"<td class='num'>{model_p_entry*100:.0f}%</td>"
+                f"<td class='num'>{_tag}{model_p_entry*100:.0f}%</td>"
             )
         # Kalshi ENTRY % cell — implied prob of our side at the
         # price we actually paid. entry_price_cents is already
         # scoped to the side we bought (tennis convention).
         kalshi_entry_cell = (
-            f"<td class='num'>{entry}%</td>" if entry
+            f"<td class='num'>{_tag}{entry}%</td>" if entry
             else "<td class='num gray'>—</td>"
         )
         # Side cell: for sport bots, mirror the watchlist row underneath
