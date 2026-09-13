@@ -293,7 +293,7 @@ bots:
     # series_ticker meta label distinguishes the cards on the home grid.
     dashboard_type: sport
     series_ticker: TABLETENNIS
-    series_prefixes: [KXTABLETENNIS, KXITTFMENMATCH, KXITTFWOMENMATCH, KXTTELITEGAME]
+    series_prefixes: [KXTABLETENNIS, KXITTFMENMATCH, KXITTFWOMENMATCH, KXTTELITEGAME, KXTTELITEMATCH]
     # 2026-07: probability source is the devigged Pinnacle TT line
     # (guest feed — The Odds API has no table-tennis coverage). Rows
     # without a Pinnacle line are WATCH-only; while Pinnacle isn't

@@ -982,7 +982,15 @@ def build_kalshi_cross_bot_history(bots: List[dict]) -> List[dict]:
             "_match": enrich.get("_match") or "",
             "_side_player": enrich.get("_side_player") or "",
             "_bot_key": bot.get("key") if bot else "unknown",
-            "_bot_name": bot.get("name") if bot else "Unknown bot",
+            # Unmatched rows STAY in History (user 2026-09-13: "the
+            # history page should capture everything in kalshi that
+            # is closed") — but label them with the series ticker so
+            # a gap in some card's series_prefixes reads as "add
+            # KXFOO to a card", not as a mystery bot. The 2026-09-13
+            # case: TT's card listed the four retired TT series but
+            # never gained KXTTELITEMATCH when Kalshi moved.
+            "_bot_name": (bot.get("name") if bot
+                          else f"Unmatched ({ticker.split('-')[0]})"),
             # Hormuz History cells (contract-style Title / projected
             # "above N" / realized-peak Winner) read the bot's
             # committed weekly panel at render time.

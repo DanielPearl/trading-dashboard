@@ -213,7 +213,7 @@ bots:
     name: Table Tennis Forecast
     dashboard_type: sport
     series_ticker: TABLETENNIS
-    series_prefixes: [KXTABLETENNIS, KXITTFMENMATCH, KXITTFWOMENMATCH, KXTTELITEGAME]
+    series_prefixes: [KXTABLETENNIS, KXITTFMENMATCH, KXITTFWOMENMATCH, KXTTELITEGAME, KXTTELITEMATCH]
     data_source: "Pinnacle moneylines (guest feed devig)"
     db_path: /root/table-tennis-forecast/data/outputs-live/watchlist.json
     decisions_path: /root/table-tennis-forecast/data/outputs-live/watchlist.json
