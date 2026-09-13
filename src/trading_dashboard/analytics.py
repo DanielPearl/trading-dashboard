@@ -376,6 +376,37 @@ def _db_bot_stats(bot: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     }
 
 
+def _unmatched_settlements(bots: List[Dict[str, Any]]) -> Dict[str, int]:
+    """Settlement series on the Kalshi account that resolve to NO bot
+    card — user 2026-09-13: "there should be no catch all label. all
+    the bots should be known". A non-empty result logs a WARNING
+    every nightly pass (the Diagnosis panel surfaces repeated
+    warnings), so a series gap gets fixed instead of living in
+    History as an 'Unmatched' row. Empty dict on any fetch problem —
+    this check must never take the artifact down with it."""
+    try:
+        from .data import (_bot_ticker_prefix_index, _ticker_to_bot,
+                           _fetch_all_kalshi_history)
+        idx = _bot_ticker_prefix_index(bots)
+        settlements, _fills = _fetch_all_kalshi_history()
+        missing: Dict[str, int] = {}
+        for s in settlements or []:
+            t = s.get("ticker") or ""
+            if t and _ticker_to_bot(t, idx) is None:
+                series = t.split("-")[0]
+                missing[series] = missing.get(series, 0) + 1
+        for series, n in missing.items():
+            log.warning(
+                "settlement attribution gap: %d settled contract(s) "
+                "in series %s match NO bot card — add %s to the "
+                "owning card's series_prefixes in config/dashboard*.yaml",
+                n, series, series)
+        return missing
+    except Exception:  # noqa: BLE001
+        log.exception("settlement-attribution check failed (non-fatal)")
+        return {}
+
+
 def compute_artifact(bots: List[Dict[str, Any]]) -> Dict[str, Any]:
     per_bot: Dict[str, Any] = {}
     for b in bots:
@@ -400,6 +431,7 @@ def compute_artifact(bots: List[Dict[str, Any]]) -> Dict[str, Any]:
             "min_avg_clv": SIZING_MIN_AVG_CLV,
         },
         "bots": per_bot,
+        "unmatched_settlement_series": _unmatched_settlements(bots),
     }
 
 

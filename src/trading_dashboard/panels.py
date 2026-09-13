@@ -405,7 +405,21 @@ def _render_analytics_panel(out: List[str]) -> None:
             f"<td>{pnl_cell}</td>"
             f"<td>{sizing}</td>"
             "</tr>")
-    out.append("</tbody></table></div>")
+    out.append("</tbody></table>")
+    # Settlement-attribution alarm (user 2026-09-13: "there should be
+    # no catch all label. all the bots should be known") — non-empty
+    # means History has rows no bot card claims; name the series so
+    # the fix is a one-line config change.
+    unmatched = art.get("unmatched_settlement_series") or {}
+    if unmatched:
+        detail = ", ".join(f"{s} ({n})" for s, n in sorted(unmatched.items()))
+        out.append(
+            "<div class='small' style='color:var(--neg,#c62828);"
+            "margin-top:6px'>&#9888; Settlement attribution gap: "
+            f"{html.escape(detail)} — settled contracts matching no "
+            "bot card. Add the series to the owning card's "
+            "series_prefixes in config/dashboard*.yaml.</div>")
+    out.append("</div>")
 
 
 def _render_bot_cards(out: List[str], rollup: dict,
