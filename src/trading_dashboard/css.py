@@ -1105,10 +1105,16 @@ tr.row-bought td.num.green { color: #56d364 !important; }
 .attribution-grid { display: grid; gap: 14px;
     grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
     margin-bottom: 14px; }
+/* Fixed square-ish panels with internal scroll (user 2026-09-13:
+   the subcategory lists keep growing — by-bot already has 10+
+   rows, by-month grows monthly — so the panel height is capped and
+   the table scrolls inside; the subhead stays pinned on top). */
 .attribution-panel { background: #0d1117;
     border: 1px solid #21262d; border-radius: 6px;
-    padding: 10px 14px; }
-.attribution-panel h3.subhead { margin-top: 0; margin-bottom: 6px; }
+    padding: 10px 14px; height: 280px; overflow-y: auto; }
+.attribution-panel h3.subhead { margin-top: 0; margin-bottom: 6px;
+    position: sticky; top: -10px; background: #0d1117;
+    padding: 10px 0 4px; z-index: 1; }
 .attribution-panel table { font-size: 12px; width: 100%; }
 .attribution-panel th, .attribution-panel td { padding: 6px 8px; }
 /* History tab P&L line chart — sits between the headline cards and

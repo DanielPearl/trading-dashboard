@@ -1555,8 +1555,27 @@ def _build_global_active_bets(bots: List[dict],
         for ab in rows:
             ab["_bot_key"] = b["key"]
             ab["_bot_name"] = b["name"]
+            # Event label for non-sport rows (user 2026-09-13): the
+            # macro stats are determined for a place, not a matchup —
+            # say which one. Weather's adapter sets the city itself;
+            # sports carry their competition.
+            ab.setdefault("_tournament", _EVENT_LABEL_BY_BOT.get(b["key"]))
             out.append(ab)
     return out
+
+
+# Where each non-sport bot's statistic is determined — the Active
+# bets Event cell (user 2026-09-13: "for joblessness say where it's
+# determining (united states?) same with gdp").
+_EVENT_LABEL_BY_BOT: Dict[str, str] = {
+    "unemployment-claims": "United States",
+    "cpi": "United States",
+    "pce": "United States",
+    "gdp": "United States",
+    "gas-prices": "United States",
+    "natural-gas": "United States",
+    "hormuz": "Strait of Hormuz",
+}
 
 
 def fetch_watchlist(db_path: str) -> List[dict]:

@@ -201,9 +201,12 @@ def enrich_active_bets(bets: List[Dict[str, Any]],
                  else "")
         if wl:
             city = str(wl.get("city") or "").split(",")[0].strip()
-            q = str(wl.get("question") or "") or kind
+            # Event = just the city (user 2026-09-13: "for rain for
+            # event. just say the city where it takes place") — the
+            # Title column already carries the full question, so the
+            # old "city · question" doubled it up.
             if city:
-                ab["_tournament"] = f"{city} · {q}" if q else city
+                ab["_tournament"] = city
             if wl.get("title"):
                 ab["title"] = wl["title"]
                 ab["_title"] = wl["title"]
