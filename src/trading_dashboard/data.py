@@ -569,6 +569,67 @@ _KALSHI_HISTORY_CACHE: Dict[str, Any] = {"at": 0.0, "settlements": [],
                                             "fills": []}
 _KALSHI_HISTORY_TTL_S = 60.0
 
+# Local accretion archive for Kalshi portfolio history. Kalshi's
+# /portfolio/settlements + /fills serve only a rolling ~60-day window
+# (2026-09-13: earliest available row was Jul 8 with pagination fully
+# exhausted and time-filtered queries for June returning empty — the
+# May/June live-trading era had silently aged out of the History tab;
+# user: "I want to show everything"). Every fresh fetch upserts into
+# this sqlite, and the reader unions archive rows the API no longer
+# carries, so from now on nothing ages out again. Pre-Jul-8 rows were
+# backfilled once from the tennis ledger's pre-audit backup (475 real
+# closes, flagged _backfill=tennis-ledger).
+_KALSHI_ARCHIVE_DB = (Path(__file__).resolve().parents[2] / "data" /
+                      "analytics" / "kalshi_archive.db")
+
+
+def _archive_conn() -> sqlite3.Connection:
+    _KALSHI_ARCHIVE_DB.parent.mkdir(parents=True, exist_ok=True)
+    c = sqlite3.connect(_KALSHI_ARCHIVE_DB)
+    c.execute("CREATE TABLE IF NOT EXISTS settlements "
+              "(key TEXT PRIMARY KEY, payload TEXT NOT NULL)")
+    c.execute("CREATE TABLE IF NOT EXISTS fills "
+              "(key TEXT PRIMARY KEY, payload TEXT NOT NULL)")
+    return c
+
+
+def _settlement_key(s: dict) -> str:
+    return f"{s.get('ticker')}|{s.get('settled_time')}"
+
+
+def _fill_key(f: dict) -> str:
+    return (f"{f.get('order_id')}|{f.get('created_time')}|"
+            f"{f.get('side')}|{f.get('action')}|{f.get('count_fp')}")
+
+
+def _archive_merge(settlements: List[dict],
+                   fills: List[dict]) -> Tuple[List[dict], List[dict]]:
+    """Upsert the fresh rows, then return fresh ∪ archive-only rows."""
+    try:
+        with closing(_archive_conn()) as c:
+            c.executemany(
+                "INSERT OR REPLACE INTO settlements (key, payload) "
+                "VALUES (?, ?)",
+                [(_settlement_key(s), json.dumps(s, default=str))
+                 for s in settlements])
+            c.executemany(
+                "INSERT OR REPLACE INTO fills (key, payload) VALUES (?, ?)",
+                [(_fill_key(f), json.dumps(f, default=str))
+                 for f in fills])
+            c.commit()
+            have_s = {_settlement_key(s) for s in settlements}
+            have_f = {_fill_key(f) for f in fills}
+            extra_s = [json.loads(p) for (k, p) in
+                       c.execute("SELECT key, payload FROM settlements")
+                       if k not in have_s]
+            extra_f = [json.loads(p) for (k, p) in
+                       c.execute("SELECT key, payload FROM fills")
+                       if k not in have_f]
+        return settlements + extra_s, fills + extra_f
+    except Exception:  # noqa: BLE001
+        log.exception("kalshi archive merge failed — serving API only")
+        return settlements, fills
+
 
 def _fetch_all_kalshi_history() -> Tuple[List[dict], List[dict]]:
     """Return ``(settlements, fills)`` across every Kalshi ticker.
@@ -596,6 +657,9 @@ def _fetch_all_kalshi_history() -> Tuple[List[dict], List[dict]]:
         log.exception("kalshi settlements/fills fetch failed; serving stale")
         return (_KALSHI_HISTORY_CACHE["settlements"],
                 _KALSHI_HISTORY_CACHE["fills"])
+    # Accrete into the local archive and union rows Kalshi's rolling
+    # window has already dropped — see _KALSHI_ARCHIVE_DB above.
+    settlements, fills = _archive_merge(settlements, fills)
     _KALSHI_HISTORY_CACHE.update(
         {"at": now, "settlements": settlements, "fills": fills})
     return settlements, fills
