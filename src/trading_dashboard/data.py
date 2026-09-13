@@ -931,6 +931,40 @@ def build_kalshi_cross_bot_history(bots: List[dict]) -> List[dict]:
     prefix_idx = _bot_ticker_prefix_index(bots)
     fills_by_ticker = _summarize_fills_by_ticker(fills)
     enrich_idx = _load_sim_state_enrichment(bots)
+
+    # Threshold-bot enrichment (user 2026-09-13: "the title should be
+    # the question ... projected winner might be Above X"): the
+    # ladder bots' own market_views tables carry the Kalshi question
+    # title + direction + strikes per ticker — join them in so
+    # rain/cpi/pce/gdp/claims/gas history rows read like contracts
+    # instead of bare tickers. One lazy latest-per-ticker map per db;
+    # dbs whose market_views lack the columns (billboard) skip.
+    _views_maps: Dict[str, Dict[str, dict]] = {}
+
+    def _views_lookup(db_path: str, tick: str) -> dict:
+        if not db_path or not db_path.endswith(".db"):
+            return {}
+        if db_path not in _views_maps:
+            m: Dict[str, dict] = {}
+            try:
+                with closing(_conn(db_path)) as c:
+                    cols = {r[1] for r in
+                            c.execute("PRAGMA table_info(market_views)")}
+                    if {"title", "direction", "strike_low",
+                            "strike_high"} <= cols:
+                        for r in c.execute(
+                                "SELECT ticker, title, direction, "
+                                "strike_low, strike_high FROM market_views "
+                                "WHERE id IN (SELECT MAX(id) FROM "
+                                "market_views GROUP BY ticker)"):
+                            m[r[0]] = {"title": r[1], "direction": r[2],
+                                       "strike_low": r[3],
+                                       "strike_high": r[4]}
+            except (sqlite3.OperationalError, sqlite3.DatabaseError):
+                pass
+            _views_maps[db_path] = m
+        return _views_maps[db_path].get(tick) or {}
+
     out: List[dict] = []
     for s in settlements:
         ticker = s.get("ticker") or s.get("market_ticker") or ""
@@ -995,11 +1029,17 @@ def build_kalshi_cross_bot_history(bots: List[dict]) -> List[dict]:
         # Exit price on the side we bought: 100¢ if we won, 0¢ if we lost.
         exit_cents = 100 if market_result == side_held else 0
 
-        opened_at = f.get("first_open_time") or ""
+        # Open time: fills first; the archive-backfilled rows carry
+        # the ledger's own open stamp (fills for that era aged out of
+        # Kalshi's window — user 2026-09-13: "why would some of the
+        # open dates not show").
+        opened_at = (f.get("first_open_time")
+                     or s.get("_opened_at") or "")
         settled_at = (s.get("settled_time")
                       or s.get("settle_time")
                       or s.get("created_time") or "")
         bot = _ticker_to_bot(ticker, prefix_idx)
+        views = _views_lookup((bot or {}).get("db_path") or "", ticker)
 
         # Sim-state enrichment (Title / Model p / Entry EV). Look the
         # settlement up by side-specific ticker first, then event
@@ -1042,7 +1082,11 @@ def build_kalshi_cross_bot_history(bots: List[dict]) -> List[dict]:
             "exited_at": settled_at,
             "expected_ev_at_entry": entry_ev,
             "model_yes_prob_at_entry": model_yes,
-            "_title": enrich.get("_title") or "",
+            "_title": (enrich.get("_title")
+                       or views.get("title") or ""),
+            "floor_strike": views.get("strike_low"),
+            "cap_strike": views.get("strike_high"),
+            "_direction": views.get("direction") or "",
             "_match": enrich.get("_match") or "",
             "_side_player": enrich.get("_side_player") or "",
             "_bot_key": bot.get("key") if bot else "unknown",

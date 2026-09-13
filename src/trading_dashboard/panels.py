@@ -1962,6 +1962,45 @@ def _render_bet_history_block(out: List[str], history: List[dict],
                 b.get("_training_data_path"), _tk)
             winner_str = (f"{int(round(_rp))} ships"
                           if _rp is not None else "—")
+        elif not _side_player:
+            # Generic threshold / yes-no contracts (rain, cpi, pce,
+            # gdp, claims, gas — user 2026-09-13: fill Projected
+            # winner / Winner "where there are currently no values").
+            # Projected winner = the outcome the bet pays on, phrased
+            # in contract terms ("Above 0.3", "Below 240K", "Rain");
+            # Winner = the outcome that actually happened (projected
+            # if the bet won, its complement if it lost). Strike
+            # values render in the bot's native units via its display
+            # config.
+            _yes_desc = _no_desc = None
+            _dirn = (b.get("_direction") or "").lower()
+            if _tk.startswith("KXRAIN"):
+                _yes_desc, _no_desc = "Rain", "No rain"
+            elif strike_low is not None or strike_high is not None:
+                _lo = (fmt_underlying(strike_low, display)
+                       if strike_low is not None else None)
+                _hi = (fmt_underlying(strike_high, display)
+                       if strike_high is not None else None)
+                if _dirn == "below" or (strike_low is None
+                                        and _hi is not None):
+                    _pivot = _hi or _lo
+                    _yes_desc = f"Below {_pivot}"
+                    _no_desc = f"Above {_pivot}"
+                elif (_dirn == "between" and _lo is not None
+                        and _hi is not None):
+                    _yes_desc = f"{_lo}–{_hi}"
+                    _no_desc = f"Outside {_lo}–{_hi}"
+                else:
+                    _yes_desc = f"Above {_lo}"
+                    _no_desc = f"Below {_lo}"
+            if _yes_desc:
+                _side_player = (_yes_desc if side == "YES"
+                                else _no_desc)
+                if pnl > 0:
+                    winner_str = _side_player
+                elif pnl < 0:
+                    winner_str = (_no_desc if side == "YES"
+                                  else _yes_desc)
         return (f"<tr><td>{html.escape(opened)}</td>"
                 f"<td>{html.escape(closed)}</td>"
                 f"{bot_cell}"
