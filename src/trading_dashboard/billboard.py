@@ -112,15 +112,32 @@ def model_summary_for_card(metrics_path: str | None,
     if not metrics:
         return {}
     blended = metrics.get("blended") or {}
+    # Honest headline (2026-09-14 rebuild): report the TOP-10 target
+    # — the one the traded contracts settle on — using BALANCED
+    # accuracy (raw accuracy on its 3.7%-positive base reads 98.6%
+    # while all-negative scores 96.3%; user: "accuracies are showing
+    # 90 something % so there's something wrong"). Falls back to the
+    # legacy blended block for pre-rebuild metrics files.
+    t10 = (metrics.get("targets") or {}).get("is_top_10") or {}
+    fam = ((t10.get("families") or {}).get(t10.get("best_model"))
+           or {})
+    test = fam.get("test") or {}
+    bub = fam.get("bubble_test") or {}
+    src = test if test.get("balanced_accuracy") is not None else blended
     return {
-        "classifier_accuracy": blended.get("accuracy"),
-        "training_brier": blended.get("brier"),
-        "training_log_loss": blended.get("log_loss"),
-        "training_f1": blended.get("f1"),
-        "training_precision": blended.get("precision"),
-        "training_recall": blended.get("recall"),
-        "training_roc_auc": blended.get("roc_auc"),
-        "threshold": blended.get("threshold"),
+        "classifier_accuracy": src.get("balanced_accuracy",
+                                       src.get("accuracy")),
+        "training_brier": src.get("brier"),
+        "training_log_loss": src.get("log_loss"),
+        "training_f1": src.get("f1"),
+        "training_precision": src.get("precision"),
+        "training_recall": src.get("recall"),
+        "training_roc_auc": src.get("roc_auc"),
+        "threshold": src.get("threshold"),
+        # Tradeable-zone read: metrics on prior-rank-4-20 rows only.
+        "bubble_n": bub.get("n"),
+        "bubble_brier": bub.get("brier"),
+        "bubble_accuracy": bub.get("balanced_accuracy"),
         "feature_count": int(metrics.get("feature_count", 0) or 0),
         # Training- and held-out test-set sizes. Surface on the Home
         # bot card as "Train rows" / "Test rows".
