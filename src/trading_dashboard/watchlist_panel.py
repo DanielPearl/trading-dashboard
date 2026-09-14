@@ -1109,6 +1109,17 @@ def _render_watchlist(out: List[str], watchlist: List[dict],
                     and "awaiting next-week consensus"
                     in (r.get("rejection_reason") or "")):
                 return True
+            # Same publish-gap convention for the discovery-driven
+            # bots (2026-09-14, user: "why don't the contracts show
+            # up in model vs market?"): rotten-tomatoes rows waiting
+            # on an RT page / first reviews, and book-awards rows
+            # waiting on the NBF list or market open, stamp an
+            # "awaiting …" reason — the listed contracts stay
+            # visible with a blank Model %.
+            if (current_bot in ("rotten-tomatoes", "book-awards")
+                    and "awaiting"
+                    in (r.get("rejection_reason") or "")):
+                return True
             return (_model_from_internal
                     and r.get("model_prob_yes") is not None)
         _open_rows = [r for r in _open_rows

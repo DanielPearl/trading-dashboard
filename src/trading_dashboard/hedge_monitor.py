@@ -195,11 +195,16 @@ def _check_db(db_path: str, bot: Dict[str, Any],
             return []
         prior_col = ("model_yes_prob_at_entry"
                       if "model_yes_prob_at_entry" in col_names else "NULL")
+        # Ledgers bootstrapped by the newer paper-only bots (rotten-
+        # tomatoes, book-awards) have no hedge_id column at all —
+        # nothing there is hedged, so the filter simply drops out.
+        hedge_filter = (" AND (hedge_id IS NULL OR hedge_id = 0)"
+                        if "hedge_id" in col_names else "")
         rows = c.execute(
             f"SELECT id, ticker, side, entry_price_cents, contracts, "
             f"  {prior_col} AS model_yes_prob_at_entry "
             f"FROM positions "
-            f"WHERE status = 'open' AND (hedge_id IS NULL OR hedge_id = 0)"
+            f"WHERE status = 'open'{hedge_filter}"
         ).fetchall()
         if not rows:
             return []
