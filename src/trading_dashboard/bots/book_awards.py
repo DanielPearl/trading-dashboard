@@ -1,12 +1,21 @@
 """Book Awards bot thread — National Book Award winner model.
 
-Same shape as rotten_tomatoes: the upstream repo is PAPER-ONLY (no
-order code exists there), so this wrapper just drives its tick() on
-an interval against the mode's own sqlite and lets the standard
-pane / analytics / history plumbing read the results. The Home
-toggle isn't consulted because there is nothing to arm — pricing the
-pane IS the bot's whole job until the calibration record earns a
-live-executor conversation.
+Drives the upstream repo's tick() on an interval against the mode's
+own sqlite; the standard pane / analytics / history plumbing reads
+the results. The pane prices every listed KXBOOKAWARDS* market with
+a live model % whether or not anything is armed.
+
+ARMING (three gates, all required before a single live order):
+  1. this service's config carries ``live.dry_run: false``
+     (only dashboard-live.yaml does — the sim service has no live
+     block, so it can never trade)
+  2. the Book Awards toggle is ON in the Home tab
+     (``bot_state.is_bot_enabled`` — defaults OFF for new bots)
+  3. the upstream tick's own shared gates pass
+     (``macro_entry_gate``, 25pp uncalibrated ceiling)
+The toggle is re-read every tick, so flipping it OFF pauses live
+entries at the next tick without a restart; paper pricing continues
+either way.
 """
 from __future__ import annotations
 
@@ -15,6 +24,7 @@ import threading
 import time
 
 from . import _base
+from .. import bot_state
 
 BOT_KEY = "book-awards"
 REPO_DEFAULT = "/root/book-award-forecast"
@@ -30,6 +40,7 @@ def start_daemon(cfg: dict) -> threading.Thread | None:
     if not db_path:
         log.warning("book-awards: no db_path configured — not starting")
         return None
+    live_armed_cfg = (cfg.get("live") or {}).get("dry_run") is False
 
     def _loop() -> None:
         try:
@@ -40,15 +51,23 @@ def start_daemon(cfg: dict) -> threading.Thread | None:
         except Exception:  # noqa: BLE001
             log.exception("book-awards upstream load failed")
             return
-        log.info("book-awards started (paper-only, interval=%ds, "
-                 "db=%s)", INTERVAL_S, db_path)
+        log.info("book-awards started (interval=%ds, db=%s, "
+                 "live-capable=%s)", INTERVAL_S, db_path,
+                 live_armed_cfg)
         while True:
             try:
-                c = main.tick(db_path, dry_run=True)
-                log.info("book-awards tick — %d series / %d markets "
-                         "(%d priced, %d gap) / +%d paper",
+                # Toggle re-read every tick — the ONLY runtime switch
+                # between paper and live once the live config arms.
+                dry = not (live_armed_cfg
+                           and bot_state.is_bot_enabled(BOT_KEY))
+                c = main.tick(db_path, dry_run=dry)
+                log.info("book-awards tick (%s) — %d series / %d "
+                         "markets (%d priced, %d gap) / +%d paper "
+                         "+%d live",
+                         "paper" if dry else "LIVE",
                          c["series"], c["markets"], c["priced"],
-                         c["gap"], c["paper_entries"])
+                         c["gap"], c["paper_entries"],
+                         c.get("live_entries", 0))
             except Exception:  # noqa: BLE001
                 log.exception("book-awards tick failed")
             time.sleep(int(cfg.get("interval_seconds") or INTERVAL_S))

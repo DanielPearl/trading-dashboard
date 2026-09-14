@@ -482,6 +482,7 @@ bots:
     series_prefixes: [KXBOOKAWARDSFIC, KXBOOKAWARDSNONF, KXBOOKAWARDSPOETRY, KXBOOKAWARDSTLIT, KXBOOKAWARDSYPLIT, KXBOOKAWARDS]
     data_source: "NBF archive 2013+ (10-longlist -> 5-finalist -> winner) + Wikipedia attention + Booker momentum + OpenLibrary — LOYO-validated winner model (paper-only)"
     metrics_path: /root/book-award-forecast/data/outputs/metrics.json
+    training_data_path: /root/book-award-forecast/data/features.csv
     display:
       chart_period_minutes: 1440
   - key: hormuz
