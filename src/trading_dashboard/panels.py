@@ -709,6 +709,26 @@ def _render_bot_cards(out: List[str], rollup: dict,
             clv_cls = ("green" if clv_n and clv_avg > 0
                        else ("red" if clv_n and clv_avg < 0 else "gray"))
             out.append("<dl>")
+            # Verdict line first (user 2026-09-14: "put the verdict at
+            # the top above p&l") — the model-vs-market Brier
+            # comparison spelled out: green when the model's
+            # probabilities beat the market price's at entry, red when
+            # the market wins (the bot's edges are noise), plain when
+            # they're within noise of each other.
+            if bm is not None and bk is not None:
+                if bm < bk - 0.002:
+                    _v_txt, _v_cls = "model beats market", "green"
+                elif bm > bk + 0.002:
+                    _v_txt, _v_cls = "market beats model", "red"
+                else:
+                    _v_txt, _v_cls = "model ≈ market", ""
+                out.append(
+                    f"<dt title='Brier of the model vs Brier of the "
+                    f"Kalshi entry price over the same closed trades "
+                    f"— whichever forecast the outcomes better.'>"
+                    f"Verdict</dt>"
+                    f"<dd class='{_v_cls}' style='grid-column:span 3;"
+                    f"text-align:left;'>{_v_txt}</dd>")
             out.append(
                 f"<dt title='All-time realized profit and loss on closed trades.'>P&amp;L</dt>"
                 f"<dd class='{pnl_cls}'>{pnl_str}</dd>"
@@ -729,25 +749,6 @@ def _render_bot_cards(out: List[str], rollup: dict,
                 f"<dd class='{dd_cls}'>{dd_str}</dd>"
                 f"<dt title='Closing-line value: entry price vs the benchmark line at kickoff, averaged (n measured). Positive = beating the close — the fastest-converging evidence the edge is real.'>CLV</dt>"
                 f"<dd class='{clv_cls}'>{clv_str}</dd>")
-            # Verdict line (user 2026-09-14): the model-vs-market
-            # Brier comparison spelled out — green when the model's
-            # probabilities beat the market price's at entry, red
-            # when the market wins (the bot's edges are noise), plain
-            # when they're within noise of each other.
-            if bm is not None and bk is not None:
-                if bm < bk - 0.002:
-                    _v_txt, _v_cls = "model beats market", "green"
-                elif bm > bk + 0.002:
-                    _v_txt, _v_cls = "market beats model", "red"
-                else:
-                    _v_txt, _v_cls = "model ≈ market", ""
-                out.append(
-                    f"<dt title='Brier of the model vs Brier of the "
-                    f"Kalshi entry price over the same closed trades "
-                    f"— whichever forecast the outcomes better.'>"
-                    f"Verdict</dt>"
-                    f"<dd class='{_v_cls}' style='grid-column:span 3;"
-                    f"text-align:left;'>{_v_txt}</dd>")
             # Data source — pulled from dashboard.yaml. Spans the full
             # row width so long descriptions don't crowd a metric cell.
             ds = b.get("data_source")
