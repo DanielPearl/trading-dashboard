@@ -1111,7 +1111,11 @@ tr.row-bought td.num.green { color: #56d364 !important; }
    the table scrolls inside; the subhead stays pinned on top). */
 .attribution-panel { background: #0d1117;
     border: 1px solid #21262d; border-radius: 6px;
-    padding: 10px 14px; height: 280px; overflow-y: auto; }
+    padding: 10px 14px; max-height: 440px; overflow-y: auto; }
+/* 440px fits the largest FIXED-bucket slices in full — By price (9
+   buckets) and By edge (7) never scroll (user 2026-09-14); the
+   unbounded slices (By bot, By month) still scroll internally.
+   max-height (not height) so short tables aren't padded tall. */
 .attribution-panel h3.subhead { margin-top: 0; margin-bottom: 6px;
     position: sticky; top: -10px; background: #0d1117;
     padding: 10px 0 4px; z-index: 1; }

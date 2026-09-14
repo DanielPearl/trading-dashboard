@@ -786,16 +786,22 @@ _HISTORY_CHART_JS = """<script>
     // >= 0 (gains), red when < 0 (losses). When two consecutive points
     // straddle zero, interpolate the crossing so the color flips
     // exactly at the baseline.
-    const GREEN = '#3fb950', RED = '#f85149';
-    const colorOf = function (v) { return v >= 0 ? GREEN : RED; };
+    // Zero-net days are neutral (user 2026-09-14): a day with no
+    // bets (or exactly-offsetting ones) is grey, not a "gain".
+    const GREEN = '#3fb950', RED = '#f85149', FLAT = '#8b949e';
+    const colorOf = function (v) {
+      return v === 0 ? FLAT : (v > 0 ? GREEN : RED);
+    };
     for (let i = 1; i < series.length; i++) {
       const a = series[i - 1], b = series[i];
       const sameSide = (a[1] >= 0) === (b[1] >= 0);
       if (sameSide) {
+        const segColor = (a[1] === 0 && b[1] === 0) ? FLAT
+          : colorOf(a[1] !== 0 ? a[1] : b[1]);
         svg.appendChild(el('polyline', {
           points: x(a[0]).toFixed(1) + ',' + y(a[1]).toFixed(1) + ' ' +
             x(b[0]).toFixed(1) + ',' + y(b[1]).toFixed(1),
-          fill: 'none', stroke: colorOf(a[1]),
+          fill: 'none', stroke: segColor,
           'stroke-width': '2',
           'stroke-linejoin': 'round', 'stroke-linecap': 'round'
         }));
