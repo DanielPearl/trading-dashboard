@@ -669,13 +669,17 @@ def _render_bot_cards(out: List[str], rollup: dict,
                     _v_txt, _v_cls = "market beats model", "red"
                 else:
                     _v_txt, _v_cls = "model ≈ market", ""
+                # Label sits left, the verdict text rides the card's
+                # right edge (user 2026-09-14: "put the ... text to
+                # the right of the card. keep verdict text where it
+                # is").
                 out.append(
                     f"<dt title='Brier of the model vs Brier of the "
                     f"Kalshi entry price over the same closed trades "
                     f"— whichever forecast the outcomes better.'>"
                     f"Verdict</dt>"
                     f"<dd class='{_v_cls}' style='grid-column:span 3;"
-                    f"text-align:left;'>{_v_txt}</dd>")
+                    f"text-align:right;'>{_v_txt}</dd>")
             out.append(
                 f"<dt title='All-time realized profit and loss on closed trades.'>P&amp;L</dt>"
                 f"<dd class='{pnl_cls}'>{pnl_str}</dd>"
