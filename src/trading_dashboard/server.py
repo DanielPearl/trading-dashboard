@@ -1229,6 +1229,7 @@ def serve(host: str, port: int, bots: List[dict], risk_caps: dict,
           weather_trader_cfg: dict | None = None,
           hormuz_trader_cfg: dict | None = None,
           rotten_tomatoes_trader_cfg: dict | None = None,
+          book_awards_trader_cfg: dict | None = None,
           mode: str = "sim",
           live_state_paths: List[str] | None = None) -> None:
     Handler.bots = bots
@@ -1400,6 +1401,9 @@ def serve(host: str, port: int, bots: List[dict], risk_caps: dict,
     if rotten_tomatoes_trader_cfg:
         from .bots import rotten_tomatoes as rt_bot_mod
         rt_bot_mod.start_daemon(rotten_tomatoes_trader_cfg)
+    if book_awards_trader_cfg:
+        from .bots import book_awards as book_awards_bot
+        book_awards_bot.start_daemon(book_awards_trader_cfg)
     if hormuz_trader_cfg:
         from .bots import hormuz as hormuz_bot
         hormuz_bot.start_daemon(hormuz_trader_cfg)
@@ -1595,6 +1599,7 @@ def main(argv: list[str] | None = None) -> int:
     hormuz_trader_cfg = cfg.raw.get("hormuz_trader") or {}
     rotten_tomatoes_trader_cfg = (cfg.raw.get("rotten_tomatoes_trader")
                                   or {})
+    book_awards_trader_cfg = cfg.raw.get("book_awards_trader") or {}
 
     host = args.host or cfg.host
     port = args.port or cfg.port
@@ -1640,6 +1645,7 @@ def main(argv: list[str] | None = None) -> int:
           weather_trader_cfg=weather_trader_cfg,
           hormuz_trader_cfg=hormuz_trader_cfg,
           rotten_tomatoes_trader_cfg=rotten_tomatoes_trader_cfg,
+          book_awards_trader_cfg=book_awards_trader_cfg,
           mode=cfg.mode,
           live_state_paths=live_state_paths)
     return 0

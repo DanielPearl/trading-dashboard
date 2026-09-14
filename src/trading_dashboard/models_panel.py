@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import csv
 import html
+import json
 import re
 import sqlite3
 from contextlib import closing
@@ -2817,6 +2818,21 @@ def _render_models_panel(out: List[str], bot: dict, model: dict | None,
         "rows_test":  (model or {}).get("rows_test"),
     }
     captured = (model or {}).get("captured_at") or ""
+    # A standard bot may also commit a tennis-shape metrics.json
+    # (per_model dict) — e.g. book-awards' LOYO model zoo. When
+    # configured, it supersedes the single-row sim.db fallback.
+    mp = bot.get("metrics_path")
+    if mp and Path(mp).exists():
+        try:
+            ext = json.loads(Path(mp).read_text())
+        except (OSError, json.JSONDecodeError):
+            ext = None
+        if isinstance(ext, dict) and ext.get("per_model"):
+            metrics_shim["per_model"] = ext["per_model"]
+            metrics_shim.setdefault("rows_train", ext.get("rows_train"))
+            metrics_shim.setdefault("rows_test", ext.get("rows_test"))
+            captured = captured or ext.get("captured_at") or ""
+            fallback_rows = []
     last_trained = str(captured)[:10] if captured else "—"
 
     # 1) Table of models run.
