@@ -219,6 +219,19 @@ def closing_line(ticker: str) -> Optional[float]:
 # ─────────────────────────── analytics computer ──────────────────────
 
 
+def _max_drawdown(pnls_in_close_order: List[float]) -> float:
+    """Largest peak-to-trough fall of the CUMULATIVE realized P&L,
+    in dollars (returned ≥ 0). The bot-card risk stat: 'how deep did
+    the hole get on the way to the current total'."""
+    peak = cum = 0.0
+    worst = 0.0
+    for p in pnls_in_close_order:
+        cum += p
+        peak = max(peak, cum)
+        worst = max(worst, peak - cum)
+    return round(worst, 2)
+
+
 def _bins(pairs: List[tuple]) -> List[Dict[str, Any]]:
     """10pp calibration bins over (predicted, won) pairs."""
     out = []
@@ -258,18 +271,26 @@ def _sport_bot_stats(bot: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     model_pairs: List[tuple] = []      # (model prob of side, won)
     market_pairs: List[tuple] = []     # (price of side, won)
     clvs: List[float] = []
+    edges: List[float] = []            # entry model − entry price, held side
+    pnls_ordered: List[float] = []     # close order — drawdown input
+    staked = 0.0
     pnl = 0.0
-    for p in closed:
+    for p in sorted(closed, key=lambda x: x.get("closed_at") or ""):
         if p.get("exit_reason") not in _SCORED_EXITS:
             continue
         won = bool(p.get("won"))
-        pnl += float(p.get("realized_pnl") or 0.0)
+        _pnl_i = float(p.get("realized_pnl") or 0.0)
+        pnl += _pnl_i
+        pnls_ordered.append(_pnl_i)
+        staked += float(p.get("stake") or 0.0)
         mp = p.get("entry_model_prob")
         kp = p.get("entry_market_prob")
         if mp is not None:
             model_pairs.append((float(mp), won))
         if kp is not None:
             market_pairs.append((float(kp), won))
+        if mp is not None and kp is not None:
+            edges.append(float(mp) - float(kp))
         # CLV: closing benchmark prob for the SIDE ticker minus the
         # price paid. Positive = we bought better than the close.
         tick = p.get("ticker")
@@ -285,6 +306,10 @@ def _sport_bot_stats(bot: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         "kind": "sport",
         "n": len(model_pairs),
         "realized_pnl": round(pnl, 2),
+        "roi": (round(pnl / staked, 4) if staked > 0 else None),
+        "avg_edge": (round(sum(edges) / len(edges), 4)
+                     if edges else None),
+        "max_drawdown": _max_drawdown(pnls_ordered),
         "win_rate": round(sum(1 for _, w in model_pairs if w)
                           / len(model_pairs), 3),
         "avg_model_prob": round(sum(p for p, _ in model_pairs)
@@ -333,15 +358,19 @@ def _db_bot_stats(bot: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         return None
     pairs: List[tuple] = []
     market_pairs: List[tuple] = []
+    edges: List[float] = []
+    pnls_ordered: List[float] = []
+    staked = 0.0
     pnl_cents = 0
     try:
         with closing(sqlite3.connect(dbp)) as c:
             c.row_factory = sqlite3.Row
             rows = c.execute(
-                "SELECT ticker, side, entry_price_cents, "
+                "SELECT ticker, side, entry_price_cents, contracts, "
                 "realized_pnl_cents, decision_json FROM positions "
                 "WHERE status = 'closed' "
-                "AND realized_pnl_cents IS NOT NULL").fetchall()
+                "AND realized_pnl_cents IS NOT NULL "
+                "ORDER BY exited_at").fetchall()
     except sqlite3.Error:
         return None
     # Bots that share one ledger (rain + temp both live in the
@@ -355,17 +384,27 @@ def _db_bot_stats(bot: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     for r in rows:
         won = (r["realized_pnl_cents"] or 0) > 0
         pnl_cents += int(r["realized_pnl_cents"] or 0)
+        pnls_ordered.append((r["realized_pnl_cents"] or 0) / 100.0)
+        if r["entry_price_cents"] is not None:
+            staked += (r["entry_price_cents"] / 100.0) * (r["contracts"] or 1)
         p = _model_prob_from_decision(r["decision_json"], r["side"])
         if p is not None:
             pairs.append((p, won))
         if r["entry_price_cents"] is not None:
             market_pairs.append((r["entry_price_cents"] / 100.0, won))
+            if p is not None:
+                edges.append(p - r["entry_price_cents"] / 100.0)
     if not pairs:
         return None
     return {
         "kind": "ledger",
         "n": len(pairs),
         "realized_pnl": round(pnl_cents / 100.0, 2),
+        "roi": (round((pnl_cents / 100.0) / staked, 4)
+                if staked > 0 else None),
+        "avg_edge": (round(sum(edges) / len(edges), 4)
+                     if edges else None),
+        "max_drawdown": _max_drawdown(pnls_ordered),
         "win_rate": round(sum(1 for _, w in pairs if w) / len(pairs), 3),
         "avg_model_prob": round(sum(p for p, _ in pairs) / len(pairs), 3),
         "brier_model": _brier(pairs),

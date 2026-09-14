@@ -448,6 +448,13 @@ def _render_bot_cards(out: List[str], rollup: dict,
     from . import bot_state
     bot_states = bot_state.get_all_states()
 
+    # Live trading stats for every card — the nightly analytics
+    # artifact (P&L / ROI / win / Brier / edge / trades / drawdown /
+    # CLV). None until the first artifact write after deploy.
+    from . import analytics
+    analytics_by_bot = ((analytics.read_artifact() or {}).get("bots")
+                        or {})
+
     # Per-bot perf rows — used for the period-scoped Gain/loss cell.
     perf_by_name = {name: s for name, s in (rollup.get("per_bot") or [])}
 
@@ -648,59 +655,86 @@ def _render_bot_cards(out: List[str], rollup: dict,
         )
         out.append("</div>")
 
-        if not m:
-            out.append("<dl><dt class='gray'>Model</dt>"
+        # Card body: LIVE trading stats from the nightly analytics
+        # artifact (user 2026-09-14: "P&L, ROI, Win %, Brier Score,
+        # Average Edge, # Trades, Max Drawdown, and CLV ... instead
+        # of the model stats on historical data"). Training metrics
+        # still live on each bot's Models tab; the card grid now
+        # answers "is this bot making money and is its edge real".
+        stats = (analytics_by_bot or {}).get(bot_key) or {}
+        if not stats:
+            out.append("<dl><dt class='gray'>Trades</dt>"
                        "<dd class='gray' style='grid-column:span 3;text-align:left;'>"
-                       "no snapshot yet</dd></dl>")
+                       "no closed trades yet</dd></dl>")
         else:
-            a_wins = int(m.get("actual_wins") or 0)
-            a_losses = int(m.get("actual_losses") or 0)
-            a_total = a_wins + a_losses
-            # Show the real percentage at any sample size (per user
-            # request). n=0 still shows "—" to distinguish "no data
-            # yet" from "0%". The drift-badge logic above keeps its
-            # n ≥ 10 guard since drift needs a meaningful sample.
-            a_pct = a_wins / a_total if a_total > 0 else None
-            if a_total > 0:
-                a_str = f"{a_pct*100:.0f}%"
-                a_cls = ("green" if a_pct > 0.55
-                         else ("red" if a_pct < 0.45 else ""))
+            def _money(v):
+                if v is None:
+                    return "—", "gray"
+                cls = "green" if v > 0 else ("red" if v < 0 else "gray")
+                sign = "+" if v > 0 else ("−" if v < 0 else "")
+                return f"{sign}${abs(v):.2f}", cls
+
+            pnl_str, pnl_cls = _money(stats.get("realized_pnl"))
+            roi = stats.get("roi")
+            roi_str = "—" if roi is None else f"{roi*100:+.1f}%"
+            roi_cls = ("green" if roi and roi > 0
+                       else ("red" if roi and roi < 0 else "gray"))
+            win = stats.get("win_rate")
+            win_str = _fmt_pct(win)
+            win_cls = ("green" if win is not None and win > 0.55
+                       else ("red" if win is not None and win < 0.45
+                             else ""))
+            bm = stats.get("brier_model")
+            bk = stats.get("brier_market")
+            brier_str = "—" if bm is None else f"{bm:.3f}"
+            # Green when the model beats the market's Brier — the
+            # only comparison that makes a Brier readable at a glance.
+            brier_cls = ("green" if (bm is not None and bk is not None
+                                     and bm < bk - 0.002)
+                         else ("red" if (bm is not None and bk is not None
+                                         and bm > bk + 0.002) else ""))
+            edge = stats.get("avg_edge")
+            edge_str = "—" if edge is None else f"{edge*100:+.1f}pp"
+            dd = stats.get("max_drawdown")
+            if dd is None:
+                dd_str, dd_cls = "—", "gray"
+            elif dd == 0:
+                dd_str, dd_cls = "$0.00", "gray"
             else:
-                a_str = "—"
-                a_cls = "gray"
-            features = int(m.get("feature_count") or 0)
-            # Sample sizes: training-set rows the model fit on, and the
-            # held-out test rows the headline metrics were measured on.
-            # Both come from model_snapshots (sqlite bots) or metrics.json
-            # (tennis-style adapters via fetch_latest_model). Cell reads
-            # "—" when a bot hasn't been retrained since the schema added
-            # the column.
-            def _fmt_n(v):
-                try:
-                    return f"{int(v):,}" if v else "—"
-                except (TypeError, ValueError):
-                    return "—"
-            train_str = _fmt_n(m.get("rows_train"))
-            test_str = _fmt_n(m.get("rows_test"))
+                dd_str, dd_cls = f"−${dd:.2f}", "red"
+            clv = (stats.get("clv") or {})
+            clv_avg, clv_n = clv.get("avg"), clv.get("n") or 0
+            clv_str = ("—" if not clv_n
+                       else f"{clv_avg*100:+.1f}pp ({clv_n})")
+            clv_cls = ("green" if clv_n and clv_avg > 0
+                       else ("red" if clv_n and clv_avg < 0 else "gray"))
             out.append("<dl>")
-            out.append(f"<dt>Accuracy</dt><dd>{_fmt_pct(m.get('classifier_accuracy'), 1)}</dd>"
-                        f"<dt>F1</dt><dd>{_fmt_pct(m.get('training_f1'))}</dd>")
-            out.append(f"<dt>Precision</dt><dd>{_fmt_pct(m.get('training_precision'))}</dd>"
-                        f"<dt>ROC AUC</dt><dd>{_fmt_pct(m.get('training_roc_auc'))}</dd>")
-            out.append(f"<dt>Recall</dt><dd>{_fmt_pct(m.get('training_recall'))}</dd>"
-                        f"<dt>Features</dt><dd>{features}</dd>")
-            out.append(f"<dt title='Training-set size — number of historical observations the model fit on. More rows = more market regimes covered.'>Train rows</dt>"
-                        f"<dd>{train_str}</dd>"
-                        f"<dt title='Held-out test-set size — observations the headline metrics were measured on.'>Test rows</dt>"
-                        f"<dd>{test_str}</dd>")
-            out.append(f"<dt>Actual win %</dt><dd class='{a_cls}'>{a_str}</dd>"
-                        f"<dt>P&amp;L</dt><dd class='{gl_cls}'>{gl_str}</dd>")
+            out.append(
+                f"<dt title='All-time realized profit and loss on closed trades.'>P&amp;L</dt>"
+                f"<dd class='{pnl_cls}'>{pnl_str}</dd>"
+                f"<dt title='Realized P&L divided by total dollars staked.'>ROI</dt>"
+                f"<dd class='{roi_cls}'>{roi_str}</dd>")
+            out.append(
+                f"<dt title='Share of closed trades that made money.'>Win %</dt>"
+                f"<dd class='{win_cls}'>{win_str}</dd>"
+                f"<dt title='Mean squared error of the model probability at entry — lower is better. Green when the model beats the Brier of the market price it traded against; red when the market beats the model (its edges are noise).'>Brier</dt>"
+                f"<dd class='{brier_cls}'>{brier_str}</dd>")
+            out.append(
+                f"<dt title='Average (model % − entry price) on the side bought — the edge the bot believed it was getting.'>Avg edge</dt>"
+                f"<dd>{edge_str}</dd>"
+                f"<dt title='Closed trades counted in these stats.'># Trades</dt>"
+                f"<dd>{stats.get('n', 0)}</dd>")
+            out.append(
+                f"<dt title='Deepest peak-to-trough fall of cumulative realized P&L — how bad the worst losing stretch got.'>Max DD</dt>"
+                f"<dd class='{dd_cls}'>{dd_str}</dd>"
+                f"<dt title='Closing-line value: entry price vs the benchmark line at kickoff, averaged (n measured). Positive = beating the close — the fastest-converging evidence the edge is real.'>CLV</dt>"
+                f"<dd class='{clv_cls}'>{clv_str}</dd>")
             # Data source — pulled from dashboard.yaml. Spans the full
             # row width so long descriptions don't crowd a metric cell.
             ds = b.get("data_source")
             if ds:
                 out.append(
-                    f"<dt title='Where the model's training data comes "
+                    f"<dt title='Where the model's data comes "
                     f"from. Real public source — never synthetic.'>Source</dt>"
                     f"<dd style='grid-column:span 3;text-align:left;font-size:0.85em;color:var(--muted);'>"
                     f"{html.escape(str(ds))}</dd>"
