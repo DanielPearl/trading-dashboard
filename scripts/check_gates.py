@@ -79,6 +79,8 @@ REGISTRY: dict[str, tuple[str, str, list[str]]] = {
                       [r"buy_criteria", r"max_edge|MAX_EDGE"]),
     "billboard":     ("/root/billboard-charts", "shared_tokens",
                       [r"buy_criteria", r"MAX_EDGE|edge_exceeds_max"]),
+    "rotten-tomatoes": ("/root/rotten-tomatoes", "macro_gate",
+                        [r"macro_entry_gate"]),
     # Dormant / advisory — unwired legacy or no live order path.
     # Arming any of these without first wiring the shared gates (and
     # upgrading the mechanism above) is exactly what this check

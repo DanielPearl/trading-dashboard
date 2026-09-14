@@ -1084,7 +1084,7 @@ def _render_watchlist(out: List[str], watchlist: List[dict],
         _model_from_internal = (
             is_billboard_bot or is_reality_bot or is_hormuz_bot
             or is_weather_bot or is_cpi_bot
-            or current_bot == "darts")
+            or current_bot in ("darts", "rotten-tomatoes"))
 
         def _has_model_pct(r: dict) -> bool:
             if r.get("pinnacle_prob_yes") is not None:

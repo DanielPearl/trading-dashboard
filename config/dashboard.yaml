@@ -463,6 +463,15 @@ bots:
         start: "2026-03-25T00:00:00Z"
         end:   "2026-11-08T05:00:00Z"
 
+  - key: rotten-tomatoes
+    name: Rotten Tomatoes
+    dashboard_type: standard
+    db_path: /root/rotten-tomatoes/data/outputs/sim.db
+    series_ticker: KXRT
+    series_prefixes: [KXRT, KXMETACRITIC, RT]
+    data_source: "rottentomatoes.com critic score JSON — Beta-Binomial review accumulation (paper-only)"
+    display:
+      chart_period_minutes: 1440
   - key: hormuz
     name: Hormuz Forecast
     # Weekly peak-traffic forecaster for the Strait of Hormuz
@@ -776,4 +785,9 @@ weather_trader:
   # the shared env like the other bots.
   enabled: true
   repo_path: /root/weather-forecast
+  interval_seconds: 900
+
+rotten_tomatoes_trader:
+  repo_path: /root/rotten-tomatoes
+  db_path: /root/rotten-tomatoes/data/outputs/sim.db
   interval_seconds: 900

@@ -2064,6 +2064,7 @@ BOT_FILTER_KEYS = {
     "mlb", "basketball", "tennis", "table-tennis", "darts",
     "world-cup", "billboard", "reality-leaks", "hormuz",
     "rain", "temp", "weather", "cpi", "pce", "gdp", "unemployment-claims",
+    "rotten-tomatoes",
 }
 
 
