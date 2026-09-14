@@ -1509,7 +1509,11 @@ def _render_models_run_table(
     parts.append(
         "<thead><tr>"
         "<th style='text-align:left;'>Model</th>"
-        "<th class='num'>Accuracy</th>"
+        "<th class='num' title='Balanced accuracy (mean of per-class "
+        "recalls) where the trainer reports it — raw accuracy on a "
+        "rare-event target reads 95%+ for predicting all-negative "
+        "(2026-09-14 billboard rebuild). Falls back to raw accuracy "
+        "for older metrics files.'>Accuracy</th>"
         "<th class='num'>F1</th>"
         "<th class='num'>Precision</th>"
         "<th class='num'>Recall</th>"
@@ -1527,10 +1531,13 @@ def _render_models_run_table(
         )
     else:
         for label, block in rows_source:
+            _acc = block.get("balanced_accuracy")
+            if _acc is None or _acc != _acc:  # NaN-safe
+                _acc = block.get("accuracy")
             parts.append(
                 "<tr>"
                 f"<td>{html.escape(str(label))}</td>"
-                f"<td class='num'>{_pct(block.get('accuracy'))}</td>"
+                f"<td class='num'>{_pct(_acc)}</td>"
                 f"<td class='num'>{_pct(block.get('f1'))}</td>"
                 f"<td class='num'>{_pct(block.get('precision'))}</td>"
                 f"<td class='num'>{_pct(block.get('recall'))}</td>"
