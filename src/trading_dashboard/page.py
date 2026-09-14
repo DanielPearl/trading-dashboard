@@ -343,6 +343,20 @@ def render_page(
                 current_tab="training",
                 period_key=period_key,
             ))
+        elif (current_bot_dict or {}).get("training_data_path"):
+            # Generic committed-CSV training panel (rotten-tomatoes,
+            # book-awards, any future bot that sets
+            # training_data_path without a bespoke renderer): the
+            # full training grain, every column verbatim, paged.
+            from . import training_csv as _tcsv_mod
+            out.append(_tcsv_mod.render_training_data_panel(
+                bot=current_bot_dict or {},
+                current_bot=current_bot,
+                page=_page,
+                page_size=25,
+                current_tab="training",
+                period_key=period_key,
+            ))
         else:
             out.append(_tennis_mod.render_training_data_panel(
                 current_bot=current_bot,

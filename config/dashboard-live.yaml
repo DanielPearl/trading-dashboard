@@ -357,7 +357,9 @@ bots:
     decisions_path: /root/rotten-tomatoes/data/outputs-live/decisions.jsonl
     series_ticker: KXRT
     series_prefixes: [KXRT, KXMETACRITIC, RT]
-    data_source: "rottentomatoes.com critic score JSON — Beta-Binomial review accumulation (paper-only)"
+    data_source: "rottentomatoes.com critic score JSON + settled Kalshi ladders x Wayback trajectories (LOMO-trained; paper-only)"
+    metrics_path: /root/rotten-tomatoes/data/outputs/metrics.json
+    training_data_path: /root/rotten-tomatoes/data/training_data.csv
     display:
       chart_period_minutes: 1440
   - key: book-awards
