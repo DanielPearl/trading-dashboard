@@ -1066,7 +1066,7 @@ tr.row-bought td.num.green { color: #56d364 !important; }
    natural height — only the global aggregate at the top of Home
    gets clamped. Matches the .watchlist-scroll idiom used for the
    strike-ladder table. */
-.summary-active-scroll { max-height: 280px; overflow-y: auto;
+.summary-active-scroll { max-height: 480px; overflow-y: auto;
     border: 1px solid #30363d; border-radius: 6px;
     background: #0d1117; }
 .summary-active-scroll table { margin: 0; }
