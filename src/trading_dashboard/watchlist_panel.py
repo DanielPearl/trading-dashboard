@@ -431,6 +431,11 @@ def _render_watchlist(out: List[str], watchlist: List[dict],
     # cards — with the generic Title | Question columns instead of the
     # sport Side/player cell (it's a strike ladder, not a matchup).
     is_hormuz_bot = current_bot == "hormuz"
+    # Rotten-tomatoes / book-awards (user 2026-09-14: "watchlist
+    # should not have the line chart section. only the active bets
+    # and model vs market") — same two-section ladder layout as
+    # hormuz / cpi: no hero chart, no prediction cards.
+    is_ladder_bot = current_bot in ("rotten-tomatoes", "book-awards")
     # CPI (user 2026-09-08: "we don't want the line graphic or the
     # summary blocks") — hormuz-style two-section layout, no hero
     # chart / prediction cards. Model % is the Cleveland Fed nowcast
@@ -443,7 +448,8 @@ def _render_watchlist(out: List[str], watchlist: List[dict],
     # follows the same layout with its own Show / Contestant / Leak
     # columns.
     use_sections = (is_sport_bot or is_billboard_bot or is_reality_bot
-                    or is_hormuz_bot or is_weather_bot or is_cpi_bot)
+                    or is_hormuz_bot or is_weather_bot or is_cpi_bot
+                    or is_ladder_bot)
     if not use_sections:
         out.append("<div class='section'><h2>"
                    "Watchlist — model vs market</h2>"
@@ -1083,8 +1089,8 @@ def _render_watchlist(out: List[str], watchlist: List[dict],
         # only when a professional line exists; held rows always stay.
         _model_from_internal = (
             is_billboard_bot or is_reality_bot or is_hormuz_bot
-            or is_weather_bot or is_cpi_bot
-            or current_bot in ("darts", "rotten-tomatoes"))
+            or is_weather_bot or is_cpi_bot or is_ladder_bot
+            or current_bot == "darts")
 
         def _has_model_pct(r: dict) -> bool:
             if r.get("pinnacle_prob_yes") is not None:
@@ -1668,7 +1674,7 @@ def _render_watchlist(out: List[str], watchlist: List[dict],
             # tennis). Scoped to is_active so Model-vs-market keeps its
             # Kalshi-truth-only HOLDING rule on sim.
             if held_bet is None and (is_hormuz_bot or is_weather_bot
-                                      or is_cpi_bot
+                                      or is_cpi_bot or is_ladder_bot
                                       or (is_active and mode != "live")):
                 _pb = held_by_ticker.get(ticker)
                 if _pb:
@@ -2117,7 +2123,7 @@ def _render_watchlist(out: List[str], watchlist: List[dict],
             _no_benchmark_feed = current_bot == "darts"
             if (is_active or is_billboard_bot or is_reality_bot
                     or is_hormuz_bot or is_weather_bot or is_cpi_bot
-                    or _no_benchmark_feed) and pinn_p is None:
+                    or is_ladder_bot or _no_benchmark_feed) and pinn_p is None:
                 # Billboard has no external benchmark book — the bot's
                 # own P(#1) is the Model % on every pane. Reality-leaks
                 # likewise: Model % is the leak-implied probability.
