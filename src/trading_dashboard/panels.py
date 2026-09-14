@@ -510,15 +510,22 @@ def _render_bot_cards(out: List[str], rollup: dict,
         # Only applies to sim.db-style bots that record a scalar
         # underlying — same exclusion as the regime pill above.
         staleness_html = ""
-        # Hormuz is exempt: its stored current_gas_price is a *forecast*
-        # (the predicted weekly peak), not a current observed level, so
-        # the "forecast vs market-implied" gap the badge measures is the
-        # bot's intended edge — not a stale upstream feed. (Same spirit
-        # as the natural-gas drift-badge exemption above.)
+        # Forecast-scalar bots are exempt: their stored
+        # current_gas_price is a *forecast* of a future release
+        # (hormuz's predicted weekly peak, GDPNow's quarter estimate,
+        # the PCE/CPI nowcasts, the claims consensus), not a current
+        # observed level — so the "forecast vs market-implied" gap
+        # the badge measures is the bot's intended edge, not a stale
+        # upstream feed. 2026-09-14 (user: "why does gdp forecast say
+        # stale"): GDPNow 4.42 vs a market implying ~2.5 lit the
+        # badge on exactly the disagreement the bot exists to trade;
+        # the feed itself was verified fresh.
+        _FORECAST_SCALAR_BOTS = {"hormuz", "gdp", "pce", "cpi",
+                                 "unemployment-claims"}
         if (b.get("dashboard_type") not in
                 ("sport", "survivor", "billboard", "reality", "weather",
                  "whale", "rules-parser")
-                and bot_key != "hormuz"
+                and bot_key not in _FORECAST_SCALAR_BOTS
                 and m and m.get("current_gas_price") is not None
                 and b.get("series_ticker")):
             try:
