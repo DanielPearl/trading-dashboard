@@ -62,12 +62,18 @@ def _latest_mark_cents(c: sqlite3.Connection, position_id: int,
     NO it's the NO side's mid. Falls back to the cents we have on
     hand if either mid is missing.
     """
-    row = c.execute(
-        "SELECT yes_ask_cents, yes_bid_cents, no_ask_cents, mid_cents "
-        "FROM position_marks WHERE position_id = ? "
-        "ORDER BY updated_at DESC LIMIT 1",
-        (position_id,),
-    ).fetchone()
+    try:
+        row = c.execute(
+            "SELECT yes_ask_cents, yes_bid_cents, no_ask_cents, mid_cents "
+            "FROM position_marks WHERE position_id = ? "
+            "ORDER BY updated_at DESC LIMIT 1",
+            (position_id,),
+        ).fetchone()
+    except sqlite3.OperationalError:
+        # Ledgers bootstrapped by the paper-only bots (rotten-
+        # tomatoes) carry no position_marks table — no mark means
+        # nothing to hedge against; the caller skips the position.
+        return None
     if not row:
         return None
     side = (side or "").upper()
