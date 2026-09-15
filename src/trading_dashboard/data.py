@@ -1749,7 +1749,8 @@ def _watchlist_from_kalshi(markets: List[dict]) -> List[dict]:
 
 
 def _merge_kalshi_with_local(kalshi_markets: List[dict],
-                              local_rows: List[dict]) -> List[dict]:
+                              local_rows: List[dict],
+                              keep_local_extras: bool = False) -> List[dict]:
     """Build the watchlist from Kalshi (the spine), then for each row
     look up the matching ticker in the local DB and copy over the
     bot-computed fields (model_prob_yes, bot_verdict, edge_*, etc.).
@@ -1775,6 +1776,14 @@ def _merge_kalshi_with_local(kalshi_markets: List[dict],
         for f in bot_fields:
             if local.get(f) is not None:
                 row[f] = local[f]
+    if keep_local_extras:
+        # Discovery-ladder bots (rotten-tomatoes, book-awards) price
+        # markets across MANY series (KXRT + KXRTTV + legacy shells);
+        # the Kalshi spine only covers the configured series_ticker,
+        # so local rows outside it must survive the merge.
+        spine = {r["ticker"] for r in base}
+        base.extend(r for r in local_rows
+                    if r.get("ticker") and r["ticker"] not in spine)
     return base
 
 

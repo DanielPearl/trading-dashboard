@@ -838,6 +838,12 @@ class Handler(BaseHTTPRequestHandler):
                     all_open_events = bot.get("key") in {
                         "basketball", "tennis", "table-tennis", "darts",
                         "world-cup", "mlb",
+                        # Discovery-ladder bots run MANY concurrent
+                        # events (one ladder per movie / per award
+                        # category); narrowing to the most-imminent
+                        # event rendered exactly one movie's strikes
+                        # (2026-09-14: 14 of 220 RT rows).
+                        "rotten-tomatoes", "book-awards",
                     }
                     try:
                         (kalshi_history, atm_market, kalshi_markets,
@@ -909,6 +915,7 @@ class Handler(BaseHTTPRequestHandler):
                 if kalshi_markets:
                     watchlist = _merge_kalshi_with_local(
                         kalshi_markets, watchlist,
+                        keep_local_extras=all_open_events,
                     )
 
                 # Cross-bot rollup (Summary cards, Home active bets,
