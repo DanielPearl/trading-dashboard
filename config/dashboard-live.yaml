@@ -362,18 +362,6 @@ bots:
     training_data_path: /root/rotten-tomatoes/data/training_data.csv
     display:
       chart_period_minutes: 1440
-  - key: book-awards
-    name: Book Awards
-    dashboard_type: standard
-    db_path: /root/book-award-forecast/data/outputs-live/sim.db
-    decisions_path: /root/book-award-forecast/data/outputs-live/decisions.jsonl
-    series_ticker: KXBOOKAWARDSFIC
-    series_prefixes: [KXBOOKAWARDSFIC, KXBOOKAWARDSNONF, KXBOOKAWARDSPOETRY, KXBOOKAWARDSTLIT, KXBOOKAWARDSYPLIT, KXBOOKAWARDS]
-    data_source: "NBF archive 2013+ (10-longlist -> 5-finalist -> winner) + Wikipedia attention + Booker momentum + OpenLibrary — LOYO-validated winner model (paper-only)"
-    metrics_path: /root/book-award-forecast/data/outputs/metrics.json
-    training_data_path: /root/book-award-forecast/data/features.csv
-    display:
-      chart_period_minutes: 1440
   - key: hormuz
     name: Hormuz Forecast
     # KXHORMUZPEAK weekly peak-traffic bot. LIVE trading armed
@@ -899,15 +887,6 @@ weather_trader:
     # via the upstream temp_enabled flag until stations are calibrated.
     dry_run: false
 
-book_awards_trader:
-  repo_path: /root/book-award-forecast
-  db_path: /root/book-award-forecast/data/outputs-live/sim.db
-  interval_seconds: 3600
-  # Live-capable: with dry_run false here, the Home-tab Book Awards
-  # toggle (defaults OFF) is the arming switch. 1-contract IOCs,
-  # max 3 open per category ladder, macro_entry_gate (25pp ceiling).
-  live:
-    dry_run: false
 rotten_tomatoes_trader:
   repo_path: /root/rotten-tomatoes
   db_path: /root/rotten-tomatoes/data/outputs-live/sim.db

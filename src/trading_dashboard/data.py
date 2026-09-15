@@ -1777,7 +1777,7 @@ def _merge_kalshi_with_local(kalshi_markets: List[dict],
             if local.get(f) is not None:
                 row[f] = local[f]
     if keep_local_extras:
-        # Discovery-ladder bots (rotten-tomatoes, book-awards) price
+        # Discovery-ladder bots (rotten-tomatoes) price
         # markets across MANY series (KXRT + KXRTTV + legacy shells);
         # the Kalshi spine only covers the configured series_ticker,
         # so local rows outside it must survive the merge.

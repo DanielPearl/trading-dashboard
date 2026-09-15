@@ -838,12 +838,11 @@ class Handler(BaseHTTPRequestHandler):
                     all_open_events = bot.get("key") in {
                         "basketball", "tennis", "table-tennis", "darts",
                         "world-cup", "mlb",
-                        # Discovery-ladder bots run MANY concurrent
-                        # events (one ladder per movie / per award
-                        # category); narrowing to the most-imminent
-                        # event rendered exactly one movie's strikes
-                        # (2026-09-14: 14 of 220 RT rows).
-                        "rotten-tomatoes", "book-awards",
+                        # Rotten-tomatoes runs MANY concurrent
+                        # events (one ladder per movie); narrowing to
+                        # the most-imminent event rendered exactly one
+                        # movie's strikes (2026-09-14: 14 of 220 rows).
+                        "rotten-tomatoes",
                     }
                     try:
                         (kalshi_history, atm_market, kalshi_markets,
@@ -1236,7 +1235,6 @@ def serve(host: str, port: int, bots: List[dict], risk_caps: dict,
           weather_trader_cfg: dict | None = None,
           hormuz_trader_cfg: dict | None = None,
           rotten_tomatoes_trader_cfg: dict | None = None,
-          book_awards_trader_cfg: dict | None = None,
           mode: str = "sim",
           live_state_paths: List[str] | None = None) -> None:
     Handler.bots = bots
@@ -1408,9 +1406,6 @@ def serve(host: str, port: int, bots: List[dict], risk_caps: dict,
     if rotten_tomatoes_trader_cfg:
         from .bots import rotten_tomatoes as rt_bot_mod
         rt_bot_mod.start_daemon(rotten_tomatoes_trader_cfg)
-    if book_awards_trader_cfg:
-        from .bots import book_awards as book_awards_bot
-        book_awards_bot.start_daemon(book_awards_trader_cfg)
     if hormuz_trader_cfg:
         from .bots import hormuz as hormuz_bot
         hormuz_bot.start_daemon(hormuz_trader_cfg)
@@ -1606,7 +1601,6 @@ def main(argv: list[str] | None = None) -> int:
     hormuz_trader_cfg = cfg.raw.get("hormuz_trader") or {}
     rotten_tomatoes_trader_cfg = (cfg.raw.get("rotten_tomatoes_trader")
                                   or {})
-    book_awards_trader_cfg = cfg.raw.get("book_awards_trader") or {}
 
     host = args.host or cfg.host
     port = args.port or cfg.port
@@ -1652,7 +1646,6 @@ def main(argv: list[str] | None = None) -> int:
           weather_trader_cfg=weather_trader_cfg,
           hormuz_trader_cfg=hormuz_trader_cfg,
           rotten_tomatoes_trader_cfg=rotten_tomatoes_trader_cfg,
-          book_awards_trader_cfg=book_awards_trader_cfg,
           mode=cfg.mode,
           live_state_paths=live_state_paths)
     return 0

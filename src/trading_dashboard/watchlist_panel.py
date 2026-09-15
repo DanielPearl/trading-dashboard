@@ -431,11 +431,11 @@ def _render_watchlist(out: List[str], watchlist: List[dict],
     # cards — with the generic Title | Question columns instead of the
     # sport Side/player cell (it's a strike ladder, not a matchup).
     is_hormuz_bot = current_bot == "hormuz"
-    # Rotten-tomatoes / book-awards (user 2026-09-14: "watchlist
-    # should not have the line chart section. only the active bets
-    # and model vs market") — same two-section ladder layout as
-    # hormuz / cpi: no hero chart, no prediction cards.
-    is_ladder_bot = current_bot in ("rotten-tomatoes", "book-awards")
+    # Rotten-tomatoes (user 2026-09-14: "watchlist should not have
+    # the line chart section. only the active bets and model vs
+    # market") — same two-section ladder layout as hormuz / cpi:
+    # no hero chart, no prediction cards.
+    is_ladder_bot = current_bot == "rotten-tomatoes"
     # CPI (user 2026-09-08: "we don't want the line graphic or the
     # summary blocks") — hormuz-style two-section layout, no hero
     # chart / prediction cards. Model % is the Cleveland Fed nowcast
@@ -1118,11 +1118,10 @@ def _render_watchlist(out: List[str], watchlist: List[dict],
             # Same publish-gap convention for the discovery-driven
             # bots (2026-09-14, user: "why don't the contracts show
             # up in model vs market?"): rotten-tomatoes rows waiting
-            # on an RT page / first reviews, and book-awards rows
-            # waiting on the NBF list or market open, stamp an
+            # on an RT page / first reviews stamp an
             # "awaiting …" reason — the listed contracts stay
             # visible with a blank Model %.
-            if (current_bot in ("rotten-tomatoes", "book-awards")
+            if (current_bot == "rotten-tomatoes"
                     and "awaiting"
                     in (r.get("rejection_reason") or "")):
                 return True

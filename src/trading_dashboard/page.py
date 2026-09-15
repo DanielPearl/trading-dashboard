@@ -345,7 +345,7 @@ def render_page(
             ))
         elif (current_bot_dict or {}).get("training_data_path"):
             # Generic committed-CSV training panel (rotten-tomatoes,
-            # book-awards, any future bot that sets
+            # any future bot that sets
             # training_data_path without a bespoke renderer): the
             # full training grain, every column verbatim, paged.
             from . import training_csv as _tcsv_mod

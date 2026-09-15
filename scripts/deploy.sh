@@ -21,7 +21,6 @@ REPOS=(
   /root/gas-prices
   /root/billboard-charts
   /root/rotten-tomatoes
-  /root/book-award-forecast
 )
 
 for r in "${REPOS[@]}"; do

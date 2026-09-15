@@ -2819,7 +2819,7 @@ def _render_models_panel(out: List[str], bot: dict, model: dict | None,
     }
     captured = (model or {}).get("captured_at") or ""
     # A standard bot may also commit a tennis-shape metrics.json
-    # (per_model dict) — e.g. book-awards' LOYO model zoo. When
+    # (per_model dict) — e.g. rotten-tomatoes' LOMO model zoo. When
     # configured, it supersedes the single-row sim.db fallback.
     mp = bot.get("metrics_path")
     if mp and Path(mp).exists():
