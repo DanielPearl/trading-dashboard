@@ -474,6 +474,12 @@ bots:
     metrics_path: /root/rotten-tomatoes/data/outputs/metrics.json
     training_data_path: /root/rotten-tomatoes/data/training_data.csv
     display:
+      # Strikes are Tomatometer scores — "above 50", never "$50.00"
+      # (user 2026-09-15: the Question must match the Kalshi contract).
+      underlying_label: Tomatometer score
+      underlying_unit: ""
+      underlying_decimals: 0
+      unit_position: none
       chart_period_minutes: 1440
   - key: hormuz
     name: Hormuz Forecast
