@@ -149,6 +149,20 @@ def _close_position(c: sqlite3.Connection, *, position_id: int,
     return realized_cents
 
 
+def _kalshi_result(ticker: str) -> str | None:
+    """The market's REAL settlement result ('yes'/'no') from Kalshi,
+    or None while it hasn't finalized. Used by the live settle-only
+    sweep — the ONLY close the live ledger accepts is exchange truth."""
+    try:
+        from . import kalshi_client
+        mk = (kalshi_client.get_client().get_market(ticker)
+              or {}).get("market") or {}
+        res = (mk.get("result") or "").lower()
+        return res if res in ("yes", "no") else None
+    except Exception:  # noqa: BLE001
+        return None
+
+
 def _ticker_is_stale(ticker: str | None, grace_minutes: int = 15) -> bool:
     """True when the Kalshi ticker's encoded settlement date is more
     than ``grace_minutes`` in the past — the contract has settled
@@ -172,6 +186,7 @@ def _ticker_is_stale(ticker: str | None, grace_minutes: int = 15) -> bool:
 
 def _check_db(db_path: str, bot: Dict[str, Any],
                 profit_lock_cents: int, stop_loss_cents: int,
+                settle_only: bool = False,
                 ) -> List[Dict[str, Any]]:
     """Scan one bot's sim.db. Returns the list of closes applied."""
     bot_key = bot.get("key", "")
@@ -226,6 +241,34 @@ def _check_db(db_path: str, bot: Dict[str, Any],
             mark = _latest_mark_cents(c, pos_id, side)
             reason: str | None = None
             pnl = 0
+            if settle_only:
+                # LIVE mode: the only permissible ledger close is the
+                # exchange's real settlement (2026-09-16: rain's
+                # SEP13/14 rows sat "active" for days — the weather
+                # bot has no sweep and hedge closes are sim-only, so
+                # nothing ever booked the real results).
+                if not _ticker_is_stale(ticker, grace_minutes=5):
+                    continue
+                res = _kalshi_result(ticker)
+                if res is None:
+                    continue
+                won = (res == side.lower())
+                exit_mark = 100 if won else 0
+                pnl = _unrealized_pnl_per_contract(side, entry, exit_mark)
+                realized = _close_position(
+                    c, position_id=pos_id, entry=entry,
+                    contracts=contracts, exit_mark=exit_mark,
+                    side=side, reason="settled_kalshi")
+                c.commit()
+                closed.append({
+                    "bot": bot_name, "bot_key": bot_key,
+                    "ticker": ticker, "side": side,
+                    "reason": "settled_kalshi",
+                    "realized_cents": realized,
+                })
+                log.info("[settle] %s %s %s -> %s (%+d c)", bot_name,
+                         ticker, side, res.upper(), realized)
+                continue
             # Stale path first — fires even when mark is None (use
             # entry as exit so the realized P&L is zero rather than
             # stranding the position forever).
@@ -629,14 +672,16 @@ def _check_whale_orders(orders_path: str | None, bot_key: str,
     return actions
 
 
-def tick(bots: List[dict], hedge_cfg: dict) -> List[Dict[str, Any]]:
+def tick(bots: List[dict], hedge_cfg: dict,
+         settle_only: bool = False) -> List[Dict[str, Any]]:
     """One scan across every registered bot. Returns the closes
     applied this tick so the caller can log / report them."""
-    if not hedge_cfg or not hedge_cfg.get("enabled"):
-        return []
-    pl = int(hedge_cfg.get("profit_lock_cents", 0) or 0)
-    sl = int(hedge_cfg.get("stop_loss_cents", 0) or 0)
-    if pl <= 0 and sl <= 0:
+    if not settle_only:
+        if not hedge_cfg or not hedge_cfg.get("enabled"):
+            return []
+    pl = int((hedge_cfg or {}).get("profit_lock_cents", 0) or 0)
+    sl = int((hedge_cfg or {}).get("stop_loss_cents", 0) or 0)
+    if not settle_only and pl <= 0 and sl <= 0:
         return []
     closed: List[Dict[str, Any]] = []
     for b in bots:
@@ -644,6 +689,11 @@ def tick(bots: List[dict], hedge_cfg: dict) -> List[Dict[str, Any]]:
         bot_key = b.get("key", "")
         bot_name = b.get("name", "")
         try:
+            if settle_only and dt in ("sport", "survivor", "whale",
+                                       "rules-parser"):
+                # Live sport/state bots close through their own
+                # executors; the settle sweep covers sim.db ledgers.
+                continue
             if dt in ("sport", "survivor"):
                 # Sport (tennis / table-tennis / darts / NBA) and
                 # survivor all use sim_state.json. Survivor currently
@@ -675,6 +725,7 @@ def tick(bots: List[dict], hedge_cfg: dict) -> List[Dict[str, Any]]:
                 results = _check_db(
                     db, b,
                     profit_lock_cents=pl, stop_loss_cents=sl,
+                    settle_only=settle_only,
                 )
         except Exception:  # noqa: BLE001
             log.exception("hedge tick failed for %s", bot_key)
@@ -692,20 +743,24 @@ def tick(bots: List[dict], hedge_cfg: dict) -> List[Dict[str, Any]]:
 
 
 def start_daemon(bots: List[dict], hedge_cfg: dict,
-                  interval_seconds: int = 30) -> threading.Thread:
+                  interval_seconds: int = 30,
+                  settle_only: bool = False) -> threading.Thread:
     """Spawn the hedge-monitor background thread. Daemon = True so
     SIGINT on the dashboard tears it down cleanly. No-op (returns a
-    dead thread) when hedge.enabled is false."""
+    dead thread) when hedge.enabled is false — except in settle_only
+    mode, which runs regardless: it books EXCHANGE results into the
+    ledger (no discretionary closes), so it is bookkeeping, not
+    hedging."""
 
     def _loop() -> None:
         log.info("hedge_monitor started (interval=%ds, "
-                  "profit_lock=%d¢, stop_loss=%d¢)",
+                  "profit_lock=%d¢, stop_loss=%d¢, settle_only=%s)",
                   interval_seconds,
                   hedge_cfg.get("profit_lock_cents", 0),
-                  hedge_cfg.get("stop_loss_cents", 0))
+                  hedge_cfg.get("stop_loss_cents", 0), settle_only)
         while True:
             try:
-                tick(bots, hedge_cfg)
+                tick(bots, hedge_cfg, settle_only=settle_only)
             except Exception:  # noqa: BLE001
                 log.exception("hedge_monitor loop iteration failed")
             time.sleep(interval_seconds)

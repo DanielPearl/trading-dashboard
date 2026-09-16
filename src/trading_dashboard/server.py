@@ -1294,8 +1294,18 @@ def serve(host: str, port: int, bots: List[dict], risk_caps: dict,
         from . import hedge_monitor
         hedge_monitor.start_daemon(bots, hedge_cfg)
     else:
-        log.info("hedge monitor NOT started — live mode holds real "
-                 "positions; ledger-only closes are sim-only")
+        # LIVE: no discretionary ledger closes — but the ledger DOES
+        # book real exchange settlements (2026-09-16: rain's SEP13/14
+        # rows sat "active" for days because the weather bot has no
+        # sweep of its own). settle_only closes strictly on Kalshi's
+        # published result, nothing else.
+        from . import hedge_monitor
+        hedge_monitor.start_daemon(bots, hedge_cfg,
+                                   interval_seconds=300,
+                                   settle_only=True)
+        log.info("hedge monitor in settle-only mode — live ledgers "
+                 "book real Kalshi results; discretionary closes "
+                 "stay sim-only")
     # Auto-pause daemon. Six-hourly walk of the bot list — bots with
     # three consecutive 30-day windows of negative realized P&L get
     # their on/off toggle flipped to OFF, with the action recorded
