@@ -2706,10 +2706,13 @@ _WATCHLIST_ROW_CLICK_JS = """
 </script>
 <style>
 #watchlist-tbody tr,
+#watchlist-tbody-active tr,
 #wl-active-tbody tr { cursor: pointer; }
 #watchlist-tbody tr.row-selected td,
+#watchlist-tbody-active tr.row-selected td,
 #wl-active-tbody tr.row-selected td { background: #1f2630 !important; }
 #watchlist-tbody tr:hover td,
+#watchlist-tbody-active tr:hover td,
 #wl-active-tbody tr:hover td { background: #1c222b; }
 /* Held-position rows share the same neutral grey hover / selected
    tint as every other row — the per-row colouring was retired in
