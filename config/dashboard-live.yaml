@@ -897,3 +897,6 @@ rotten_tomatoes_trader:
   repo_path: /root/rotten-tomatoes
   db_path: /root/rotten-tomatoes/data/outputs-live/sim.db
   interval_seconds: 900
+  # Paper-only bot: the LIVE service prices the pane but records no
+  # paper positions — Active bets on live shows real holdings only.
+  paper_entries: false

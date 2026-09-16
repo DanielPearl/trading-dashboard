@@ -41,7 +41,9 @@ def start_daemon(cfg: dict) -> threading.Thread | None:
                  "db=%s)", INTERVAL_S, db_path)
         while True:
             try:
-                c = main.tick(db_path, dry_run=True)
+                c = main.tick(db_path, dry_run=True,
+                              paper=bool(cfg.get("paper_entries",
+                                                 True)))
                 log.info("rotten-tomatoes tick — %d series / %d markets "
                          "(%d priced, %d gap) / +%d paper",
                          c["series"], c["markets"], c["priced"],
