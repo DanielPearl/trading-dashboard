@@ -471,6 +471,21 @@ def _render_watchlist(out: List[str], watchlist: List[dict],
     if not bets and latest_active:
         bets = [latest_active]
     held_by_ticker = {b.get("ticker"): b for b in bets if b.get("ticker")}
+    # Per-bet probability chart (user 2026-09-16) — built once here,
+    # emitted BETWEEN Active bets and Model vs market below.
+    _bet_chart_html = ""
+    if bets:
+        try:
+            from . import bet_chart as _bet_chart
+            _bot_cfg = next((b for b in (available_bots or [])
+                             if b.get("key") == current_bot), {})
+            _cp = _bet_chart.build_payload(_bot_cfg, bets)
+            if _cp:
+                _tmp: List[str] = []
+                _render_bet_prob_chart(_tmp, _cp)
+                _bet_chart_html = "".join(_tmp)
+        except Exception:  # noqa: BLE001
+            log.exception("bet chart payload failed")
     # Alias each bet under its BASE event ticker too. Sport watchlist
     # rows carry the base ticker (side markets live in ticker_a/_b), so
     # a bet keyed only by its full side ticker (e.g. a real Kalshi
@@ -626,6 +641,10 @@ def _render_watchlist(out: List[str], watchlist: List[dict],
             out.append("</div>")
         else:
             out.append("<div class='empty'>No active bets right now.</div>")
+
+        if _bet_chart_html:
+            out.append(_bet_chart_html)
+            _bet_chart_html = ""
 
         _render_watchlist_hero(out, watchlist, model,
                                underlying_history or [],
@@ -1378,6 +1397,9 @@ def _render_watchlist(out: List[str], watchlist: List[dict],
                     out.append("</div></div>")
                     continue
             else:  # model-vs-market
+                if _bet_chart_html:
+                    out.append(_bet_chart_html)
+                    _bet_chart_html = ""
                 out.append("<div class='section'>")
                 out.append(
                     "<div style='display:flex;align-items:center;"
@@ -2404,21 +2426,6 @@ def _render_watchlist(out: List[str], watchlist: List[dict],
         # loop iteration.
         if use_sections:
             out.append("</div></div>")
-    # Per-bet probability chart (user 2026-09-16): model %% vs
-    # Kalshi %% from purchase to contract close for the selected
-    # active bet — defaults to the newest bet, and clicking any
-    # Active-bets row switches the chart to that bet.
-    try:
-        from . import bet_chart as _bet_chart
-        _bot_cfg = next((b for b in (available_bots or [])
-                         if b.get("key") == current_bot), {})
-        _chart_payload = (_bet_chart.build_payload(_bot_cfg, bets)
-                          if bets else None)
-    except Exception:  # noqa: BLE001
-        log.exception("bet chart payload failed")
-        _chart_payload = None
-    if _chart_payload:
-        _render_bet_prob_chart(out, _chart_payload)
     # Append the row-click JS hook once — after every table is
     # emitted. The hook globs both tbodies (`watchlist-tbody` and,
     # on sport bots, `watchlist-tbody-active`) via its query
@@ -2711,35 +2718,45 @@ _WATCHLIST_ROW_CLICK_JS = """
 """
 
 
-def _render_bet_prob_chart(out: List[str], payload: dict) -> None:
-    """Model %% vs Kalshi %% line chart for one active bet.
 
-    Solid line = Kalshi market, dashed = the bot's model; both plot
-    the chance THE BET wins (NO bets flip the yes-axis) so up always
-    reads as winning. Green for YES bets, red for NO. X runs from
-    the buy time to the contract close (drawn to the latest update).
-    Clicking a row in the Active bets table (data-ticker) re-draws
-    for that bet; default is the newest bet.
+
+def _render_bet_prob_chart(out: List[str], payload: dict) -> None:
+    """Model % vs Kalshi % line chart for one active bet — rendered
+    BETWEEN Active bets and Model vs market.
+
+    Kalshi line: solid, green for YES bets / red for NO. Model line:
+    white. Both plot the chance THE BET wins (NO bets flip the
+    yes-axis) so up always reads as winning. X runs from buy time to
+    contract close. Hovering shows a crosshair with both series'
+    values at that time; clicking an Active-bets row (data-ticker)
+    switches the chart to that bet; default is the newest bet. The
+    SVG re-measures its container so the plot fills the pane width.
     """
     data = json.dumps(payload)
     out.append(
         "<div class='section'><h2>Bet probability</h2>"
         "<div class='body'>"
-        "<div class='small gray' id='bpc-caption' "
-        "style='margin-bottom:6px;'></div>"
-        "<div style='overflow-x:auto;'>"
-        "<svg id='bpc-svg' viewBox='0 0 860 240' width='100%' "
-        "height='240' style='background:#0d1117;border:1px solid "
-        "#21262d;border-radius:6px;'></svg></div>"
+        "<div id='bpc-caption' style='margin-bottom:6px;font-size:14px;"
+        "font-weight:600;'></div>"
+        "<div id='bpc-wrap' style='position:relative;width:100%;'>"
+        "<svg id='bpc-svg' width='100%' height='260' "
+        "style='display:block;background:#0d1117;border:1px solid "
+        "#21262d;border-radius:6px;'></svg>"
+        "<div id='bpc-tip' hidden style='position:absolute;pointer-events:"
+        "none;background:#161b22;border:1px solid #30363d;border-radius:"
+        "6px;padding:6px 9px;font-size:12px;line-height:1.5;white-space:"
+        "nowrap;z-index:5;'></div>"
+        "</div>"
         "<div class='small gray' style='margin-top:6px;display:flex;"
-        "gap:18px;align-items:center;'>"
+        "gap:18px;align-items:center;flex-wrap:wrap;'>"
+        "<span><svg width='26' height='8'><line id='bpc-leg-k' x1='0' "
+        "y1='4' x2='26' y2='4' stroke='#3fb950' stroke-width='3'/></svg>"
+        " Kalshi market %</span>"
         "<span><svg width='26' height='8'><line x1='0' y1='4' x2='26' "
-        "y2='4' stroke='#8b949e' stroke-width='2'/></svg> Kalshi %</span>"
-        "<span><svg width='26' height='8'><line x1='0' y1='4' x2='26' "
-        "y2='4' stroke='#8b949e' stroke-width='2' "
-        "stroke-dasharray='5,4'/></svg> Model %</span>"
+        "y2='4' stroke='#e6edf3' stroke-width='3'/></svg> Model %</span>"
         "<span id='bpc-side'></span>"
-        "<span class='gray'>click an Active-bets row to switch</span>"
+        "<span class='gray'>hover for values · click an Active-bets "
+        "row to switch</span>"
         "</div>"
         f"<script id='bpc-data' type='application/json'>{data}</script>"
         """<script>
@@ -2748,10 +2765,13 @@ def _render_bet_prob_chart(out: List[str], payload: dict) -> None:
   if (!el) return;
   var BETS = (JSON.parse(el.textContent) || {}).bets || [];
   if (!BETS.length) return;
-  var GREEN = '#3fb950', RED = '#f85149', GRID = '#21262d',
-      TXT = '#8b949e';
+  var GREEN = '#3fb950', RED = '#f85149', WHITE = '#e6edf3',
+      GRID = '#21262d', TXT = '#8b949e';
   var svg = document.getElementById('bpc-svg');
-  var W = 860, H = 240, L = 44, R = 14, T = 14, B = 26;
+  var wrap = document.getElementById('bpc-wrap');
+  var tip = document.getElementById('bpc-tip');
+  var H = 260, T = 14, B = 28, L = 46, R = 16;
+  var CUR = BETS[0], W = 900;
 
   function fmtT(ts) {
     var d = new Date(ts * 1000);
@@ -2760,60 +2780,63 @@ def _render_bet_prob_chart(out: List[str], payload: dict) -> None:
            String(d.getMinutes()).padStart(2, '0');
   }
 
+  var xDom = [0, 1];
+  function X(ts) { return L + (W - L - R) * (ts - xDom[0]) / (xDom[1] - xDom[0]); }
+  function Y(p) { return T + (H - T - B) * (1 - p / 100); }
+
   function draw(bet) {
+    CUR = bet;
+    W = Math.max(wrap.clientWidth || 900, 640);
+    svg.setAttribute('viewBox', '0 0 ' + W + ' ' + H);
     var color = bet.side === 'NO' ? RED : GREEN;
     var pts = (bet.kalshi || []).concat(bet.model || []);
     if (!pts.length) { svg.innerHTML = ''; return; }
     var lastTs = Math.max.apply(null, pts.map(function (p) { return p[0]; }));
-    var x0 = bet.open_ts,
-        x1 = Math.max(bet.close_ts || 0, lastTs, x0 + 600);
-    function X(ts) { return L + (W - L - R) * (ts - x0) / (x1 - x0); }
-    function Y(p) { return T + (H - T - B) * (1 - p / 100); }
+    xDom = [bet.open_ts,
+            Math.max(bet.close_ts || 0, lastTs, bet.open_ts + 600)];
     var s = '';
     [0, 25, 50, 75, 100].forEach(function (g) {
       s += "<line x1='" + L + "' y1='" + Y(g) + "' x2='" + (W - R) +
-           "' y2='" + Y(g) + "' stroke='" + GRID + "' stroke-width='1'/>";
-      s += "<text x='" + (L - 6) + "' y='" + (Y(g) + 4) +
-           "' fill='" + TXT + "' font-size='10' text-anchor='end'>" +
-           g + "</text>";
+           "' y2='" + Y(g) + "' stroke='" + GRID + "'/>";
+      s += "<text x='" + (L - 6) + "' y='" + (Y(g) + 4) + "' fill='" +
+           TXT + "' font-size='10' text-anchor='end'>" + g + "</text>";
     });
-    // close-time marker
-    if (bet.close_ts && bet.close_ts <= x1) {
+    if (bet.close_ts && bet.close_ts <= xDom[1]) {
       s += "<line x1='" + X(bet.close_ts) + "' y1='" + T + "' x2='" +
            X(bet.close_ts) + "' y2='" + (H - B) + "' stroke='" + GRID +
            "' stroke-dasharray='3,3'/>";
-      s += "<text x='" + X(bet.close_ts) + "' y='" + (H - B + 14) +
-           "' fill='" + TXT + "' font-size='10' " +
+      s += "<text x='" + Math.min(X(bet.close_ts), W - 30) + "' y='" +
+           (H - B + 15) + "' fill='" + TXT + "' font-size='10' " +
            "text-anchor='middle'>close</text>";
     }
-    s += "<text x='" + L + "' y='" + (H - B + 14) + "' fill='" + TXT +
-         "' font-size='10'>" + fmtT(x0) + " (bought)</text>";
-    function line(series, dashed) {
+    s += "<text x='" + L + "' y='" + (H - B + 15) + "' fill='" + TXT +
+         "' font-size='10'>" + fmtT(xDom[0]) + " (bought)</text>";
+    function line(series, col) {
       if (!series || !series.length) return '';
       var d = series.map(function (p, i) {
         return (i ? 'L' : 'M') + X(p[0]).toFixed(1) + ',' +
                Y(p[1]).toFixed(1);
       }).join(' ');
-      var o = "<path d='" + d + "' fill='none' stroke='" + color +
-              "' stroke-width='2'" +
-              (dashed ? " stroke-dasharray='5,4' opacity='0.65'" : '') +
-              '/>';
-      if (series.length <= 60) {
+      var o = "<path d='" + d + "' fill='none' stroke='" + col +
+              "' stroke-width='2'/>";
+      if (series.length <= 80) {
         series.forEach(function (p) {
           o += "<circle cx='" + X(p[0]).toFixed(1) + "' cy='" +
-               Y(p[1]).toFixed(1) + "' r='2.2' fill='" + color + "'" +
-               (dashed ? " opacity='0.65'" : '') + "/>";
+               Y(p[1]).toFixed(1) + "' r='2.2' fill='" + col + "'/>";
         });
       }
       return o;
     }
-    s += line(bet.kalshi, false);
-    s += line(bet.model, true);
+    s += line(bet.kalshi, color);
+    s += line(bet.model, WHITE);
+    s += "<line id='bpc-xhair' x1='0' y1='" + T + "' x2='0' y2='" +
+         (H - B) + "' stroke='#58a6ff' stroke-width='1' " +
+         "visibility='hidden'/>";
     svg.innerHTML = s;
+    var leg = document.getElementById('bpc-leg-k');
+    if (leg) leg.setAttribute('stroke', color);
     var cap = document.getElementById('bpc-caption');
-    if (cap) {
-      cap.textContent = bet.label + ' — ' + bet.ticker;
-    }
+    if (cap) cap.textContent = bet.label;
     var sideEl = document.getElementById('bpc-side');
     if (sideEl) {
       sideEl.innerHTML = "<span style='color:" + color +
@@ -2822,12 +2845,56 @@ def _render_bet_prob_chart(out: List[str], payload: dict) -> None:
     }
   }
 
+  function nearest(series, ts) {
+    if (!series || !series.length) return null;
+    var best = series[0];
+    for (var i = 1; i < series.length; i++) {
+      if (Math.abs(series[i][0] - ts) < Math.abs(best[0] - ts)) {
+        best = series[i];
+      }
+    }
+    return best;
+  }
+
+  svg.addEventListener('mousemove', function (ev) {
+    var r = svg.getBoundingClientRect();
+    var px = (ev.clientX - r.left) * (W / r.width);
+    if (px < L || px > W - R) { tip.hidden = true; return; }
+    var ts = xDom[0] + (px - L) / (W - L - R) * (xDom[1] - xDom[0]);
+    var k = nearest(CUR.kalshi, ts), m = nearest(CUR.model, ts);
+    var xh = document.getElementById('bpc-xhair');
+    if (xh) {
+      xh.setAttribute('x1', px); xh.setAttribute('x2', px);
+      xh.setAttribute('visibility', 'visible');
+    }
+    var color = CUR.side === 'NO' ? RED : GREEN;
+    var rows = ["<span style='color:" + TXT + ";'>" + fmtT(ts) +
+                '</span>'];
+    if (k) rows.push("<span style='color:" + color +
+                     ";font-weight:600;'>Kalshi " + k[1].toFixed(1) +
+                     '%</span>');
+    if (m) rows.push("<span style='color:" + WHITE +
+                     ";font-weight:600;'>Model " + m[1].toFixed(1) +
+                     '%</span>');
+    tip.innerHTML = rows.join('<br>');
+    tip.hidden = false;
+    var lx = (ev.clientX - r.left) + 14;
+    if (lx > r.width - 150) lx = (ev.clientX - r.left) - 150;
+    tip.style.left = lx + 'px';
+    tip.style.top = Math.max(0, ev.clientY - r.top - 16) + 'px';
+  });
+  svg.addEventListener('mouseleave', function () {
+    tip.hidden = true;
+    var xh = document.getElementById('bpc-xhair');
+    if (xh) xh.setAttribute('visibility', 'hidden');
+  });
+
   var byTicker = {};
   BETS.forEach(function (b) {
-    byTicker[b.ticker] = b;
-    byTicker[b.ticker.split('-').slice(0, -1).join('-')] = b;
+    byTicker[b.ticker] = byTicker[b.ticker] || b;
+    var base = b.ticker.split('-').slice(0, -1).join('-');
+    byTicker[base] = byTicker[base] || b;
   });
-  draw(BETS[0]);
   document.addEventListener('click', function (ev) {
     var tr = ev.target && ev.target.closest &&
              ev.target.closest('tr[data-ticker]');
@@ -2835,6 +2902,14 @@ def _render_bet_prob_chart(out: List[str], payload: dict) -> None:
     var b = byTicker[tr.getAttribute('data-ticker')];
     if (b) draw(b);
   });
+  // Make Active-bets rows read as clickable.
+  document.querySelectorAll('tr[data-ticker]').forEach(function (tr) {
+    if (byTicker[tr.getAttribute('data-ticker')]) {
+      tr.style.cursor = 'pointer';
+    }
+  });
+  window.addEventListener('resize', function () { draw(CUR); });
+  draw(BETS[0]);
 })();
 </script>"""
         "</div></div>")

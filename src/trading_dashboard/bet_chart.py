@@ -126,6 +126,38 @@ def _model_series(db_path: str, ticker: str, open_ts: float,
     return _downsample(out)
 
 
+def _contract_title(db_path: str, ticker: str) -> Optional[str]:
+    """The Kalshi contract's own title + question phrasing from the
+    bot's latest market_views row — "Resident Evil Rotten Tomatoes
+    score? · above 92" — so the chart caption reads like the listing
+    instead of a ticker."""
+    if not db_path or not db_path.endswith(".db") \
+            or not Path(db_path).exists():
+        return None
+    try:
+        with closing(sqlite3.connect(db_path)) as c:
+            cols = {r[1] for r in
+                    c.execute("PRAGMA table_info(market_views)")}
+            if "title" not in cols:
+                return None
+            row = c.execute(
+                "SELECT title, direction, strike_low FROM market_views"
+                " WHERE ticker = ? ORDER BY id DESC LIMIT 1",
+                (ticker,)).fetchone()
+    except (sqlite3.OperationalError, sqlite3.DatabaseError):
+        return None
+    if not row or not row[0]:
+        return None
+    title, direction, strike = row
+    q = ""
+    if strike is not None:
+        n = _num(strike)
+        n_txt = (str(int(n)) if n is not None and n == int(n)
+                 else str(strike))
+        q = f" · {direction or 'above'} {n_txt}"
+    return f"{title}{q}"
+
+
 def build_payload(bot: dict, bets: List[dict]) -> Optional[dict]:
     """Chart payload for the pane: newest-first, capped, one entry
     per bet with both series. None when there is nothing to draw."""
@@ -181,8 +213,9 @@ def build_payload(bot: dict, bets: List[dict]) -> Optional[dict]:
 
         mtc = _num(b.get("minutes_to_close"))
         close_ts = int(now + mtc * 60) if mtc and mtc > 0 else None
-        label = (b.get("_match") or b.get("title")
-                 or b.get("direction") or ticker)
+        label = (b.get("_match")
+                 or _contract_title(bot.get("db_path") or "", ticker)
+                 or b.get("title") or ticker)
         rows.append({
             "ticker": ticker,
             "side": side,
