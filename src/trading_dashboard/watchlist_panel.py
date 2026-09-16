@@ -2404,6 +2404,21 @@ def _render_watchlist(out: List[str], watchlist: List[dict],
         # loop iteration.
         if use_sections:
             out.append("</div></div>")
+    # Per-bet probability chart (user 2026-09-16): model %% vs
+    # Kalshi %% from purchase to contract close for the selected
+    # active bet — defaults to the newest bet, and clicking any
+    # Active-bets row switches the chart to that bet.
+    try:
+        from . import bet_chart as _bet_chart
+        _bot_cfg = next((b for b in (available_bots or [])
+                         if b.get("key") == current_bot), {})
+        _chart_payload = (_bet_chart.build_payload(_bot_cfg, bets)
+                          if bets else None)
+    except Exception:  # noqa: BLE001
+        log.exception("bet chart payload failed")
+        _chart_payload = None
+    if _chart_payload:
+        _render_bet_prob_chart(out, _chart_payload)
     # Append the row-click JS hook once — after every table is
     # emitted. The hook globs both tbodies (`watchlist-tbody` and,
     # on sport bots, `watchlist-tbody-active`) via its query
@@ -2694,3 +2709,132 @@ _WATCHLIST_ROW_CLICK_JS = """
    favour of the HOLDING badge in the Verdict column. */
 </style>
 """
+
+
+def _render_bet_prob_chart(out: List[str], payload: dict) -> None:
+    """Model %% vs Kalshi %% line chart for one active bet.
+
+    Solid line = Kalshi market, dashed = the bot's model; both plot
+    the chance THE BET wins (NO bets flip the yes-axis) so up always
+    reads as winning. Green for YES bets, red for NO. X runs from
+    the buy time to the contract close (drawn to the latest update).
+    Clicking a row in the Active bets table (data-ticker) re-draws
+    for that bet; default is the newest bet.
+    """
+    data = json.dumps(payload)
+    out.append(
+        "<div class='section'><h2>Bet probability</h2>"
+        "<div class='body'>"
+        "<div class='small gray' id='bpc-caption' "
+        "style='margin-bottom:6px;'></div>"
+        "<div style='overflow-x:auto;'>"
+        "<svg id='bpc-svg' viewBox='0 0 860 240' width='100%' "
+        "height='240' style='background:#0d1117;border:1px solid "
+        "#21262d;border-radius:6px;'></svg></div>"
+        "<div class='small gray' style='margin-top:6px;display:flex;"
+        "gap:18px;align-items:center;'>"
+        "<span><svg width='26' height='8'><line x1='0' y1='4' x2='26' "
+        "y2='4' stroke='#8b949e' stroke-width='2'/></svg> Kalshi %</span>"
+        "<span><svg width='26' height='8'><line x1='0' y1='4' x2='26' "
+        "y2='4' stroke='#8b949e' stroke-width='2' "
+        "stroke-dasharray='5,4'/></svg> Model %</span>"
+        "<span id='bpc-side'></span>"
+        "<span class='gray'>click an Active-bets row to switch</span>"
+        "</div>"
+        f"<script id='bpc-data' type='application/json'>{data}</script>"
+        """<script>
+(function () {
+  var el = document.getElementById('bpc-data');
+  if (!el) return;
+  var BETS = (JSON.parse(el.textContent) || {}).bets || [];
+  if (!BETS.length) return;
+  var GREEN = '#3fb950', RED = '#f85149', GRID = '#21262d',
+      TXT = '#8b949e';
+  var svg = document.getElementById('bpc-svg');
+  var W = 860, H = 240, L = 44, R = 14, T = 14, B = 26;
+
+  function fmtT(ts) {
+    var d = new Date(ts * 1000);
+    return (d.getMonth() + 1) + '/' + d.getDate() + ' ' +
+           String(d.getHours()).padStart(2, '0') + ':' +
+           String(d.getMinutes()).padStart(2, '0');
+  }
+
+  function draw(bet) {
+    var color = bet.side === 'NO' ? RED : GREEN;
+    var pts = (bet.kalshi || []).concat(bet.model || []);
+    if (!pts.length) { svg.innerHTML = ''; return; }
+    var lastTs = Math.max.apply(null, pts.map(function (p) { return p[0]; }));
+    var x0 = bet.open_ts,
+        x1 = Math.max(bet.close_ts || 0, lastTs, x0 + 600);
+    function X(ts) { return L + (W - L - R) * (ts - x0) / (x1 - x0); }
+    function Y(p) { return T + (H - T - B) * (1 - p / 100); }
+    var s = '';
+    [0, 25, 50, 75, 100].forEach(function (g) {
+      s += "<line x1='" + L + "' y1='" + Y(g) + "' x2='" + (W - R) +
+           "' y2='" + Y(g) + "' stroke='" + GRID + "' stroke-width='1'/>";
+      s += "<text x='" + (L - 6) + "' y='" + (Y(g) + 4) +
+           "' fill='" + TXT + "' font-size='10' text-anchor='end'>" +
+           g + "</text>";
+    });
+    // close-time marker
+    if (bet.close_ts && bet.close_ts <= x1) {
+      s += "<line x1='" + X(bet.close_ts) + "' y1='" + T + "' x2='" +
+           X(bet.close_ts) + "' y2='" + (H - B) + "' stroke='" + GRID +
+           "' stroke-dasharray='3,3'/>";
+      s += "<text x='" + X(bet.close_ts) + "' y='" + (H - B + 14) +
+           "' fill='" + TXT + "' font-size='10' " +
+           "text-anchor='middle'>close</text>";
+    }
+    s += "<text x='" + L + "' y='" + (H - B + 14) + "' fill='" + TXT +
+         "' font-size='10'>" + fmtT(x0) + " (bought)</text>";
+    function line(series, dashed) {
+      if (!series || !series.length) return '';
+      var d = series.map(function (p, i) {
+        return (i ? 'L' : 'M') + X(p[0]).toFixed(1) + ',' +
+               Y(p[1]).toFixed(1);
+      }).join(' ');
+      var o = "<path d='" + d + "' fill='none' stroke='" + color +
+              "' stroke-width='2'" +
+              (dashed ? " stroke-dasharray='5,4' opacity='0.65'" : '') +
+              '/>';
+      if (series.length <= 60) {
+        series.forEach(function (p) {
+          o += "<circle cx='" + X(p[0]).toFixed(1) + "' cy='" +
+               Y(p[1]).toFixed(1) + "' r='2.2' fill='" + color + "'" +
+               (dashed ? " opacity='0.65'" : '') + "/>";
+        });
+      }
+      return o;
+    }
+    s += line(bet.kalshi, false);
+    s += line(bet.model, true);
+    svg.innerHTML = s;
+    var cap = document.getElementById('bpc-caption');
+    if (cap) {
+      cap.textContent = bet.label + ' — ' + bet.ticker;
+    }
+    var sideEl = document.getElementById('bpc-side');
+    if (sideEl) {
+      sideEl.innerHTML = "<span style='color:" + color +
+        ";font-weight:600;'>" + bet.side +
+        " bought</span> · lines show the chance this bet wins";
+    }
+  }
+
+  var byTicker = {};
+  BETS.forEach(function (b) {
+    byTicker[b.ticker] = b;
+    byTicker[b.ticker.split('-').slice(0, -1).join('-')] = b;
+  });
+  draw(BETS[0]);
+  document.addEventListener('click', function (ev) {
+    var tr = ev.target && ev.target.closest &&
+             ev.target.closest('tr[data-ticker]');
+    if (!tr) return;
+    var b = byTicker[tr.getAttribute('data-ticker')];
+    if (b) draw(b);
+  });
+})();
+</script>"""
+        "</div></div>")
