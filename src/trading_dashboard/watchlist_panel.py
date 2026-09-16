@@ -2797,8 +2797,10 @@ def _render_bet_prob_chart(out: List[str], payload: dict) -> None:
     var pts = (bet.kalshi || []).concat(bet.model || []);
     if (!pts.length) { svg.innerHTML = ''; return; }
     var lastTs = Math.max.apply(null, pts.map(function (p) { return p[0]; }));
-    xDom = [bet.open_ts,
-            Math.max(bet.close_ts || 0, lastTs, bet.open_ts + 600)];
+    // The lines always span the full plot width: x runs from the buy
+    // time to the LATEST update (user 2026-09-16), with the contract
+    // close shown as a right-edge label instead of empty runway.
+    xDom = [bet.open_ts, Math.max(lastTs, bet.open_ts + 600)];
     var s = '';
     [0, 25, 50, 75, 100].forEach(function (g) {
       s += "<line x1='" + L + "' y1='" + Y(g) + "' x2='" + (W - R) +
@@ -2806,16 +2808,12 @@ def _render_bet_prob_chart(out: List[str], payload: dict) -> None:
       s += "<text x='" + (L - 6) + "' y='" + (Y(g) + 4) + "' fill='" +
            TXT + "' font-size='10' text-anchor='end'>" + g + "</text>";
     });
-    if (bet.close_ts && bet.close_ts <= xDom[1]) {
-      s += "<line x1='" + X(bet.close_ts) + "' y1='" + T + "' x2='" +
-           X(bet.close_ts) + "' y2='" + (H - B) + "' stroke='" + GRID +
-           "' stroke-dasharray='3,3'/>";
-      s += "<text x='" + Math.min(X(bet.close_ts), W - 30) + "' y='" +
-           (H - B + 15) + "' fill='" + TXT + "' font-size='10' " +
-           "text-anchor='middle'>close</text>";
-    }
     s += "<text x='" + L + "' y='" + (H - B + 15) + "' fill='" + TXT +
          "' font-size='10'>" + fmtT(xDom[0]) + " (bought)</text>";
+    s += "<text x='" + (W - R) + "' y='" + (H - B + 15) + "' fill='" +
+         TXT + "' font-size='10' text-anchor='end'>" +
+         (bet.close_ts ? 'closes ' + fmtT(bet.close_ts)
+                       : fmtT(xDom[1])) + "</text>";
     function line(series, col, dotted) {
       if (!series || !series.length) return '';
       var d = series.map(function (p, i) {
