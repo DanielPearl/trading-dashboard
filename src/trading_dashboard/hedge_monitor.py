@@ -155,8 +155,10 @@ def _kalshi_result(ticker: str) -> str | None:
     sweep — the ONLY close the live ledger accepts is exchange truth."""
     try:
         from . import kalshi_client
-        mk = (kalshi_client.get_client().get_market(ticker)
-              or {}).get("market") or {}
+        resp = kalshi_client.get_client().get_market(ticker) or {}
+        # The dashboard shim returns the market dict directly; the
+        # raw SDK wraps it in {"market": {...}} — accept both.
+        mk = resp.get("market") or resp
         res = (mk.get("result") or "").lower()
         return res if res in ("yes", "no") else None
     except Exception:  # noqa: BLE001
