@@ -521,6 +521,23 @@ def fetch_active_bets_with_marks(db_path: str) -> List[dict]:
         "          ORDER BY mv.id DESC LIMIT 1) AS current_model_prob_yes "
         if has_model_col else
         "       NULL AS _no_model_col ")
+    # A ledger without a position_marks table at all (the paper-only
+    # bots: rotten-tomatoes) errored the whole statement and silently
+    # blanked its Active bets everywhere (2026-09-16: the RT pane's
+    # bet chart never rendered). Join the table only when it exists.
+    has_marks_tbl = False
+    try:
+        with closing(_conn(db_path)) as _c:
+            has_marks_tbl = bool(_c.execute(
+                "SELECT name FROM sqlite_master WHERE type='table'"
+                " AND name='position_marks'").fetchone())
+    except (sqlite3.OperationalError, sqlite3.DatabaseError):
+        pass
+    marks_join = ("LEFT JOIN position_marks m ON p.id = m.position_id "
+                  if has_marks_tbl else
+                  "LEFT JOIN (SELECT NULL AS position_id,"
+                  " NULL AS yes_ask_cents, NULL AS no_ask_cents) m"
+                  " ON p.id = m.position_id ")
     rows = _safe_query(
         db_path,
         "SELECT p.*, "
@@ -544,7 +561,7 @@ def fetch_active_bets_with_marks(db_path: str) -> List[dict]:
         "          WHERE mv.ticker = p.ticker "
         "          ORDER BY mv.id DESC LIMIT 1) AS cap_strike, "
         + model_sel +
-        "FROM positions p LEFT JOIN position_marks m ON p.id = m.position_id "
+        "FROM positions p " + marks_join +
         "WHERE p.status = 'open' ORDER BY p.opened_at DESC")
     # Flag so the renderer knows "None" here means "the model has no
     # CURRENT opinion — render a dash", not "column missing — fall
