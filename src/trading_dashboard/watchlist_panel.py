@@ -2753,7 +2753,9 @@ def _render_bet_prob_chart(out: List[str], payload: dict) -> None:
         "y1='4' x2='26' y2='4' stroke='#3fb950' stroke-width='3'/></svg>"
         " Kalshi market %</span>"
         "<span><svg width='26' height='8'><line x1='0' y1='4' x2='26' "
-        "y2='4' stroke='#e6edf3' stroke-width='3'/></svg> Model %</span>"
+        "y2='4' stroke='#e6edf3' stroke-width='3' "
+        "stroke-dasharray='2,4' stroke-linecap='round'/></svg>"
+        " Model %</span>"
         "<span id='bpc-side'></span>"
         "<span class='gray'>hover for values · click an Active-bets "
         "row to switch</span>"
@@ -2811,14 +2813,16 @@ def _render_bet_prob_chart(out: List[str], payload: dict) -> None:
     }
     s += "<text x='" + L + "' y='" + (H - B + 15) + "' fill='" + TXT +
          "' font-size='10'>" + fmtT(xDom[0]) + " (bought)</text>";
-    function line(series, col) {
+    function line(series, col, dotted) {
       if (!series || !series.length) return '';
       var d = series.map(function (p, i) {
         return (i ? 'L' : 'M') + X(p[0]).toFixed(1) + ',' +
                Y(p[1]).toFixed(1);
       }).join(' ');
       var o = "<path d='" + d + "' fill='none' stroke='" + col +
-              "' stroke-width='2'/>";
+              "' stroke-width='2'" +
+              (dotted ? " stroke-dasharray='2,5'" +
+                        " stroke-linecap='round'" : '') + '/>';
       if (series.length <= 80) {
         series.forEach(function (p) {
           o += "<circle cx='" + X(p[0]).toFixed(1) + "' cy='" +
@@ -2828,7 +2832,7 @@ def _render_bet_prob_chart(out: List[str], payload: dict) -> None:
       return o;
     }
     s += line(bet.kalshi, color);
-    s += line(bet.model, WHITE);
+    s += line(bet.model, WHITE, true);
     s += "<line id='bpc-xhair' x1='0' y1='" + T + "' x2='0' y2='" +
          (H - B) + "' stroke='#58a6ff' stroke-width='1' " +
          "visibility='hidden'/>";
