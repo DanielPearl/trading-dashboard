@@ -41,6 +41,10 @@ bots:
       # are the natural resolution. The chart depicts day-over-day
       # change; hovering snaps to the nearest recorded day.
       chart_period_minutes: 1440
+    seasons:
+      - name: "Retail gas prices — daily contracts"
+        start: "2026-01-01T00:00:00Z"
+        end:   "2026-12-31T23:59:00Z"
   - key: unemployment-claims
     name: Jobless Claims
     db_path: /root/unemployment-claims/data/sim.db
@@ -64,6 +68,10 @@ bots:
       # ("at least 200,000") so the threshold reads as plain English
       # rather than the K-shorthand fmt_underlying produces.
       question_format: at_least_full
+    seasons:
+      - name: "Jobless claims — weekly Thursday releases"
+        start: "2026-01-01T00:00:00Z"
+        end:   "2026-12-31T23:59:00Z"
   - key: basketball
     name: Basketball Forecast
     # NBA is a head-to-head sport bot ("Will Team A win?") — same
@@ -111,6 +119,21 @@ bots:
       - name: "WNBA 2026 Season"
         start: "2026-05-01T00:00:00Z"
         end:   "2026-10-31T03:00:00Z"
+      - name: "NBA 2026-27 Season"
+        start: "2026-10-20T23:00:00Z"
+        end:   "2027-06-22T03:00:00Z"
+      - name: "NCAA Men's Basketball 2026-27"
+        start: "2026-11-09T17:00:00Z"
+        end:   "2027-04-06T03:00:00Z"
+      - name: "NCAA Women's Basketball 2026-27"
+        start: "2026-11-09T17:00:00Z"
+        end:   "2027-04-05T03:00:00Z"
+      - name: "EuroLeague 2026-27"
+        start: "2026-09-30T16:00:00Z"
+        end:   "2027-05-30T22:00:00Z"
+      - name: "NBL (Australia) 2026-27"
+        start: "2026-09-17T07:00:00Z"
+        end:   "2027-03-31T12:00:00Z"
     display:
       underlying_label: Home team win prob (Pinnacle)
       underlying_unit: ""
@@ -147,6 +170,10 @@ bots:
       # Override the default "next week" so the watchlist's
       # "Predicted ___" card reads correctly for a monthly print.
       prediction_period_label: next month
+    seasons:
+      - name: "CPI — monthly releases"
+        start: "2026-01-01T00:00:00Z"
+        end:   "2026-12-31T23:59:00Z"
   - key: pce
     name: PCE Forecast
     db_path: /root/cpi/data/pce-sim.db
@@ -171,6 +198,10 @@ bots:
       # Override the default "next week" so the watchlist's
       # "Predicted ___" card reads correctly for a monthly print.
       prediction_period_label: next month
+    seasons:
+      - name: "PCE — monthly releases"
+        start: "2026-01-01T00:00:00Z"
+        end:   "2026-12-31T23:59:00Z"
   - key: gdp
     name: GDP Forecast
     db_path: /root/cpi/data/gdp-sim.db
@@ -195,6 +226,10 @@ bots:
       # Override the default "next week" so the watchlist's
       # "Predicted ___" card reads correctly for a monthly print.
       prediction_period_label: this quarter
+    seasons:
+      - name: "GDP — quarterly releases"
+        start: "2026-01-01T00:00:00Z"
+        end:   "2026-12-31T23:59:00Z"
   - key: natural-gas
     name: Natural Gas Prices
     # Lives at /root/peak-load/ on the droplet — directory keeps its old
@@ -212,6 +247,10 @@ bots:
       # auto-downgrade to hourly inside fetch_underlying_history (a
       # single-day daily series would be 0-1 points).
       chart_period_minutes: 1440
+    seasons:
+      - name: "Natural gas — daily contracts"
+        start: "2026-01-01T00:00:00Z"
+        end:   "2026-12-31T23:59:00Z"
   - key: tennis
     name: Tennis Forecast
     # Tennis bot (Baseline Break) writes a JSON watchlist + metrics +
@@ -326,6 +365,10 @@ bots:
         end:   "2028-05-01T23:59:59Z"
 
   - key: billboard
+    seasons:
+      - name: "Billboard Hot 100 — weekly charts (year-round)"
+        start: "2026-01-01T00:00:00Z"
+        end:   "2026-12-31T23:59:00Z"
     name: Billboard Hot 100
     # Hot 100 Top-10 forecaster (KXRANKLISTSONGTOP10). JSON-source for the watchlist
     # tab (model probs / verdicts come from watchlist.json), sim.db-
@@ -346,6 +389,10 @@ bots:
     training_db_path: /root/billboard-charts/data/processed/artifacts/training_data.db
 
   - key: reality-leaks
+    seasons:
+      - name: "Reality TV leaks — per-show cycles"
+        start: "2026-01-01T00:00:00Z"
+        end:   "2026-12-31T23:59:00Z"
     name: Reality Leaks
     # Leak-driven reality-TV PAPER trader (2026-07-17). Watches public
     # leak channels (Reddit spoiler subs, Reality Steve RSS, UK
@@ -481,7 +528,15 @@ bots:
       underlying_decimals: 0
       unit_position: none
       chart_period_minutes: 1440
+    seasons:
+      - name: "Rotten Tomatoes scores — rolling releases (paper)"
+        start: "2026-01-01T00:00:00Z"
+        end:   "2026-12-31T23:59:00Z"
   - key: hormuz
+    seasons:
+      - name: "Hormuz transit peak — weekly contracts (paper)"
+        start: "2026-01-01T00:00:00Z"
+        end:   "2026-12-31T23:59:00Z"
     name: Hormuz Forecast
     # Weekly peak-traffic forecaster for the Strait of Hormuz
     # (KXHORMUZPEAK). Standard sim.db macro bot: recency-weighted Ridge
@@ -527,7 +582,15 @@ bots:
     data_source: "NWS api.weather.gov probabilityOfPrecipitation"
     display:
       chart_period_minutes: 1440
+    seasons:
+      - name: "Daily rain contracts — year-round (watch-only)"
+        start: "2026-01-01T00:00:00Z"
+        end:   "2026-12-31T23:59:00Z"
   - key: temp
+    seasons:
+      - name: "Daily temperature contracts — year-round (off)"
+        start: "2026-01-01T00:00:00Z"
+        end:   "2026-12-31T23:59:00Z"
     name: Temperature Forecast
     # KXHIGH* daily-high ladders (one "<K", four 2F buckets, one ">K").
     # Centre from the NWS official daily high, width from the median
