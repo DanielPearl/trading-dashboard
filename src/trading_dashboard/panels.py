@@ -2247,14 +2247,17 @@ def _render_history_detail_modal(out: List[str]) -> None:
       String(d.getHours()).padStart(2, '0') + ':' +
       String(d.getMinutes()).padStart(2, '0');
   }
-  function draw(series, side, openTs, closeTs) {
+  function draw(series, side, openTs, closeTs, entryPct) {
     var W = Math.max((svg.parentNode.clientWidth || 900), 600),
         H = 250, T = 14, B = 26, L = 44, R = 16;
     svg.setAttribute('viewBox', '0 0 ' + W + ' ' + H);
     var color = side === 'NO' ? RED : GREEN;
     $('hd-leg-k').setAttribute('stroke', color);
     var pts = (series.kalshi || []).concat(series.model || []);
-    var x0 = openTs, x1 = closeTs > openTs ? closeTs : openTs + 600;
+    // Full market life: axis starts at the Kalshi listing when the
+    // series provides it, with the purchase marked inside it.
+    var x0 = Math.min(series.market_open || openTs, openTs),
+        x1 = closeTs > x0 ? closeTs : x0 + 600;
     function X(ts) { return L + (W - L - R) * (ts - x0) / (x1 - x0); }
     function Y(p) { return T + (H - T - B) * (1 - p / 100); }
     var s = '';
@@ -2277,8 +2280,27 @@ def _render_history_detail_modal(out: List[str]) -> None:
     }
     s += line(series.kalshi, color, false);
     s += line(series.model, WHITE, true);
+    // Buy marker: vertical line at purchase time + a ring at the
+    // price paid (side-relative), labeled.
+    if (isFinite(openTs) && openTs >= x0 && openTs <= x1) {
+      var bx = X(openTs);
+      s += "<line x1='" + bx + "' y1='" + T + "' x2='" + bx +
+           "' y2='" + (H - B) + "' stroke='#58a6ff'" +
+           " stroke-width='1.5' stroke-dasharray='5,4'/>";
+      if (isFinite(entryPct)) {
+        s += "<circle cx='" + bx + "' cy='" + Y(entryPct) +
+             "' r='5' fill='none' stroke='#58a6ff'" +
+             " stroke-width='2'/>";
+      }
+      var tx = Math.min(Math.max(bx + 6, L + 4), W - 120);
+      s += "<text x='" + tx + "' y='" + (T + 12) +
+           "' fill='#58a6ff' font-size='11' font-weight='600'>" +
+           'bought' + (isFinite(entryPct)
+                       ? ' @ ' + Math.round(entryPct) + '\u00a2'
+                       : '') + '</text>';
+    }
     svg.innerHTML = s;
-    $('hd-axis').textContent = fmtT(x0) + ' (bought) → ' +
+    $('hd-axis').textContent = fmtT(x0) + ' (listed) \u2192 ' +
       fmtT(x1) + ' (settled)';
     if (!pts.length) {
       $('hd-loading').textContent = 'no recorded movement — this '
@@ -2332,7 +2354,7 @@ def _render_history_detail_modal(out: List[str]) -> None:
     fetch(u).then(function (r) { return r.json(); })
       .then(function (series) {
         $('hd-loading').hidden = true;
-        draw(series, side, openTs, closeTs);
+        draw(series, side, openTs, closeTs, entry);
       })
       .catch(function () {
         $('hd-loading').textContent = 'movement history unavailable';

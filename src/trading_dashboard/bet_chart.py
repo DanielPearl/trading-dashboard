@@ -232,24 +232,34 @@ def build_payload(bot: dict, bets: List[dict]) -> Optional[dict]:
 
 def history_series(bot: dict, ticker: str, side: str,
                    open_ts: float, close_ts: float) -> dict:
-    """Both series for a SETTLED contract, bounded [open, close] —
-    the History drill-down's data (user 2026-09-17: click a history
-    row, see how Kalshi % and model % moved over the bet's life)."""
+    """Both series for a SETTLED contract over the market's FULL
+    life — from Kalshi listing to settlement, not just from the
+    purchase (user 2026-09-17: "show the full kalshi history of the
+    contract and then show where i bought it"). ``market_open`` in
+    the response lets the chart scale its axis to the whole
+    lifetime; the caller draws the buy marker from the bet row."""
     side = "NO" if str(side).upper() == "NO" else "YES"
     grace = 900
     kal: List[list] = []
+    market_open = open_ts
     try:
         from . import kalshi_client as kc
         client = kc.get_client()
-        span_h = (close_ts - open_ts) / 3600.0
+        mk = client.get_market(ticker) or {}
+        mk = mk.get("market") or mk
+        mo = _ts(mk.get("open_time"))
+        if mo and mo < open_ts:
+            market_open = mo
+        span_h = (close_ts - market_open) / 3600.0
         period = 1 if span_h <= 48 else 60
         resp = client.get_market_candlesticks(
             ticker=ticker, series_ticker=ticker.split("-")[0],
-            start_ts=int(open_ts - 3600), end_ts=int(close_ts + grace),
+            start_ts=int(market_open - 3600),
+            end_ts=int(close_ts + grace),
             period_interval=period)
         for c in (resp or {}).get("candlesticks") or []:
             ts = _num(c.get("end_period_ts") or c.get("ts"))
-            if ts is None or ts < open_ts or ts > close_ts + grace:
+            if ts is None or ts < market_open or ts > close_ts + grace:
                 continue
             sp = _side_pct(kc._candle_yes_prob(c), side)
             if sp is not None:
@@ -257,6 +267,7 @@ def history_series(bot: dict, ticker: str, side: str,
     except Exception:  # noqa: BLE001
         log.exception("history candles failed for %s", ticker)
     mdl = [p for p in _model_series(bot.get("db_path") or "", ticker,
-                                    open_ts, side)
+                                    market_open, side)
            if p[0] <= close_ts + grace]
-    return {"kalshi": _downsample(kal), "model": mdl}
+    return {"kalshi": _downsample(kal), "model": mdl,
+            "market_open": int(market_open)}
