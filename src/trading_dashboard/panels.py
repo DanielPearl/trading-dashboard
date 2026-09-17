@@ -2015,7 +2015,10 @@ def _render_bet_history_block(out: List[str], history: List[dict],
                                   else _yes_desc)
         # History drill-down attrs (user 2026-09-17): clicking a row
         # opens the per-contract detail card + movement chart.
-        _h_title = (b.get("title") or b.get("_match") or _tk or "")
+        # Same text the visible Title column shows (Kalshi title ->
+        # derived matchup/question) — the modal header must never be
+        # a bare ticker (user 2026-09-17).
+        _h_title = (title_text or b.get("_match") or _tk or "")
         _h_attrs = ""
         if _tk:
             _h_attrs = (
