@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import Any
 from typing import List
 from .data import (
+    drop_untraded_bets,
     filter_history_by_period,
     _compute_active_bets_totals,
     _live_kalshi_held_tickers,
@@ -220,6 +221,8 @@ def _compute_cross_bot_rollup(bots: List[dict], *, period_days: int | None,
                 ):
                     if not _keep_on_kalshi(ab):
                         continue
+                    if not drop_untraded_bets([ab], b):
+                        continue
                     ab["_bot_name"] = b["name"]
                     ab["_bot_key"] = b["key"]
                     ab["_dashboard_type"] = b.get("dashboard_type") or "standard"
@@ -289,6 +292,8 @@ def _compute_cross_bot_rollup(bots: List[dict], *, period_days: int | None,
                         _bb_bets, b.get("watchlist_json_path"))
                 for ab in _bb_bets:
                     if not _keep_on_kalshi(ab):
+                        continue
+                    if not drop_untraded_bets([ab], b):
                         continue
                     ab["_bot_name"] = b["name"]
                     ab["_bot_key"] = b["key"]
@@ -361,6 +366,8 @@ def _compute_cross_bot_rollup(bots: List[dict], *, period_days: int | None,
             _wl_by_tk = {}
         for ab in fetch_active_bets_with_marks(b["db_path"]):
             if not _keep_on_kalshi(ab):
+                continue
+            if not drop_untraded_bets([ab], b):
                 continue
             ab["_bot_name"] = b["name"]
             ab["_bot_key"] = b["key"]
@@ -669,6 +676,8 @@ class Handler(BaseHTTPRequestHandler):
                                     exclude_tickers=covered,
                                     sim_state_path=bot.get("sim_state_path"),
                                 ))
+                    bot_active_bets = drop_untraded_bets(
+                        bot_active_bets, bot)
                     for ab in bot_active_bets:
                         ab.setdefault("_display", bot.get("display") or {})
                     # Sport bots have no per-bot "latest open position"
@@ -724,6 +733,8 @@ class Handler(BaseHTTPRequestHandler):
                             bot_active_bets = [
                                 ab for ab in bot_active_bets
                                 if _bb_on_kalshi(ab.get("ticker"))]
+                    bot_active_bets = drop_untraded_bets(
+                        bot_active_bets, bot)
                     for ab in bot_active_bets:
                         ab.setdefault("_display", bot.get("display") or {})
                     latest_active = fetch_latest_open_position(db_path)
@@ -749,6 +760,8 @@ class Handler(BaseHTTPRequestHandler):
                         fetch_active_bets_with_marks(db_path), _wk)
                     _weather.enrich_active_bets(
                         bot_active_bets, bot.get("watchlist_json_path"))
+                    bot_active_bets = drop_untraded_bets(
+                        bot_active_bets, bot)
                     for ab in bot_active_bets:
                         ab.setdefault("_display", bot.get("display") or {})
                     latest_active = fetch_latest_open_position(db_path)
@@ -769,6 +782,8 @@ class Handler(BaseHTTPRequestHandler):
                     watchlist = _reality.build_standard_watchlist_rows(
                         payload_wl)
                     bot_active_bets = fetch_active_bets_with_marks(db_path)
+                    bot_active_bets = drop_untraded_bets(
+                        bot_active_bets, bot)
                     for ab in bot_active_bets:
                         ab.setdefault("_display", bot.get("display") or {})
                     latest_active = fetch_latest_open_position(db_path)
@@ -779,6 +794,8 @@ class Handler(BaseHTTPRequestHandler):
                     latest_active = fetch_latest_open_position(db_path)
                     watchlist = fetch_watchlist(db_path)
                     bot_active_bets = fetch_active_bets_with_marks(db_path)
+                    bot_active_bets = drop_untraded_bets(
+                        bot_active_bets, bot)
                     for ab in bot_active_bets:
                         ab.setdefault("_display", bot.get("display") or {})
                 # Open positions — fetched here (instead of just before

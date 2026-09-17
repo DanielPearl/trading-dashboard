@@ -104,6 +104,9 @@ bots:
       KXSLBGAME, KXIBPLGAME, KXNBLGAME, KXCBAGAME, KXPBAGAME, KXNBBGAME,
       KXLNBPGAME, KXLBPGAME, KXBSNGAME, KXCEBLGAME, KXBALGAME,
       KXBIG3GAME, KXTBTGAME, KXUNRIVALEDGAME, KXBILGAME]
+    # Guest-feed-only leagues (mirrors the live allowlist):
+    # never shown as active bets.
+    untraded_series: [KXNCAAMBD3GAME, KXEUROCUPGAME, KXEUROBASKETGAME, KXWEUROBASKETGAME, KXFIBAGAME, KXWFIBAGAME, KXFIBACHAMPGAME, KXFIBACHAMPLEAGUEGAME, KXFIBAECUPGAME, KXACBGAME, KXBBLGAME, KXDBBGAME, KXBBSERIEAGAME, KXBBSERIEBGAME, KXGBLGAME, KXSLBGAME, KXIBPLGAME, KXCBAGAME, KXPBAGAME, KXNBBGAME, KXLNBPGAME, KXLBPGAME, KXBSNGAME, KXCEBLGAME, KXBALGAME, KXBIG3GAME, KXTBTGAME, KXUNRIVALEDGAME, KXBILGAME]
     data_source: "Pinnacle moneylines (guest feed + The Odds API devig)"
     # One window per Kalshi NBA series the bot polls: KXNBAGAME
     # (regular season + playoffs) and KXNBASUMMERGAME (Las Vegas
@@ -263,6 +266,9 @@ bots:
     # the cross-bot History ledger. Bot trades ATP tour, WTA tour, and
     # ITF Futures / Challengers.
     series_prefixes: [KXATPMATCH, KXWTAMATCH, KXITFMATCH]
+    # Invalidated-model series (user 2026-09-17): recorded in the
+    # ledger, never shown as active bets.
+    untraded_series: [KXITFMATCH]
     data_source: "Jeff Sackmann tennis_atp + tennis_wta (GitHub)"
     db_path: /root/tennis-forecast/data/outputs/watchlist.json
     decisions_path: /root/tennis-forecast/data/outputs/watchlist.json

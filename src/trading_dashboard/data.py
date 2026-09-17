@@ -483,6 +483,20 @@ def fetch_latest_open_position(db_path: str) -> dict | None:
     return dict(row) if row else None
 
 
+def drop_untraded_bets(bets: List[dict], bot: dict) -> List[dict]:
+    """Hide bets in series the bot no longer trades (user 2026-09-17:
+    ITF and every other invalidated-model series must not appear in
+    Active bets). Bot entries declare ``untraded_series`` prefixes;
+    ledger/paper rows in those series stay recorded but never render
+    as active bets anywhere."""
+    pref = tuple(str(p).upper()
+                 for p in (bot.get("untraded_series") or ()) if p)
+    if not pref:
+        return bets
+    return [b for b in bets
+            if not str(b.get("ticker") or "").upper().startswith(pref)]
+
+
 def fetch_active_bets_with_marks(db_path: str) -> List[dict]:
     """Open positions joined with their latest mark + latest mtc + the
     most recent market_views row's strike bounds (so the summary table
