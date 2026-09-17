@@ -205,6 +205,14 @@ class SportLiveExecutor:
         # key existed in dashboard-live.yaml before this — the
         # executor just wasn't reading it.
         self.require_pinnacle = bool(cfg.get("require_pinnacle", False))
+        # Series-level exclusion (2026-09-17: ITF realized 38% on a
+        # claimed 62.6% over 53 live bets — the low-tier benchmark is
+        # fake edge; user: exclude ITF, keep ATP/WTA). Prefix match
+        # on the side ticker; sim configs leave this empty so paper
+        # keeps measuring the excluded series.
+        self.excluded_series = tuple(
+            str(p).upper() for p in (cfg.get("excluded_series") or ())
+            if p)
         # Strong-edge bypass retired 2026-07-15 (was a patch over the
         # 30¢ min_entry_price floor). Now that the floor is at 15¢
         # (SDK hard floor), the true-edge gate handles filtering
@@ -419,6 +427,11 @@ class SportLiveExecutor:
         ticker = (row.get("ticker_a") if side == "A"
                   else row.get("ticker_b"))
         if not ticker:
+            return
+        if self.excluded_series and str(ticker).upper().startswith(
+                self.excluded_series):
+            self._log.info("%s-live skip %s: excluded series",
+                           self.bot_key, ticker)
             return
         if len(state.get("open_positions", [])) >= self.max_open:
             return

@@ -538,6 +538,11 @@ tennis_trader:
     dry_run: false
     sim_state_path: /root/tennis-forecast/data/outputs-live/sim_state.json
     max_open_positions: 10  # restored to 10 per user (2026-06-07) — calibration data improving
+    # ITF excluded 2026-09-17 (user: "let's fix those") — 53 live ITF
+    # bets realized 38% on a claimed 62.6%: the low-tier benchmark is
+    # fake edge. ATP/WTA stay tradeable; sim keeps papering ITF so
+    # the calibration record continues.
+    excluded_series: [KXITFMATCH]
     max_orders_per_day: 20
     contracts_per_order: 1
     # Gate simplification 2026-07-15 (user directive):
