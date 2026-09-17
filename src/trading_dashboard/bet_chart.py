@@ -349,9 +349,17 @@ def record_sport_benchmarks(bots: List[dict]) -> int:
         if not wl or not p or not Path(wl).exists():
             continue
         try:
-            rows = json.loads(Path(wl).read_text())
+            payload = json.loads(Path(wl).read_text())
         except (OSError, json.JSONDecodeError):
             continue
+        # Watchlist shapes vary by bot: bare list, or a dict wrapping
+        # the rows under "rows"/"matches".
+        if isinstance(payload, dict):
+            rows = (payload.get("rows") or payload.get("matches")
+                    or payload.get("watchlist") or [])
+        else:
+            rows = payload or []
+        rows = [r for r in rows if isinstance(r, dict)]
         try:
             with closing(sqlite3.connect(p)) as c:
                 c.execute("CREATE TABLE IF NOT EXISTS bench ("
