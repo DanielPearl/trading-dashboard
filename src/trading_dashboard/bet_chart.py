@@ -230,6 +230,14 @@ def build_payload(bot: dict, bets: List[dict]) -> Optional[dict]:
     return {"bets": rows}
 
 
+def _series_cache_path(ticker: str, side: str) -> Path:
+    d = Path(__file__).resolve().parents[2] / "data" / "series_cache"
+    d.mkdir(parents=True, exist_ok=True)
+    safe = "".join(ch if ch.isalnum() or ch in "-_" else "_"
+                   for ch in f"{ticker}_{side}")
+    return d / f"{safe}.json"
+
+
 def history_series(bot: dict, ticker: str, side: str,
                    open_ts: float, close_ts: float) -> dict:
     """Both series for a SETTLED contract over the market's FULL
@@ -239,6 +247,17 @@ def history_series(bot: dict, ticker: str, side: str,
     the response lets the chart scale its axis to the whole
     lifetime; the caller draws the buy marker from the bet row."""
     side = "NO" if str(side).upper() == "NO" else "YES"
+    # A settled contract's history is immutable — cache it forever so
+    # every view after the first is a snapshot (user 2026-09-17:
+    # "this should just be a snapshot").
+    cache = _series_cache_path(ticker, side)
+    if cache.exists():
+        try:
+            cached = json.loads(cache.read_text())
+            if cached.get("kalshi"):
+                return cached
+        except (OSError, json.JSONDecodeError):
+            pass
     grace = 900
     kal: List[list] = []
     market_open = open_ts
@@ -269,5 +288,88 @@ def history_series(bot: dict, ticker: str, side: str,
     mdl = [p for p in _model_series(bot.get("db_path") or "", ticker,
                                     market_open, side)
            if p[0] <= close_ts + grace]
-    return {"kalshi": _downsample(kal), "model": mdl,
-            "market_open": int(market_open)}
+    if not mdl:
+        mdl = [p for p in _benchmark_history_series(
+                   bot, ticker, market_open, side)
+               if p[0] <= close_ts + grace]
+    out = {"kalshi": _downsample(kal), "model": mdl,
+           "market_open": int(market_open)}
+    if kal:
+        try:
+            cache.write_text(json.dumps(out))
+        except OSError:
+            pass
+    return out
+
+
+def _bench_db_path(bot: dict) -> Optional[Path]:
+    """benchmark_history.db lives beside the sport bot's sim_state —
+    written by the dashboard's benchmark recorder (2026-09-17) so
+    future sport contracts get a model line; nothing exists for bets
+    that settled before the recorder started."""
+    sp = bot.get("sim_state_path") or ""
+    if not sp:
+        return None
+    return Path(sp).parent / "benchmark_history.db"
+
+
+def _benchmark_history_series(bot: dict, ticker: str,
+                              open_ts: float, side: str) -> List[list]:
+    p = _bench_db_path(bot)
+    if not p or not p.exists():
+        return []
+    out: List[list] = []
+    try:
+        with closing(sqlite3.connect(p)) as c:
+            for ts, prob in c.execute(
+                    "SELECT ts, prob_yes FROM bench WHERE ticker = ?"
+                    " ORDER BY ts", (ticker,)):
+                if ts is None or prob is None or ts < open_ts:
+                    continue
+                sp = _side_pct(float(prob), side)
+                if sp is not None:
+                    out.append([int(ts), sp])
+    except (sqlite3.OperationalError, sqlite3.DatabaseError):
+        return []
+    return _downsample(out)
+
+
+def record_sport_benchmarks(bots: List[dict]) -> int:
+    """Append every sport bot's current benchmark probs to its
+    benchmark_history.db — the movement record the History drill-down
+    reads for sport contracts. Called on an interval by the server."""
+    import time as _time
+    n = 0
+    now = int(_time.time())
+    for bot in bots or []:
+        if (bot.get("dashboard_type") or "") != "sport":
+            continue
+        wl = bot.get("watchlist_json_path")
+        p = _bench_db_path(bot)
+        if not wl or not p or not Path(wl).exists():
+            continue
+        try:
+            rows = json.loads(Path(wl).read_text())
+        except (OSError, json.JSONDecodeError):
+            continue
+        try:
+            with closing(sqlite3.connect(p)) as c:
+                c.execute("CREATE TABLE IF NOT EXISTS bench ("
+                          " ts INTEGER, ticker TEXT, prob_yes REAL,"
+                          " PRIMARY KEY (ts, ticker))")
+                for r in rows or []:
+                    for sfx in ("a", "b"):
+                        tk = r.get(f"ticker_{sfx}")
+                        pr = (r.get(f"pinnacle_prob_{sfx}")
+                              if r.get(f"pinnacle_prob_{sfx}") is not None
+                              else r.get(f"live_prob_{sfx}"))
+                        if tk and pr is not None:
+                            c.execute("INSERT OR IGNORE INTO bench"
+                                      " VALUES (?,?,?)",
+                                      (now, str(tk), float(pr)))
+                            n += 1
+                c.commit()
+        except (sqlite3.OperationalError, sqlite3.DatabaseError):
+            log.exception("benchmark recorder failed for %s",
+                          bot.get("key"))
+    return n

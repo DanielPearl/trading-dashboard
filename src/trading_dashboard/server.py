@@ -1337,6 +1337,21 @@ def serve(host: str, port: int, bots: List[dict], risk_caps: dict,
     # were swept closed at their entry price). Real positions settle
     # via each bot's result-based close; real history comes from the
     # Kalshi settlements API.
+    # Sport benchmark recorder (2026-09-17): snapshots every sport
+    # bot's benchmark probs into benchmark_history.db beside its
+    # sim_state so the History drill-down can draw a model line for
+    # sport contracts going forward.
+    def _bench_loop() -> None:
+        import time as _t
+        from . import bet_chart as _bc
+        while True:
+            try:
+                _bc.record_sport_benchmarks(bots)
+            except Exception:  # noqa: BLE001
+                log.exception("benchmark recorder tick failed")
+            _t.sleep(300)
+    threading.Thread(target=_bench_loop, daemon=True,
+                     name="benchmark-recorder").start()
     if mode != "live":
         from . import hedge_monitor
         hedge_monitor.start_daemon(bots, hedge_cfg)

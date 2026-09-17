@@ -2215,7 +2215,7 @@ def _render_history_detail_modal(out: List[str]) -> None:
         #21262d;border-radius:8px;'></svg>
       <div id='hd-loading' class='small gray' style='position:absolute;
         inset:0;display:flex;align-items:center;
-        justify-content:center;'>loading movement history&hellip;</div>
+        justify-content:center;'>&hellip;</div>
     </div>
     <div class='small gray' style='margin-top:6px;display:flex;
       gap:18px;flex-wrap:wrap;'>
@@ -2336,7 +2336,7 @@ def _render_history_detail_modal(out: List[str]) -> None:
     net.textContent = money(pnl);
     net.style.color = color;
     svg.innerHTML = '';
-    $('hd-loading').textContent = 'loading movement history…';
+    $('hd-loading').textContent = '…';
     $('hd-loading').hidden = false;
     ov.style.display = 'flex';
     var openTs = Date.parse(d.hopen || '') / 1000,
@@ -2371,6 +2371,25 @@ def _render_history_detail_modal(out: List[str]) -> None:
   document.addEventListener('keydown', function (ev) {
     if (ev.key === 'Escape') ov.style.display = 'none';
   });
+  // Idle prefetch: warm the server's immutable series cache for the
+  // most recent rows so clicks render as snapshots.
+  setTimeout(function () {
+    var rows = Array.prototype.slice.call(
+      document.querySelectorAll('tr.hist-row')).slice(0, 15);
+    var i = 0;
+    (function next() {
+      if (i >= rows.length) return;
+      var d = rows[i++].dataset;
+      var o = Date.parse(d.hopen || '') / 1000,
+          c = Date.parse(d.hclose || '') / 1000;
+      if (isFinite(o) && isFinite(c) && c > o) {
+        fetch('/api/bet_history_series?ticker=' +
+              encodeURIComponent(d.hticker) + '&side=' +
+              (d.hside || 'YES') + '&open=' + o + '&close=' + c)
+          .catch(function () {}).finally(next);
+      } else { next(); }
+    })();
+  }, 1500);
 })();
 </script>
 <style>
