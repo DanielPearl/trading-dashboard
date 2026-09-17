@@ -2013,7 +2013,23 @@ def _render_bet_history_block(out: List[str], history: List[dict],
                 elif pnl < 0:
                     winner_str = (_no_desc if side == "YES"
                                   else _yes_desc)
-        return (f"<tr><td>{html.escape(opened)}</td>"
+        # History drill-down attrs (user 2026-09-17): clicking a row
+        # opens the per-contract detail card + movement chart.
+        _h_title = (b.get("title") or b.get("_match") or _tk or "")
+        _h_attrs = ""
+        if _tk and b.get("opened_at") and b.get("exited_at"):
+            _h_attrs = (
+                f" class='hist-row' data-hticker='{html.escape(_tk)}'"
+                f" data-hside='{side}'"
+                f" data-hopen='{html.escape(str(b.get('opened_at')))}'"
+                f" data-hclose='{html.escape(str(b.get('exited_at')))}'"
+                f" data-hentry='{entry if entry is not None else ''}'"
+                f" data-hpnl='{pnl}'"
+                f" data-hcontracts='{contracts}'"
+                f" data-hbet='{html.escape(str(_side_player or ''))}'"
+                f" data-hwinner='{html.escape(str(winner_str or ''))}'"
+                f" data-htitle='{html.escape(str(_h_title)[:120])}'")
+        return (f"<tr{_h_attrs}><td>{html.escape(opened)}</td>"
                 f"<td>{html.escape(closed)}</td>"
                 f"{bot_cell}"
                 f"<td>{_title_cell}{merged_badge}</td>"
@@ -2152,3 +2168,183 @@ def _render_bot_unavailable(out: List[str], bot_key: str) -> None:
                f"but has no data on this host yet. Switch to a different bot above, "
                f"or run that bot's service to populate <code>data/sim.db</code>.</div>"
                "</div></div>")
+
+
+def _render_history_detail_modal(out: List[str]) -> None:
+    """Per-contract drill-down for the History tab (user 2026-09-17):
+    click any All-bets row → a Kalshi-contract-page-style card with
+    the outcome banner (won/lost + P&L), who was backed vs who won,
+    cost and payout, and the Kalshi % / model % movement chart over
+    the bet's lifetime (fetched from /api/bet_history_series)."""
+    out.append("""
+<div id='hd-overlay' hidden style='position:fixed;inset:0;
+  background:rgba(1,4,9,0.72);z-index:60;display:flex;
+  align-items:center;justify-content:center;padding:20px;'>
+  <div style='background:#0d1117;border:1px solid #30363d;
+    border-radius:12px;max-width:960px;width:100%;max-height:92vh;
+    overflow-y:auto;padding:20px 24px;'>
+    <div style='display:flex;justify-content:space-between;
+      align-items:flex-start;gap:12px;'>
+      <div>
+        <div id='hd-title' style='font-size:18px;font-weight:700;
+          line-height:1.3;'></div>
+        <div id='hd-sub' class='small gray' style='margin-top:2px;'></div>
+      </div>
+      <button id='hd-close' style='background:none;border:none;
+        color:#8b949e;font-size:22px;cursor:pointer;line-height:1;'>
+        &#10005;</button>
+    </div>
+    <div id='hd-banner' style='margin:14px 0;border-radius:8px;
+      padding:12px 16px;font-size:16px;font-weight:700;'></div>
+    <div style='display:flex;gap:26px;flex-wrap:wrap;margin-bottom:14px;'
+      class='small'>
+      <div><div class='gray'>You backed</div>
+        <div id='hd-bet' style='font-weight:600;'></div></div>
+      <div><div class='gray'>Winner</div>
+        <div id='hd-winner' style='font-weight:600;'></div></div>
+      <div><div class='gray'>Paid</div>
+        <div id='hd-cost' style='font-weight:600;'></div></div>
+      <div><div class='gray'>Payout</div>
+        <div id='hd-payout' style='font-weight:600;'></div></div>
+      <div><div class='gray'>Net</div>
+        <div id='hd-net' style='font-weight:600;'></div></div>
+    </div>
+    <div id='hd-chartwrap' style='position:relative;'>
+      <svg id='hd-svg' width='100%' height='250'
+        style='display:block;background:#010409;border:1px solid
+        #21262d;border-radius:8px;'></svg>
+      <div id='hd-loading' class='small gray' style='position:absolute;
+        inset:0;display:flex;align-items:center;
+        justify-content:center;'>loading movement history&hellip;</div>
+    </div>
+    <div class='small gray' style='margin-top:6px;display:flex;
+      gap:18px;flex-wrap:wrap;'>
+      <span><svg width='24' height='8'><line id='hd-leg-k' x1='0' y1='4'
+        x2='24' y2='4' stroke='#3fb950' stroke-width='3'/></svg>
+        Kalshi market %</span>
+      <span><svg width='24' height='8'><line x1='0' y1='4' x2='24'
+        y2='4' stroke='#e6edf3' stroke-width='3' stroke-dasharray='2,4'
+        stroke-linecap='round'/></svg> Model %</span>
+      <span id='hd-axis' class='gray'></span>
+    </div>
+  </div>
+</div>
+<script>
+(function () {
+  var GREEN = '#3fb950', RED = '#f85149', WHITE = '#e6edf3',
+      GRID = '#21262d', TXT = '#8b949e';
+  var ov = document.getElementById('hd-overlay');
+  if (!ov) return;
+  var svg = document.getElementById('hd-svg');
+  function $(id) { return document.getElementById(id); }
+  function money(cents) {
+    var v = cents / 100.0;
+    return (v < 0 ? '-$' : '$') + Math.abs(v).toFixed(2);
+  }
+  function fmtT(ts) {
+    var d = new Date(ts * 1000);
+    return (d.getMonth() + 1) + '/' + d.getDate() + ' ' +
+      String(d.getHours()).padStart(2, '0') + ':' +
+      String(d.getMinutes()).padStart(2, '0');
+  }
+  function draw(series, side, openTs, closeTs) {
+    var W = Math.max((svg.parentNode.clientWidth || 900), 600),
+        H = 250, T = 14, B = 26, L = 44, R = 16;
+    svg.setAttribute('viewBox', '0 0 ' + W + ' ' + H);
+    var color = side === 'NO' ? RED : GREEN;
+    $('hd-leg-k').setAttribute('stroke', color);
+    var pts = (series.kalshi || []).concat(series.model || []);
+    var x0 = openTs, x1 = closeTs > openTs ? closeTs : openTs + 600;
+    function X(ts) { return L + (W - L - R) * (ts - x0) / (x1 - x0); }
+    function Y(p) { return T + (H - T - B) * (1 - p / 100); }
+    var s = '';
+    [0, 25, 50, 75, 100].forEach(function (g) {
+      s += "<line x1='" + L + "' y1='" + Y(g) + "' x2='" + (W - R) +
+           "' y2='" + Y(g) + "' stroke='" + GRID + "'/>";
+      s += "<text x='" + (L - 6) + "' y='" + (Y(g) + 4) + "' fill='" +
+           TXT + "' font-size='10' text-anchor='end'>" + g + "</text>";
+    });
+    function line(sr, col, dotted) {
+      if (!sr || !sr.length) return '';
+      var d = sr.map(function (p, i) {
+        return (i ? 'L' : 'M') + X(p[0]).toFixed(1) + ',' +
+               Y(p[1]).toFixed(1);
+      }).join(' ');
+      return "<path d='" + d + "' fill='none' stroke='" + col +
+             "' stroke-width='2'" +
+             (dotted ? " stroke-dasharray='2,5' stroke-linecap='round'"
+                     : '') + "/>";
+    }
+    s += line(series.kalshi, color, false);
+    s += line(series.model, WHITE, true);
+    svg.innerHTML = s;
+    $('hd-axis').textContent = fmtT(x0) + ' (bought) → ' +
+      fmtT(x1) + ' (settled)';
+    if (!pts.length) {
+      $('hd-loading').textContent =
+        'no recorded movement for this contract';
+      $('hd-loading').hidden = false;
+    }
+  }
+  function openModal(tr) {
+    var d = tr.dataset;
+    var side = d.hside || 'YES';
+    var pnl = parseInt(d.hpnl || '0', 10);
+    var n = parseInt(d.hcontracts || '1', 10) || 1;
+    var entry = parseInt(d.hentry || '0', 10);
+    var won = pnl > 0;
+    var color = won ? GREEN : (pnl < 0 ? RED : TXT);
+    $('hd-title').textContent = d.htitle || d.hticker;
+    $('hd-sub').textContent = d.hticker;
+    var bn = $('hd-banner');
+    bn.textContent = (won ? 'WON ' : (pnl < 0 ? 'LOST ' : 'FLAT ')) +
+      money(pnl);
+    bn.style.background = won ? 'rgba(63,185,80,0.12)'
+      : (pnl < 0 ? 'rgba(248,81,73,0.12)' : 'rgba(139,148,158,0.12)');
+    bn.style.color = color;
+    bn.style.border = '1px solid ' + color;
+    $('hd-bet').textContent = (d.hbet || side) + ' — ' + side +
+      ' @ ' + entry + '¢' + (n > 1 ? ' × ' + n : '');
+    $('hd-bet').style.color = side === 'NO' ? RED : GREEN;
+    $('hd-winner').textContent = d.hwinner || '—';
+    $('hd-cost').textContent = money(entry * n);
+    $('hd-payout').textContent = money(won ? 100 * n : 0);
+    var net = $('hd-net');
+    net.textContent = money(pnl);
+    net.style.color = color;
+    svg.innerHTML = '';
+    $('hd-loading').textContent = 'loading movement history…';
+    $('hd-loading').hidden = false;
+    ov.hidden = false;
+    var openTs = Date.parse(d.hopen) / 1000,
+        closeTs = Date.parse(d.hclose) / 1000;
+    var u = '/api/bet_history_series?ticker=' +
+      encodeURIComponent(d.hticker) + '&side=' + side +
+      '&open=' + openTs + '&close=' + closeTs;
+    fetch(u).then(function (r) { return r.json(); })
+      .then(function (series) {
+        $('hd-loading').hidden = true;
+        draw(series, side, openTs, closeTs);
+      })
+      .catch(function () {
+        $('hd-loading').textContent = 'movement history unavailable';
+      });
+  }
+  document.addEventListener('click', function (ev) {
+    var tr = ev.target && ev.target.closest &&
+             ev.target.closest('tr.hist-row');
+    if (tr) { openModal(tr); return; }
+    if (ev.target === ov || ev.target.closest('#hd-close')) {
+      ov.hidden = true;
+    }
+  });
+  document.addEventListener('keydown', function (ev) {
+    if (ev.key === 'Escape') ov.hidden = true;
+  });
+})();
+</script>
+<style>
+tr.hist-row { cursor: pointer; }
+tr.hist-row:hover td { background: #1c222b; }
+</style>
+""")

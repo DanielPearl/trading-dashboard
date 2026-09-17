@@ -14,6 +14,7 @@ from .panels import (
     PERIOD_OPTIONS,
     _period_days,
     _render_bet_history_block,
+    _render_history_detail_modal,
     _render_bot_cards,
     _render_bot_filter,
     _render_bot_unavailable,
@@ -438,6 +439,7 @@ def render_page(
     if kalshi_history:
         _render_bet_history_block(out, kalshi_history, heading="",
                                     shown_initially=25)
+        _render_history_detail_modal(out)
     elif is_live:
         out.append("<div class='empty'>No settled Kalshi contracts yet "
                     "— the ledger will populate as bots trade live and "

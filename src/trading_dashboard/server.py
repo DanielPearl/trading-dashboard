@@ -1025,6 +1025,36 @@ class Handler(BaseHTTPRequestHandler):
             self.send_header("Content-Length", str(len(payload)))
             self.end_headers()
             self.wfile.write(payload)
+        elif parsed.path == "/api/bet_history_series":
+            # History drill-down (user 2026-09-17): per-contract
+            # Kalshi %% / model %% series over the bet's lifetime.
+            # Bot resolved from the ticker prefix so the row needs no
+            # bot key of its own.
+            try:
+                q = parse_qs(parsed.query)
+                ticker = (q.get("ticker") or [""])[0]
+                side = (q.get("side") or ["YES"])[0]
+                open_ts = float((q.get("open") or ["0"])[0])
+                close_ts = float((q.get("close") or ["0"])[0])
+                from .data import _bot_ticker_prefix_index, _ticker_to_bot
+                bot = _ticker_to_bot(
+                    ticker, _bot_ticker_prefix_index(self.bots)) or {}
+                from . import bet_chart
+                series = (bet_chart.history_series(
+                    bot, ticker, side, open_ts, close_ts)
+                    if ticker and open_ts and close_ts else
+                    {"kalshi": [], "model": []})
+                body_j = json.dumps(series).encode("utf-8")
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Cache-Control", "no-store")
+                self.send_header("Content-Length", str(len(body_j)))
+                self.end_headers()
+                self.wfile.write(body_j)
+            except Exception:  # noqa: BLE001
+                log.exception("bet_history_series failed")
+                self.send_error(500)
+            return
         elif parsed.path == "/api/snapshot":
             # JSON payload that the page's JS polls every few seconds
             # to patch live cells in place. Same data the full HTML

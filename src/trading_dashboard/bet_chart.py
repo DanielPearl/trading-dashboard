@@ -228,3 +228,35 @@ def build_payload(bot: dict, bets: List[dict]) -> Optional[dict]:
     if not rows:
         return None
     return {"bets": rows}
+
+
+def history_series(bot: dict, ticker: str, side: str,
+                   open_ts: float, close_ts: float) -> dict:
+    """Both series for a SETTLED contract, bounded [open, close] —
+    the History drill-down's data (user 2026-09-17: click a history
+    row, see how Kalshi % and model % moved over the bet's life)."""
+    side = "NO" if str(side).upper() == "NO" else "YES"
+    grace = 900
+    kal: List[list] = []
+    try:
+        from . import kalshi_client as kc
+        client = kc.get_client()
+        span_h = (close_ts - open_ts) / 3600.0
+        period = 1 if span_h <= 48 else 60
+        resp = client.get_market_candlesticks(
+            ticker=ticker, series_ticker=ticker.split("-")[0],
+            start_ts=int(open_ts - 3600), end_ts=int(close_ts + grace),
+            period_interval=period)
+        for c in (resp or {}).get("candlesticks") or []:
+            ts = _num(c.get("end_period_ts") or c.get("ts"))
+            if ts is None or ts < open_ts or ts > close_ts + grace:
+                continue
+            sp = _side_pct(kc._candle_yes_prob(c), side)
+            if sp is not None:
+                kal.append([int(ts), sp])
+    except Exception:  # noqa: BLE001
+        log.exception("history candles failed for %s", ticker)
+    mdl = [p for p in _model_series(bot.get("db_path") or "", ticker,
+                                    open_ts, side)
+           if p[0] <= close_ts + grace]
+    return {"kalshi": _downsample(kal), "model": mdl}
