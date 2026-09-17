@@ -1586,6 +1586,7 @@ def main(argv: list[str] | None = None) -> int:
             "training_db_path": b.training_db_path,
             "series_ticker": b.series_ticker,
             "series_prefixes": list(b.series_prefixes or []),
+            "untraded_series": list(b.untraded_series or []),
             "weather_kind": b.weather_kind,
             "seasons": [
                 {"name": s.name, "start": s.start, "end": s.end}
