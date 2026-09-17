@@ -2017,12 +2017,12 @@ def _render_bet_history_block(out: List[str], history: List[dict],
         # opens the per-contract detail card + movement chart.
         _h_title = (b.get("title") or b.get("_match") or _tk or "")
         _h_attrs = ""
-        if _tk and b.get("opened_at") and b.get("exited_at"):
+        if _tk:
             _h_attrs = (
                 f" class='hist-row' data-hticker='{html.escape(_tk)}'"
                 f" data-hside='{side}'"
-                f" data-hopen='{html.escape(str(b.get('opened_at')))}'"
-                f" data-hclose='{html.escape(str(b.get('exited_at')))}'"
+                f" data-hopen='{html.escape(str(b.get('opened_at') or ''))}'"
+                f" data-hclose='{html.escape(str(b.get('exited_at') or ''))}'"
                 f" data-hentry='{entry if entry is not None else ''}'"
                 f" data-hpnl='{pnl}'"
                 f" data-hcontracts='{contracts}'"
@@ -2177,8 +2177,8 @@ def _render_history_detail_modal(out: List[str]) -> None:
     cost and payout, and the Kalshi % / model % movement chart over
     the bet's lifetime (fetched from /api/bet_history_series)."""
     out.append("""
-<div id='hd-overlay' hidden style='position:fixed;inset:0;
-  background:rgba(1,4,9,0.72);z-index:60;display:flex;
+<div id='hd-overlay' style='position:fixed;inset:0;
+  background:rgba(1,4,9,0.72);z-index:60;display:none;
   align-items:center;justify-content:center;padding:20px;'>
   <div style='background:#0d1117;border:1px solid #30363d;
     border-radius:12px;max-width:960px;width:100%;max-height:92vh;
@@ -2281,8 +2281,9 @@ def _render_history_detail_modal(out: List[str]) -> None:
     $('hd-axis').textContent = fmtT(x0) + ' (bought) → ' +
       fmtT(x1) + ' (settled)';
     if (!pts.length) {
-      $('hd-loading').textContent =
-        'no recorded movement for this contract';
+      $('hd-loading').textContent = 'no recorded movement — this '
+        + 'contract settled before movement tracking, or Kalshi no '
+        + 'longer serves its price history';
       $('hd-loading').hidden = false;
     }
   }
@@ -2315,9 +2316,16 @@ def _render_history_detail_modal(out: List[str]) -> None:
     svg.innerHTML = '';
     $('hd-loading').textContent = 'loading movement history…';
     $('hd-loading').hidden = false;
-    ov.hidden = false;
-    var openTs = Date.parse(d.hopen) / 1000,
-        closeTs = Date.parse(d.hclose) / 1000;
+    ov.style.display = 'flex';
+    var openTs = Date.parse(d.hopen || '') / 1000,
+        closeTs = Date.parse(d.hclose || '') / 1000;
+    if (!isFinite(openTs) || !isFinite(closeTs) || closeTs <= openTs) {
+      // Older archive-backfilled contracts predate the movement
+      // records — the card still shows the settlement facts.
+      $('hd-loading').textContent = 'no movement history for this ' +
+        'older contract (settled before movement tracking began)';
+      return;
+    }
     var u = '/api/bet_history_series?ticker=' +
       encodeURIComponent(d.hticker) + '&side=' + side +
       '&open=' + openTs + '&close=' + closeTs;
@@ -2335,11 +2343,11 @@ def _render_history_detail_modal(out: List[str]) -> None:
              ev.target.closest('tr.hist-row');
     if (tr) { openModal(tr); return; }
     if (ev.target === ov || ev.target.closest('#hd-close')) {
-      ov.hidden = true;
+      ov.style.display = 'none';
     }
   });
   document.addEventListener('keydown', function (ev) {
-    if (ev.key === 'Escape') ov.hidden = true;
+    if (ev.key === 'Escape') ov.style.display = 'none';
   });
 })();
 </script>
