@@ -659,6 +659,16 @@ nba_trader:
     # and a row clears the shared gates (9pp edge, 30-70c band).
     dry_run: false
     sim_state_path: /root/nba/data/outputs-live/sim_state.json
+    # Benchmark-covered allowlist (2026-09-17, user: "remove anything
+    # else that has the same issue" after ITF): only leagues The Odds
+    # API cascade actually quotes may enter live. The minor leagues
+    # (LNBP/FIBA/NBB/CBA/PBA/BSN/BAL/ACB/...) ride the single-source
+    # guest feed — the exact profile that made ITF's edges fake — and
+    # any NEW league Kalshi lists is excluded by default until the
+    # cascade covers it. Sim keeps papering everything.
+    allowed_series: [KXNBAGAME, KXNBASUMMERGAME, KXWNBAGAME,
+      KXNCAAMBGAME, KXNCAAWBGAME, KXNCAABGAME,
+      KXEUROLEAGUEGAME, KXNBLGAME]
     max_open_positions: 10   # raised 6 → 10 (hard cap) for $1-stake testing
     # Backstop only — the real limit is max_open_positions
     # ("10 at a time"); slots reopen as positions settle.

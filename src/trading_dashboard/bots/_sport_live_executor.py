@@ -213,6 +213,16 @@ class SportLiveExecutor:
         self.excluded_series = tuple(
             str(p).upper() for p in (cfg.get("excluded_series") or ())
             if p)
+        # Allowlist variant (2026-09-17, basketball): when set, ONLY
+        # tickers matching these prefixes may enter — safer than a
+        # blacklist for a bot whose exporter discovers dozens of
+        # niche leagues (LNBP/FIBA/NBB/CBA/...) that only the
+        # single-source guest feed quotes. New leagues Kalshi lists
+        # are excluded BY DEFAULT until the benchmark cascade
+        # actually covers them.
+        self.allowed_series = tuple(
+            str(p).upper() for p in (cfg.get("allowed_series") or ())
+            if p)
         # Strong-edge bypass retired 2026-07-15 (was a patch over the
         # 30¢ min_entry_price floor). Now that the floor is at 15¢
         # (SDK hard floor), the true-edge gate handles filtering
@@ -431,6 +441,12 @@ class SportLiveExecutor:
         if self.excluded_series and str(ticker).upper().startswith(
                 self.excluded_series):
             self._log.info("%s-live skip %s: excluded series",
+                           self.bot_key, ticker)
+            return
+        if self.allowed_series and not str(ticker).upper().startswith(
+                self.allowed_series):
+            self._log.info("%s-live skip %s: series not on the "
+                           "benchmark-covered allowlist",
                            self.bot_key, ticker)
             return
         if len(state.get("open_positions", [])) >= self.max_open:
