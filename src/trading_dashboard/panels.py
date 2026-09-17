@@ -2303,9 +2303,7 @@ def _render_history_detail_modal(out: List[str]) -> None:
     $('hd-axis').textContent = fmtT(x0) + ' (listed) \u2192 ' +
       fmtT(x1) + ' (settled)';
     if (!pts.length) {
-      $('hd-loading').textContent = 'no recorded movement — this '
-        + 'contract settled before movement tracking, or Kalshi no '
-        + 'longer serves its price history';
+      $('hd-loading').textContent = 'No movement history available.';
       $('hd-loading').hidden = false;
     }
   }
@@ -2342,10 +2340,7 @@ def _render_history_detail_modal(out: List[str]) -> None:
     var openTs = Date.parse(d.hopen || '') / 1000,
         closeTs = Date.parse(d.hclose || '') / 1000;
     if (!isFinite(openTs) || !isFinite(closeTs) || closeTs <= openTs) {
-      // Older archive-backfilled contracts predate the movement
-      // records — the card still shows the settlement facts.
-      $('hd-loading').textContent = 'no movement history for this ' +
-        'older contract (settled before movement tracking began)';
+      $('hd-loading').textContent = 'No movement history available.';
       return;
     }
     var u = '/api/bet_history_series?ticker=' +
@@ -2357,7 +2352,7 @@ def _render_history_detail_modal(out: List[str]) -> None:
         draw(series, side, openTs, closeTs, entry);
       })
       .catch(function () {
-        $('hd-loading').textContent = 'movement history unavailable';
+        $('hd-loading').textContent = 'No movement history available.';
       });
   }
   document.addEventListener('click', function (ev) {
