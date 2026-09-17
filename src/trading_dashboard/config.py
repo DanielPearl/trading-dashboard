@@ -121,6 +121,9 @@ class BotEntry:
     # ("KXDARTS*"); plain entries match the ticker's first dash-segment
     # exactly. Empty → falls back to [series_ticker].
     series_prefixes: List[str] = field(default_factory=list)
+    # Series the bot no longer trades (invalidated models) —
+    # ledger rows stay recorded, never shown as active bets.
+    untraded_series: list | None = None
     # Human-readable name of the upstream data source surfaced on each
     # bot's model card and detail page (e.g. "FRED ICSA", "Billboard
     # Hot 100 weekly chart"). Falls through from config; render code
