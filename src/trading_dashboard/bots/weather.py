@@ -102,18 +102,21 @@ def start_daemon(cfg: dict) -> Any:
             try:
                 rain_on = bot_state.is_bot_enabled(RAIN_KEY)
                 temp_on = bot_state.is_bot_enabled(TEMP_KEY)
-                if rain_on or temp_on:
-                    bot_cfg.trading.rain_enabled = base_rain and rain_on
-                    bot_cfg.trading.temp_enabled = base_temp and temp_on
-                    json_path, _db_path = export(bot_cfg)
-                    log.info("weather tick (%s, rain=%s temp=%s) — wrote %s",
-                             mode,
-                             "on" if bot_cfg.trading.rain_enabled else "off",
-                             "on" if bot_cfg.trading.temp_enabled else "off",
-                             json_path)
-                else:
-                    log.info("weather tick skipped — both rain and temp "
-                             "paused on dashboard")
+                # Paused toggles stop ENTRIES, never the pane
+                # (2026-09-17: the live rain watchlist froze at its
+                # Sep-13 pause because the whole tick — export
+                # included — was skipped). The exporter always runs;
+                # rain/temp_enabled gates only the buy paths inside.
+                bot_cfg.trading.rain_enabled = base_rain and rain_on
+                bot_cfg.trading.temp_enabled = base_temp and temp_on
+                json_path, _db_path = export(bot_cfg)
+                log.info("weather tick (%s, rain=%s temp=%s%s) — wrote %s",
+                         mode,
+                         "on" if bot_cfg.trading.rain_enabled else "off",
+                         "on" if bot_cfg.trading.temp_enabled else "off",
+                         "" if (rain_on or temp_on)
+                         else ", watch-only: both paused",
+                         json_path)
             except Exception:  # noqa: BLE001
                 log.exception("weather-bot tick failed")
             time.sleep(max(60, interval))
